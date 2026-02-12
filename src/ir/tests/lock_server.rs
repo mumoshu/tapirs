@@ -240,7 +240,7 @@ async fn lock_server(num_replicas: usize) {
         );
 
         for _ in 0..2 {
-            if thread_rng().gen() {
+            if thread_rng().r#gen() {
                 let to_remove = replicas
                     .iter()
                     .map(|r| r.address())
@@ -252,7 +252,7 @@ async fn lock_server(num_replicas: usize) {
                         .do_send(r.address(), crate::ir::RemoveMember { address: to_remove });
                 }
             }
-            if thread_rng().gen() {
+            if thread_rng().r#gen() {
                 add_replica(&mut replicas, &registry, &membership);
             }
         }

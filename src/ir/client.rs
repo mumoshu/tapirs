@@ -28,7 +28,7 @@ pub struct Id(pub u64);
 
 impl Id {
     pub fn new() -> Self {
-        Self(thread_rng().gen())
+        Self(thread_rng().r#gen())
     }
 }
 
@@ -212,7 +212,7 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
     }
 
     /// Returns when the inconsistent operation is finalized, retrying indefinitely.
-    pub fn invoke_inconsistent(&self, op: U::IO) -> impl Future<Output = ()> {
+    pub fn invoke_inconsistent(&self, op: U::IO) -> impl Future<Output = ()> + use<U, T> {
         let inner = Arc::clone(&self.inner);
 
         let op_id = {
@@ -313,11 +313,11 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
     }
 
     /// Returns the consensus result, retrying indefinitely.
-    pub fn invoke_consensus(
+    pub fn invoke_consensus<D: Fn(HashMap<U::CR, usize>, MembershipSize) -> U::CR + Send>(
         &self,
         op: U::CO,
-        decide: impl Fn(HashMap<U::CR, usize>, MembershipSize) -> U::CR + Send,
-    ) -> impl Future<Output = U::CR> + Send {
+        decide: D,
+    ) -> impl Future<Output = U::CR> + Send + use<U, T, D> {
         fn has_ancient<R, A>(replies: &HashMap<A, ReplyConsensus<R, A>>) -> bool {
             replies.values().any(|v| v.result_state.is_none())
         }

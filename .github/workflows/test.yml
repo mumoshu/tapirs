@@ -15,11 +15,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: nightly-2023-06-08
-          override: true
+          toolchain: 1.93.0
           components: rustfmt, clippy
       - name: Test
         run: cargo test --release

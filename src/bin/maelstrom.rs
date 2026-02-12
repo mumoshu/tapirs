@@ -1,7 +1,3 @@
-#![feature(return_position_impl_trait_in_trait)]
-#![feature(let_chains)]
-#![allow(incomplete_features)]
-
 use async_maelstrom::msg::Body::{self};
 use async_maelstrom::msg::{Error, LinKv, Msg, MsgId};
 use async_maelstrom::process::{ProcNet, Process};
@@ -135,7 +131,7 @@ impl Transport<TapirReplica<K, V>> for Maelstrom {
     ) -> impl futures::Future<Output = R> + Send + 'static {
         let id = self.id;
         let (sender, mut receiver) = tokio::sync::oneshot::channel();
-        let reply = thread_rng().gen();
+        let reply = thread_rng().r#gen();
         self.inner.requests.lock().unwrap().insert(reply, sender);
         let message = Wrapper {
             message: message.into(),
@@ -489,7 +485,7 @@ impl Process<LinKv, Wrapper> for KvNode {
                                         .send(Msg {
                                             src: src.clone(),
                                             dest: IdEnum::App({
-                                                let n = thread_rng().gen::<usize>();
+                                                let n = thread_rng().r#gen::<usize>();
                                                 n % 2
                                             })
                                             .to_string(),

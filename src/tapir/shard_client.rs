@@ -61,7 +61,7 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
         transaction_id: OccTransactionId,
         transaction: &OccTransaction<K, V, Timestamp>,
         timestamp: Timestamp,
-    ) -> impl Future<Output = OccPrepareResult<Timestamp>> + Send {
+    ) -> impl Future<Output = OccPrepareResult<Timestamp>> + Send + use<K, V, T> {
         let future = self.inner.invoke_consensus(
             CO::Prepare {
                 transaction_id,
@@ -132,7 +132,7 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
         transaction: &OccTransaction<K, V, Timestamp>,
         prepared_timestamp: Timestamp,
         commit: bool,
-    ) -> impl Future<Output = ()> + Send {
+    ) -> impl Future<Output = ()> + Send + use<K, V, T> {
         self.inner.invoke_inconsistent(if commit {
             IO::Commit {
                 transaction_id,

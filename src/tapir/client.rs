@@ -77,7 +77,7 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Client<K, V, T> {
                 clients: Default::default(),
                 transport,
             })),
-            next_transaction_number: AtomicU64::new(thread_rng().gen()),
+            next_transaction_number: AtomicU64::new(thread_rng().r#gen()),
         }
     }
 
@@ -106,24 +106,8 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Transaction<K, V, T> {
         async move {
             let client = Inner::shard_client(&client, key.shard).await;
 
-            loop {
-                {
-                    let lock = inner.lock().unwrap();
-
-                    // Read own writes.
-                    if let Some(write) = lock.inner.write_set.get(&key) {
-                        return write.as_ref().cloned();
-                    }
-
-                    // Consistent reads.
-                    if let Some(read) = lock.read_cache.get(&key) {
-                        return read.as_ref().cloned();
-                    }
-                }
-
-                let (value, timestamp) = client.get(key.key.clone(), None).await;
-
-                let mut lock = inner.lock().unwrap();
+            {
+                let lock = inner.lock().unwrap();
 
                 // Read own writes.
                 if let Some(write) = lock.inner.write_set.get(&key) {
@@ -134,11 +118,25 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Transaction<K, V, T> {
                 if let Some(read) = lock.read_cache.get(&key) {
                     return read.as_ref().cloned();
                 }
-
-                lock.read_cache.insert(key.clone(), value.clone());
-                lock.inner.add_read(key, timestamp);
-                return value;
             }
+
+            let (value, timestamp) = client.get(key.key.clone(), None).await;
+
+            let mut lock = inner.lock().unwrap();
+
+            // Read own writes.
+            if let Some(write) = lock.inner.write_set.get(&key) {
+                return write.as_ref().cloned();
+            }
+
+            // Consistent reads.
+            if let Some(read) = lock.read_cache.get(&key) {
+                return read.as_ref().cloned();
+            }
+
+            lock.read_cache.insert(key.clone(), value.clone());
+            lock.inner.add_read(key, timestamp);
+            value
         }
     }
 
@@ -148,7 +146,7 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Transaction<K, V, T> {
         lock.inner.add_write(key, value);
     }
 
-    fn commit_inner(&self, only_prepare: bool) -> impl Future<Output = Option<Timestamp>> {
+    fn commit_inner(&self, only_prepare: bool) -> impl Future<Output = Option<Timestamp>> + use<K, V, T> {
         let id = self.id;
         let client = self.client.clone();
         let inner = self.inner.clone();
@@ -256,7 +254,7 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Transaction<K, V, T> {
                 let sleep = T::sleep(duration);
                 select! {
                     _ = sleep => {
-                        std::future::pending::<!>().await
+                        std::future::pending::<Option<Timestamp>>().await
                     }
                     result = inner => {
                         result

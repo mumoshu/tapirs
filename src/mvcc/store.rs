@@ -86,11 +86,7 @@ impl<K: Hash + Eq, V, TS: Ord + Eq + Copy + Default> Store<K, V, TS> {
     {
         self.inner
             .get(key)
-            .and_then(|versions| {
-                versions
-                    .upper_bound(Bound::Included(&timestamp))
-                    .key_value()
-            })
+            .and_then(|versions| versions.range(..=timestamp).next_back())
             .map(|(ts, (v, _))| (v.as_ref(), *ts))
             .unwrap_or_default()
     }
@@ -103,9 +99,9 @@ impl<K: Hash + Eq, V, TS: Ord + Eq + Copy + Default> Store<K, V, TS> {
         self.inner
             .get(key)
             .map(|versions| {
-                let cursor = versions.upper_bound(Bound::Included(&timestamp));
-                if let Some((fk, _)) = cursor.key_value() {
-                    if let Some((lk, _)) = cursor.peek_next() {
+                if let Some((fk, _)) = versions.range(..=timestamp).next_back() {
+                    let next = versions.range((Bound::Excluded(fk), Bound::Unbounded)).next();
+                    if let Some((lk, _)) = next {
                         (*fk, Some(*lk))
                     } else {
                         (*fk, None)
@@ -131,7 +127,7 @@ impl<K: Hash + Eq, V, TS: Ord + Eq + Copy + Default> Store<K, V, TS> {
     /// version of the key that the transaction read.
     pub fn commit_get(&mut self, key: K, read: TS, commit: TS) {
         let versions = self.inner.entry(key).or_default();
-        if let Some((_, version)) = versions.upper_bound_mut(Bound::Included(&read)).value_mut() {
+        if let Some((_, (_, version))) = versions.range_mut(..=read).next_back() {
             *version = Some(if let Some(version) = *version {
                 version.max(commit)
             } else {
@@ -161,7 +157,7 @@ impl<K: Hash + Eq, V, TS: Ord + Eq + Copy + Default> Store<K, V, TS> {
     {
         self.inner
             .get(key)
-            .and_then(|entries| entries.upper_bound(Bound::Included(&timestamp)).value())
+            .and_then(|entries| entries.range(..=timestamp).next_back().map(|(_, v)| v))
             .and_then(|(_, ts)| *ts)
     }
 }

@@ -262,14 +262,14 @@ impl<K: Key, V: Value, TS: Timestamp> Store<K, V, TS> {
             }
 
             if self.linearizable && let Some(writes) = self.prepared_writes.get(key) {
-                if let Some(write) = writes.lower_bound(Bound::Excluded(&commit)).key() {
+                if let Some((write, _)) = writes.range((Bound::Excluded(&commit), Bound::Unbounded)).next() {
                     // Write conflicts with later prepared write.
                     return PrepareResult::Retry { proposed: write.time() };
                 }
             }
 
             if let Some(reads) = self.prepared_reads.get(key) {
-                if reads.lower_bound(Bound::Excluded(&commit)).key().is_some() {
+                if reads.range((Bound::Excluded(&commit), Bound::Unbounded)).next().is_some() {
                     // Write conflicts with later prepared read.
                     return PrepareResult::Abstain;
                 }
