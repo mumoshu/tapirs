@@ -94,6 +94,15 @@ struct Inner<U: Upcalls, T: Transport<U>> {
     transport: T,
     app_tick: Option<fn(&U, &T, &Membership<T::Address>)>,
     view_info_key: String,
+    // Single Mutex for all state — faithfully implements the TLA+ single-threaded
+    // state machine model. A RwLock<Upcalls> + Mutex<ProtocolState> split was
+    // considered to make RequestUnlogged (exec_unlogged(&self)) concurrently
+    // runnable via read locks. However, exec_consensus(&mut self) mutates state
+    // (prepared list, min_prepare_time), so ProposeConsensus still needs a write
+    // lock and blocks Gets. The only gain would be concurrent Gets with each
+    // other — Gets are fast (BTreeMap lookup) and with thread-per-core the Mutex
+    // is uncontended. Deemed unnecessary complexity; reconsider only if profiling
+    // shows contention.
     sync: Mutex<SyncInner<U, T>>,
 }
 
