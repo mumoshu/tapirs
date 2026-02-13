@@ -202,6 +202,11 @@ impl<U: IrReplicaUpcalls> Transport<U> for Channel<U> {
                             //channel.random_delay(1..50).await;
                             break result;
                         }
+                    } else {
+                        // Replica didn't respond (e.g., IR view change in
+                        // progress). Back off with a non-zero delay so
+                        // simulated time advances under start_paused=true.
+                        Self::sleep(Duration::from_millis(50)).await;
                     }
                 } else {
                     warn!("unknown address {address:?}");

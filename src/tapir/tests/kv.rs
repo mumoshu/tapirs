@@ -530,15 +530,17 @@ fn build_clients_faulty(
     registry: &ChannelRegistry<TapirReplica<K, V>>,
     config: &NetworkFaultConfig,
     seed: u64,
-) -> Vec<Arc<TapirClient<K, V, FaultyTransport>>> {
-    (0..num_clients)
-        .map(|i| {
-            let client_seed = seed.wrapping_add(10000 + i as u64);
-            let channel = registry.channel(move |_, _| unreachable!());
-            let transport = FaultyChannelTransport::new(channel, config.clone(), client_seed);
-            Arc::new(TapirClient::new(transport))
-        })
-        .collect()
+) -> (Vec<Arc<TapirClient<K, V, FaultyTransport>>>, Vec<FaultyTransport>) {
+    let mut clients = Vec::new();
+    let mut transports = Vec::new();
+    for i in 0..num_clients {
+        let client_seed = seed.wrapping_add(10000 + i as u64);
+        let channel = registry.channel(move |_, _| unreachable!());
+        let transport = FaultyChannelTransport::new(channel, config.clone(), client_seed);
+        transports.push(transport.clone());
+        clients.push(Arc::new(TapirClient::new(transport)));
+    }
+    (clients, transports)
 }
 
 fn build_kv_faulty(
@@ -550,10 +552,11 @@ fn build_kv_faulty(
 ) -> (
     Vec<Arc<IrReplica<TapirReplica<K, V>, FaultyTransport>>>,
     Vec<Arc<TapirClient<K, V, FaultyTransport>>>,
+    Vec<FaultyTransport>,
 ) {
-    let (mut shards, clients) =
+    let (mut shards, clients, client_transports) =
         build_sharded_kv_faulty(linearizable, 1, num_replicas, num_clients, config, seed);
-    (shards.remove(0), clients)
+    (shards.remove(0), clients, client_transports)
 }
 
 fn build_sharded_kv_faulty(
@@ -566,6 +569,7 @@ fn build_sharded_kv_faulty(
 ) -> (
     Vec<Vec<Arc<IrReplica<TapirReplica<K, V>, FaultyTransport>>>>,
     Vec<Arc<TapirClient<K, V, FaultyTransport>>>,
+    Vec<FaultyTransport>,
 ) {
     init_tracing();
 
@@ -591,9 +595,10 @@ fn build_sharded_kv_faulty(
         shards.push(replicas);
     }
 
-    let clients = build_clients_faulty(num_clients, &registry, config, seed.wrapping_add(5000));
+    let (clients, client_transports) =
+        build_clients_faulty(num_clients, &registry, config, seed.wrapping_add(5000));
 
-    (shards, clients)
+    (shards, clients, client_transports)
 }
 
 #[tokio::test(flavor = "current_thread", start_paused = true)]
@@ -627,7 +632,7 @@ async fn fuzz_tapir_transactions() {
 
     eprintln!("fuzz_tapir_transactions: num_shards={num_shards} seed={seed}");
 
-    let (_shards, clients) = build_sharded_kv_faulty(
+    let (shards, clients, client_transports) = build_sharded_kv_faulty(
         true,
         num_shards as usize,
         num_replicas,
@@ -644,6 +649,107 @@ async fn fuzz_tapir_transactions() {
 
     // Generate per-client seeds up front (rng is not Send).
     let client_seeds: Vec<u64> = (0..num_clients).map(|_| rng.r#gen()).collect();
+
+    // Spawn fault injection task.
+    //
+    // IR/TAPIR is LEADERLESS for normal operations — there is no designated
+    // leader. View changes can be initiated by ANY replica (periodic tick
+    // timeout) or ANY client (detecting view number inconsistency across
+    // replicas). The replica designated by view.leader() only serves as the
+    // view change COORDINATOR — it collects f+1 DoViewChange addenda and
+    // runs sync/merge. It does NOT initiate view changes.
+    //
+    // Three fault types exercise different view change triggers:
+    //   1. Replica-initiated: any replica bumps its view and broadcasts
+    //      DoViewChange, simulating its periodic tick timeout.
+    //   2. Client-initiated: any client sends DoViewChange with
+    //      from_client=true to all replicas, nudging them to adopt a higher
+    //      view. Client messages carry addendum=None and do NOT contribute
+    //      to the f+1 quorum needed by the coordinator.
+    //   3. Network partition: isolates a replica, forcing the remaining
+    //      replicas to complete a view change (sync/merge) without it, then
+    //      heals so the lagging replica catches up via StartView.
+    let fault_seed = rng.r#gen::<u64>();
+    let fault_shards = shards.clone();
+    let fault_clients = clients.clone();
+    let fault_client_transports = client_transports.clone();
+    let fault_handle = tokio::spawn(async move {
+        let mut rng = StdRng::seed_from_u64(fault_seed);
+        let num_fault_rounds = rng.gen_range(2..=4u32);
+
+        for round in 0..num_fault_rounds {
+            // Wait before injecting faults (let some transactions complete).
+            FaultyTransport::sleep(Duration::from_millis(rng.gen_range(50..=200))).await;
+
+            let event: u8 = rng.gen_range(0..100);
+
+            if event < 35 {
+                // --- Replica-initiated view change ---
+                let shard_idx = rng.gen_range(0..fault_shards.len());
+                let replica_idx = rng.gen_range(0..fault_shards[shard_idx].len());
+                eprintln!(
+                    "fault[{round}]: replica-initiated view change on \
+                     shard={shard_idx} replica={replica_idx} (seed={fault_seed})"
+                );
+                fault_shards[shard_idx][replica_idx].force_view_change();
+            } else if event < 65 {
+                // --- Client-initiated view change ---
+                let client_idx = rng.gen_range(0..fault_clients.len());
+                let shard_idx = rng.gen_range(0..fault_shards.len());
+                eprintln!(
+                    "fault[{round}]: client-initiated view change from \
+                     client={client_idx} shard={shard_idx} (seed={fault_seed})"
+                );
+                fault_clients[client_idx]
+                    .force_view_change(ShardNumber(shard_idx as u32));
+            } else {
+                // --- Network partition + heal ---
+                // Partition must be applied on ALL transports for a full
+                // network partition (each transport has independent fault state).
+                let shard_idx = rng.gen_range(0..fault_shards.len());
+                let replica_idx = rng.gen_range(0..fault_shards[shard_idx].len());
+                let target_addr = fault_shards[shard_idx][replica_idx].address();
+                eprintln!(
+                    "fault[{round}]: partitioning replica addr={target_addr} \
+                     shard={shard_idx} replica={replica_idx} (seed={fault_seed})"
+                );
+
+                for shard in &fault_shards {
+                    for replica in shard {
+                        replica.transport().partition_node(target_addr);
+                    }
+                }
+                for ct in &fault_client_transports {
+                    ct.partition_node(target_addr);
+                }
+
+                // Hold partition briefly. Replicas now reply with state=None
+                // when ViewChanging (no hot loop in send()), and the remaining
+                // 2 of 3 can still form a quorum for view change completion.
+                let hold_ms = rng.gen_range(200..=1000u64);
+                FaultyTransport::sleep(Duration::from_millis(hold_ms)).await;
+
+                // Heal partition.
+                eprintln!(
+                    "fault[{round}]: healing replica addr={target_addr} \
+                     after {hold_ms}ms (seed={fault_seed})"
+                );
+                for shard in &fault_shards {
+                    for replica in shard {
+                        replica.transport().heal_node(target_addr);
+                    }
+                }
+                for ct in &fault_client_transports {
+                    ct.heal_node(target_addr);
+                }
+            }
+
+            // Let view change propagate (replicas exchange DoViewChange,
+            // coordinator collects quorum, runs sync/merge, broadcasts
+            // StartView).
+            FaultyTransport::sleep(Duration::from_millis(rng.gen_range(100..=500))).await;
+        }
+    });
 
     // Spawn concurrent client workloads.
     let handles: Vec<_> = clients
@@ -698,7 +804,7 @@ async fn fuzz_tapir_transactions() {
                         }
                     }
 
-                    match timeout(Duration::from_secs(5), txn.commit()).await {
+                    match timeout(Duration::from_secs(10), txn.commit()).await {
                         Ok(Some(_ts)) => {
                             let mut counts = committed_counts.lock().unwrap();
                             for (s, k) in write_targets {
@@ -719,7 +825,8 @@ async fn fuzz_tapir_transactions() {
         .collect();
 
     // Wait for all workloads with overall timeout.
-    let all_done = timeout(Duration::from_secs(30), async {
+    let all_done = timeout(Duration::from_secs(60), async {
+        let _ = fault_handle.await;
         for handle in handles {
             handle.await.unwrap();
         }
@@ -738,8 +845,8 @@ async fn fuzz_tapir_transactions() {
     );
     assert!(committed > 0, "no transactions committed (seed={seed})");
 
-    // Let replicas drain pending operations.
-    FaultyTransport::sleep(Duration::from_secs(2)).await;
+    // Let replicas drain pending operations after all view changes settle.
+    FaultyTransport::sleep(Duration::from_secs(5)).await;
 
     // Verify counter invariant: for each (shard, key), final value == committed increments.
     let counts = committed_counts.lock().unwrap().clone();
@@ -747,11 +854,14 @@ async fn fuzz_tapir_transactions() {
     for ((shard, key), expected) in &counts {
         let txn = verify_client.begin();
         let actual = txn
-            .get(Sharded { shard: ShardNumber(*shard), key: *key })
+            .get(Sharded {
+                shard: ShardNumber(*shard),
+                key: *key,
+            })
             .await
             .unwrap_or(0);
 
-        match timeout(Duration::from_secs(5), txn.commit()).await {
+        match timeout(Duration::from_secs(10), txn.commit()).await {
             Ok(Some(_)) => {
                 assert_eq!(
                     actual, *expected,

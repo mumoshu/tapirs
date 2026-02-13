@@ -71,6 +71,20 @@ struct TransactionInner<K: Key, V: Value> {
 }
 
 impl<K: Key, V: Value, T: TapirTransport<K, V>> Client<K, V, T> {
+    /// Force a client-initiated view change for the given shard.
+    ///
+    /// In IR/TAPIR, any client can trigger a view change — there is no
+    /// designated leader. This delegates to the IR client's
+    /// `force_view_change`, which bumps the view and sends `DoViewChange`
+    /// with `from_client: true` to all replicas in the shard.
+    #[cfg(test)]
+    pub fn force_view_change(&self, shard: ShardNumber) {
+        let inner = self.inner.lock().unwrap();
+        if let Some(client) = inner.clients.get(&shard) {
+            client.inner.force_view_change();
+        }
+    }
+
     pub fn new(transport: T) -> Self {
         Self {
             inner: Arc::new(Mutex::new(Inner {

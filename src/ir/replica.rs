@@ -734,4 +734,25 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
         }
         None
     }
+
+    /// Force this replica to initiate a view change.
+    ///
+    /// In IR (and TAPIR), there is no designated leader for normal operations.
+    /// Any replica can independently initiate a view change — typically when
+    /// its periodic tick detects no recent activity (timeout). This method
+    /// simulates that timeout by bumping the view number and broadcasting
+    /// `DoViewChange` to all peers, exactly as `tick()` does.
+    ///
+    /// The replica designated by `view.leader()` only serves as the view
+    /// change *coordinator* (collecting addenda and running sync/merge),
+    /// NOT as the initiator.
+    #[cfg(test)]
+    pub fn force_view_change(&self) {
+        let mut sync = self.inner.sync.lock().unwrap();
+        if sync.status.is_normal() {
+            sync.status = Status::ViewChanging;
+        }
+        sync.view.make_mut().number.0 += 1;
+        Self::broadcast_do_view_change(&self.inner.transport, &mut *sync);
+    }
 }

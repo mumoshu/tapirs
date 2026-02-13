@@ -519,6 +519,34 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
         }
     }
 
+    /// Force a client-initiated view change.
+    ///
+    /// In IR (and TAPIR), clients can trigger view changes independently.
+    /// This happens naturally when a client observes replicas at different
+    /// view numbers (via `update_view` in consensus/inconsistent ops).
+    /// This method explicitly bumps the client's view and sends
+    /// `DoViewChange { from_client: true }` to all replicas, which causes
+    /// them to adopt the higher view and broadcast to their peers.
+    ///
+    /// Client-initiated DoViewChange messages carry `addendum: None` — they
+    /// do NOT contribute to the f+1 quorum needed by the view change
+    /// coordinator. They only nudge replicas to start their own view change.
+    #[cfg(test)]
+    pub fn force_view_change(&self) {
+        let mut sync = self.inner.sync.lock().unwrap();
+        sync.view.make_mut().number.0 += 1;
+        for address in &sync.view.membership {
+            self.inner.transport.do_send(
+                address,
+                Message::<U, T>::DoViewChange(DoViewChange {
+                    view: sync.view.clone(),
+                    from_client: true,
+                    addendum: None,
+                }),
+            );
+        }
+    }
+
     /// Broadcast a `Reconfigure` message to all replicas, triggering a view change
     /// that atomically propagates the new app_config to the entire group.
     pub fn reconfigure(&self, config: Vec<u8>) {
