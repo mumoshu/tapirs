@@ -21,6 +21,8 @@ impl Debug for Number {
 pub struct View<A> {
     pub membership: Membership<A>,
     pub number: Number,
+    #[serde(default)]
+    pub app_config: Option<Vec<u8>>,
 }
 
 impl<A: Eq + Copy> View<A> {

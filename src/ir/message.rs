@@ -29,6 +29,7 @@ pub enum MessageImpl<UO, UR, IO, CO, CR, A> {
     StartView(StartView<IO, CO, CR, A>),
     AddMember(AddMember<A>),
     RemoveMember(RemoveMember<A>),
+    Reconfigure(Reconfigure),
 }
 
 impl<UO: Debug, UR: Debug, IO: Debug, CO: Debug, CR: Debug, A: Debug> Debug
@@ -49,6 +50,7 @@ impl<UO: Debug, UR: Debug, IO: Debug, CO: Debug, CR: Debug, A: Debug> Debug
             Self::StartView(r) => Debug::fmt(r, f),
             Self::AddMember(r) => Debug::fmt(r, f),
             Self::RemoveMember(r) => Debug::fmt(r, f),
+            Self::Reconfigure(r) => Debug::fmt(r, f),
         }
     }
 }
@@ -171,4 +173,11 @@ pub struct AddMember<A> {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RemoveMember<A> {
     pub address: A,
+}
+
+/// Sets `view.app_config` and triggers a view change to propagate the
+/// new configuration to all replicas atomically.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Reconfigure {
+    pub config: Vec<u8>,
 }

@@ -85,6 +85,7 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
                     view: SharedView::new(View {
                         membership,
                         number: ViewNumber(0),
+                        app_config: None,
                     }),
                 }),
             }),

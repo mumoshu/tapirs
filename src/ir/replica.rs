@@ -1,5 +1,6 @@
 use super::{
-    message::ViewChangeAddendum, shared_view::SharedView, AddMember, Confirm, DoViewChange,
+    message::{Reconfigure, ViewChangeAddendum},
+    shared_view::SharedView, AddMember, Confirm, DoViewChange,
     FinalizeConsensus, FinalizeInconsistent, Membership, Message, OpId, ProposeConsensus,
     ProposeInconsistent, Record, RecordConsensusEntry, RecordEntryState, RecordInconsistentEntry,
     RemoveMember, ReplyConsensus, ReplyInconsistent, ReplyUnlogged, RequestUnlogged, StartView,
@@ -65,6 +66,10 @@ pub trait Upcalls: Sized + Send + Serialize + DeserializeOwned + 'static {
         d: HashMap<OpId, (Self::CO, Self::CR)>,
         u: Vec<(OpId, Self::CO, Self::CR)>,
     ) -> HashMap<OpId, Self::CR>;
+
+    /// Called after a view change completes with the current `app_config`.
+    /// Default: no-op (static setups ignore config).
+    fn apply_config(&mut self, _config: &[u8]) {}
 }
 
 pub struct Replica<U: Upcalls, T: Transport<U>> {
@@ -124,6 +129,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
         let view = SharedView::new(View {
             membership,
             number: ViewNumber(0),
+            app_config: None,
         });
         let view_info_key = format!("ir_replica_{}", transport.address());
         let ret = Self {
@@ -597,6 +603,9 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                             sync.changed_view_recently = true;
                             sync.status = Status::Normal;
                             sync.view.make_mut().number = msg_view_number;
+                            if let Some(config) = sync.view.app_config.as_ref() {
+                                sync.upcalls.apply_config(config);
+                            }
 
                             let destinations = sync
                                 .view
@@ -647,6 +656,9 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                     sync.status = Status::Normal;
                     sync.view = view.clone();
                     sync.latest_normal_view = view.clone();
+                    if let Some(config) = sync.view.app_config.as_ref() {
+                        sync.upcalls.apply_config(config);
+                    }
                     sync.changed_view_recently = true;
                     sync.leader_record = Some(StartView { record: new_record, view });
                     self.persist_view_info(&*sync);
@@ -693,6 +705,17 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                     self.persist_view_info(&*sync);
 
                     // Election.
+                    Self::broadcast_do_view_change(&self.inner.transport, sync);
+                }
+            }
+            Message::<U, T>::Reconfigure(Reconfigure { config }) => {
+                if sync.status.is_normal() {
+                    info!("reconfiguring with {} bytes", config.len());
+                    sync.view.make_mut().app_config = Some(config);
+                    sync.status = Status::ViewChanging;
+                    sync.view.make_mut().number.0 += 3;
+                    self.persist_view_info(&*sync);
+
                     Self::broadcast_do_view_change(&self.inner.transport, sync);
                 }
             }
