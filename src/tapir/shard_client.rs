@@ -167,7 +167,7 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
         } else {
             IO::Abort {
                 transaction_id,
-                commit: None,
+                commit: Some(prepared_timestamp),
             }
         })
     }
