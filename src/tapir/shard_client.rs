@@ -98,6 +98,9 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
                         OccPrepareResult::TooOld => {
                             return CR::Prepare(OccPrepareResult::TooOld);
                         }
+                        OccPrepareResult::OutOfRange => {
+                            return CR::Prepare(OccPrepareResult::OutOfRange);
+                        }
                     }
                 }
 

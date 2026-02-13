@@ -1,4 +1,4 @@
-use super::{Key, ShardNumber, Timestamp, Value, CO, CR, IO, UO, UR};
+use super::{Change, Key, KeyRange, ShardNumber, Timestamp, Value, CO, CR, IO, UO, UR};
 use crate::ir::ReplyUnlogged;
 use crate::tapir::ShardClient;
 use crate::util::vectorize;
@@ -12,6 +12,10 @@ use std::task::Context;
 use std::time::Duration;
 use std::{collections::HashMap, future::Future, hash::Hash};
 use tracing::{trace, warn};
+
+fn none<T>() -> Option<T> {
+    None
+}
 
 /// Diverge from TAPIR and don't maintain a no-vote list. Instead, wait for a
 /// view change to syncronize each participant shard's prepare result and then
@@ -45,6 +49,12 @@ pub struct Replica<K, V> {
     min_prepare_time: u64,
     /// Minimum acceptable prepare time (finalized).
     finalized_min_prepare_time: u64,
+    /// Highest timestamp at which all transactions are guaranteed committed or aborted.
+    validated_timestamp: u64,
+    /// If set, reject operations for keys outside this range.
+    /// Not persisted: re-applied from view.app_config via apply_config after each view change.
+    #[serde(skip_serializing, skip_deserializing, default = "none", bound(deserialize = ""))]
+    key_range: Option<KeyRange<K>>,
 }
 
 impl<K: Key, V: Value> Replica<K, V> {
@@ -55,6 +65,8 @@ impl<K: Key, V: Value> Replica<K, V> {
             gc_watermark: 0,
             min_prepare_time: 0,
             finalized_min_prepare_time: 0,
+            validated_timestamp: 0,
+            key_range: None,
         }
     }
 
@@ -97,8 +109,8 @@ impl<K: Key, V: Value> Replica<K, V> {
                 return;
             }
 
-            fn decide<V, A>(
-                results: &HashMap<A, ReplyUnlogged<UR<V>, A>>,
+            fn decide<K, V, A>(
+                results: &HashMap<A, ReplyUnlogged<UR<K, V>, A>>,
                 membership: IrMembershipSize,
             ) -> Option<OccPrepareResult<Timestamp>> {
                 let highest_view = results.values().map(|r| r.view.number).max()?;
@@ -146,7 +158,7 @@ impl<K: Key, V: Value> Replica<K, V> {
 
                     let results = future
                         .until(
-                            |results: &HashMap<T::Address, ReplyUnlogged<UR<V>, T::Address>>,
+                            |results: &HashMap<T::Address, ReplyUnlogged<UR<K, V>, T::Address>>,
                              cx: &mut Context<'_>| {
                                 decide(results, membership).is_some()
                                     || timeout.as_mut().poll(cx).is_ready()
@@ -199,7 +211,7 @@ impl<K: Key, V: Value> Replica<K, V> {
 
 impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
     type UO = UO<K>;
-    type UR = UR<V>;
+    type UR = UR<K, V>;
     type IO = IO<K, V>;
     type CO = CO<K, V>;
     type CR = CR;
@@ -207,6 +219,11 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
     fn exec_unlogged(&self, op: Self::UO) -> Self::UR {
         match op {
             UO::Get { key, timestamp } => {
+                if let Some(range) = &self.key_range {
+                    if !range.contains(&key) {
+                        return UR::OutOfRange;
+                    }
+                }
                 let (v, ts) = if let Some(timestamp) = timestamp {
                     self.inner.get_at(&key, timestamp)
                 } else {
@@ -260,6 +277,32 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
                     OccPrepareResult::Abstain
                 })
             }
+            UO::ScanChanges {
+                start_ts,
+                end_ts_inclusive,
+            } => {
+                let effective_end = Timestamp {
+                    time: end_ts_inclusive.min(self.validated_timestamp),
+                    client_id: IrClientId(u64::MAX),
+                };
+                let start = Timestamp {
+                    time: start_ts,
+                    client_id: IrClientId(0),
+                };
+                let raw = self.inner.scan_committed_since(start, effective_end);
+                let changes = raw
+                    .into_iter()
+                    .map(|(key, value, ts)| Change {
+                        key,
+                        value,
+                        timestamp: ts,
+                    })
+                    .collect();
+                UR::ScanChanges {
+                    changes,
+                    validated_timestamp: self.validated_timestamp,
+                }
+            }
         }
     }
 
@@ -281,6 +324,7 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
                     );
                 }
                 self.inner.commit(*transaction_id, transaction, *commit);
+                self.recompute_validated_timestamp();
             }
             IO::Abort {
                 transaction_id,
@@ -319,6 +363,7 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
                     })
                 {
                     self.inner.remove_prepared(*transaction_id);
+                    self.recompute_validated_timestamp();
                 }
             }
         }
@@ -330,7 +375,19 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
                 transaction_id,
                 transaction,
                 commit,
-            } => CR::Prepare(if commit.time < self.gc_watermark {
+            } => {
+                if let Some(range) = &self.key_range {
+                    let reads_in_range = transaction
+                        .shard_read_set(self.inner.shard())
+                        .all(|(key, _)| range.contains(key));
+                    let writes_in_range = transaction
+                        .shard_write_set(self.inner.shard())
+                        .all(|(key, _)| range.contains(key));
+                    if !reads_in_range || !writes_in_range {
+                        return CR::Prepare(OccPrepareResult::OutOfRange);
+                    }
+                }
+                CR::Prepare(if commit.time < self.gc_watermark {
                 // In theory, could check the other conditions first, but
                 // that might hide bugs.
                 OccPrepareResult::TooOld
@@ -369,7 +426,8 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
             } else {
                 self.inner
                     .prepare(*transaction_id, transaction.clone(), *commit, false)
-            }),
+            })
+            }
             CO::RaiseMinPrepareTime { time } => {
                 // Want to avoid tentative prepare operations materializing later on...
                 self.min_prepare_time = self.min_prepare_time.max(
@@ -407,6 +465,7 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
                 self.min_prepare_time = self.min_prepare_time.max(self.finalized_min_prepare_time);
             }
         }
+        self.recompute_validated_timestamp();
     }
 
     fn sync(&mut self, local: &IrRecord<Self>, leader: &IrRecord<Self>) {
@@ -493,6 +552,7 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
 
             self.exec_inconsistent(&entry.op);
         }
+        self.recompute_validated_timestamp();
     }
 
     fn merge(
@@ -575,9 +635,38 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
 
         ret
     }
+
+    fn apply_config(&mut self, config: &[u8]) {
+        if let Ok(range) = serde_json::from_slice::<KeyRange<K>>(config) {
+            self.key_range = Some(range);
+        }
+    }
 }
 
 impl<K: Key, V: Value> Replica<K, V> {
+    fn recompute_validated_timestamp(&mut self) {
+        let max_committed = self
+            .transaction_log
+            .values()
+            .filter(|(_, committed)| *committed)
+            .map(|(ts, _)| ts.time)
+            .max()
+            .unwrap_or(0);
+
+        let earliest_pending_prepare = self
+            .inner
+            .prepared
+            .values()
+            .map(|(ts, _, _)| ts.time)
+            .min();
+
+        self.validated_timestamp = if let Some(earliest) = earliest_pending_prepare {
+            max_committed.min(earliest.saturating_sub(1))
+        } else {
+            max_committed
+        };
+    }
+
     pub fn tick<T: TapirTransport<K, V>>(
         &self,
         transport: &T,

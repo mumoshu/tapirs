@@ -189,7 +189,11 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Transaction<K, V, T> {
                         |results: &HashMap<ShardNumber, OccPrepareResult<Timestamp>>,
                          _cx: &mut Context<'_>| {
                             results.values().any(|v| {
-                                v.is_fail() || v.is_abstain() || v.is_too_late() || v.is_too_old()
+                                v.is_fail()
+                                    || v.is_abstain()
+                                    || v.is_too_late()
+                                    || v.is_too_old()
+                                    || v.is_out_of_range()
                             })
                         },
                     )

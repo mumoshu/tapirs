@@ -103,6 +103,8 @@ pub enum PrepareResult<TS: Timestamp> {
     ///   committed or aborted already).
     /// - Merging replicas can safely self-destruct (TODO: is there a better option?)
     TooOld,
+    /// The transaction touches keys outside this shard's current key range.
+    OutOfRange,
 }
 
 impl<TS: Timestamp> PrepareResult<TS> {
@@ -129,9 +131,17 @@ impl<TS: Timestamp> PrepareResult<TS> {
     pub fn is_too_old(&self) -> bool {
         matches!(self, Self::TooOld)
     }
+
+    pub fn is_out_of_range(&self) -> bool {
+        matches!(self, Self::OutOfRange)
+    }
 }
 
 impl<K: Key, V: Value, TS> Store<K, V, TS> {
+    pub fn shard(&self) -> ShardNumber {
+        self.shard
+    }
+
     pub fn new(shard: ShardNumber, linearizable: bool) -> Self {
         Self {
             shard,
@@ -141,6 +151,12 @@ impl<K: Key, V: Value, TS> Store<K, V, TS> {
             prepared_reads: Default::default(),
             prepared_writes: Default::default(),
         }
+    }
+}
+
+impl<K: Key + Clone, V: Value + Clone, TS: Timestamp> Store<K, V, TS> {
+    pub fn scan_committed_since(&self, start_ts: TS, end_ts: TS) -> Vec<(K, Option<V>, TS)> {
+        self.inner.scan_committed_since(start_ts, end_ts)
     }
 }
 

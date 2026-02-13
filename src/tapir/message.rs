@@ -19,14 +19,38 @@ pub enum UO<K> {
         /// Same as (any) known prepared timestamp.
         commit: Timestamp,
     },
+    /// For CDC-based resharding: read committed changes in a timestamp range.
+    ScanChanges {
+        start_ts: u64,
+        end_ts_inclusive: u64,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum UR<V> {
+pub enum UR<K, V> {
     /// To clients.
     Get(Option<V>, Timestamp),
     /// To backup coordinators.
     CheckPrepare(OccPrepareResult<Timestamp>),
+    /// CDC scan results.
+    ScanChanges {
+        #[serde(bound(
+            serialize = "K: Serialize, V: Serialize",
+            deserialize = "K: Deserialize<'de>, V: Deserialize<'de>"
+        ))]
+        changes: Vec<Change<K, V>>,
+        validated_timestamp: u64,
+    },
+    /// The requested key is outside this shard's current key range.
+    OutOfRange,
+}
+
+/// A committed key-value change at a specific timestamp.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Change<K, V> {
+    pub key: K,
+    pub value: Option<V>,
+    pub timestamp: Timestamp,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

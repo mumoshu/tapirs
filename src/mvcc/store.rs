@@ -67,6 +67,19 @@ impl<K, V, TS> Default for MemoryStore<K, V, TS> {
     }
 }
 
+impl<K: Ord + Clone, V: Clone, TS: Ord + Eq + Copy + Default> MemoryStore<K, V, TS> {
+    /// Return all committed versions in the timestamp range [start_ts, end_ts].
+    pub fn scan_committed_since(&self, start_ts: TS, end_ts: TS) -> Vec<(K, Option<V>, TS)> {
+        let mut changes = Vec::new();
+        for (key, versions) in &self.inner {
+            for (ts, (value, _)) in versions.range(start_ts..=end_ts) {
+                changes.push((key.clone(), value.clone(), *ts));
+            }
+        }
+        changes
+    }
+}
+
 impl<K: Ord, V, TS: Ord + Eq + Copy + Default> MemoryStore<K, V, TS> {
     /// Get the latest version.
     pub fn get<Q: ?Sized + Ord>(&self, key: &Q) -> (Option<&V>, TS)
