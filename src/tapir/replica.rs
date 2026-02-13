@@ -231,6 +231,36 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
                 };
                 UR::Get(v.cloned(), ts)
             }
+            UO::Scan {
+                start_key,
+                end_key,
+                timestamp,
+            } => {
+                if let Some(range) = &self.key_range {
+                    if !range.contains(&start_key) || !range.contains(&end_key) {
+                        return UR::OutOfRange;
+                    }
+                }
+                // When no timestamp is specified, use latest (same semantics as Get).
+                let ts = timestamp.unwrap_or_else(|| {
+                    // Use maximum possible timestamp to get latest versions.
+                    Timestamp {
+                        time: u64::MAX,
+                        client_id: IrClientId(u64::MAX),
+                    }
+                });
+                let results = self.inner.scan(&start_key, &end_key, ts);
+                let max_ts = results
+                    .iter()
+                    .map(|(_, _, t)| *t)
+                    .max()
+                    .unwrap_or_default();
+                let pairs = results
+                    .into_iter()
+                    .map(|(k, v, _)| (k, v))
+                    .collect();
+                UR::Scan(pairs, max_ts)
+            }
             UO::CheckPrepare {
                 transaction_id,
                 commit,

@@ -19,6 +19,12 @@ pub enum UO<K> {
         /// Same as (any) known prepared timestamp.
         commit: Timestamp,
     },
+    /// Range scan for transactional reads.
+    Scan {
+        start_key: K,
+        end_key: K,
+        timestamp: Option<Timestamp>,
+    },
     /// For CDC-based resharding: read committed changes in a timestamp range.
     ScanChanges {
         start_ts: u64,
@@ -41,6 +47,15 @@ pub enum UR<K, V> {
         changes: Vec<Change<K, V>>,
         validated_timestamp: u64,
     },
+    /// Range scan results.
+    Scan(
+        #[serde(bound(
+            serialize = "K: Serialize, V: Serialize",
+            deserialize = "K: Deserialize<'de>, V: Deserialize<'de>"
+        ))]
+        Vec<(K, Option<V>)>,
+        Timestamp,
+    ),
     /// The requested key is outside this shard's current key range.
     OutOfRange,
 }
