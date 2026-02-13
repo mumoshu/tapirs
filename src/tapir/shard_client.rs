@@ -57,6 +57,27 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
         }
     }
 
+    pub fn scan(
+        &self,
+        start_key: K,
+        end_key: K,
+        timestamp: Option<Timestamp>,
+    ) -> impl Future<Output = (Vec<(K, Option<V>)>, Timestamp)> {
+        let future = self
+            .inner
+            .invoke_unlogged(UO::Scan { start_key, end_key, timestamp });
+
+        async move {
+            match future.await {
+                UR::Scan(results, ts) => (results, ts),
+                _ => {
+                    debug_assert!(false);
+                    (Vec::new(), Default::default())
+                }
+            }
+        }
+    }
+
     pub fn prepare(
         &self,
         transaction_id: OccTransactionId,
