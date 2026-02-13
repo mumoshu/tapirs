@@ -4,17 +4,30 @@ use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 
 /// A pooled TCP connection with read/write state.
+/// For inbound connections, stream and reader are used.
+/// For outbound connections, only write_queue is used (stream owned by connect_and_write task).
 pub(crate) struct PooledConnection {
-    pub stream: TcpStream,
+    pub stream: Option<TcpStream>,
     pub reader: FrameReader,
     pub write_queue: VecDeque<Vec<u8>>,
     pub send_in_flight: bool,
 }
 
 impl PooledConnection {
+    /// Create a pooled connection for inbound (with owned stream).
     pub fn new(stream: TcpStream) -> Self {
         Self {
-            stream,
+            stream: Some(stream),
+            reader: FrameReader::new(),
+            write_queue: VecDeque::new(),
+            send_in_flight: false,
+        }
+    }
+
+    /// Create metadata-only connection for outbound (stream owned by connect_and_write).
+    pub fn new_outbound() -> Self {
+        Self {
+            stream: None,
             reader: FrameReader::new(),
             write_queue: VecDeque::new(),
             send_in_flight: false,

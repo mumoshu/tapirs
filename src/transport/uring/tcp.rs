@@ -97,6 +97,23 @@ pub(crate) struct TcpStream {
     pub fd: RawFd,
 }
 
+/// A borrowed TCP stream that does NOT close the fd on drop.
+/// Used when sharing an fd between read_loop and write_loop.
+pub(crate) struct BorrowedTcpStream {
+    pub fd: RawFd,
+}
+
+impl BorrowedTcpStream {
+    /// Receive data into buffer.
+    pub fn recv<'a>(&self, buf: &'a mut [u8]) -> RecvFuture<'a> {
+        RecvFuture {
+            fd: self.fd,
+            buf,
+            key: None,
+        }
+    }
+}
+
 impl TcpStream {
     /// Create a connected TCP stream.
     pub fn connect(addr: SocketAddr) -> ConnectFuture {

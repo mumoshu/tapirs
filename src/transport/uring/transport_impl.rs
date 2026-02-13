@@ -89,9 +89,15 @@ where
             payload: message.clone(),
         };
         let frame = FrameCodec::encode(&wire);
-        {
+        let should_spawn = {
             let mut s = state.borrow_mut();
-            send_frame(&mut s, address, frame);
+            send_frame(&mut s, address, frame)
+        };
+        if should_spawn {
+            let t = self.clone();
+            with_reactor(|r| {
+                r.executor.spawn(super::transport::connect_and_write(address.socket_addr(), t));
+            });
         }
 
         // SAFETY: Future contains Rc but is only used on the reactor
@@ -130,8 +136,16 @@ where
             payload: message,
         };
         let frame = FrameCodec::encode(&wire);
-        let mut state = self.state.borrow_mut();
-        send_frame(&mut state, address, frame);
+        let should_spawn = {
+            let mut state = self.state.borrow_mut();
+            send_frame(&mut state, address, frame)
+        };
+        if should_spawn {
+            let t = self.clone();
+            with_reactor(|r| {
+                r.executor.spawn(super::transport::connect_and_write(address.socket_addr(), t));
+            });
+        }
     }
 
     fn spawn(future: impl Future<Output = ()> + Send + 'static) {
@@ -143,17 +157,20 @@ fn send_frame<U: ReplicaUpcalls>(
     state: &mut TransportState<U>,
     address: UringAddress,
     frame: Vec<u8>,
-) {
+) -> bool {
     let addr = address.socket_addr();
     if state.conn_pool.is_connected(&addr) {
         if let Some(conn) = state.conn_pool.get_mut(&addr) {
             conn.write_queue.push_back(frame);
         }
+        false
     } else if state.conn_pool.is_connecting(&addr) {
         state.conn_pool.queue_while_connecting(addr, frame);
+        false  // Already connecting, don't spawn duplicate
     } else {
         state.conn_pool.start_connecting(addr);
         state.conn_pool.queue_while_connecting(addr, frame);
+        true  // New connection, spawn connect_and_write
     }
 }
 
