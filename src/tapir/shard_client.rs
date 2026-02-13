@@ -1,9 +1,10 @@
 use super::{Change, Key, Replica, ShardNumber, Timestamp, Value, CO, CR, IO, UO, UR};
 use crate::{
-    transport::Transport, IrClient, IrClientId, IrMembership, OccPrepareResult, OccTransaction,
-    OccTransactionId,
+    transport::Transport, IrClient, IrClientId, IrMembership, OccPrepareResult,
+    OccSharedTransaction, OccTransaction, OccTransactionId,
 };
 use std::future::Future;
+use std::sync::Arc;
 
 pub struct ShardClient<K: Key, V: Value, T: Transport<Replica<K, V>>> {
     shard: ShardNumber,
@@ -59,13 +60,13 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
     pub fn prepare(
         &self,
         transaction_id: OccTransactionId,
-        transaction: &OccTransaction<K, V, Timestamp>,
+        transaction: &OccSharedTransaction<K, V, Timestamp>,
         timestamp: Timestamp,
     ) -> impl Future<Output = OccPrepareResult<Timestamp>> + Send + use<K, V, T> {
         let future = self.inner.invoke_consensus(
             CO::Prepare {
                 transaction_id,
-                transaction: transaction.clone(),
+                transaction: Arc::clone(transaction),
                 commit: timestamp,
             },
             |results, membership_size| {
@@ -132,14 +133,14 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
     pub fn end(
         &self,
         transaction_id: OccTransactionId,
-        transaction: &OccTransaction<K, V, Timestamp>,
+        transaction: &OccSharedTransaction<K, V, Timestamp>,
         prepared_timestamp: Timestamp,
         commit: bool,
     ) -> impl Future<Output = ()> + Send + use<K, V, T> {
         self.inner.invoke_inconsistent(if commit {
             IO::Commit {
                 transaction_id,
-                transaction: transaction.clone(),
+                transaction: Arc::clone(transaction),
                 commit: prepared_timestamp,
             }
         } else {
@@ -180,7 +181,7 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
     ) -> impl Future<Output = ()> + Send + use<K, V, T> {
         self.inner.invoke_inconsistent(IO::Commit {
             transaction_id,
-            transaction,
+            transaction: Arc::new(transaction),
             commit,
         })
     }

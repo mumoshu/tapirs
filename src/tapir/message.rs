@@ -1,5 +1,5 @@
 use super::Timestamp;
-use crate::{OccPrepareResult, OccTransaction, OccTransactionId};
+use crate::{OccPrepareResult, OccSharedTransaction, OccTransactionId};
 use serde::{Deserialize, Serialize};
 use std::hash::Hash;
 
@@ -60,7 +60,7 @@ pub enum IO<K, V> {
         transaction_id: OccTransactionId,
         /// Same as successfully prepared transaction.
         #[serde(bound(deserialize = "K: Eq + Deserialize<'de> + Hash, V: Deserialize<'de>"))]
-        transaction: OccTransaction<K, V, Timestamp>,
+        transaction: OccSharedTransaction<K, V, Timestamp>,
         /// Same as successfully prepared commit timestamp.
         commit: Timestamp,
     },
@@ -119,7 +119,7 @@ pub enum CO<K, V> {
         transaction_id: OccTransactionId,
         /// Transaction to prepare.
         #[serde(bound(deserialize = "K: Eq + Deserialize<'de> + Hash, V: Deserialize<'de>"))]
-        transaction: OccTransaction<K, V, Timestamp>,
+        transaction: OccSharedTransaction<K, V, Timestamp>,
         /// Proposed commit timestamp.
         commit: Timestamp,
     },

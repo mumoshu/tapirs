@@ -8,7 +8,12 @@ use std::{
     collections::{hash_map::Entry, HashMap, HashSet},
     fmt::Debug,
     hash::Hash,
+    sync::Arc,
 };
+
+/// Arc-wrapped transaction to avoid deep cloning in the consensus broadcast,
+/// OCC prepared list, view change record merge, and backup coordinator paths.
+pub type SharedTransaction<K, V, TS> = Arc<Transaction<K, V, TS>>;
 
 #[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
 pub struct Id {

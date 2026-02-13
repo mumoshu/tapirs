@@ -4,7 +4,7 @@ use crate::tapir::ShardClient;
 use crate::util::vectorize;
 use crate::{
     IrClientId, IrMembership, IrMembershipSize, IrOpId, IrRecord, IrReplicaUpcalls,
-    OccPrepareResult, OccStore, OccTransaction, OccTransactionId, TapirTransport,
+    OccPrepareResult, OccSharedTransaction, OccStore, OccTransactionId, TapirTransport,
 };
 use futures::future::join_all;
 use serde::{Deserialize, Serialize};
@@ -72,7 +72,7 @@ impl<K: Key, V: Value> Replica<K, V> {
 
     fn recover_coordination<T: TapirTransport<K, V>>(
         transaction_id: OccTransactionId,
-        transaction: OccTransaction<K, V, Timestamp>,
+        transaction: OccSharedTransaction<K, V, Timestamp>,
         commit: Timestamp,
         // TODO: Optimize.
         _membership: IrMembership<T::Address>,

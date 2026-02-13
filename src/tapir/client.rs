@@ -153,7 +153,7 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Transaction<K, V, T> {
 
         let transaction = {
             let lock = inner.lock().unwrap();
-            lock.inner.clone()
+            Arc::new(lock.inner.clone())
         };
 
         let min_commit_timestamp = max_read_timestamp(&transaction).saturating_add(1);
