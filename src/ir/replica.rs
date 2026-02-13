@@ -99,7 +99,7 @@ struct SyncInner<U: Upcalls, T: Transport<U>> {
     leader_record: Option<StartView<U::IO, U::CO, U::CR, T::Address>>,
     changed_view_recently: bool,
     upcalls: U,
-    record: Record<U>,
+    record: Arc<Record<U>>,
     outstanding_do_view_changes: HashMap<T::Address, DoViewChange<U::IO, U::CO, U::CR, T::Address>>,
     /// Last time received message from each peer replica.
     peer_liveness: HashMap<T::Address, Instant>,
@@ -134,7 +134,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                     view,
                     changed_view_recently: true,
                     upcalls,
-                    record: Record::<U>::default(),
+                    record: Arc::new(Record::<U>::default()),
                     leader_record: None,
                     outstanding_do_view_changes: HashMap::new(),
                     peer_liveness: HashMap::new(),
@@ -281,7 +281,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                     view: sync.view.clone(),
                     from_client: false,
                     addendum: (address == sync.view.leader()).then(|| ViewChangeAddendum {
-                        record: sync.record.clone(),
+                        record: (*sync.record).clone(),
                         latest_normal_view: sync.latest_normal_view.clone(),
                     }),
                 }),
@@ -320,7 +320,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                         }));
                     }
 
-                    let state = match sync.record.inconsistent.entry(op_id) {
+                    let state = match Arc::make_mut(&mut sync.record).inconsistent.entry(op_id) {
                         Entry::Vacant(vacant) => {
                             vacant.insert(RecordInconsistentEntry {
                                 op,
@@ -350,7 +350,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                             result_state: None,
                         }));
                     }
-                    let (result, state) = match sync.record.consensus.entry(op_id) {
+                    let (result, state) = match Arc::make_mut(&mut sync.record).consensus.entry(op_id) {
                         Entry::Occupied(entry) => {
                             let entry = entry.get();
                             debug_assert_eq!(entry.op, op);
@@ -374,14 +374,14 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                 }
             }
             Message::<U, T>::FinalizeInconsistent(FinalizeInconsistent { op_id }) => {
-                if sync.status.is_normal() && let Some(entry) = sync.record.inconsistent.get_mut(&op_id) && entry.state.is_tentative() {
+                if sync.status.is_normal() && let Some(entry) = Arc::make_mut(&mut sync.record).inconsistent.get_mut(&op_id) && entry.state.is_tentative() {
                     entry.state = RecordEntryState::Finalized(sync.view.number);
                     sync.upcalls.exec_inconsistent(&entry.op);
                 }
             }
             Message::<U, T>::FinalizeConsensus(FinalizeConsensus { op_id, result }) => {
                 if sync.status.is_normal() {
-                    if let Some(entry) = sync.record.consensus.get_mut(&op_id) {
+                    if let Some(entry) = Arc::make_mut(&mut sync.record).consensus.get_mut(&op_id) {
                         // Don't allow a late `FinalizeConsensus` to overwrite
                         // a view change decision.
                         if entry.state.is_tentative() {
@@ -434,7 +434,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                         }
 
                         let my_address = self.inner.transport.address();
-                        let synthetic = DoViewChange{ view: sync.view.clone(), from_client: false, addendum: Some(ViewChangeAddendum { record: sync.record.clone(), latest_normal_view: sync.latest_normal_view.clone() }) };
+                        let synthetic = DoViewChange{ view: sync.view.clone(), from_client: false, addendum: Some(ViewChangeAddendum { record: (*sync.record).clone(), latest_normal_view: sync.latest_normal_view.clone() }) };
                         let matching = sync
                             .outstanding_do_view_changes
                             .iter()
@@ -593,7 +593,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                                     );
                                 }
 
-                                sync.record = R;
+                                sync.record = Arc::new(R);
                             }
                             sync.changed_view_recently = true;
                             sync.status = Status::Normal;
@@ -611,7 +611,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                             self.persist_view_info(&*sync);
 
                             let start_view = StartView {
-                                record: sync.record.clone(),
+                                record: (*sync.record).clone(),
                                 view: sync.view.clone(),
                             };
                             for address in destinations {
@@ -644,7 +644,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                 {
                     info!("starting view {:?} (was {:?} in {:?})", view.number, sync.status, sync.view.number);
                     sync.upcalls.sync(&sync.record, &new_record);
-                    sync.record = new_record.clone();
+                    sync.record = Arc::new(new_record.clone());
                     sync.status = Status::Normal;
                     sync.view = view.clone();
                     sync.latest_normal_view = view.clone();

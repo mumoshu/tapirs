@@ -1,5 +1,5 @@
 use std::fmt::Debug;
 
-pub trait Message: Clone + Send + Debug + 'static {}
+pub trait Message: Clone + Send + Sync + Debug + 'static {}
 
-impl<T: Clone + Send + Debug + 'static> Message for T {}
+impl<T: Clone + Send + Sync + Debug + 'static> Message for T {}
