@@ -5,6 +5,10 @@
 mod address;
 mod codec;
 mod error;
+pub(crate) mod reactor;
+mod task;
+mod timer;
 
 pub use address::UringAddress;
 pub use error::UringError;
+pub use timer::UringSleep;
