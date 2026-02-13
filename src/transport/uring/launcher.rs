@@ -1,13 +1,11 @@
 use super::address::UringAddress;
-use super::reactor;
-use super::tcp::TcpListener;
-use super::transport::UringTransport;
-use super::wire::{UringIrMessage, WireMessage};
 use super::codec::{FrameCodec, FrameReader};
-use super::conn_pool::PooledConnection;
-use super::tcp::TcpStream;
+use super::reactor;
+use super::tcp::{TcpListener, TcpStream};
+use super::transport::UringTransport;
+use super::wire::WireMessage;
 use crate::ir::ReplicaUpcalls;
-use crate::{IrMembership, IrReplica, ShardNumber};
+use crate::{IrMembership, ShardNumber};
 use serde::{Serialize, de::DeserializeOwned};
 use std::net::SocketAddr;
 
@@ -155,17 +153,20 @@ where
                 Ok(m) => m,
                 Err(_) => continue,
             };
-            dispatch_wire_message(&transport, &stream, wire);
+            if let Some(reply_frame) = dispatch_wire_message(&transport, wire) {
+                if stream.send(&reply_frame).await.is_err() {
+                    return; // Connection broken.
+                }
+            }
         }
     }
 }
 
-/// Dispatch an incoming wire message.
+/// Dispatch an incoming wire message. Returns a reply frame to send, if any.
 fn dispatch_wire_message<U: ReplicaUpcalls>(
     transport: &UringTransport<U>,
-    stream: &TcpStream,
     wire: WireMessage<U>,
-)
+) -> Option<Vec<u8>>
 where
     U::UO: Serialize + DeserializeOwned,
     U::UR: Serialize + DeserializeOwned,
@@ -186,10 +187,10 @@ where
                         request_id,
                         payload: reply,
                     };
-                    let _frame = FrameCodec::encode(&reply_wire);
-                    // TODO: send reply frame on the stream
+                    return Some(FrameCodec::encode(&reply_wire));
                 }
             }
+            None
         }
         WireMessage::Reply {
             request_id,
@@ -203,11 +204,13 @@ where
                     waker.wake();
                 }
             }
+            None
         }
         WireMessage::FireAndForget { from, payload } => {
             if let Some(ref cb) = state.receive_callback {
                 cb(from, payload);
             }
+            None
         }
     }
 }
