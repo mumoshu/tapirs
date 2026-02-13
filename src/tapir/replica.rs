@@ -204,7 +204,7 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
     type CO = CO<K, V>;
     type CR = CR;
 
-    fn exec_unlogged(&mut self, op: Self::UO) -> Self::UR {
+    fn exec_unlogged(&self, op: Self::UO) -> Self::UR {
         match op {
             UO::Get { key, timestamp } => {
                 let (v, ts) = if let Some(timestamp) = timestamp {

@@ -89,7 +89,7 @@ async fn lock_server(num_replicas: usize) {
         type CO = Lock;
         type CR = LockResult;
 
-        fn exec_unlogged(&mut self, op: Self::UO) -> Self::UR {
+        fn exec_unlogged(&self, op: Self::UO) -> Self::UR {
             let _ = op;
             unreachable!();
         }
