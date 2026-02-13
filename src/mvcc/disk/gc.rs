@@ -16,30 +16,67 @@ impl GarbageCollector {
     ///
     /// An entry is "live" if it still exists in the LSM index (i.e.,
     /// the LSM entry's value_ptr points to this segment and offset).
-    pub async fn gc_vlog_segment<TS, IO>(
-        _old_segment: &VlogSegment<IO>,
-        _new_segment: &mut VlogSegment<IO>,
-        _lsm: &LsmTree<IO>,
-    ) -> Result<GcStats, StorageError>
+    ///
+    /// Returns stats and a list of `(key, timestamp, new_ptr)` for each
+    /// live entry recopied. The caller must update memtable/LSM pointers
+    /// from old locations to new ones before deleting the old segment.
+    pub async fn gc_vlog_segment<K, V, TS, IO>(
+        old_segment: &VlogSegment<IO>,
+        new_segment: &mut VlogSegment<IO>,
+        lsm: &LsmTree<IO>,
+    ) -> Result<(GcStats, Vec<(K, TS, super::vlog::ValuePointer)>), StorageError>
     where
+        K: Serialize + for<'de> Deserialize<'de> + Ord + Clone + std::fmt::Debug,
+        V: Serialize + for<'de> Deserialize<'de> + Clone + std::fmt::Debug,
         TS: Serialize
             + for<'de> Deserialize<'de>
             + Ord
             + Copy
             + Default
             + super::memtable::MaxValue
-            + Clone,
+            + Clone
+            + std::fmt::Debug,
         IO: DiskIo,
     {
-        // For Phase 1, GC is a placeholder that tracks stats.
-        // A full implementation would scan the vlog and check each
-        // entry against the LSM to determine liveness.
-        Ok(GcStats {
+        let mut stats = GcStats {
             entries_scanned: 0,
             entries_live: 0,
             entries_dead: 0,
             bytes_reclaimed: 0,
-        })
+        };
+        let mut pointer_updates = Vec::new();
+
+        // Scan entire old segment from offset 0
+        let entries = old_segment.recover_entries::<K, V, TS>(0).await?;
+
+        for (entry, old_ptr) in entries {
+            stats.entries_scanned += 1;
+
+            // Check if LSM still references this entry at this location
+            match lsm.get_at(&entry.key, &entry.timestamp).await? {
+                Some((_, lsm_entry)) => {
+                    // Check if the LSM entry's pointer matches the old segment location
+                    if lsm_entry.value_ptr == Some(old_ptr) {
+                        // LIVE: This entry is still referenced by LSM at this exact location
+                        // Recopy to new segment
+                        let new_ptr = new_segment.append(&entry).await?;
+                        pointer_updates.push((entry.key, entry.timestamp, new_ptr));
+                        stats.entries_live += 1;
+                    } else {
+                        // DEAD: LSM points to a different location (or None)
+                        stats.entries_dead += 1;
+                        stats.bytes_reclaimed += old_ptr.length as u64;
+                    }
+                }
+                None => {
+                    // DEAD: Entry not found in LSM (deleted or overwritten)
+                    stats.entries_dead += 1;
+                    stats.bytes_reclaimed += old_ptr.length as u64;
+                }
+            }
+        }
+
+        Ok((stats, pointer_updates))
     }
 
     /// Prune old versions from the LSM tree during compaction.
