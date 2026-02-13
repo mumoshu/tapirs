@@ -3,9 +3,11 @@ use super::error::StorageError;
 use super::lsm::LsmTree;
 use super::manifest::Manifest;
 use super::memtable::{CompositeKey, LsmEntry, MaxValue, Memtable};
+use super::sstable::SSTableReader;
 use super::vlog::{VlogEntry, VlogSegment};
 use crate::mvcc::backend::MvccBackend;
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashSet};
 use std::fmt::Debug;
 use std::path::PathBuf;
 
@@ -32,7 +34,7 @@ pub struct DiskStore<K, V, TS, IO: DiskIo> {
 
 impl<K, V, TS, IO: DiskIo> DiskStore<K, V, TS, IO>
 where
-    K: Serialize + for<'de> Deserialize<'de> + Ord + Clone + Send + Debug,
+    K: Serialize + for<'de> Deserialize<'de> + Ord + Clone + Send + Debug + std::hash::Hash,
     V: Serialize + for<'de> Deserialize<'de> + Clone + Send + Debug,
     TS: Serialize
         + for<'de> Deserialize<'de>
@@ -321,37 +323,41 @@ where
     }
 
     fn find_next_version(&self, key: &K, after_ts: TS) -> Result<Option<TS>, StorageError> {
-        // Check memtable: iterate entries for this key after `after_ts`.
-        let mut next: Option<TS> = None;
+        let mut versions: Vec<TS> = Vec::new();
 
-        // In the BTreeMap, entries with Reverse<TS> are ordered so that
-        // higher timestamps come first. We look for the entry whose
-        // timestamp is just above `after_ts`.
-        let _search = CompositeKey::new(key.clone(), after_ts);
+        // Collect from memtable
         for (ck, _) in self.memtable.iter() {
-            if ck.key != *key {
-                if ck.key > *key {
-                    break;
+            if ck.key == *key && ck.timestamp.0 > after_ts {
+                versions.push(ck.timestamp.0);
+            }
+        }
+
+        // Collect from SSTables
+        for meta in self
+            .lsm
+            .l0_metas()
+            .iter()
+            .rev()
+            .chain(self.lsm.l1_metas().iter())
+        {
+            let reader = futures::executor::block_on(SSTableReader::<IO>::open(
+                meta.path.clone(),
+                self.io_flags,
+            ))?;
+
+            let all_entries = futures::executor::block_on(reader.read_all::<K, TS>())?;
+
+            for (ck, _) in all_entries {
+                if ck.key == *key && ck.timestamp.0 > after_ts {
+                    versions.push(ck.timestamp.0);
                 }
-                continue;
-            }
-            if ck.timestamp.0 > after_ts {
-                // This version is newer. Since entries are in descending
-                // TS order, the last one we see > after_ts (but closest
-                // to it) is the one we want.
-                next = Some(ck.timestamp.0);
             }
         }
 
-        // Also check LSM (all SSTables might have versions we haven't seen).
-        // For simplicity in Phase 1, we do a brute-force search.
-        // A production implementation would optimize this with range queries.
-
-        if next.is_some() {
-            return Ok(next);
-        }
-
-        Ok(None)
+        // Return minimum timestamp > after_ts
+        versions.sort();
+        versions.dedup();
+        Ok(versions.first().copied())
     }
 
     fn decode_last_read_ts(&self, raw: Option<u64>) -> Result<Option<TS>, StorageError> {
@@ -394,16 +400,20 @@ where
         timestamp: TS,
     ) -> Result<Vec<(K, Option<V>, TS)>, StorageError> {
         let mut results = Vec::new();
+        let mut found_keys: HashSet<K> = HashSet::new();
 
-        // Scan memtable.
+        // Scan memtable first
         let mem_results = self.memtable.scan(start, end, &timestamp);
         for (ck, entry) in &mem_results {
             let value = self.resolve_value(entry)?;
             results.push((ck.key.clone(), value, ck.timestamp.0));
+            found_keys.insert(ck.key.clone());
         }
 
-        // For Phase 1, memtable-only scan is sufficient for correctness.
-        // A full implementation would also scan SSTables and merge.
+        // Scan SSTables for keys not in memtable
+        let lsm_results = self.scan_sstables_in_range(start, end, &timestamp, &found_keys)?;
+        results.extend(lsm_results);
+
         Ok(results)
     }
 
@@ -415,7 +425,7 @@ where
         after_ts: TS,
         before_ts: TS,
     ) -> Result<bool, StorageError> {
-        // Scan memtable for any writes in the range.
+        // Check memtable first (early exit)
         for (ck, _) in self.memtable.iter() {
             if ck.key < *start {
                 continue;
@@ -427,7 +437,94 @@ where
                 return Ok(true);
             }
         }
+
+        // Check SSTables (early exit on first match)
+        for meta in self
+            .lsm
+            .l0_metas()
+            .iter()
+            .rev()
+            .chain(self.lsm.l1_metas().iter())
+        {
+            let reader = futures::executor::block_on(SSTableReader::<IO>::open(
+                meta.path.clone(),
+                self.io_flags,
+            ))?;
+
+            let all_entries = futures::executor::block_on(reader.read_all::<K, TS>())?;
+
+            for (ck, _) in all_entries {
+                if ck.key < *start {
+                    continue;
+                }
+                if ck.key > *end {
+                    break;
+                }
+                if ck.timestamp.0 > after_ts && ck.timestamp.0 < before_ts {
+                    return Ok(true);
+                }
+            }
+        }
+
         Ok(false)
+    }
+
+    /// Scan SSTables in the LSM tree for keys in range, excluding keys already found.
+    ///
+    /// Helper for `scan_impl()` to merge SSTable results with memtable results.
+    fn scan_sstables_in_range(
+        &self,
+        start: &K,
+        end: &K,
+        timestamp: &TS,
+        skip_keys: &HashSet<K>,
+    ) -> Result<Vec<(K, Option<V>, TS)>, StorageError> {
+        let mut seen: BTreeMap<K, (TS, LsmEntry)> = BTreeMap::new();
+
+        // Scan all SSTables: L0 (newest first) + L1
+        for meta in self
+            .lsm
+            .l0_metas()
+            .iter()
+            .rev()
+            .chain(self.lsm.l1_metas().iter())
+        {
+            let reader = futures::executor::block_on(SSTableReader::<IO>::open(
+                meta.path.clone(),
+                self.io_flags,
+            ))?;
+
+            let all_entries = futures::executor::block_on(reader.read_all::<K, TS>())?;
+
+            for (ck, entry) in all_entries {
+                // Filter: key in range, timestamp <= query ts, not in memtable
+                if ck.key < *start || ck.key > *end {
+                    continue;
+                }
+                if ck.timestamp.0 > *timestamp {
+                    continue;
+                }
+                if skip_keys.contains(&ck.key) {
+                    continue;
+                }
+
+                // Keep latest version per key
+                if let Some((ts, _)) = seen.get(&ck.key) {
+                    if *ts >= ck.timestamp.0 {
+                        continue;
+                    }
+                }
+                seen.insert(ck.key.clone(), (ck.timestamp.0, entry));
+            }
+        }
+
+        // Resolve values and return
+        let mut results = Vec::new();
+        for (key, (ts, entry)) in seen {
+            let value = self.resolve_value(&entry)?;
+            results.push((key, value, ts));
+        }
+        Ok(results)
     }
 
     /// Sync all data to disk.
@@ -442,7 +539,7 @@ where
 
 impl<K, V, TS, IO: DiskIo> MvccBackend<K, V, TS> for DiskStore<K, V, TS, IO>
 where
-    K: Serialize + for<'de> Deserialize<'de> + Ord + Clone + Send + Debug,
+    K: Serialize + for<'de> Deserialize<'de> + Ord + Clone + Send + Debug + std::hash::Hash,
     V: Serialize + for<'de> Deserialize<'de> + Clone + Send + Debug,
     TS: Serialize
         + for<'de> Deserialize<'de>
