@@ -3,6 +3,8 @@ pub mod disk_io;
 pub mod disk_store;
 pub mod error;
 pub mod gc;
+#[cfg(test)]
+mod integration_tests;
 pub mod lsm;
 pub mod manifest;
 pub mod memtable;
