@@ -20,3 +20,5 @@ Cargo.lock
 
 flamegraph.svg
 /store
+
+temp/
