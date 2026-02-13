@@ -1,4 +1,6 @@
-use super::{record::RecordImpl, OpId, RecordEntryState, ReplicaUpcalls, View, ViewNumber};
+use super::{
+    record::RecordImpl, shared_view::SharedView, OpId, RecordEntryState, ReplicaUpcalls, ViewNumber,
+};
 use crate::Transport;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
@@ -59,7 +61,7 @@ pub struct RequestUnlogged<UO> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplyUnlogged<UR, A> {
     pub result: UR,
-    pub view: View<A>,
+    pub view: SharedView<A>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,7 +87,7 @@ pub struct ProposeConsensus<CO> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplyInconsistent<A> {
     pub op_id: OpId,
-    pub view: View<A>,
+    pub view: SharedView<A>,
     /// If `None`, the request couldn't be processed because
     /// `recent` wasn't recent.
     pub state: Option<RecordEntryState>,
@@ -94,7 +96,7 @@ pub struct ReplyInconsistent<A> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplyConsensus<CR, A> {
     pub op_id: OpId,
-    pub view: View<A>,
+    pub view: SharedView<A>,
     /// If `None`, the request couldn't be processed because
     /// `recent` wasn't recent.
     pub result_state: Option<(CR, RecordEntryState)>,
@@ -114,14 +116,14 @@ pub struct FinalizeConsensus<CR> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Confirm<A> {
     pub op_id: OpId,
-    pub view: View<A>,
+    pub view: SharedView<A>,
 }
 
 /// Informs a replica about a new view.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DoViewChange<IO, CO, CR, A> {
     /// View to change to.
-    pub view: View<A>,
+    pub view: SharedView<A>,
     /// From client (don't send cached leader record).
     pub from_client: bool,
     /// Is `Some` when sent from replica to new leader.
@@ -133,7 +135,7 @@ pub struct ViewChangeAddendum<IO, CO, CR, A> {
     /// Sender replica's record.
     pub record: RecordImpl<IO, CO, CR>,
     /// Latest view in which sender replica had a normal state.
-    pub latest_normal_view: View<A>,
+    pub latest_normal_view: SharedView<A>,
 }
 
 impl<IO, CO, CR, A: Debug> Debug for ViewChangeAddendum<IO, CO, CR, A> {
@@ -150,7 +152,7 @@ pub struct StartView<IO, CO, CR, A> {
     /// Leader's merged record.
     pub record: RecordImpl<IO, CO, CR>,
     /// New view.
-    pub view: View<A>,
+    pub view: SharedView<A>,
 }
 
 impl<IO, CO, CR, A: Debug> Debug for StartView<IO, CO, CR, A> {

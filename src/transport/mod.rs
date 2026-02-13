@@ -16,7 +16,7 @@ mod channel;
 mod message;
 
 pub trait Transport<U: IrReplicaUpcalls>: Clone + Send + Sync + 'static {
-    type Address: Copy + Eq + Hash + Debug + Display + Send + Serialize + DeserializeOwned + 'static;
+    type Address: Copy + Eq + Hash + Debug + Display + Send + Sync + Serialize + DeserializeOwned + 'static;
     type Sleep: Future<Output = ()> + Send;
 
     /// Get own address.

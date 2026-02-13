@@ -1,7 +1,8 @@
 use super::{
-    Confirm, DoViewChange, FinalizeConsensus, FinalizeInconsistent, Membership, MembershipSize,
-    Message, OpId, ProposeConsensus, ProposeInconsistent, ReplicaUpcalls, ReplyConsensus,
-    ReplyInconsistent, ReplyUnlogged, RequestUnlogged, View, ViewNumber,
+    shared_view::SharedView, Confirm, DoViewChange, FinalizeConsensus, FinalizeInconsistent,
+    Membership, MembershipSize, Message, OpId, ProposeConsensus, ProposeInconsistent,
+    ReplicaUpcalls, ReplyConsensus, ReplyInconsistent, ReplyUnlogged, RequestUnlogged, View,
+    ViewNumber,
 };
 use crate::{
     util::{join, Join},
@@ -62,7 +63,7 @@ struct Inner<U: ReplicaUpcalls, T: Transport<U>> {
 
 struct SyncInner<U: ReplicaUpcalls, T: Transport<U>> {
     operation_counter: u64,
-    view: View<T::Address>,
+    view: SharedView<T::Address>,
 }
 
 impl<U: ReplicaUpcalls, T: Transport<U>> SyncInner<U, T> {
@@ -81,10 +82,10 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
                 transport,
                 sync: Mutex::new(SyncInner {
                     operation_counter: 0,
-                    view: View {
+                    view: SharedView::new(View {
                         membership,
                         number: ViewNumber(0),
-                    },
+                    }),
                 }),
             }),
             _spooky: PhantomData,
@@ -109,7 +110,7 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
     fn update_view<'a>(
         transport: &T,
         sync: &mut SyncInner<U, T>,
-        views: impl IntoIterator<Item = (T::Address, &'a View<T::Address>)> + Clone,
+        views: impl IntoIterator<Item = (T::Address, &'a SharedView<T::Address>)> + Clone,
     ) {
         if let Some(latest_view) = views
             .clone()

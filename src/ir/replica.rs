@@ -1,8 +1,9 @@
 use super::{
-    message::ViewChangeAddendum, AddMember, Confirm, DoViewChange, FinalizeConsensus,
-    FinalizeInconsistent, Membership, Message, OpId, ProposeConsensus, ProposeInconsistent, Record,
-    RecordConsensusEntry, RecordEntryState, RecordInconsistentEntry, RemoveMember, ReplyConsensus,
-    ReplyInconsistent, ReplyUnlogged, RequestUnlogged, StartView, View, ViewNumber,
+    message::ViewChangeAddendum, shared_view::SharedView, AddMember, Confirm, DoViewChange,
+    FinalizeConsensus, FinalizeInconsistent, Membership, Message, OpId, ProposeConsensus,
+    ProposeInconsistent, Record, RecordConsensusEntry, RecordEntryState, RecordInconsistentEntry,
+    RemoveMember, ReplyConsensus, ReplyInconsistent, ReplyUnlogged, RequestUnlogged, StartView,
+    View, ViewNumber,
 };
 use crate::{Transport, TransportMessage};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -92,8 +93,8 @@ struct Inner<U: Upcalls, T: Transport<U>> {
 
 struct SyncInner<U: Upcalls, T: Transport<U>> {
     status: Status,
-    view: View<T::Address>,
-    latest_normal_view: View<T::Address>,
+    view: SharedView<T::Address>,
+    latest_normal_view: SharedView<T::Address>,
     /// Leader's record from the *start* of the current view, used for catching up other replicas.
     leader_record: Option<StartView<U::IO, U::CO, U::CR, T::Address>>,
     changed_view_recently: bool,
@@ -106,8 +107,8 @@ struct SyncInner<U: Upcalls, T: Transport<U>> {
 
 #[derive(Serialize, Deserialize)]
 struct PersistentViewInfo<A> {
-    view: View<A>,
-    latest_normal_view: View<A>,
+    view: SharedView<A>,
+    latest_normal_view: SharedView<A>,
 }
 
 impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
@@ -119,10 +120,10 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
         transport: T,
         app_tick: Option<fn(&U, &T, &Membership<T::Address>)>,
     ) -> Self {
-        let view = View {
+        let view = SharedView::new(View {
             membership,
             number: ViewNumber(0),
-        };
+        });
         let ret = Self {
             inner: Arc::new(Inner {
                 transport,
@@ -150,10 +151,10 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
             sync.status = Status::Recovering;
             sync.view = persistent.view;
             sync.latest_normal_view = persistent.latest_normal_view;
-            sync.view.number.0 += 1;
+            sync.view.make_mut().number.0 += 1;
 
             if sync.view.leader() == ret.inner.transport.address() {
-                sync.view.number.0 += 1;
+                sync.view.make_mut().number.0 += 1;
             }
 
             ret.persist_view_info(&*sync);
@@ -226,7 +227,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                     if sync.status.is_normal() {
                         sync.status = Status::ViewChanging;
                     }
-                    sync.view.number.0 += 1;
+                    sync.view.make_mut().number.0 += 1;
 
                     info!(
                         "{:?} timeout sending do view change {}",
@@ -596,7 +597,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                             }
                             sync.changed_view_recently = true;
                             sync.status = Status::Normal;
-                            sync.view.number = msg_view_number;
+                            sync.view.make_mut().number = msg_view_number;
 
                             let destinations = sync
                                 .view
@@ -605,8 +606,8 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                                 .chain(sync.latest_normal_view.membership.iter())
                                 .collect::<HashSet<_>>();
 
-                            sync.latest_normal_view.number = msg_view_number;
-                            sync.latest_normal_view.membership = sync.view.membership.clone();
+                            sync.latest_normal_view.make_mut().number = msg_view_number;
+                            sync.latest_normal_view.make_mut().membership = sync.view.membership.clone();
                             self.persist_view_info(&*sync);
 
                             let start_view = StartView {
@@ -661,15 +662,14 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                     info!("adding member {address:?}");
 
                     sync.status = Status::ViewChanging;
-                    sync.view.number.0 += 3;
+                    sync.view.make_mut().number.0 += 3;
 
                     // Add the node.
-                    sync.view.membership = Membership::new(
-                        sync.view.membership
-                            .iter()
-                            .chain(std::iter::once(address))
-                            .collect()
-                        );
+                    let new_members = sync.view.membership
+                        .iter()
+                        .chain(std::iter::once(address))
+                        .collect();
+                    sync.view.make_mut().membership = Membership::new(new_members);
                     self.persist_view_info(&*sync);
 
                     // Election.
@@ -683,15 +683,14 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                     }
                     info!("removing member {address:?}");
                     sync.status = Status::ViewChanging;
-                    sync.view.number.0 += 3;
+                    sync.view.make_mut().number.0 += 3;
 
                     // Remove the node.
-                    sync.view.membership = Membership::new(
-                        sync.view.membership
-                            .iter()
-                            .filter(|a| *a != address)
-                            .collect()
-                        );
+                    let new_members = sync.view.membership
+                        .iter()
+                        .filter(|a| *a != address)
+                        .collect();
+                    sync.view.make_mut().membership = Membership::new(new_members);
                     self.persist_view_info(&*sync);
 
                     // Election.

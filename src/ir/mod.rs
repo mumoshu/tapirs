@@ -4,6 +4,7 @@ mod message;
 mod op;
 mod record;
 mod replica;
+mod shared_view;
 mod view;
 
 #[cfg(test)]
@@ -22,4 +23,5 @@ pub use record::{
     InconsistentEntry as RecordInconsistentEntry, Record, State as RecordEntryState,
 };
 pub use replica::{Replica, Status as ReplicaStatus, Upcalls as ReplicaUpcalls};
+pub use shared_view::SharedView;
 pub use view::{Number as ViewNumber, View};
