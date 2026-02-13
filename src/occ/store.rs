@@ -7,7 +7,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Borrow,
-    collections::{hash_map::Entry, BTreeMap, HashMap},
+    collections::{btree_map, hash_map, BTreeMap, HashMap},
     fmt::Debug,
     hash::Hash,
     ops::{Bound, Deref, DerefMut},
@@ -36,15 +36,15 @@ pub struct Store<K, V, TS> {
         )
     )]
     prepared_reads: HashMap<K, TimestampSet<TS>>,
-    // Cache.
+    // Cache. BTreeMap for efficient range queries during scan-set validation.
     #[serde(
-        with = "vectorize",
+        with = "vectorize_btree",
         bound(
-            serialize = "K: Serialize + Hash + Eq, TS: Serialize",
-            deserialize = "K: Deserialize<'de> + Hash + Eq, TS: Deserialize<'de> + Ord"
+            serialize = "K: Serialize + Ord, TS: Serialize",
+            deserialize = "K: Deserialize<'de> + Ord, TS: Deserialize<'de> + Ord"
         )
     )]
-    prepared_writes: HashMap<K, TimestampSet<TS>>,
+    prepared_writes: BTreeMap<K, TimestampSet<TS>>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -175,6 +175,14 @@ impl<K: Key, V: Value, TS: Timestamp> Store<K, V, TS> {
         self.inner.get_at(key, timestamp)
     }
 
+    pub fn scan(&self, start: &K, end: &K, timestamp: TS) -> Vec<(K, Option<V>, TS)>
+    where
+        K: Clone,
+        V: Clone,
+    {
+        self.inner.scan(start, end, timestamp)
+    }
+
     pub fn prepare(
         &mut self,
         id: TransactionId,
@@ -182,7 +190,7 @@ impl<K: Key, V: Value, TS: Timestamp> Store<K, V, TS> {
         commit: TS,
         dry_run: bool,
     ) -> PrepareResult<TS> {
-        if let Entry::Occupied(occupied) = self.prepared.entry(id) {
+        if let hash_map::Entry::Occupied(occupied) = self.prepared.entry(id) {
             if occupied.get().0 == commit {
                 // Already prepared at this timestamp.
                 return PrepareResult::Ok;
@@ -308,6 +316,32 @@ impl<K: Key, V: Value, TS: Timestamp> Store<K, V, TS> {
             }
         }
 
+        // Check for conflicts with the scan set (phantom prevention).
+        for entry in transaction.shard_scan_set(self.shard) {
+            // Check if any committed writes appeared in the scanned range after the scan.
+            if self.inner.has_writes_in_range(
+                &entry.start_key,
+                &entry.end_key,
+                entry.timestamp,
+                commit,
+            ) {
+                return PrepareResult::Fail;
+            }
+            // Check if any prepared writes exist in the scanned range.
+            for (_key, timestamps) in self
+                .prepared_writes
+                .range(&entry.start_key..=&entry.end_key)
+            {
+                if timestamps
+                    .range((Bound::Excluded(entry.timestamp), Bound::Excluded(commit)))
+                    .next()
+                    .is_some()
+                {
+                    return PrepareResult::Abstain;
+                }
+            }
+        }
+
         PrepareResult::Ok
     }
 
@@ -337,11 +371,11 @@ impl<K: Key, V: Value, TS: Timestamp> Store<K, V, TS> {
     ) {
         trace!("preparing {id:?} at {commit:?} (fin = {finalized})");
         match self.prepared.entry(id) {
-            Entry::Vacant(vacant) => {
+            hash_map::Entry::Vacant(vacant) => {
                 vacant.insert((commit, transaction.clone(), finalized));
                 self.add_prepared_inner(&transaction, commit);
             }
-            Entry::Occupied(mut occupied) => {
+            hash_map::Entry::Occupied(mut occupied) => {
                 if occupied.get().0 == commit {
                     debug_assert_eq!(*occupied.get().1, *transaction);
                     occupied.get_mut().2 = finalized;
@@ -382,7 +416,7 @@ impl<K: Key, V: Value, TS: Timestamp> Store<K, V, TS> {
 
     fn remove_prepared_inner(&mut self, transaction: &Transaction<K, V, TS>, commit: TS) {
         for (key, _) in transaction.shard_read_set(self.shard) {
-            if let Entry::Occupied(mut occupied) = self.prepared_reads.entry(key.clone()) {
+            if let hash_map::Entry::Occupied(mut occupied) = self.prepared_reads.entry(key.clone()) {
                 occupied.get_mut().remove(&commit);
                 if occupied.get().is_empty() {
                     occupied.remove();
@@ -390,7 +424,7 @@ impl<K: Key, V: Value, TS: Timestamp> Store<K, V, TS> {
             }
         }
         for (key, _) in transaction.shard_write_set(self.shard) {
-            if let Entry::Occupied(mut occupied) = self.prepared_writes.entry(key.clone()) {
+            if let btree_map::Entry::Occupied(mut occupied) = self.prepared_writes.entry(key.clone()) {
                 occupied.get_mut().remove(&commit);
                 if occupied.get().is_empty() {
                     occupied.remove();
