@@ -139,7 +139,6 @@ impl<K: Key, V: Value> Replica<K, V> {
                         .count()
                         >= membership.f_plus_one()
                     {
-                        // TODO: Check views too.
                         OccPrepareResult::TooLate
                     } else {
                         return None;
@@ -376,6 +375,15 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
                             .unwrap_or(true)
                     })
                     .unwrap_or_else(|| {
+                        // Guard: never overwrite a committed transaction.
+                        if self
+                            .transaction_log
+                            .get(transaction_id)
+                            .map(|(_, c)| *c)
+                            .unwrap_or(false)
+                        {
+                            return false;
+                        }
                         debug_assert!(
                             !self
                                 .transaction_log
@@ -384,7 +392,6 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
                                 .unwrap_or(false),
                             "{transaction_id:?} committed"
                         );
-                        // TODO: Timestamp.
                         self.transaction_log
                             .insert(*transaction_id, (Default::default(), false));
                         true
@@ -673,6 +680,22 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
 
 impl<K: Key, V: Value> Replica<K, V> {
     fn recompute_validated_timestamp(&mut self) {
+        // GC orphaned prepares below gc_watermark — these can never be
+        // resolved (CheckPrepare returns TooOld) and would block
+        // validated_timestamp / CDC progress indefinitely.
+        if self.gc_watermark > 0 {
+            let orphans: Vec<_> = self
+                .inner
+                .prepared
+                .iter()
+                .filter(|(_, (ts, _, _))| ts.time < self.gc_watermark)
+                .map(|(id, _)| *id)
+                .collect();
+            for id in orphans {
+                self.inner.remove_prepared(id);
+            }
+        }
+
         let max_committed = self
             .transaction_log
             .values()
@@ -728,5 +751,152 @@ impl<K: Key, V: Value> Replica<K, V> {
                 let _ = futures::future::select(future, timeout).await;
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::ReplicaUpcalls;
+    use std::sync::Arc;
+
+    fn make_txn_id(client: u64, num: u64) -> OccTransactionId {
+        OccTransactionId {
+            client_id: IrClientId(client),
+            number: num,
+        }
+    }
+
+    fn make_ts(time: u64, client: u64) -> Timestamp {
+        Timestamp {
+            time,
+            client_id: IrClientId(client),
+        }
+    }
+
+    fn empty_txn() -> OccSharedTransaction<i64, i64, Timestamp> {
+        Arc::new(crate::OccTransaction {
+            read_set: HashMap::new(),
+            write_set: HashMap::new(),
+            scan_set: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn abort_none_does_not_overwrite_committed() {
+        let mut replica = Replica::<i64, i64>::new(ShardNumber(0), false);
+        let txn_id = make_txn_id(1, 1);
+        let ts = make_ts(10, 1);
+        let txn = empty_txn();
+
+        // Commit the transaction.
+        replica.exec_inconsistent(&IO::Commit {
+            transaction_id: txn_id,
+            transaction: txn,
+            commit: ts,
+        });
+        assert_eq!(replica.transaction_log.get(&txn_id), Some(&(ts, true)));
+
+        // Abort with commit: None should NOT overwrite the committed entry.
+        replica.exec_inconsistent(&IO::Abort {
+            transaction_id: txn_id,
+            commit: None,
+        });
+        assert_eq!(
+            replica.transaction_log.get(&txn_id),
+            Some(&(ts, true)),
+            "abort with commit: None must not overwrite a committed transaction"
+        );
+    }
+
+    #[test]
+    fn abort_with_timestamp_skips_different_prepare() {
+        let mut replica = Replica::<i64, i64>::new(ShardNumber(0), false);
+        let txn_id = make_txn_id(1, 1);
+        let ts1 = make_ts(10, 1);
+        let ts2 = make_ts(20, 1);
+        let txn = empty_txn();
+
+        // Prepare at ts1.
+        let result = replica.exec_consensus(&CO::Prepare {
+            transaction_id: txn_id,
+            transaction: txn,
+            commit: ts1,
+        });
+        assert!(
+            matches!(result, CR::Prepare(OccPrepareResult::Ok)),
+            "prepare should succeed"
+        );
+        assert!(replica.inner.prepared.contains_key(&txn_id));
+
+        // Abort at ts2 (different timestamp) should NOT remove the prepare at ts1.
+        replica.exec_inconsistent(&IO::Abort {
+            transaction_id: txn_id,
+            commit: Some(ts2),
+        });
+        assert!(
+            replica.inner.prepared.contains_key(&txn_id),
+            "abort at different timestamp must not remove the prepared entry"
+        );
+    }
+
+    #[test]
+    fn abort_with_timestamp_removes_matching_prepare() {
+        let mut replica = Replica::<i64, i64>::new(ShardNumber(0), false);
+        let txn_id = make_txn_id(1, 1);
+        let ts1 = make_ts(10, 1);
+        let txn = empty_txn();
+
+        // Prepare at ts1.
+        let result = replica.exec_consensus(&CO::Prepare {
+            transaction_id: txn_id,
+            transaction: txn,
+            commit: ts1,
+        });
+        assert!(
+            matches!(result, CR::Prepare(OccPrepareResult::Ok)),
+            "prepare should succeed"
+        );
+        assert!(replica.inner.prepared.contains_key(&txn_id));
+
+        // Abort at ts1 (matching timestamp) should remove the prepare.
+        replica.exec_inconsistent(&IO::Abort {
+            transaction_id: txn_id,
+            commit: Some(ts1),
+        });
+        assert!(
+            !replica.inner.prepared.contains_key(&txn_id),
+            "abort at matching timestamp must remove the prepared entry"
+        );
+    }
+
+    #[test]
+    fn orphaned_prepares_below_gc_watermark_are_cleaned() {
+        let mut replica = Replica::<i64, i64>::new(ShardNumber(0), false);
+        let txn_id = make_txn_id(1, 1);
+        let ts = make_ts(5, 1);
+        let txn = empty_txn();
+
+        // Prepare at time=5.
+        let result = replica.exec_consensus(&CO::Prepare {
+            transaction_id: txn_id,
+            transaction: txn,
+            commit: ts,
+        });
+        assert!(
+            matches!(result, CR::Prepare(OccPrepareResult::Ok)),
+            "prepare should succeed"
+        );
+        assert!(replica.inner.prepared.contains_key(&txn_id));
+
+        // Advance gc_watermark past the prepare timestamp.
+        replica.gc_watermark = 10;
+
+        // recompute_validated_timestamp should GC the orphaned prepare.
+        replica.recompute_validated_timestamp();
+        assert!(
+            !replica.inner.prepared.contains_key(&txn_id),
+            "orphaned prepare below gc_watermark should be removed"
+        );
     }
 }
