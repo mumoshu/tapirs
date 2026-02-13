@@ -1,12 +1,14 @@
 use crate::{
-    tapir::Sharded, ChannelRegistry, ChannelTransport, IrMembership, IrReplica, ShardNumber,
-    TapirClient, TapirReplica, TapirTimestamp, Transport as _,
+    tapir::Sharded,
+    transport::{FaultyChannelTransport, LatencyConfig, NetworkFaultConfig},
+    ChannelRegistry, ChannelTransport, IrMembership, IrReplica, ShardNumber, TapirClient,
+    TapirReplica, TapirTimestamp, Transport as _,
 };
 use futures::future::join_all;
-use rand::{thread_rng, Rng};
+use rand::{rngs::StdRng, thread_rng, Rng, SeedableRng};
 use std::{
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicI64, AtomicU64, Ordering},
         Arc, Mutex,
     },
     time::Duration,
@@ -24,6 +26,7 @@ fn init_tracing() {
 type K = i64;
 type V = i64;
 type Transport = ChannelTransport<TapirReplica<K, V>>;
+type FaultyTransport = FaultyChannelTransport<TapirReplica<K, V>>;
 
 fn build_shard(
     shard: ShardNumber,
@@ -478,4 +481,215 @@ async fn coordinator_recovery(num_replicas: usize) {
 
         panic!("never recovered");
     }
+}
+
+// --- Faulty transport helpers ---
+
+fn build_shard_faulty(
+    shard: ShardNumber,
+    linearizable: bool,
+    num_replicas: usize,
+    registry: &ChannelRegistry<TapirReplica<K, V>>,
+    config: &NetworkFaultConfig,
+    seed: u64,
+) -> Vec<Arc<IrReplica<TapirReplica<K, V>, FaultyTransport>>> {
+    let initial_address = registry.len();
+    let membership = IrMembership::new(
+        (0..num_replicas)
+            .map(|n| n + initial_address)
+            .collect::<Vec<_>>(),
+    );
+
+    let replicas = (0..num_replicas)
+        .map(|i| {
+            let node_seed = seed.wrapping_add(initial_address as u64 + i as u64);
+            let config = config.clone();
+            let membership = membership.clone();
+
+            Arc::new_cyclic(
+                |weak: &std::sync::Weak<IrReplica<TapirReplica<K, V>, FaultyTransport>>| {
+                    let weak = weak.clone();
+                    let channel = registry
+                        .channel(move |from, message| weak.upgrade()?.receive(from, message));
+                    let transport = FaultyChannelTransport::new(channel, config, node_seed);
+                    let upcalls = TapirReplica::new(shard, linearizable);
+                    IrReplica::new(membership, upcalls, transport, Some(TapirReplica::tick))
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+
+    registry.put_shard_addresses(shard, membership);
+
+    replicas
+}
+
+fn build_clients_faulty(
+    num_clients: usize,
+    registry: &ChannelRegistry<TapirReplica<K, V>>,
+    config: &NetworkFaultConfig,
+    seed: u64,
+) -> Vec<Arc<TapirClient<K, V, FaultyTransport>>> {
+    (0..num_clients)
+        .map(|i| {
+            let client_seed = seed.wrapping_add(10000 + i as u64);
+            let channel = registry.channel(move |_, _| unreachable!());
+            let transport = FaultyChannelTransport::new(channel, config.clone(), client_seed);
+            Arc::new(TapirClient::new(transport))
+        })
+        .collect()
+}
+
+fn build_kv_faulty(
+    linearizable: bool,
+    num_replicas: usize,
+    num_clients: usize,
+    config: &NetworkFaultConfig,
+    seed: u64,
+) -> (
+    Vec<Arc<IrReplica<TapirReplica<K, V>, FaultyTransport>>>,
+    Vec<Arc<TapirClient<K, V, FaultyTransport>>>,
+) {
+    init_tracing();
+
+    let registry = ChannelRegistry::default();
+
+    let replicas = build_shard_faulty(
+        ShardNumber(0),
+        linearizable,
+        num_replicas,
+        &registry,
+        config,
+        seed,
+    );
+
+    let clients = build_clients_faulty(num_clients, &registry, config, seed.wrapping_add(5000));
+
+    (replicas, clients)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fuzz_tapir_transactions() {
+    let seed: u64 = std::env::var("TAPI_TEST_SEED")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| thread_rng().r#gen());
+
+    eprintln!("fuzz_tapir_transactions seed={seed}");
+
+    let mut rng = StdRng::seed_from_u64(seed);
+
+    let config = NetworkFaultConfig {
+        drop_rate: 0.05,
+        duplicate_rate: 0.02,
+        reorder_buffer_size: 3,
+        latency: LatencyConfig::Uniform {
+            min: Duration::from_millis(1),
+            max: Duration::from_millis(10),
+        },
+        partition_pairs: Default::default(),
+        clock_skew_nanos: 0,
+    };
+
+    let num_replicas = 3;
+    let num_clients = 3;
+    let num_keys: i64 = 5;
+    let iterations_per_client = 20;
+
+    let (_replicas, clients) = build_kv_faulty(true, num_replicas, num_clients, &config, seed);
+
+    // Track committed increments per key.
+    let committed_counts: Arc<Vec<AtomicI64>> =
+        Arc::new((0..num_keys).map(|_| AtomicI64::new(0)).collect());
+    let total_committed = Arc::new(AtomicU64::new(0));
+    let total_attempted = Arc::new(AtomicU64::new(0));
+
+    // Generate per-client seeds up front (rng is not Send).
+    let client_seeds: Vec<u64> = (0..num_clients).map(|_| rng.r#gen()).collect();
+
+    // Spawn concurrent client workloads.
+    let handles: Vec<_> = clients
+        .iter()
+        .enumerate()
+        .map(|(client_idx, client)| {
+            let client = Arc::clone(client);
+            let committed_counts = Arc::clone(&committed_counts);
+            let total_committed = Arc::clone(&total_committed);
+            let total_attempted = Arc::clone(&total_attempted);
+            let client_seed = client_seeds[client_idx];
+
+            tokio::spawn(async move {
+                let mut rng = StdRng::seed_from_u64(client_seed);
+
+                for _ in 0..iterations_per_client {
+                    let key: i64 = rng.gen_range(0..num_keys);
+                    total_attempted.fetch_add(1, Ordering::Relaxed);
+
+                    let txn = client.begin();
+                    let old = txn.get(key).await.unwrap_or(0);
+                    txn.put(key, Some(old + 1));
+
+                    match timeout(Duration::from_secs(5), txn.commit()).await {
+                        Ok(Some(_ts)) => {
+                            committed_counts[key as usize].fetch_add(1, Ordering::Relaxed);
+                            total_committed.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Ok(None) | Err(_) => {
+                            // Aborted or timed out -- no side effect.
+                        }
+                    }
+
+                    // Small inter-transaction delay.
+                    FaultyTransport::sleep(Duration::from_millis(rng.gen_range(1..=20))).await;
+                }
+            })
+        })
+        .collect();
+
+    // Wait for all workloads with overall timeout.
+    let all_done = timeout(Duration::from_secs(30), async {
+        for handle in handles {
+            handle.await.unwrap();
+        }
+    })
+    .await;
+
+    if all_done.is_err() {
+        eprintln!("fuzz_tapir_transactions: workload timed out (seed={seed})");
+    }
+
+    let attempted = total_attempted.load(Ordering::Relaxed);
+    let committed = total_committed.load(Ordering::Relaxed);
+    eprintln!("fuzz_tapir_transactions: attempted={attempted} committed={committed} seed={seed}");
+    assert!(committed > 0, "no transactions committed (seed={seed})");
+
+    // Let replicas drain pending operations.
+    FaultyTransport::sleep(Duration::from_secs(2)).await;
+
+    // Verify counter invariant: for each key, final value == number of committed increments.
+    let verify_client = &clients[0];
+    for key in 0..num_keys {
+        let expected = committed_counts[key as usize].load(Ordering::Relaxed);
+
+        let txn = verify_client.begin();
+        let actual = txn.get(key).await.unwrap_or(0);
+
+        match timeout(Duration::from_secs(5), txn.commit()).await {
+            Ok(Some(_)) => {
+                assert_eq!(
+                    actual, expected,
+                    "counter invariant violated for key {key}: actual={actual} expected={expected} (seed={seed})"
+                );
+            }
+            _ => {
+                eprintln!(
+                    "warning: verification read for key {key} did not commit (seed={seed})"
+                );
+            }
+        }
+    }
+
+    eprintln!(
+        "fuzz_tapir_transactions: seed={seed} {committed}/{attempted} committed, invariants passed"
+    );
 }

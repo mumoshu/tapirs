@@ -36,6 +36,7 @@ struct FaultState<U: IrReplicaUpcalls> {
     config: NetworkFaultConfig,
     rng: StdRng,
     reorder_buffers: HashMap<(usize, usize), ReorderBuffer<U>>,
+    partitioned_nodes: HashSet<usize>,
 }
 
 /// Configuration for network fault injection
@@ -111,6 +112,7 @@ impl<U: IrReplicaUpcalls> FaultyChannelTransport<U> {
                 config,
                 rng: StdRng::seed_from_u64(seed),
                 reorder_buffers: HashMap::new(),
+                partitioned_nodes: HashSet::new(),
             })),
         }
     }
@@ -145,21 +147,27 @@ impl<U: IrReplicaUpcalls> FaultyChannelTransport<U> {
 
     pub fn partition_node(&self, node: usize) {
         let mut state = self.state.write().unwrap();
-        // Block all pairs involving this node (assume dense node IDs 0..100)
-        for other in 0..100 {
-            if other != node {
-                state.config.partition_pairs.insert((node, other));
-                state.config.partition_pairs.insert((other, node));
-            }
-        }
+        state.partitioned_nodes.insert(node);
+        Self::rebuild_partition_pairs(&mut state);
     }
 
     pub fn heal_node(&self, node: usize) {
         let mut state = self.state.write().unwrap();
-        state
-            .config
-            .partition_pairs
-            .retain(|(a, b)| *a != node && *b != node);
+        state.partitioned_nodes.remove(&node);
+        Self::rebuild_partition_pairs(&mut state);
+    }
+
+    fn rebuild_partition_pairs(state: &mut FaultState<U>) {
+        state.config.partition_pairs.clear();
+        for &partitioned in &state.partitioned_nodes {
+            // Block all pairs involving this partitioned node (assume dense node IDs 0..100)
+            for other in 0..100 {
+                if other != partitioned {
+                    state.config.partition_pairs.insert((partitioned, other));
+                    state.config.partition_pairs.insert((other, partitioned));
+                }
+            }
+        }
     }
 
     pub fn partition_pair(&self, a: usize, b: usize) {
@@ -309,8 +317,12 @@ impl<U: IrReplicaUpcalls> FaultyChannelTransport<U> {
             messages.shuffle(&mut s.rng);
         }
 
+        // Re-check partition state before sending each buffered message
         for msg in messages {
-            inner.do_send(to, msg);
+            if !Self::is_partitioned(state, from, to) {
+                inner.do_send(to, msg);
+            }
+            // If partitioned, drop the message silently
         }
     }
 
@@ -328,11 +340,22 @@ impl<U: IrReplicaUpcalls> FaultyChannelTransport<U> {
         });
     }
 
-    fn spawn_duplicate(inner: &Channel<U>, address: usize, message: IrMessage<U, Channel<U>>) {
+    fn spawn_duplicate(
+        state: &Arc<RwLock<FaultState<U>>>,
+        inner: &Channel<U>,
+        from: usize,
+        address: usize,
+        message: IrMessage<U, Channel<U>>,
+    ) {
         let inner = inner.clone();
+        let state = Arc::clone(state);
         <Self as Transport<U>>::spawn(async move {
             <Self as Transport<U>>::sleep(Duration::from_millis(1)).await;
-            inner.do_send(address, message);
+            // Re-check partition state before sending duplicate
+            if !Self::is_partitioned(&state, from, address) {
+                inner.do_send(address, message);
+            }
+            // If partitioned, drop the duplicate silently
         });
     }
 
@@ -453,7 +476,7 @@ impl<U: IrReplicaUpcalls> Transport<U> for FaultyChannelTransport<U> {
 
                 // 7. Handle duplication
                 if Self::should_duplicate(&state) {
-                    Self::spawn_duplicate(&inner, address, message_inner.clone());
+                    Self::spawn_duplicate(&state, &inner, from, address, message_inner.clone());
                 }
 
                 // 8. Convert reply back and return
@@ -498,7 +521,7 @@ impl<U: IrReplicaUpcalls> Transport<U> for FaultyChannelTransport<U> {
 
             // 6. Handle duplicate
             if Self::should_duplicate(&state) {
-                Self::spawn_duplicate(&inner, address, message_inner);
+                Self::spawn_duplicate(&state, &inner, from, address, message_inner);
             }
         });
     }
@@ -525,6 +548,9 @@ impl<K: Key, V: Value> TapirTransport<K, V> for FaultyChannelTransport<TapirRepl
 mod tests {
     use super::*;
     use crate::transport::ChannelRegistry;
+    use crate::ir::message::FinalizeInconsistent;
+    use crate::ir::{OpId, ClientId};
+    use std::sync::Mutex;
 
     type TestUpcalls = TapirReplica<i64, i64>;
 
@@ -710,5 +736,191 @@ mod tests {
             .map(|_| FaultyChannelTransport::<TestUpcalls>::should_duplicate(&faulty.state))
             .collect();
         assert_eq!(duplicates.iter().filter(|&&x| x).count(), 10);
+    }
+
+    #[tokio::test]
+    async fn fuzz_transport_simulator() {
+        let seed: u64 = std::env::var("TAPI_TEST_SEED")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_else(|| {
+                use std::time::SystemTime;
+                SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos() as u64
+            });
+        eprintln!("seed={}", seed);
+
+        // Run once — the underlying Channel uses thread_rng() so true
+        // end-to-end determinism isn't possible, but the FaultyChannelTransport's
+        // own decisions (drops, duplicates, reordering) are seeded and deterministic.
+        run_fuzz_iteration(seed).await;
+    }
+
+    async fn run_fuzz_iteration(seed: u64) {
+        let mut rng = StdRng::seed_from_u64(seed);
+
+        // 1. Generate random number of nodes
+        let num_nodes = rng.gen_range(3..=7);
+
+        // 2. Generate random NetworkFaultConfig
+        let config = NetworkFaultConfig {
+            drop_rate: rng.gen_range(0.0..=0.3),
+            duplicate_rate: rng.gen_range(0.0..=0.2),
+            reorder_buffer_size: rng.gen_range(0..=5),
+            latency: match rng.gen_range(0..3) {
+                0 => LatencyConfig::None,
+                1 => LatencyConfig::Fixed(Duration::from_millis(rng.gen_range(1..=20))),
+                _ => LatencyConfig::Uniform {
+                    min: Duration::from_millis(1),
+                    max: Duration::from_millis(rng.gen_range(2..=50)),
+                },
+            },
+            partition_pairs: HashSet::new(),
+            clock_skew_nanos: rng.gen_range(-1_000_000_000..=1_000_000_000),
+        };
+
+        eprintln!(
+            "Config: nodes={}, drop={:.2}, dup={:.2}, reorder={}, latency={:?}, skew={}",
+            num_nodes, config.drop_rate, config.duplicate_rate,
+            config.reorder_buffer_size, config.latency, config.clock_skew_nanos
+        );
+
+        // 3. Create ChannelRegistry and FaultyChannelTransports
+        let registry = Arc::new(ChannelRegistry::<TestUpcalls>::default());
+        let received: Arc<Mutex<Vec<(usize, usize, u64)>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut transports = Vec::new();
+
+        for node_id in 0..num_nodes {
+            let received_clone: Arc<Mutex<Vec<(usize, usize, u64)>>> = Arc::clone(&received);
+            let ch = registry.channel(move |from, msg| {
+                // Extract msg_id from the message
+                use crate::ir::message::MessageImpl::*;
+                if let FinalizeInconsistent(fi) = msg {
+                    received_clone
+                        .lock()
+                        .unwrap()
+                        .push((from, node_id, fi.op_id.number));
+                }
+                None
+            });
+            let transport = FaultyChannelTransport::new(ch, config.clone(), seed + node_id as u64);
+            transports.push(transport);
+        }
+
+        // 4. Generate random operation sequence
+        let num_ops = rng.gen_range(20..=50);
+        let mut operations = Vec::new();
+
+        #[derive(Debug, Clone)]
+        enum Operation {
+            Send { from: usize, to: usize, msg_id: u64 },
+            PartitionNode(usize),
+            HealNode(usize),
+            SetDropRate(f64),
+        }
+
+        for _ in 0..num_ops {
+            let op = match rng.gen_range(0..100) {
+                0..=69 => Operation::Send {
+                    from: rng.gen_range(0..num_nodes),
+                    to: rng.gen_range(0..num_nodes),
+                    msg_id: operations.len() as u64,
+                },
+                70..=84 => Operation::PartitionNode(rng.gen_range(0..num_nodes)),
+                85..=94 => Operation::HealNode(rng.gen_range(0..num_nodes)),
+                _ => Operation::SetDropRate(rng.gen_range(0.0..=0.5)),
+            };
+            operations.push(op);
+        }
+
+        // Track state for invariant checking.
+        // do_send spawns async tasks — partition checks happen when those tasks
+        // run during quiescence. Track partition windows to only check messages
+        // sent AFTER partition AND partition never healed.
+        let mut partition_start: HashMap<usize, usize> = HashMap::new(); // node -> operation_index
+        let mut sent_messages: Vec<(usize, usize, u64, usize)> = Vec::new(); // (from, to, id, op_index)
+
+        // 5. Execute operations
+        eprintln!("Executing {} operations...", operations.len());
+        for (op_index, op) in operations.iter().enumerate() {
+            match op {
+                Operation::Send { from, to, msg_id } => {
+                    sent_messages.push((*from, *to, *msg_id, op_index));
+
+                    let msg = FinalizeInconsistent {
+                        op_id: OpId {
+                            client_id: ClientId(0),
+                            number: *msg_id,
+                        },
+                    };
+                    transports[*from].do_send(*to, msg);
+                }
+                Operation::PartitionNode(node) => {
+                    for transport in &transports {
+                        transport.partition_node(*node);
+                    }
+                    partition_start.insert(*node, op_index);
+                }
+                Operation::HealNode(node) => {
+                    for transport in &transports {
+                        transport.heal_node(*node);
+                    }
+                    partition_start.remove(node);
+                }
+                Operation::SetDropRate(rate) => {
+                    for transport in &transports {
+                        transport.set_drop_rate(*rate);
+                    }
+                }
+            }
+        }
+
+        // 6. Wait for quiescence — all spawned tasks complete
+        <FaultyChannelTransport<TestUpcalls> as Transport<TestUpcalls>>::sleep(
+            Duration::from_millis(500)
+        ).await;
+
+        // 7. Verify hard invariants
+        let received_msgs = received.lock().unwrap().clone();
+        let received_set: HashSet<(usize, usize, u64)> = received_msgs.iter().cloned().collect();
+
+        let send_count = sent_messages.len();
+        eprintln!("Sent {} messages, received {}", send_count, received_msgs.len());
+
+        // Hard invariant: messages sent AFTER a node was partitioned AND that
+        // node is still partitioned at quiescence (never healed) must not be
+        // delivered. NOTE: partition_node() doesn't block self-sends (from==to).
+        let mut blocked_by_partition = 0;
+        for &(from, to, msg_id, send_index) in &sent_messages {
+            // Skip self-sends — partition_node() doesn't block them
+            if from == to {
+                continue;
+            }
+
+            // Check if from was partitioned before this send and never healed
+            let from_blocked = partition_start.get(&from)
+                .map(|&part_idx| part_idx < send_index)
+                .unwrap_or(false);
+
+            // Check if to was partitioned before this send and never healed
+            let to_blocked = partition_start.get(&to)
+                .map(|&part_idx| part_idx < send_index)
+                .unwrap_or(false);
+
+            if from_blocked || to_blocked {
+                blocked_by_partition += 1;
+                assert!(
+                    !received_set.contains(&(from, to, msg_id)),
+                    "Message {} from {} to {} delivered despite partition (from_part={}, to_part={})",
+                    msg_id, from, to, from_blocked, to_blocked
+                );
+            }
+        }
+
+        if blocked_by_partition > 0 {
+            eprintln!("✓ Partition invariant: {}/{} messages must be blocked", blocked_by_partition, send_count);
+        }
     }
 }

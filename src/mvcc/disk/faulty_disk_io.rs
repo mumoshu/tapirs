@@ -3,12 +3,20 @@ use super::disk_io::{DiskIo, OpenFlags};
 use super::error::StorageError;
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
+use std::cell::RefCell;
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
+
+thread_local! {
+    /// Shared fault state for testing. When enabled, all FaultyDiskIo instances
+    /// created via `open()` in this thread will share the same fault state,
+    /// allowing runtime configuration changes to affect all instances.
+    static SHARED_FAULT_STATE: RefCell<Option<Arc<Mutex<FaultState>>>> = RefCell::new(None);
+}
 
 /// Wrapper around any DiskIo implementation with configurable fault injection.
 ///
@@ -21,10 +29,13 @@ pub struct FaultyDiskIo<IO: DiskIo> {
     state: Arc<Mutex<FaultState>>,
 }
 
-struct FaultState {
-    config: DiskFaultConfig,
-    rng: StdRng,
-    bytes_written: u64,
+/// Internal fault state shared across FaultyDiskIo instances.
+///
+/// Public to allow test access via `get_shared_fault_state()`.
+pub struct FaultState {
+    pub config: DiskFaultConfig,
+    pub rng: StdRng,
+    pub bytes_written: u64,
 }
 
 /// Configuration for disk fault injection.
@@ -241,7 +252,17 @@ impl<IO: DiskIo> DiskIo for FaultyDiskIo<IO> {
 
     fn open(path: &Path, flags: OpenFlags) -> Result<Self, StorageError> {
         let inner = IO::open(path, flags)?;
-        Ok(Self::with_seed(inner, 0))
+
+        // Check if shared fault state is enabled (for testing)
+        let shared_state = SHARED_FAULT_STATE.with(|s| s.borrow().clone());
+
+        if let Some(state) = shared_state {
+            // Use shared state - all instances will share the same fault config
+            Ok(Self { inner, state })
+        } else {
+            // Normal path: create default config
+            Ok(Self::with_seed(inner, 0))
+        }
     }
 
     fn pread(&self, buf: &mut AlignedBuf, offset: u64) -> Self::ReadFuture {
@@ -350,6 +371,41 @@ impl<IO: DiskIo> FaultyDiskIo<IO> {
         let mut state = self.state.lock().unwrap();
         state.config = DiskFaultConfig::default();
         state.bytes_written = 0;
+    }
+
+    /// Enable shared fault state for testing.
+    ///
+    /// When enabled, all FaultyDiskIo instances created via `open()` in the
+    /// current thread will share the same fault state. This allows runtime
+    /// configuration changes to affect all instances (e.g., VlogSegment IO
+    /// and all LSM SSTable IOs).
+    ///
+    /// Must call `disable_shared_fault_state()` after testing to clean up.
+    pub fn enable_shared_fault_state(config: DiskFaultConfig, seed: u64) {
+        SHARED_FAULT_STATE.with(|s| {
+            *s.borrow_mut() = Some(Arc::new(Mutex::new(FaultState {
+                config,
+                rng: StdRng::seed_from_u64(seed),
+                bytes_written: 0,
+            })));
+        });
+    }
+
+    /// Get a handle to the shared fault state for runtime modification.
+    ///
+    /// Returns None if shared state is not enabled. The returned Arc can
+    /// be used to modify the fault configuration at runtime, affecting all
+    /// FaultyDiskIo instances created in this thread.
+    pub fn get_shared_fault_state() -> Option<Arc<Mutex<FaultState>>> {
+        SHARED_FAULT_STATE.with(|s| s.borrow().clone())
+    }
+
+    /// Disable shared fault state for testing.
+    ///
+    /// Clears the thread-local shared state. Should be called after testing
+    /// to avoid affecting other tests.
+    pub fn disable_shared_fault_state() {
+        SHARED_FAULT_STATE.with(|s| *s.borrow_mut() = None);
     }
 }
 
@@ -622,5 +678,200 @@ mod tests {
         faulty.pwrite(&buf, 0).await.unwrap();
         assert_eq!(faulty.bytes_written(), 4096);
         assert!(faulty.fsync().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn fuzz_storage_simulator() {
+        use crate::mvcc::backend::MvccBackend;
+        use crate::mvcc::disk::disk_store::DiskStore;
+        use rand::Rng;
+        use std::collections::BTreeMap;
+        use std::env;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use tempfile::TempDir;
+
+        // Use TAPI_TEST_SEED for deterministic reproduction, otherwise random seed
+        let seed = env::var("TAPI_TEST_SEED")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_else(|| {
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos() as u64
+            });
+        println!("seed={}", seed);
+
+        let mut rng = StdRng::seed_from_u64(seed);
+        let dir = TempDir::new().unwrap();
+
+        // Generate random fault config
+        let config = DiskFaultConfig {
+            fsync_fail_rate: rng.gen_range(0.0..0.3),
+            read_corruption_rate: rng.gen_range(0.0..0.1),
+            enospc_after_bytes: if rng.gen_bool(0.5) {
+                Some(rng.gen_range(10_000..100_000))
+            } else {
+                None
+            },
+            slow_io_latency: None,
+        };
+
+        println!(
+            "fault config: fsync_fail_rate={:.3}, read_corruption_rate={:.3}, enospc_after_bytes={:?}",
+            config.fsync_fail_rate, config.read_corruption_rate, config.enospc_after_bytes
+        );
+
+        // Enable shared fault state for all FaultyDiskIo instances
+        FaultyDiskIo::<BufferedIo>::enable_shared_fault_state(config.clone(), seed);
+        let fault_handle = FaultyDiskIo::<BufferedIo>::get_shared_fault_state().unwrap();
+
+        // Create DiskStore with FaultyDiskIo
+        type TestStore = DiskStore<String, String, u64, FaultyDiskIo<BufferedIo>>;
+        let mut store = TestStore::open(dir.path().to_path_buf()).unwrap();
+
+        // Track what should be persisted (writes followed by successful fsync)
+        let mut committed_data: BTreeMap<(String, u64), String> = BTreeMap::new();
+        let mut pending_writes: Vec<(String, String, u64)> = Vec::new();
+
+        // Generate random operations
+        let num_ops = rng.gen_range(50..200);
+        println!("executing {} random operations", num_ops);
+
+        for i in 0..num_ops {
+            match rng.gen_range(0..4) {
+                0 => {
+                    // Write operation
+                    let key = format!("key{}", rng.gen_range(0..20));
+                    let value = format!("value{}", rng.gen_range(0..u32::MAX));
+                    let ts = rng.gen_range(1..1000);
+
+                    match store.put(key.clone(), Some(value.clone()), ts) {
+                        Ok(_) => {
+                            pending_writes.push((key.clone(), value.clone(), ts));
+                            if i % 50 == 0 {
+                                println!("  op {}: put {} @ {} = {}", i, key, ts, value);
+                            }
+                        }
+                        Err(e) => {
+                            // ENOSPC expected
+                            if i % 50 == 0 {
+                                println!("  op {}: put failed (expected): {:?}", i, e);
+                            }
+                        }
+                    }
+                }
+                1 => {
+                    // Read operation
+                    let key = format!("key{}", rng.gen_range(0..20));
+                    let _ = store.get(&key); // May fail with corruption or not found
+                }
+                2 => {
+                    // Fsync operation
+                    match store.sync() {
+                        Ok(_) => {
+                            // Successful fsync - commit pending writes
+                            if !pending_writes.is_empty() {
+                                println!(
+                                    "  op {}: sync succeeded, committing {} writes",
+                                    i,
+                                    pending_writes.len()
+                                );
+                                for (k, v, ts) in pending_writes.drain(..) {
+                                    committed_data.insert((k, ts), v);
+                                }
+                                // Save manifest after successful sync
+                                if store.save_manifest().is_err() {
+                                    // Manifest save may fail due to ENOSPC, but data is still synced
+                                    println!("  manifest save failed (ENOSPC expected)");
+                                }
+                            }
+                        }
+                        Err(_e) => {
+                            // Fsync failed - writes are lost
+                            if !pending_writes.is_empty() {
+                                println!(
+                                    "  op {}: sync failed (fault injection), losing {} pending writes",
+                                    i,
+                                    pending_writes.len()
+                                );
+                                pending_writes.clear();
+                            }
+                        }
+                    }
+                }
+                3 => {
+                    // Change fault config at runtime
+                    let mut state = fault_handle.lock().unwrap();
+                    state.config.fsync_fail_rate = rng.gen_range(0.0..0.5);
+                    state.config.read_corruption_rate = rng.gen_range(0.0..0.1);
+                    if i % 50 == 0 {
+                        println!(
+                            "  op {}: updated fault rates: fsync={:.3}, corruption={:.3}",
+                            i, state.config.fsync_fail_rate, state.config.read_corruption_rate
+                        );
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        // Final sync to commit remaining writes
+        if store.sync().is_ok() {
+            println!(
+                "final sync succeeded, committing {} remaining writes",
+                pending_writes.len()
+            );
+            for (k, v, ts) in pending_writes.drain(..) {
+                committed_data.insert((k, ts), v);
+            }
+            let _ = store.save_manifest();
+        } else {
+            println!("final sync failed, losing {} pending writes", pending_writes.len());
+        }
+
+        println!("committed {} total writes", committed_data.len());
+
+        // Crash simulation: drop store
+        drop(store);
+
+        // Disable corruption for recovery verification
+        {
+            let mut state = fault_handle.lock().unwrap();
+            state.config.read_corruption_rate = 0.0;
+            state.config.fsync_fail_rate = 0.0;
+            state.config.enospc_after_bytes = None;
+        }
+
+        println!("simulating crash and recovery...");
+
+        // Recovery: reopen store
+        let recovered_store = TestStore::open(dir.path().to_path_buf()).unwrap();
+
+        println!("verifying {} committed writes after recovery", committed_data.len());
+
+        // Verify all committed data is present
+        for ((key, ts), expected_value) in &committed_data {
+            let (actual, actual_ts) = recovered_store.get_at(key, *ts).unwrap();
+            assert_eq!(
+                actual.as_ref(),
+                Some(expected_value),
+                "Mismatch for key {} at ts {}: expected {:?}, got {:?}",
+                key,
+                ts,
+                Some(expected_value),
+                actual
+            );
+            assert_eq!(
+                actual_ts, *ts,
+                "Timestamp mismatch for key {}: expected {}, got {}",
+                key, ts, actual_ts
+            );
+        }
+
+        println!("all invariants verified successfully!");
+
+        // Clean up
+        FaultyDiskIo::<BufferedIo>::disable_shared_fault_state();
     }
 }

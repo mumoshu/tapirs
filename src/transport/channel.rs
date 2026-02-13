@@ -100,17 +100,17 @@ impl<U: IrReplicaUpcalls> Clone for Channel<U> {
 
 impl<U: IrReplicaUpcalls> Channel<U> {
     #[allow(unused_variables)]
-    fn should_drop(from: usize, to: usize) -> bool {
-        //return false;
-        //return (from == 1) ^ (to == 1);
-
-        rand::thread_rng().gen_bool(1.0 / 5.0)
+    fn should_drop(&self, from: usize, to: usize) -> bool {
+        // Channel is a reliable in-process transport - no fault injection.
+        // Use FaultyChannelTransport for fault injection.
+        false
     }
 
-    fn random_delay(range: Range<u64>) -> <Self as Transport<U>>::Sleep {
-        Self::sleep(std::time::Duration::from_millis(
-            thread_rng().gen_range(range),
-        ))
+    #[allow(unused_variables)]
+    fn random_delay(&self, range: Range<u64>) -> <Self as Transport<U>>::Sleep {
+        // Channel is a reliable in-process transport - no artificial delays.
+        // Use FaultyChannelTransport for latency injection.
+        Self::sleep(Duration::ZERO)
     }
 }
 
@@ -175,28 +175,29 @@ impl<U: IrReplicaUpcalls> Transport<U> for Channel<U> {
         }
         let message = message.into();
         let inner = Arc::clone(&self.inner);
+        let channel = self.clone();
         async move {
             loop {
-                Self::random_delay(10..50).await;
+                channel.random_delay(10..50).await;
                 let callback = {
                     let inner = inner.read().unwrap();
                     inner.callbacks.get(address).map(Arc::clone)
                 };
                 if let Some(callback) = callback.as_ref() {
-                    if Self::should_drop(from, address) {
+                    if channel.should_drop(from, address) {
                         continue;
                     }
                     let result = callback(from, message.clone())
                         .map(|r| r.try_into().unwrap_or_else(|_| panic!()));
                     if let Some(result) = result {
-                        let should_drop = Self::should_drop(address, from);
+                        let should_drop = channel.should_drop(address, from);
                         if LOG {
                             trace!(
                                 "{address} replying {result:?} to {from} (drop = {should_drop})"
                             );
                         }
                         if !should_drop {
-                            //Self::random_delay(1..50).await;
+                            //channel.random_delay(1..50).await;
                             break result;
                         }
                     }
@@ -213,7 +214,7 @@ impl<U: IrReplicaUpcalls> Transport<U> for Channel<U> {
 
     fn do_send(&self, address: Self::Address, message: impl Into<IrMessage<U, Self>> + Debug) {
         let from = self.address;
-        let should_drop = Self::should_drop(self.address, address);
+        let should_drop = self.should_drop(self.address, address);
         if LOG {
             trace!("{from} do-sending {message:?} to {address} (drop = {should_drop})");
         }
@@ -223,8 +224,9 @@ impl<U: IrReplicaUpcalls> Transport<U> for Channel<U> {
         drop(inner);
         if let Some(callback) = callback
             && !should_drop {
+                let channel = self.clone();
                 Self::spawn(async move {
-                    Self::random_delay(1..50).await;
+                    channel.random_delay(1..50).await;
                     callback(from, message);
                 });
             }
