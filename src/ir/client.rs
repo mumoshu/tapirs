@@ -1,8 +1,8 @@
 use super::{
-    shared_view::SharedView, Confirm, DoViewChange, FinalizeConsensus, FinalizeInconsistent,
-    Membership, MembershipSize, Message, OpId, ProposeConsensus, ProposeInconsistent,
-    ReplicaUpcalls, ReplyConsensus, ReplyInconsistent, ReplyUnlogged, RequestUnlogged, View,
-    ViewNumber,
+    message::Reconfigure, shared_view::SharedView, Confirm, DoViewChange, FinalizeConsensus,
+    FinalizeInconsistent, Membership, MembershipSize, Message, OpId, ProposeConsensus,
+    ProposeInconsistent, ReplicaUpcalls, ReplyConsensus, ReplyInconsistent, ReplyUnlogged,
+    RequestUnlogged, View, ViewNumber,
 };
 use crate::{
     util::{join, Join},
@@ -510,6 +510,17 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
                     }
                 }
             }
+        }
+    }
+
+    /// Broadcast a `Reconfigure` message to all replicas, triggering a view change
+    /// that atomically propagates the new app_config to the entire group.
+    pub fn reconfigure(&self, config: Vec<u8>) {
+        let sync = self.inner.sync.lock().unwrap();
+        for address in &sync.view.membership {
+            self.inner
+                .transport
+                .do_send(address, Reconfigure { config: config.clone() });
         }
     }
 }

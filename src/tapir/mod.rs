@@ -5,6 +5,8 @@ mod key_value;
 mod message;
 mod replica;
 mod shard_client;
+pub mod shard_manager;
+mod shard_manager_cdc;
 pub mod shard_router;
 mod timestamp;
 
@@ -20,5 +22,6 @@ pub use message::{Change, CO, CR, IO, UO, UR};
 pub use replica::Replica;
 pub use shard::{Number as ShardNumber, Sharded};
 pub use shard_client::ShardClient;
+pub use shard_manager::ShardManager;
 pub use shard_router::{ShardRouter, StaticRouter};
 pub use timestamp::Timestamp;

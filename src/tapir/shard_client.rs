@@ -1,4 +1,4 @@
-use super::{Key, Replica, ShardNumber, Timestamp, Value, CO, CR, IO, UO, UR};
+use super::{Change, Key, Replica, ShardNumber, Timestamp, Value, CO, CR, IO, UO, UR};
 use crate::{
     transport::Transport, IrClient, IrClientId, IrMembership, OccPrepareResult, OccTransaction,
     OccTransactionId,
@@ -148,6 +148,47 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
                 commit: None,
             }
         })
+    }
+
+    /// Request committed changes in a timestamp range for CDC-based resharding.
+    pub fn scan_changes(
+        &self,
+        start_ts: u64,
+        end_ts_inclusive: u64,
+    ) -> impl Future<Output = (Vec<Change<K, V>>, u64)> + Send + use<'_, K, V, T> {
+        let future = self
+            .inner
+            .invoke_unlogged(UO::ScanChanges { start_ts, end_ts_inclusive });
+
+        async move {
+            match future.await {
+                UR::ScanChanges { changes, validated_timestamp } => (changes, validated_timestamp),
+                _ => {
+                    debug_assert!(false);
+                    (Vec::new(), 0)
+                }
+            }
+        }
+    }
+
+    /// Send a commit for a transaction (used by ShardManager to replicate changes).
+    pub fn commit(
+        &self,
+        transaction_id: OccTransactionId,
+        transaction: OccTransaction<K, V, Timestamp>,
+        commit: Timestamp,
+    ) -> impl Future<Output = ()> + Send + use<K, V, T> {
+        self.inner.invoke_inconsistent(IO::Commit {
+            transaction_id,
+            transaction,
+            commit,
+        })
+    }
+
+    /// Broadcast a `Reconfigure` to all replicas, triggering a view change
+    /// that atomically updates the shard's app_config (e.g. key_range).
+    pub fn reconfigure(&self, config: Vec<u8>) {
+        self.inner.reconfigure(config);
     }
 
     pub fn raise_min_prepare_time(&self, time: u64) -> impl Future<Output = u64> + Send {
