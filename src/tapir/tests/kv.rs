@@ -773,16 +773,16 @@ async fn fuzz_tapir_transactions() {
                     // Track which (shard, key) pairs we wrote +1 to.
                     let mut write_targets: Vec<(u32, i64)> = Vec::new();
 
-                    if txn_type < 60 {
-                        // Single-key read-modify-write.
+                    if txn_type < 50 {
+                        // Single-key read-modify-write (50%).
                         let shard = rng.gen_range(0..num_shards);
                         let key: i64 = rng.gen_range(0..num_keys);
                         let sk = Sharded { shard: ShardNumber(shard), key };
                         let old = txn.get(sk.clone()).await.unwrap_or(0);
                         txn.put(sk, Some(old + 1));
                         write_targets.push((shard, key));
-                    } else if txn_type < 85 {
-                        // Cross-shard: read from one shard, write to another.
+                    } else if txn_type < 70 {
+                        // Cross-shard: read from one shard, write to another (20%).
                         let shard_a = rng.gen_range(0..num_shards);
                         let shard_b = rng.gen_range(0..num_shards);
                         let key_a: i64 = rng.gen_range(0..num_keys);
@@ -794,8 +794,24 @@ async fn fuzz_tapir_transactions() {
                         let old_b = txn.get(sk_b.clone()).await.unwrap_or(0);
                         txn.put(sk_b, Some(old_b + 1));
                         write_targets.push((shard_b, key_b));
+                    } else if txn_type < 85 {
+                        // Scan-then-write: range scan + write on shard 0 (15%).
+                        // Exercises OCC phantom prevention (has_writes_in_range).
+                        // Channel transport's shards_for_range always returns shard 0,
+                        // so both scan and write must target shard 0 for phantom detection.
+                        let lo: i64 = rng.gen_range(0..num_keys);
+                        let hi: i64 = rng.gen_range(lo..num_keys);
+                        let scan_start = Sharded { shard: ShardNumber(0), key: lo };
+                        let scan_end = Sharded { shard: ShardNumber(0), key: hi };
+                        let _results = txn.scan(scan_start, scan_end).await;
+                        // Write a key on shard 0 (may or may not overlap the scanned range).
+                        let write_key: i64 = rng.gen_range(0..num_keys);
+                        let sk = Sharded { shard: ShardNumber(0), key: write_key };
+                        let old = txn.get(sk.clone()).await.unwrap_or(0);
+                        txn.put(sk, Some(old + 1));
+                        write_targets.push((0, write_key));
                     } else {
-                        // Read-only transaction.
+                        // Read-only transaction (15%).
                         let n_reads = rng.gen_range(1..=2u8);
                         for _ in 0..n_reads {
                             let shard = rng.gen_range(0..num_shards);
