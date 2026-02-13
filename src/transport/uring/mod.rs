@@ -4,6 +4,7 @@
 
 mod address;
 mod codec;
+mod conn_pool;
 mod disk_io;
 mod error;
 pub(crate) mod reactor;
