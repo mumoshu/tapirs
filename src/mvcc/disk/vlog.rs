@@ -156,6 +156,86 @@ impl<IO: DiskIo> VlogSegment<IO> {
         bitcode::deserialize(payload).map_err(|e| StorageError::Codec(e.to_string()))
     }
 
+    /// Scan and recover entries from a starting offset for crash recovery.
+    ///
+    /// Returns a vector of (VlogEntry, ValuePointer) tuples for all valid
+    /// entries found. Stops at the first CRC mismatch or codec error,
+    /// which likely indicates a partial write during crash.
+    pub async fn recover_entries<K, V, TS>(
+        &self,
+        from_offset: u64,
+    ) -> Result<Vec<(VlogEntry<K, V, TS>, ValuePointer)>, StorageError>
+    where
+        K: Serialize + for<'de> Deserialize<'de>,
+        V: Serialize + for<'de> Deserialize<'de>,
+        TS: Serialize + for<'de> Deserialize<'de>,
+    {
+        let mut recovered = Vec::new();
+        let file_size = std::fs::metadata(&self.path)?.len();
+        let mut current_offset = from_offset;
+
+        while current_offset + 4096 <= file_size {
+            // Read one 4 KiB block (vlog entries are padded to this size)
+            let mut buf = AlignedBuf::new(4096);
+            self.io.pread(&mut buf, current_offset).await?;
+
+            let buf_data = buf.as_full_slice();
+            if buf_data.len() < 8 {
+                // Not enough for minimal entry (bitcode header + CRC)
+                break;
+            }
+
+            // Find the payload length by scanning for valid CRC.
+            // The block format is: [payload | 4-byte CRC | padding to 4 KiB]
+            // We don't know payload length in advance, so try each possible length.
+            let mut found = false;
+            for payload_len in 4..=(4096-4) {
+                if payload_len + 4 > buf_data.len() {
+                    break;
+                }
+
+                let payload = &buf_data[0..payload_len];
+                let stored_crc = u32::from_le_bytes([
+                    buf_data[payload_len],
+                    buf_data[payload_len + 1],
+                    buf_data[payload_len + 2],
+                    buf_data[payload_len + 3],
+                ]);
+                let actual_crc = crc32fast::hash(payload);
+
+                if stored_crc == actual_crc {
+                    // Found matching CRC, try to deserialize
+                    match bitcode::deserialize::<VlogEntry<K, V, TS>>(payload) {
+                        Ok(entry) => {
+                            // Success! Create ValuePointer and add to recovered list
+                            let ptr = ValuePointer {
+                                segment_id: self.id,
+                                offset: current_offset,
+                                length: (payload_len + 4) as u32,
+                            };
+                            recovered.push((entry, ptr));
+                            found = true;
+                            break;
+                        }
+                        Err(_) => {
+                            // CRC matched but deserialize failed, keep trying
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            if !found {
+                // No valid entry found in this block, stop recovery
+                break;
+            }
+
+            current_offset += 4096;
+        }
+
+        Ok(recovered)
+    }
+
     /// Sync the segment to disk.
     pub async fn sync(&self) -> Result<(), StorageError> {
         self.io.fsync().await

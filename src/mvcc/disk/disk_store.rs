@@ -24,6 +24,9 @@ pub struct DiskStore<K, V, TS, IO: DiskIo> {
     base_dir: PathBuf,
     io_flags: OpenFlags,
     next_segment_id: u64,
+    /// Vlog offset up to which data has been flushed to SSTables.
+    /// Entries after this offset are in memtable and need replay on recovery.
+    flushed_vlog_offset: u64,
     _v: std::marker::PhantomData<V>,
 }
 
@@ -77,6 +80,7 @@ where
             base_dir,
             io_flags,
             next_segment_id: 1,
+            flushed_vlog_offset: 0,
             _v: std::marker::PhantomData,
         })
     }
@@ -110,12 +114,26 @@ where
         )?;
 
         // Replay vlog entries after the flushed offset into memtable.
-        let memtable = Memtable::new();
-        // For Phase 1, the manifest records the flushed offset. Entries
-        // after that offset are replayed. The vlog is the WAL.
-        // In practice, replay would scan from manifest.vlog_write_offset
-        // to end-of-file. For now, the memtable starts empty and will be
-        // rebuilt from new writes.
+        let mut memtable = Memtable::new();
+
+        // Recover entries from vlog
+        let recovered_entries = futures::executor::block_on(
+            vlog.recover_entries::<K, V, TS>(manifest.vlog_write_offset)
+        )?;
+
+        for (entry, ptr) in &recovered_entries {
+            memtable.insert(
+                CompositeKey::new(entry.key.clone(), entry.timestamp),
+                LsmEntry {
+                    value_ptr: Some(*ptr),
+                    last_read_ts: None,
+                },
+            );
+        }
+
+        if !recovered_entries.is_empty() {
+            tracing::info!("Recovered {} entries from vlog", recovered_entries.len());
+        }
 
         Ok(Self {
             memtable,
@@ -124,6 +142,7 @@ where
             base_dir,
             io_flags,
             next_segment_id: manifest.next_segment_id,
+            flushed_vlog_offset: manifest.vlog_write_offset,
             _v: std::marker::PhantomData,
         })
     }
@@ -134,7 +153,7 @@ where
             l0_sstables: self.lsm.l0_metas().to_vec(),
             l1_sstables: self.lsm.l1_metas().to_vec(),
             vlog_segment_ids: vec![self.vlog.id],
-            vlog_write_offset: self.vlog.write_offset(),
+            vlog_write_offset: self.flushed_vlog_offset,
             next_sst_id: self.lsm.next_sst_id(),
             next_segment_id: self.next_segment_id,
             checksum: 0,
@@ -352,6 +371,10 @@ where
             futures::executor::block_on(
                 self.lsm.flush_memtable(&mut self.memtable),
             )?;
+
+            // Update flushed offset - all data up to current vlog position
+            // is now safely in SSTables.
+            self.flushed_vlog_offset = self.vlog.write_offset();
 
             if self.lsm.needs_compaction() {
                 futures::executor::block_on(self.lsm.compact::<K, TS>())?;
@@ -594,6 +617,145 @@ mod tests {
             // exists as WAL, but Phase 1 recovery restores LSM state only.
             // This test verifies the manifest round-trip works.
             assert!(store.base_dir().exists());
+        }
+    }
+
+    #[test]
+    fn crash_recovery_replays_unflushed_vlog_entries() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+
+        // Stage 1: Write data but don't flush to SSTables
+        {
+            let mut store =
+                DiskStore::<String, String, u64, BufferedIo>::open(path.clone()).unwrap();
+
+            // Write some entries to vlog (not large enough to trigger flush)
+            store
+                .put_impl("key1".to_string(), Some("value1".to_string()), 10)
+                .unwrap();
+            store
+                .put_impl("key2".to_string(), Some("value2".to_string()), 20)
+                .unwrap();
+            store
+                .put_impl("key3".to_string(), Some("value3".to_string()), 30)
+                .unwrap();
+
+            // Verify they're in memtable
+            let (v, ts) = store.get_impl(&"key1".to_string()).unwrap();
+            assert_eq!(v, Some("value1".to_string()));
+            assert_eq!(ts, 10);
+
+            // Save manifest to mark these as unflushed
+            store.save_manifest().unwrap();
+        }
+
+        // Stage 2: Reopen store - should replay vlog into memtable
+        {
+            let store =
+                DiskStore::<String, String, u64, BufferedIo>::open(path).unwrap();
+
+            // All three entries should be recovered from vlog
+            let (v, ts) = store.get_impl(&"key1".to_string()).unwrap();
+            assert_eq!(v, Some("value1".to_string()));
+            assert_eq!(ts, 10);
+
+            let (v, ts) = store.get_impl(&"key2".to_string()).unwrap();
+            assert_eq!(v, Some("value2".to_string()));
+            assert_eq!(ts, 20);
+
+            let (v, ts) = store.get_impl(&"key3".to_string()).unwrap();
+            assert_eq!(v, Some("value3".to_string()));
+            assert_eq!(ts, 30);
+        }
+    }
+
+    #[test]
+    fn crash_recovery_handles_partial_writes() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+
+        // Stage 1: Write entries to vlog
+        {
+            let mut store =
+                DiskStore::<String, String, u64, BufferedIo>::open(path.clone()).unwrap();
+
+            store
+                .put_impl("key1".to_string(), Some("value1".to_string()), 10)
+                .unwrap();
+            store
+                .put_impl("key2".to_string(), Some("value2".to_string()), 20)
+                .unwrap();
+            store.save_manifest().unwrap();
+        }
+
+        // Stage 2: Corrupt the vlog file (simulate partial write)
+        {
+            let vlog_path = path.join("vlog-000000.log");
+            let metadata = std::fs::metadata(&vlog_path).unwrap();
+            let file_size = metadata.len();
+
+            // Truncate file to simulate incomplete write
+            if file_size >= 4096 {
+                let file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&vlog_path)
+                    .unwrap();
+                file.set_len(file_size - 2048).unwrap(); // Truncate last entry
+            }
+        }
+
+        // Stage 3: Recovery should succeed but recover only the first entry
+        {
+            let store =
+                DiskStore::<String, String, u64, BufferedIo>::open(path).unwrap();
+
+            // First entry should be recovered
+            let (v, ts) = store.get_impl(&"key1".to_string()).unwrap();
+            assert_eq!(v, Some("value1".to_string()));
+            assert_eq!(ts, 10);
+
+            // Second entry should not be recovered (truncated)
+            let (v, ts) = store.get_impl(&"key2".to_string()).unwrap();
+            assert_eq!(v, None);
+            assert_eq!(ts, 0);
+        }
+    }
+
+    #[test]
+    fn crash_recovery_with_mixed_flushed_and_unflushed_data() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+
+        // Stage 1: Write enough data to trigger flush
+        {
+            let mut store =
+                DiskStore::<String, String, u64, BufferedIo>::open(path.clone()).unwrap();
+
+            // Write large values to trigger flush
+            for i in 0u64..2000 {
+                let key = format!("key-{i:06}");
+                let val = format!("value-{i:06}-{}", "x".repeat(20));
+                store.put_impl(key, Some(val), i + 1).unwrap();
+            }
+            // At this point, some entries are in SSTables, some in memtable
+            store.save_manifest().unwrap();
+        }
+
+        // Stage 2: Reopen - should get flushed data from LSM + unflushed from vlog
+        {
+            let store =
+                DiskStore::<String, String, u64, BufferedIo>::open(path).unwrap();
+
+            // Early key should be from SSTable
+            let (v, ts) = store.get_impl(&"key-000000".to_string()).unwrap();
+            assert!(v.is_some());
+            assert_eq!(ts, 1);
+
+            // Later key should be from recovered memtable
+            let (v, ts) = store.get_impl(&"key-001999".to_string()).unwrap();
+            assert!(v.is_some());
+            assert_eq!(ts, 2000);
         }
     }
 }
