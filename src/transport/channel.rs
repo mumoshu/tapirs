@@ -8,7 +8,6 @@ use std::{
     collections::HashMap,
     fmt::Debug,
     future::Future,
-    ops::Range,
     sync::{Arc, Mutex, RwLock},
     time::Duration,
 };
@@ -103,21 +102,6 @@ impl<U: IrReplicaUpcalls> Clone for Channel<U> {
     }
 }
 
-impl<U: IrReplicaUpcalls> Channel<U> {
-    #[allow(unused_variables)]
-    fn should_drop(&self, from: usize, to: usize) -> bool {
-        // Channel is a reliable in-process transport - no fault injection.
-        // Use FaultyChannelTransport for fault injection.
-        false
-    }
-
-    #[allow(unused_variables)]
-    fn random_delay(&self, range: Range<u64>) -> <Self as Transport<U>>::Sleep {
-        // Channel is a reliable in-process transport - no artificial delays.
-        // Use FaultyChannelTransport for latency injection.
-        Self::sleep(Duration::ZERO)
-    }
-}
 
 impl<U: IrReplicaUpcalls> Transport<U> for Channel<U> {
     type Address = usize;
@@ -177,31 +161,20 @@ impl<U: IrReplicaUpcalls> Transport<U> for Channel<U> {
         }
         let message = message.into();
         let inner = Arc::clone(&self.inner);
-        let channel = self.clone();
         async move {
             loop {
-                channel.random_delay(10..50).await;
                 let callback = {
                     let inner = inner.read().unwrap();
                     inner.callbacks.get(address).map(Arc::clone)
                 };
                 if let Some(callback) = callback.as_ref() {
-                    if channel.should_drop(from, address) {
-                        continue;
-                    }
                     let result = callback(from, message.clone())
                         .map(|r| r.try_into().unwrap_or_else(|_| panic!()));
                     if let Some(result) = result {
-                        let should_drop = channel.should_drop(address, from);
                         if LOG {
-                            trace!(
-                                "{address} replying {result:?} to {from} (drop = {should_drop})"
-                            );
+                            trace!("{address} replying {result:?} to {from}");
                         }
-                        if !should_drop {
-                            //channel.random_delay(1..50).await;
-                            break result;
-                        }
+                        break result;
                     } else {
                         // Replica didn't respond (e.g., IR view change in
                         // progress). Back off with a non-zero delay so
@@ -221,22 +194,18 @@ impl<U: IrReplicaUpcalls> Transport<U> for Channel<U> {
 
     fn do_send(&self, address: Self::Address, message: impl Into<IrMessage<U, Self>> + Debug) {
         let from = self.address;
-        let should_drop = self.should_drop(self.address, address);
         if LOG {
-            trace!("{from} do-sending {message:?} to {address} (drop = {should_drop})");
+            trace!("{from} do-sending {message:?} to {address}");
         }
         let message = message.into();
         let inner = self.inner.read().unwrap();
         let callback = inner.callbacks.get(address).map(Arc::clone);
         drop(inner);
-        if let Some(callback) = callback
-            && !should_drop {
-                let channel = self.clone();
-                Self::spawn(async move {
-                    channel.random_delay(1..50).await;
-                    callback(from, message);
-                });
-            }
+        if let Some(callback) = callback {
+            Self::spawn(async move {
+                callback(from, message);
+            });
+        }
     }
 }
 
