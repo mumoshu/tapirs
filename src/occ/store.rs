@@ -429,3 +429,376 @@ impl<K: Key, V: Value, TS: Timestamp> Store<K, V, TS> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::occ::ScanEntry;
+    use crate::tapir::{ShardNumber, Sharded, Timestamp as TapirTimestamp};
+    use crate::IrClientId;
+    use std::sync::Arc;
+
+    type TS = TapirTimestamp;
+    type TestStore = Store<String, String, TS>;
+
+    fn ts(time: u64, client_id: u64) -> TS {
+        TapirTimestamp {
+            time,
+            client_id: IrClientId(client_id),
+        }
+    }
+
+    fn txn_id(client: u64, num: u64) -> TransactionId {
+        TransactionId {
+            client_id: IrClientId(client),
+            number: num,
+        }
+    }
+
+    fn sharded(key: &str) -> Sharded<String> {
+        Sharded {
+            shard: ShardNumber(0),
+            key: key.to_string(),
+        }
+    }
+
+    fn new_store(linearizable: bool) -> TestStore {
+        Store::new(ShardNumber(0), linearizable)
+    }
+
+    fn make_txn(
+        reads: Vec<(&str, TS)>,
+        writes: Vec<(&str, Option<&str>)>,
+        scans: Vec<ScanEntry<String, TS>>,
+    ) -> SharedTransaction<String, String, TS> {
+        let mut txn = Transaction::<String, String, TS>::default();
+        for (key, timestamp) in reads {
+            txn.add_read(sharded(key), timestamp);
+        }
+        for (key, value) in writes {
+            txn.add_write(sharded(key), value.map(|v| v.to_string()));
+        }
+        txn.scan_set = scans;
+        Arc::new(txn)
+    }
+
+    // ── prepare() conflict detection ──
+
+    #[test]
+    fn prepare_ok_no_conflicts() {
+        let mut store = new_store(true);
+        // T1 writes "x", T2 writes "y" — no overlap.
+        let t1 = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
+        let t2 = make_txn(vec![], vec![("y", Some("v2"))], vec![]);
+
+        assert_eq!(store.prepare(txn_id(1, 1), t1, ts(10, 1), false), PrepareResult::Ok);
+        assert_eq!(store.prepare(txn_id(2, 1), t2, ts(11, 2), false), PrepareResult::Ok);
+    }
+
+    #[test]
+    fn prepare_ok_already_prepared_same_ts() {
+        let mut store = new_store(true);
+        let t1 = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
+
+        assert_eq!(store.prepare(txn_id(1, 1), t1.clone(), ts(10, 1), false), PrepareResult::Ok);
+        // Re-prepare at exact same timestamp → Ok (idempotent).
+        assert_eq!(store.prepare(txn_id(1, 1), t1, ts(10, 1), false), PrepareResult::Ok);
+    }
+
+    #[test]
+    fn prepare_read_write_conflict_committed() {
+        let mut store = new_store(false);
+
+        // Commit a write of "x" at ts(5,1).
+        let t1 = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
+        let id1 = txn_id(1, 1);
+        store.commit(id1, &t1, ts(5, 1));
+
+        // Now commit a newer write of "x" at ts(10,1), creating a version range end.
+        let t2 = make_txn(vec![], vec![("x", Some("v2"))], vec![]);
+        let id2 = txn_id(2, 1);
+        store.commit(id2, &t2, ts(10, 1));
+
+        // T3 read "x" at ts(5,1) (the old version). The version range for ts(5,1) ends
+        // at ts(10,1). Since commit ts(15,1) > end ts(10,1), this is a Fail.
+        let t3 = make_txn(vec![("x", ts(5, 1))], vec![], vec![]);
+        assert_eq!(
+            store.prepare(txn_id(3, 1), t3, ts(15, 1), false),
+            PrepareResult::Fail
+        );
+    }
+
+    #[test]
+    fn prepare_read_write_conflict_prepared() {
+        let mut store = new_store(false);
+
+        // Commit initial write of "x" at ts(5,1) so reads can reference it.
+        let t_init = make_txn(vec![], vec![("x", Some("v0"))], vec![]);
+        store.commit(txn_id(0, 1), &t_init, ts(5, 1));
+
+        // T1 prepares a write to "x" at ts(8,1).
+        let t1 = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
+        assert_eq!(store.prepare(txn_id(1, 1), t1, ts(8, 1), false), PrepareResult::Ok);
+
+        // T2 read "x" at ts(5,1), prepares at ts(12,2).
+        // There's a prepared write at ts(8,1) in range (read=5, commit=12) → Abstain.
+        let t2 = make_txn(vec![("x", ts(5, 1))], vec![], vec![]);
+        assert_eq!(
+            store.prepare(txn_id(2, 1), t2, ts(12, 2), false),
+            PrepareResult::Abstain
+        );
+    }
+
+    #[test]
+    fn prepare_write_write_conflict_linearizable() {
+        let mut store = new_store(true);
+
+        // Commit a write of "x" at ts(10,1).
+        let t1 = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
+        store.commit(txn_id(1, 1), &t1, ts(10, 1));
+
+        // T2 tries to write "x" at ts(5,2). In linearizable mode,
+        // last committed write ts(10) > commit ts(5) → Retry.
+        let t2 = make_txn(vec![], vec![("x", Some("v2"))], vec![]);
+        assert_eq!(
+            store.prepare(txn_id(2, 1), t2, ts(5, 2), false),
+            PrepareResult::Retry { proposed: 10 }
+        );
+    }
+
+    #[test]
+    fn prepare_write_read_conflict() {
+        let mut store = new_store(true);
+
+        // Commit initial value so reads and commit_get track properly.
+        let t_init = make_txn(vec![], vec![("x", Some("v0"))], vec![]);
+        store.commit(txn_id(0, 1), &t_init, ts(3, 1));
+
+        // T1 reads "x" at ts(3,1) and commits at ts(10,1).
+        // This calls commit_get("x", read=ts(3,1), commit=ts(10,1)) which records
+        // a last-read timestamp of ts(10,1) on the ts(3,1) version.
+        let t1 = make_txn(vec![("x", ts(3, 1))], vec![], vec![]);
+        store.commit(txn_id(1, 1), &t1, ts(10, 1));
+
+        // T2 writes "x" at ts(5,2). get_last_read("x") returns ts(10,1).
+        // last_read ts(10,1) > commit ts(5,2) → Retry.
+        let t2 = make_txn(vec![], vec![("x", Some("v2"))], vec![]);
+        assert_eq!(
+            store.prepare(txn_id(2, 1), t2, ts(5, 2), false),
+            PrepareResult::Retry { proposed: 10 }
+        );
+    }
+
+    #[test]
+    fn prepare_write_prepared_read_conflict() {
+        let mut store = new_store(false);
+
+        // Commit initial value.
+        let t_init = make_txn(vec![], vec![("x", Some("v0"))], vec![]);
+        store.commit(txn_id(0, 1), &t_init, ts(3, 1));
+
+        // T1 prepares a read of "x" at ts(3,1) with commit ts(10,1).
+        let t1 = make_txn(vec![("x", ts(3, 1))], vec![], vec![]);
+        assert_eq!(store.prepare(txn_id(1, 1), t1, ts(10, 1), false), PrepareResult::Ok);
+
+        // T2 writes "x" at ts(5,2). prepared_reads has ts(10,1) for "x".
+        // prepared read ts(10,1) > commit ts(5,2) → Abstain.
+        let t2 = make_txn(vec![], vec![("x", Some("v2"))], vec![]);
+        assert_eq!(
+            store.prepare(txn_id(2, 1), t2, ts(5, 2), false),
+            PrepareResult::Abstain
+        );
+    }
+
+    #[test]
+    fn prepare_write_prepared_write_conflict_linearizable() {
+        let mut store = new_store(true);
+
+        // T1 prepares a write of "x" at ts(10,1).
+        let t1 = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
+        assert_eq!(store.prepare(txn_id(1, 1), t1, ts(10, 1), false), PrepareResult::Ok);
+
+        // T2 writes "x" at ts(5,2). In linearizable mode, prepared_writes has ts(10,1)
+        // for "x" which is > commit ts(5,2) → Retry.
+        let t2 = make_txn(vec![], vec![("x", Some("v2"))], vec![]);
+        assert_eq!(
+            store.prepare(txn_id(2, 1), t2, ts(5, 2), false),
+            PrepareResult::Retry { proposed: 10 }
+        );
+    }
+
+    // ── Scan-set phantom detection ──
+
+    #[test]
+    fn prepare_scan_committed_phantom() {
+        let mut store = new_store(false);
+
+        // Commit a write of "b" at ts(8,1) — this is the phantom.
+        let t1 = make_txn(vec![], vec![("b", Some("v1"))], vec![]);
+        store.commit(txn_id(1, 1), &t1, ts(8, 1));
+
+        // T2 scanned range ["a","c"] at ts(5,1) and saw nothing. Now prepares at ts(12,2).
+        // The committed write "b"@ts(8,1) is in range (after_ts=5, before_ts=12) → Fail.
+        let t2 = make_txn(
+            vec![],
+            vec![],
+            vec![ScanEntry {
+                shard: ShardNumber(0),
+                start_key: "a".to_string(),
+                end_key: "c".to_string(),
+                timestamp: ts(5, 1),
+            }],
+        );
+        assert_eq!(
+            store.prepare(txn_id(2, 1), t2, ts(12, 2), false),
+            PrepareResult::Fail
+        );
+    }
+
+    #[test]
+    fn prepare_scan_prepared_phantom() {
+        let mut store = new_store(false);
+
+        // T1 prepares a write of "b" at ts(8,1).
+        let t1 = make_txn(vec![], vec![("b", Some("v1"))], vec![]);
+        assert_eq!(store.prepare(txn_id(1, 1), t1, ts(8, 1), false), PrepareResult::Ok);
+
+        // T2 scanned range ["a","c"] at ts(5,1), prepares at ts(12,2).
+        // Prepared write "b"@ts(8,1) in range (5,12) → Abstain.
+        let t2 = make_txn(
+            vec![],
+            vec![],
+            vec![ScanEntry {
+                shard: ShardNumber(0),
+                start_key: "a".to_string(),
+                end_key: "c".to_string(),
+                timestamp: ts(5, 1),
+            }],
+        );
+        assert_eq!(
+            store.prepare(txn_id(2, 1), t2, ts(12, 2), false),
+            PrepareResult::Abstain
+        );
+    }
+
+    #[test]
+    fn prepare_scan_no_phantom() {
+        let mut store = new_store(false);
+
+        // Commit a write of "z" (outside scan range) at ts(8,1).
+        let t1 = make_txn(vec![], vec![("z", Some("v1"))], vec![]);
+        store.commit(txn_id(1, 1), &t1, ts(8, 1));
+
+        // T2 scanned range ["a","c"] at ts(5,1), prepares at ts(12,2).
+        // "z" is outside the scan range → Ok.
+        let t2 = make_txn(
+            vec![],
+            vec![],
+            vec![ScanEntry {
+                shard: ShardNumber(0),
+                start_key: "a".to_string(),
+                end_key: "c".to_string(),
+                timestamp: ts(5, 1),
+            }],
+        );
+        assert_eq!(
+            store.prepare(txn_id(2, 1), t2, ts(12, 2), false),
+            PrepareResult::Ok
+        );
+    }
+
+    // ── commit() and abort() lifecycle ──
+
+    #[test]
+    fn commit_applies_writes_and_reads() {
+        let mut store = new_store(true);
+
+        let txn = make_txn(vec![], vec![("x", Some("hello"))], vec![]);
+        let id = txn_id(1, 1);
+        store.commit(id, &txn, ts(5, 1));
+
+        let (val, version) = store.get("x");
+        assert_eq!(val, Some(&"hello".to_string()));
+        assert_eq!(version, ts(5, 1));
+    }
+
+    #[test]
+    fn abort_removes_prepared() {
+        let mut store = new_store(true);
+
+        let txn = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
+        let id = txn_id(1, 1);
+        assert_eq!(store.prepare(id, txn, ts(10, 1), false), PrepareResult::Ok);
+        assert!(store.prepared.contains_key(&id));
+
+        // Abort by removing prepared.
+        assert!(store.remove_prepared(id));
+        assert!(!store.prepared.contains_key(&id));
+        // Prepared caches should also be cleaned up.
+        assert!(store.prepared_writes.is_empty());
+    }
+
+    #[test]
+    fn commit_unprepared_transaction() {
+        let mut store = new_store(true);
+
+        // Commit without prior prepare — should work (per code comment).
+        let txn = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
+        let id = txn_id(1, 1);
+        store.commit(id, &txn, ts(5, 1));
+
+        let (val, _) = store.get("x");
+        assert_eq!(val, Some(&"v1".to_string()));
+    }
+
+    // ── Linearizable vs eventual mode ──
+
+    #[test]
+    fn eventual_allows_old_write() {
+        let mut store = new_store(false);
+
+        // Commit a write of "x" at ts(10,1).
+        let t1 = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
+        store.commit(txn_id(1, 1), &t1, ts(10, 1));
+
+        // T2 writes "x" at ts(5,2). In eventual mode, older writes are allowed
+        // as long as no committed read conflicts.
+        let t2 = make_txn(vec![], vec![("x", Some("v2"))], vec![]);
+        assert_eq!(
+            store.prepare(txn_id(2, 1), t2, ts(5, 2), false),
+            PrepareResult::Ok
+        );
+    }
+
+    #[test]
+    fn linearizable_rejects_old_write() {
+        let mut store = new_store(true);
+
+        // Commit a write of "x" at ts(10,1).
+        let t1 = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
+        store.commit(txn_id(1, 1), &t1, ts(10, 1));
+
+        // T2 writes "x" at ts(5,2). In linearizable mode → Retry.
+        let t2 = make_txn(vec![], vec![("x", Some("v2"))], vec![]);
+        assert_eq!(
+            store.prepare(txn_id(2, 1), t2, ts(5, 2), false),
+            PrepareResult::Retry { proposed: 10 }
+        );
+    }
+
+    // ── Dry-run prepare ──
+
+    #[test]
+    fn prepare_dry_run_no_side_effects() {
+        let mut store = new_store(true);
+
+        let txn = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
+        let id = txn_id(1, 1);
+
+        // Dry run returns Retry (even if occ_check passes) and does not add to prepared.
+        let result = store.prepare(id, txn, ts(10, 1), true);
+        assert_eq!(result, PrepareResult::Retry { proposed: 10 });
+        assert!(!store.prepared.contains_key(&id));
+        assert!(store.prepared_writes.is_empty());
+    }
+}

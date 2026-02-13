@@ -1,6 +1,6 @@
 mod client;
 mod membership;
-mod message;
+pub(crate) mod message;
 mod op;
 mod record;
 mod replica;

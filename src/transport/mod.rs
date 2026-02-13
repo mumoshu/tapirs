@@ -4,6 +4,7 @@ use crate::{
 };
 pub use channel::{Channel, Registry as ChannelRegistry};
 pub use message::Message;
+pub use faulty_channel::{FaultyChannelTransport, NetworkFaultConfig, LatencyConfig};
 use serde::{de::DeserializeOwned, Serialize};
 use std::{
     fmt::{Debug, Display},
@@ -14,6 +15,7 @@ use std::{
 
 mod channel;
 mod message;
+mod faulty_channel;
 
 #[cfg(all(target_os = "linux", feature = "io-uring"))]
 pub mod uring;
