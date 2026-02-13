@@ -127,6 +127,7 @@ async fn ship_changes<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, 
         let txn = OccTransaction {
             read_set: HashMap::new(),
             write_set,
+            scan_set: Vec::new(),
         };
         client.commit(id, txn, change.timestamp).await;
     }
