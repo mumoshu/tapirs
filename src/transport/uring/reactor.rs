@@ -184,6 +184,14 @@ pub(crate) fn init_reactor(ring_size: u32) {
     });
 }
 
+/// Try to access the thread-local reactor. Returns None if not initialized.
+pub(crate) fn try_with_reactor<R>(f: impl FnOnce(&mut Reactor) -> R) -> Option<R> {
+    REACTOR.with(|cell| {
+        let mut borrow = cell.borrow_mut();
+        borrow.as_mut().map(f)
+    })
+}
+
 /// Current time in nanoseconds since epoch.
 pub(crate) fn now_nanos() -> u64 {
     SystemTime::now()

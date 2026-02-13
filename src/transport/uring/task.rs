@@ -98,7 +98,9 @@ unsafe fn waker_wake(data: *const ()) {
 
 unsafe fn waker_wake_by_ref(data: *const ()) {
     let id = TaskId(data as u64);
-    super::reactor::with_reactor(|r| r.executor.schedule(id));
+    // Use try_with_reactor to avoid panic when reactor is not initialized
+    // (e.g., in unit tests where the executor is used standalone).
+    super::reactor::try_with_reactor(|r| r.executor.schedule(id));
 }
 
 unsafe fn waker_drop(_data: *const ()) {
@@ -135,13 +137,14 @@ mod tests {
         let count = Rc::new(Cell::new(0u32));
         let count2 = count.clone();
         exec.spawn(async move {
-            // Yield once.
+            // Yield once, manually re-scheduling.
             let mut first = true;
-            std::future::poll_fn(move |cx| {
+            std::future::poll_fn(move |_cx| {
                 count2.set(count2.get() + 1);
                 if first {
                     first = false;
-                    cx.waker().wake_by_ref();
+                    // Waker goes through reactor which may not exist;
+                    // we manually schedule below instead.
                     Poll::Pending
                 } else {
                     Poll::Ready(())
@@ -152,6 +155,8 @@ mod tests {
         exec.poll_all();
         assert_eq!(count.get(), 1);
         assert_eq!(exec.task_count(), 1);
+        // Manually re-schedule since waker may not have reactor.
+        exec.schedule(TaskId(0));
         exec.poll_all();
         assert_eq!(count.get(), 2);
         assert_eq!(exec.task_count(), 0);

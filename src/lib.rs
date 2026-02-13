@@ -27,3 +27,9 @@ pub use transport::{
     Channel as ChannelTransport, ChannelRegistry, Message as TransportMessage, TapirTransport,
     Transport,
 };
+
+#[cfg(all(target_os = "linux", feature = "io-uring"))]
+pub use transport::uring::{
+    CoreConfig, CoreLauncher, ShardAssignment, UringAddress, UringDirectIo, UringError,
+    UringSleep, UringTransport,
+};
