@@ -19,7 +19,10 @@ use tracing::{trace, warn};
 /// let one or more of many possible backup coordinators take them at face-value.
 #[derive(Serialize, Deserialize)]
 pub struct Replica<K, V> {
-    #[serde(bound(deserialize = "K: Deserialize<'de> + Hash + Eq, V: Deserialize<'de>"))]
+    #[serde(bound(
+        serialize = "K: Serialize + Ord + Hash, V: Serialize",
+        deserialize = "K: Deserialize<'de> + Ord + Hash + Eq, V: Deserialize<'de>"
+    ))]
     inner: OccStore<K, V, Timestamp>,
     /// Stores the commit timestamp, read/write sets, and commit status (true if committed) for
     /// all known committed and aborted transactions.

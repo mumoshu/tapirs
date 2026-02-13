@@ -19,8 +19,8 @@ pub struct Store<K, V, TS> {
     shard: ShardNumber,
     linearizable: bool,
     #[serde(bound(
-        serialize = "K: Serialize, V: Serialize, TS: Serialize",
-        deserialize = "K: Deserialize<'de> + Hash + Eq, V: Deserialize<'de>, TS: Deserialize<'de> + Ord"
+        serialize = "K: Serialize + Ord, V: Serialize, TS: Serialize",
+        deserialize = "K: Deserialize<'de> + Ord, V: Deserialize<'de>, TS: Deserialize<'de> + Ord"
     ))]
     inner: MvccStore<K, V, TS>,
     /// Transactions which may commit in the future (and whether the prepare was
@@ -28,10 +28,22 @@ pub struct Store<K, V, TS> {
     #[serde(with = "vectorize")]
     pub prepared: HashMap<TransactionId, (TS, Transaction<K, V, TS>, bool)>,
     // Cache.
-    #[serde(with = "vectorize", bound(deserialize = "TS: Deserialize<'de> + Ord"))]
+    #[serde(
+        with = "vectorize",
+        bound(
+            serialize = "K: Serialize + Hash + Eq, TS: Serialize",
+            deserialize = "K: Deserialize<'de> + Hash + Eq, TS: Deserialize<'de> + Ord"
+        )
+    )]
     prepared_reads: HashMap<K, TimestampSet<TS>>,
     // Cache.
-    #[serde(with = "vectorize")]
+    #[serde(
+        with = "vectorize",
+        bound(
+            serialize = "K: Serialize + Hash + Eq, TS: Serialize",
+            deserialize = "K: Deserialize<'de> + Hash + Eq, TS: Deserialize<'de> + Ord"
+        )
+    )]
     prepared_writes: HashMap<K, TimestampSet<TS>>,
 }
 
@@ -133,14 +145,14 @@ impl<K: Key, V: Value, TS> Store<K, V, TS> {
 }
 
 impl<K: Key, V: Value, TS: Timestamp> Store<K, V, TS> {
-    pub fn get<Q: ?Sized + Eq + Hash>(&self, key: &Q) -> (Option<&V>, TS)
+    pub fn get<Q: ?Sized + Ord>(&self, key: &Q) -> (Option<&V>, TS)
     where
         K: Borrow<Q>,
     {
         self.inner.get(key)
     }
 
-    pub fn get_at<Q: ?Sized + Eq + Hash>(&self, key: &Q, timestamp: TS) -> (Option<&V>, TS)
+    pub fn get_at<Q: ?Sized + Ord>(&self, key: &Q, timestamp: TS) -> (Option<&V>, TS)
     where
         K: Borrow<Q>,
     {

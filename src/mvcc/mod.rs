@@ -1,3 +1,5 @@
+pub mod backend;
 mod store;
 
-pub use store::Store;
+pub use backend::MvccBackend;
+pub use store::{MemoryStore, Store};

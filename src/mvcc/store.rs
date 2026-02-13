@@ -1,27 +1,28 @@
-use crate::util::{vectorize, vectorize_btree};
+use super::backend::MvccBackend;
+use crate::util::vectorize_btree;
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Borrow,
-    collections::{BTreeMap, HashMap},
-    hash::Hash,
+    collections::BTreeMap,
+    convert::Infallible,
     ops::{Bound, Deref, DerefMut},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Store<K, V, TS> {
+pub struct MemoryStore<K, V, TS> {
     /// For each timestamped version of a key, track the
     /// value (or tombstone) and the optional read timestamp.
     ///
     /// For all keys, there is an implicit version (TS::default() => (None, None)),
     /// in other words the key was nonexistent at the beginning of time.
     #[serde(
-        with = "vectorize",
+        with = "vectorize_btree",
         bound(
-            serialize = "K: Serialize, V: Serialize, TS: Serialize",
-            deserialize = "K: Deserialize<'de> + Hash + Eq, V: Deserialize<'de>, TS: Deserialize<'de> + Ord"
+            serialize = "K: Serialize + Ord, V: Serialize, TS: Serialize",
+            deserialize = "K: Deserialize<'de> + Ord, V: Deserialize<'de>, TS: Deserialize<'de> + Ord"
         )
     )]
-    inner: HashMap<K, Versions<V, TS>>,
+    inner: BTreeMap<K, Versions<V, TS>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,7 +59,7 @@ impl<V, TS> DerefMut for Versions<V, TS> {
     }
 }
 
-impl<K, V, TS> Default for Store<K, V, TS> {
+impl<K, V, TS> Default for MemoryStore<K, V, TS> {
     fn default() -> Self {
         Self {
             inner: Default::default(),
@@ -66,9 +67,9 @@ impl<K, V, TS> Default for Store<K, V, TS> {
     }
 }
 
-impl<K: Hash + Eq, V, TS: Ord + Eq + Copy + Default> Store<K, V, TS> {
+impl<K: Ord, V, TS: Ord + Eq + Copy + Default> MemoryStore<K, V, TS> {
     /// Get the latest version.
-    pub fn get<Q: ?Sized + Hash + Eq>(&self, key: &Q) -> (Option<&V>, TS)
+    pub fn get<Q: ?Sized + Ord>(&self, key: &Q) -> (Option<&V>, TS)
     where
         K: Borrow<Q>,
     {
@@ -80,7 +81,7 @@ impl<K: Hash + Eq, V, TS: Ord + Eq + Copy + Default> Store<K, V, TS> {
     }
 
     /// Get the version valid at the timestamp.
-    pub fn get_at<Q: ?Sized + Hash + Eq>(&self, key: &Q, timestamp: TS) -> (Option<&V>, TS)
+    pub fn get_at<Q: ?Sized + Ord>(&self, key: &Q, timestamp: TS) -> (Option<&V>, TS)
     where
         K: Borrow<Q>,
     {
@@ -92,7 +93,7 @@ impl<K: Hash + Eq, V, TS: Ord + Eq + Copy + Default> Store<K, V, TS> {
     }
 
     /// Get range from a timestamp to the next timestamp (if any).
-    pub fn get_range<Q: ?Sized + Hash + Eq>(&self, key: &Q, timestamp: TS) -> (TS, Option<TS>)
+    pub fn get_range<Q: ?Sized + Ord>(&self, key: &Q, timestamp: TS) -> (TS, Option<TS>)
     where
         K: Borrow<Q>,
     {
@@ -140,7 +141,7 @@ impl<K: Hash + Eq, V, TS: Ord + Eq + Copy + Default> Store<K, V, TS> {
     }
 
     /// Get the last read timestamp of the last version.
-    pub fn get_last_read<Q: ?Sized + Eq + Hash>(&self, key: &Q) -> Option<TS>
+    pub fn get_last_read<Q: ?Sized + Ord>(&self, key: &Q) -> Option<TS>
     where
         K: Borrow<Q>,
     {
@@ -151,7 +152,7 @@ impl<K: Hash + Eq, V, TS: Ord + Eq + Copy + Default> Store<K, V, TS> {
     }
 
     /// Get the last read timestamp of a specific version.
-    pub fn get_last_read_at<Q: ?Sized + Eq + Hash>(&self, key: &Q, timestamp: TS) -> Option<TS>
+    pub fn get_last_read_at<Q: ?Sized + Ord>(&self, key: &Q, timestamp: TS) -> Option<TS>
     where
         K: Borrow<Q>,
     {
@@ -162,13 +163,58 @@ impl<K: Hash + Eq, V, TS: Ord + Eq + Copy + Default> Store<K, V, TS> {
     }
 }
 
+impl<K: Ord, V: Clone, TS: Ord + Eq + Copy + Default + Send + std::fmt::Debug>
+    MvccBackend<K, V, TS> for MemoryStore<K, V, TS>
+where
+    K: Send,
+    V: Send,
+    TS: Send,
+{
+    type Error = Infallible;
+
+    fn get(&self, key: &K) -> Result<(Option<V>, TS), Infallible> {
+        let (v, ts) = MemoryStore::get(self, key);
+        Ok((v.cloned(), ts))
+    }
+
+    fn get_at(&self, key: &K, timestamp: TS) -> Result<(Option<V>, TS), Infallible> {
+        let (v, ts) = MemoryStore::get_at(self, key, timestamp);
+        Ok((v.cloned(), ts))
+    }
+
+    fn get_range(&self, key: &K, timestamp: TS) -> Result<(TS, Option<TS>), Infallible> {
+        Ok(MemoryStore::get_range(self, key, timestamp))
+    }
+
+    fn put(&mut self, key: K, value: Option<V>, timestamp: TS) -> Result<(), Infallible> {
+        MemoryStore::put(self, key, value, timestamp);
+        Ok(())
+    }
+
+    fn commit_get(&mut self, key: K, read: TS, commit: TS) -> Result<(), Infallible> {
+        MemoryStore::commit_get(self, key, read, commit);
+        Ok(())
+    }
+
+    fn get_last_read(&self, key: &K) -> Result<Option<TS>, Infallible> {
+        Ok(MemoryStore::get_last_read(self, key))
+    }
+
+    fn get_last_read_at(&self, key: &K, timestamp: TS) -> Result<Option<TS>, Infallible> {
+        Ok(MemoryStore::get_last_read_at(self, key, timestamp))
+    }
+}
+
+/// Type alias for backward compatibility.
+pub type Store<K, V, TS> = MemoryStore<K, V, TS>;
+
 #[cfg(test)]
 mod tests {
-    use super::Store;
+    use super::MemoryStore;
 
     #[test]
     fn simple() {
-        let mut store = Store::default();
+        let mut store = MemoryStore::default();
         assert_eq!(store.get("test1"), (None, 0));
 
         store.put("test1".to_owned(), Some("abc".to_owned()), 10);

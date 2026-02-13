@@ -13,7 +13,7 @@ pub use ir::{
     RecordConsensusEntry as IrRecordConsensusEntry, Replica as IrReplica,
     ReplicaUpcalls as IrReplicaUpcalls,
 };
-pub use mvcc::Store as MvccStore;
+pub use mvcc::{MemoryStore as MvccMemoryStore, MvccBackend, Store as MvccStore};
 pub use occ::{
     PrepareResult as OccPrepareResult, Store as OccStore, Timestamp as OccTimestamp,
     Transaction as OccTransaction, TransactionId as OccTransactionId,
