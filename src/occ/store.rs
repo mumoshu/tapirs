@@ -801,4 +801,210 @@ mod tests {
         assert!(!store.prepared.contains_key(&id));
         assert!(store.prepared_writes.is_empty());
     }
+
+    // ── A.3.1 Linearizable read-write conflict ──
+
+    #[test]
+    fn prepare_read_write_conflict_committed_linearizable() {
+        let mut store = new_store(true);
+
+        // Commit "x" at ts(5,1), then overwrite at ts(10,1).
+        let t1 = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
+        store.commit(txn_id(1, 1), &t1, ts(5, 1));
+        let t2 = make_txn(vec![], vec![("x", Some("v2"))], vec![]);
+        store.commit(txn_id(2, 1), &t2, ts(10, 1));
+
+        // T3 read "x" at ts(5,1), prepares at ts(8,1).
+        // Serializable: commit(8) < end(10) → Ok. Linearizable: any end → Fail.
+        let t3 = make_txn(vec![("x", ts(5, 1))], vec![], vec![]);
+        assert_eq!(
+            store.prepare(txn_id(3, 1), t3, ts(8, 1), false),
+            PrepareResult::Fail
+        );
+    }
+
+    #[test]
+    fn prepare_read_write_conflict_prepared_linearizable() {
+        let mut store = new_store(true);
+
+        // Commit initial version at ts(2,1).
+        let t_init = make_txn(vec![], vec![("x", Some("v0"))], vec![]);
+        store.commit(txn_id(0, 1), &t_init, ts(2, 1));
+
+        // T1 prepares write to "x" at ts(3,1). Passes linearizable write-set check
+        // because latest committed ts(2,1) < ts(3,1).
+        let t1 = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
+        assert_eq!(store.prepare(txn_id(1, 1), t1, ts(3, 1), false), PrepareResult::Ok);
+
+        // T3 commits a newer version at ts(5,1). Now T1's prepared write at ts(3,1)
+        // is BEFORE this version.
+        let t3 = make_txn(vec![], vec![("x", Some("v2"))], vec![]);
+        store.commit(txn_id(3, 1), &t3, ts(5, 1));
+
+        // T2 reads "x" at ts(5,1) (the newer version), prepares at ts(12,2).
+        // T1's prepared write at ts(3,1) < read ts(5,1).
+        // Serializable: Excluded(read=5,1) excludes ts(3,1) → no conflict → Ok.
+        // Linearizable: Unbounded includes ts(3,1) → conflict → Abstain.
+        let t2 = make_txn(vec![("x", ts(5, 1))], vec![], vec![]);
+        assert_eq!(
+            store.prepare(txn_id(2, 1), t2, ts(12, 2), false),
+            PrepareResult::Abstain
+        );
+    }
+
+    // ── A.3.2 Serializable: write between versions allowed if earlier version unread ──
+
+    #[test]
+    fn serializable_write_between_versions_no_read_conflict() {
+        let mut store = new_store(false);
+
+        // Commit "x" at ts(3,1) — version A (never read).
+        let t_a = make_txn(vec![], vec![("x", Some("v0"))], vec![]);
+        store.commit(txn_id(0, 1), &t_a, ts(3, 1));
+
+        // Commit "x" at ts(10,1) — version B.
+        let t_b = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
+        store.commit(txn_id(1, 1), &t_b, ts(10, 1));
+
+        // T1 reads version B at ts(10,1), commits at ts(20,1).
+        // This records last_read on version B = ts(20,1).
+        let t1 = make_txn(vec![("x", ts(10, 1))], vec![], vec![]);
+        store.commit(txn_id(2, 1), &t1, ts(20, 1));
+
+        // T2 writes "x" at ts(7,2) — between versions A@3 and B@10.
+        // Serializable: get_last_read_at("x", ts(7,2)) finds version A which has
+        // no last_read → None → no conflict → Ok.
+        // (In linearizable mode, the write-write check would reject this since
+        // latest committed ts(10,1) > ts(7,2) → Retry.)
+        let t2 = make_txn(vec![], vec![("x", Some("v2"))], vec![]);
+        assert_eq!(
+            store.prepare(txn_id(3, 1), t2, ts(7, 2), false),
+            PrepareResult::Ok
+        );
+    }
+
+    #[test]
+    fn serializable_write_between_versions_read_conflict() {
+        let mut store = new_store(false);
+
+        // Commit "x" at ts(3,1) — version A.
+        let t_a = make_txn(vec![], vec![("x", Some("v0"))], vec![]);
+        store.commit(txn_id(0, 1), &t_a, ts(3, 1));
+
+        // T0 reads version A at ts(3,1), commits at ts(20,1).
+        // This records last_read on version A = ts(20,1).
+        let t0 = make_txn(vec![("x", ts(3, 1))], vec![], vec![]);
+        store.commit(txn_id(1, 1), &t0, ts(20, 1));
+
+        // Commit "x" at ts(10,1) — version B.
+        let t_b = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
+        store.commit(txn_id(2, 1), &t_b, ts(10, 1));
+
+        // T2 writes "x" at ts(7,2) — between versions A@3 and B@10.
+        // Serializable: get_last_read_at("x", ts(7,2)) finds version A which has
+        // last_read = ts(20,1). Since ts(20,1) > ts(7,2) → Retry.
+        // (Paired with serializable_write_between_versions_no_read_conflict to show
+        // get_last_read_at is both permissive and restrictive — the core SSI property.)
+        let t2 = make_txn(vec![], vec![("x", Some("v2"))], vec![]);
+        assert_eq!(
+            store.prepare(txn_id(3, 1), t2, ts(7, 2), false),
+            PrepareResult::Retry { proposed: 20 }
+        );
+    }
+
+    #[test]
+    fn serializable_no_prepared_write_write_conflict() {
+        let mut store = new_store(false);
+
+        // T1 prepares a write of "x" at ts(10,1).
+        let t1 = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
+        assert_eq!(store.prepare(txn_id(1, 1), t1, ts(10, 1), false), PrepareResult::Ok);
+
+        // T2 writes "x" at ts(5,2). In serializable mode, prepared write-write
+        // conflicts are NOT checked → Ok.
+        let t2 = make_txn(vec![], vec![("x", Some("v2"))], vec![]);
+        assert_eq!(
+            store.prepare(txn_id(2, 1), t2, ts(5, 2), false),
+            PrepareResult::Ok
+        );
+    }
+
+    // ── A.3.3 Multiple scan entries ──
+
+    #[test]
+    fn prepare_scan_multiple_entries_one_conflict() {
+        let mut store = new_store(false);
+
+        // Commit a write of "m" at ts(8,1) — inside second scan range only.
+        let t1 = make_txn(vec![], vec![("m", Some("v1"))], vec![]);
+        store.commit(txn_id(1, 1), &t1, ts(8, 1));
+
+        // T2 has two scan entries: ["a","c"]@5 and ["k","p"]@5.
+        // Only the second range contains the phantom "m"@8.
+        let t2 = make_txn(
+            vec![],
+            vec![],
+            vec![
+                ScanEntry {
+                    shard: ShardNumber(0),
+                    start_key: "a".to_string(),
+                    end_key: "c".to_string(),
+                    timestamp: ts(5, 1),
+                },
+                ScanEntry {
+                    shard: ShardNumber(0),
+                    start_key: "k".to_string(),
+                    end_key: "p".to_string(),
+                    timestamp: ts(5, 1),
+                },
+            ],
+        );
+        assert_eq!(
+            store.prepare(txn_id(2, 1), t2, ts(12, 2), false),
+            PrepareResult::Fail
+        );
+    }
+
+    // ── A.3.4 Prepared cache: timestamp change ──
+
+    #[test]
+    fn add_prepared_replaces_at_new_timestamp() {
+        let mut store = new_store(true);
+
+        let txn = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
+        let id = txn_id(1, 1);
+
+        // First prepare at ts(10,1).
+        store.add_prepared(id, txn.clone(), ts(10, 1), false);
+        assert!(store.prepared_writes.get("x").unwrap().contains_key(&ts(10, 1)));
+
+        // Re-prepare same txn at ts(20,1).
+        store.add_prepared(id, txn, ts(20, 1), false);
+
+        // Old cache entry removed, new one present.
+        let writes = store.prepared_writes.get("x").unwrap();
+        assert!(!writes.contains_key(&ts(10, 1)));
+        assert!(writes.contains_key(&ts(20, 1)));
+        assert_eq!(store.prepared.get(&id).unwrap().0, ts(20, 1));
+    }
+
+    #[test]
+    fn dry_run_preserves_existing_prepare() {
+        let mut store = new_store(true);
+
+        let txn = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
+        let id = txn_id(1, 1);
+
+        // Actually prepare at ts(10,1).
+        assert_eq!(store.prepare(id, txn.clone(), ts(10, 1), false), PrepareResult::Ok);
+        assert!(store.prepared_writes.get("x").unwrap().contains_key(&ts(10, 1)));
+
+        // Dry-run re-prepare at ts(20,1). Should not disturb existing prepare.
+        let result = store.prepare(id, txn, ts(20, 1), true);
+        assert_eq!(result, PrepareResult::Retry { proposed: 20 });
+
+        // Original prepare still intact.
+        assert!(store.prepared_writes.get("x").unwrap().contains_key(&ts(10, 1)));
+        assert_eq!(store.prepared.get(&id).unwrap().0, ts(10, 1));
+    }
 }
