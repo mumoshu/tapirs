@@ -2,7 +2,8 @@ use crate::{
     ChannelRegistry, ChannelTransport, IrClient, IrClientId, IrMembership, IrMembershipSize,
     IrOpId, IrRecord, IrReplica, IrReplicaUpcalls, Transport,
 };
-use rand::{seq::IteratorRandom, thread_rng, Rng};
+use rand::{seq::IteratorRandom, Rng, SeedableRng};
+use rand::rngs::StdRng;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
@@ -10,43 +11,43 @@ use std::{
     time::Duration,
 };
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn lock_server_1() {
     timeout_lock_server(1).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn lock_server_2() {
     timeout_lock_server(2).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn lock_server_3() {
     timeout_lock_server(3).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn lock_server_4() {
     timeout_lock_server(4).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn lock_server_5() {
     timeout_lock_server(5).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn lock_server_7() {
     timeout_lock_server(7).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn lock_server_9() {
     timeout_lock_server(9).await;
 }
 
 #[ignore]
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn lock_server_loop() {
     loop {
         timeout_lock_server(3).await;
@@ -63,6 +64,7 @@ async fn timeout_lock_server(num_replicas: usize) {
 }
 
 async fn lock_server(num_replicas: usize) {
+    let mut rng = StdRng::seed_from_u64(num_replicas as u64);
     println!("testing lock server with {num_replicas} replicas");
 
     #[derive(Debug, Clone, Eq, PartialEq)]
@@ -240,11 +242,11 @@ async fn lock_server(num_replicas: usize) {
         );
 
         for _ in 0..2 {
-            if thread_rng().r#gen() {
+            if rng.r#gen() {
                 let to_remove = replicas
                     .iter()
                     .map(|r| r.address())
-                    .choose(&mut thread_rng())
+                    .choose(&mut rng)
                     .unwrap();
                 for r in replicas.iter() {
                     clients[0]
@@ -252,7 +254,7 @@ async fn lock_server(num_replicas: usize) {
                         .do_send(r.address(), crate::ir::RemoveMember { address: to_remove });
                 }
             }
-            if thread_rng().r#gen() {
+            if rng.r#gen() {
                 add_replica(&mut replicas, &registry, &membership);
             }
         }
