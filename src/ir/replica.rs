@@ -113,7 +113,7 @@ struct PersistentViewInfo<A> {
 }
 
 impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
-    const VIEW_CHANGE_INTERVAL: Duration = Duration::from_secs(4);
+    const VIEW_CHANGE_INTERVAL: Duration = Duration::from_secs(2);
 
     pub fn new(
         membership: Membership<T::Address>,
