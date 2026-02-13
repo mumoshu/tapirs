@@ -135,4 +135,99 @@ mod tests {
         assert_eq!(FrameCodec::decode::<u64>(&p2).unwrap(), 99);
         assert!(reader.try_read_frame().unwrap().is_none());
     }
+
+    #[test]
+    fn test_max_frame_size_roundtrip() {
+        use rand::rngs::StdRng;
+        use rand::{Rng, SeedableRng};
+
+        // Create exactly MAX_FRAME_SIZE (16 MB) payload
+        let mut rng = StdRng::seed_from_u64(42);
+        let payload: Vec<u8> = (0..MAX_FRAME_SIZE).map(|_| rng.r#gen()).collect();
+
+        // Encode and decode
+        let frame = FrameCodec::encode(&payload).unwrap();
+        assert_eq!(frame.len(), 4 + MAX_FRAME_SIZE as usize);
+
+        let decoded: Vec<u8> = FrameCodec::decode(&frame[4..]).unwrap();
+        assert_eq!(decoded, payload);
+    }
+
+    #[test]
+    fn test_oversized_frame_rejection() {
+        let mut reader = FrameReader::new();
+
+        // Manually craft a frame with length prefix = MAX_FRAME_SIZE + 1
+        let oversized_len = MAX_FRAME_SIZE + 1;
+        let len_bytes = oversized_len.to_le_bytes();
+
+        let buf = reader.recv_buf();
+        buf[..4].copy_from_slice(&len_bytes);
+        reader.advance(4);
+
+        // Should return error for oversized frame
+        match reader.try_read_frame() {
+            Err(UringError::Codec(msg)) => {
+                assert!(msg.contains("frame too large"));
+                assert!(msg.contains(&oversized_len.to_string()));
+            }
+            _ => panic!("Expected Codec error for oversized frame"),
+        }
+    }
+
+    #[test]
+    fn test_buffer_growth() {
+        use rand::rngs::StdRng;
+        use rand::{Rng, SeedableRng};
+
+        // Create 1 MB payload (FrameReader starts at 8KB)
+        let mut rng = StdRng::seed_from_u64(123);
+        let large_payload: Vec<u8> = (0..1024 * 1024).map(|_| rng.r#gen()).collect();
+
+        // Encode the frame
+        let frame = FrameCodec::encode(&large_payload).unwrap();
+
+        // Feed to FrameReader (buffer should grow dynamically)
+        let mut reader = FrameReader::new();
+        assert_eq!(reader.buf.len(), 8192); // Initial size
+
+        let buf = reader.recv_buf();
+        buf[..frame.len()].copy_from_slice(&frame);
+        reader.advance(frame.len());
+
+        // Buffer should have grown to accommodate
+        assert!(reader.buf.len() >= frame.len());
+
+        // Frame should decode successfully
+        let decoded_payload = reader.try_read_frame().unwrap().unwrap();
+        let decoded: Vec<u8> = FrameCodec::decode(&decoded_payload).unwrap();
+        assert_eq!(decoded, large_payload);
+    }
+
+    #[test]
+    fn test_corrupted_bitcode_payload() {
+        use rand::rngs::StdRng;
+        use rand::{Rng, SeedableRng};
+
+        // Create valid length prefix but random garbage payload
+        let mut rng = StdRng::seed_from_u64(456);
+        let garbage: Vec<u8> = (0..100).map(|_| rng.r#gen()).collect();
+        let len = 100u32;
+
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&len.to_le_bytes());
+        frame.extend_from_slice(&garbage);
+
+        let mut reader = FrameReader::new();
+        let buf = reader.recv_buf();
+        buf[..frame.len()].copy_from_slice(&frame);
+        reader.advance(frame.len());
+
+        // Frame should be extracted successfully
+        let payload = reader.try_read_frame().unwrap().unwrap();
+
+        // But decoding should fail with bitcode error
+        let result: Result<Vec<u8>, _> = FrameCodec::decode(&payload);
+        assert!(result.is_err(), "Expected bitcode decode error for garbage payload");
+    }
 }

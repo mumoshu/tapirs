@@ -144,3 +144,96 @@ impl ConnectionPool {
         self.connections.contains_key(addr)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_backoff_exponential_growth() {
+        let mut pool = ConnectionPool::new();
+        let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+
+        // Verify exponential backoff: 100ms, 200ms, 400ms, 800ms, 1600ms, 3200ms, 5000ms (capped)
+        assert_eq!(pool.reconnect_backoff_ms(&addr), 100);
+        assert_eq!(pool.reconnect_backoff_ms(&addr), 200);
+        assert_eq!(pool.reconnect_backoff_ms(&addr), 400);
+        assert_eq!(pool.reconnect_backoff_ms(&addr), 800);
+        assert_eq!(pool.reconnect_backoff_ms(&addr), 1600);
+        assert_eq!(pool.reconnect_backoff_ms(&addr), 3200);
+        assert_eq!(pool.reconnect_backoff_ms(&addr), 5000); // Capped at MAX_BACKOFF_MS
+        assert_eq!(pool.reconnect_backoff_ms(&addr), 5000); // Stays capped
+    }
+
+    #[test]
+    fn test_backoff_reset_on_insert() {
+        let mut pool = ConnectionPool::new();
+        let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+
+        // Increment backoff 3 times
+        assert_eq!(pool.reconnect_backoff_ms(&addr), 100);
+        assert_eq!(pool.reconnect_backoff_ms(&addr), 200);
+        assert_eq!(pool.reconnect_backoff_ms(&addr), 400);
+
+        // Simulate successful connection - insert() should reset reconnect_attempts
+        pool.insert(addr, PooledConnection::new_outbound());
+
+        // Next failure should start from 100ms again
+        assert_eq!(pool.reconnect_backoff_ms(&addr), 100);
+    }
+
+    #[test]
+    fn test_queue_while_connecting() {
+        let mut pool = ConnectionPool::new();
+        let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+
+        // Start connecting
+        pool.start_connecting(addr);
+        assert!(pool.is_connecting(&addr));
+
+        // Queue frames while connecting
+        pool.queue_while_connecting(addr, vec![1, 2, 3]);
+        pool.queue_while_connecting(addr, vec![4, 5, 6]);
+
+        // Finish connecting - should return queued frames in FIFO order
+        let frames = pool.finish_connecting(addr);
+        assert_eq!(frames, vec![vec![1, 2, 3], vec![4, 5, 6]]);
+        assert!(!pool.is_connecting(&addr));
+    }
+
+    #[test]
+    fn test_try_enqueue_backpressure() {
+        let mut conn = PooledConnection::new_outbound();
+
+        // Fill to capacity (MAX_WRITE_QUEUE_SIZE = 1000)
+        for i in 0..1000 {
+            assert!(
+                conn.try_enqueue_frame(vec![i as u8; 100]).is_ok(),
+                "Frame {i} should enqueue successfully"
+            );
+        }
+
+        // 1001st frame should fail due to backpressure
+        assert!(
+            conn.try_enqueue_frame(vec![0u8; 100]).is_err(),
+            "Frame 1001 should fail with backpressure"
+        );
+    }
+
+    #[test]
+    fn test_is_connected_lifecycle() {
+        let mut pool = ConnectionPool::new();
+        let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+
+        // Initially not connected
+        assert!(!pool.is_connected(&addr));
+
+        // Insert connection
+        pool.insert(addr, PooledConnection::new_outbound());
+        assert!(pool.is_connected(&addr));
+
+        // Remove connection
+        pool.remove(&addr);
+        assert!(!pool.is_connected(&addr));
+    }
+}
