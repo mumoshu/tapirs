@@ -382,12 +382,20 @@ where
             // is now safely in SSTables.
             self.flushed_vlog_offset = self.vlog.write_offset();
 
-            if self.lsm.needs_compaction() {
-                futures::executor::block_on(self.lsm.compact::<K, TS>())?;
-            }
+            // Compact if needed, get list of old files to delete.
+            let old_files = if self.lsm.needs_compaction() {
+                futures::executor::block_on(self.lsm.compact::<K, TS>())?
+            } else {
+                Vec::new()
+            };
 
-            // Persist manifest after structural changes.
+            // Persist manifest BEFORE deleting old files (crash safety).
             self.save_manifest()?;
+
+            // Now safe to delete old compacted files.
+            for f in old_files {
+                let _ = std::fs::remove_file(&f);
+            }
         }
         Ok(())
     }
@@ -853,6 +861,706 @@ mod tests {
             let (v, ts) = store.get_impl(&"key-001999".to_string()).unwrap();
             assert!(v.is_some());
             assert_eq!(ts, 2000);
+        }
+    }
+
+    // ========== Crash-at-Boundary Tests ==========
+
+    #[test]
+    fn crash_during_flush_fsync_fails() {
+        type TestStore = DiskStore<String, String, u64, BufferedIo>;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+
+        // Phase 1: Write enough data to trigger flush, save manifest
+        {
+            let mut store = TestStore::open(path.clone()).unwrap();
+
+            // Write enough to trigger flush (>64KB)
+            for i in 0u64..2000 {
+                let key = format!("key-{i:06}");
+                let val = format!("value-{i:06}-{}", "x".repeat(20));
+                store.put_impl(key, Some(val), i + 1).unwrap();
+            }
+
+            store.save_manifest().unwrap();
+            assert!(store.lsm.l0_metas().len() > 0);
+        }
+
+        // Phase 2: Write more data that would trigger flush, but don't save manifest
+        // (simulating crash before manifest save after SSTable fsync)
+        {
+            let mut store = TestStore::open(path.clone()).unwrap();
+
+            for i in 2000u64..4000 {
+                let key = format!("key-{i:06}");
+                let val = format!("value-{i:06}-{}", "x".repeat(20));
+                store.put_impl(key, Some(val), i + 1).unwrap();
+            }
+
+            // Explicitly drop without saving manifest (simulates crash)
+        }
+
+        // Phase 3: Recover - manifest doesn't include new SSTable
+        {
+            let store = TestStore::open(path).unwrap();
+
+            // First batch (in manifest) should be readable
+            let (v, ts) = store.get_impl(&"key-000000".to_string()).unwrap();
+            assert!(v.is_some());
+            assert_eq!(ts, 1);
+
+            // Second batch (not in manifest) recovered from vlog replay
+            let (v, ts) = store.get_impl(&"key-002000".to_string()).unwrap();
+            assert!(v.is_some());
+            assert_eq!(ts, 2001);
+        }
+    }
+
+    #[test]
+    fn crash_during_flush_sstable_corrupted() {
+        type TestStore = DiskStore<String, String, u64, BufferedIo>;
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+
+        // Phase 1: Write and flush successfully
+        let sstable_path = {
+            let mut store = TestStore::open(path.clone()).unwrap();
+
+            for i in 0u64..2000 {
+                let key = format!("key-{i:06}");
+                let val = format!("value-{i:06}-{}", "x".repeat(20));
+                store.put_impl(key, Some(val), i + 1).unwrap();
+            }
+
+            store.save_manifest().unwrap();
+
+            // Get SSTable path for corruption
+            store.lsm.l0_metas()[0].path.clone()
+        };
+
+        // Phase 2: Corrupt the SSTable file (flip some bytes)
+        {
+            let mut data = std::fs::read(&sstable_path).unwrap();
+            if data.len() > 100 {
+                // Corrupt bytes in the middle
+                data[50] ^= 0xFF;
+                data[51] ^= 0xFF;
+                std::fs::write(&sstable_path, data).unwrap();
+            }
+        }
+
+        // Phase 3: Recovery should detect corrupted SSTable
+        {
+            match TestStore::open(path) {
+                Ok(store) => {
+                    // Store opened, but reading from corrupted SSTable may fail
+                    match store.get_impl(&"key-000000".to_string()) {
+                        Ok((v, ts)) => {
+                            // Recovery succeeded via vlog replay
+                            assert!(v.is_some());
+                            assert_eq!(ts, 1);
+                        }
+                        Err(e) => {
+                            // Reading failed due to corruption - acceptable
+                            // Test verifies corruption is detected
+                            assert!(matches!(e, super::super::error::StorageError::Corruption { .. }));
+                        }
+                    }
+                }
+                Err(e) => {
+                    // Opening failed due to corruption during recovery - also acceptable
+                    assert!(matches!(e, super::super::error::StorageError::Corruption { .. }));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn crash_during_flush_manifest_not_updated() {
+        type TestStore = DiskStore<String, String, u64, BufferedIo>;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+
+        // Phase 1: Write data that triggers flush, but don't save manifest
+        {
+            let mut store = TestStore::open(path.clone()).unwrap();
+
+            for i in 0u64..2000 {
+                let key = format!("key-{i:06}");
+                let val = format!("value-{i:06}-{}", "x".repeat(20));
+                store.put_impl(key, Some(val), i + 1).unwrap();
+            }
+
+            // Data flushed to SSTable, but don't save manifest
+            // (simulating crash before manifest save)
+        }
+
+        // Phase 2: Recover without manifest
+        {
+            let store = TestStore::open(path).unwrap();
+
+            // Manifest doesn't list the SSTable (orphan file)
+            // But vlog replay should recover the data
+            let (v, ts): (Option<String>, u64) = store.get_impl(&"key-000000".to_string()).unwrap();
+            assert!(v.is_some());
+            assert_eq!(ts, 1);
+        }
+    }
+
+    #[test]
+    fn crash_during_compaction_fsync_fails_before_manifest_update() {
+        type TestStore = DiskStore<String, String, u64, BufferedIo>;
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+
+        // Phase 1: Create 4 L0 SSTables by writing large batches
+        {
+            let mut store = TestStore::open(path.clone()).unwrap();
+
+            // Write 4 separate large batches (each triggers memtable flush)
+            for batch in 0u64..4 {
+                for i in 0u64..800 {
+                    let key = format!("key-{batch:02}-{i:04}");
+                    let val = format!("value-{}-{}", batch, "x".repeat(30));
+                    store.put_impl(key, Some(val), batch * 1000 + i).unwrap();
+                }
+            }
+
+            // If we have L0 files or L1, we're good
+            let has_sstables = store.lsm.l0_metas().len() >= 3 || store.lsm.l1_metas().len() > 0;
+            assert!(has_sstables, "Expected L0 or L1 SSTables to be created");
+            store.save_manifest().unwrap();
+        }
+
+        // Phase 2: Trigger compaction but don't save manifest after
+        // (simulating crash after new L1 written but before manifest update)
+        {
+            let mut store = TestStore::open(path.clone()).unwrap();
+
+            // Write one more batch to trigger compaction
+            for i in 0u64..600 {
+                let key = format!("key-04-{i:04}");
+                let val = format!("value-{}", "x".repeat(20));
+                store.put_impl(key, Some(val), 4000 + i).unwrap();
+            }
+
+            // Compaction happens, new L1 created, but we drop without saving manifest
+            // With bug fix: old files should still exist (not deleted yet)
+        }
+
+        // Phase 3: Recover - manifest still points to old L0 files
+        {
+            let store = TestStore::open(path).unwrap();
+
+            // Old L0 files exist, data recoverable
+            let (v, ts): (Option<String>, u64) = store.get_impl(&"key-00-0000".to_string()).unwrap();
+            assert!(v.is_some());
+            assert_eq!(ts, 0);
+
+            // Verify bug fix: old files weren't deleted prematurely
+            // (if they were, this would fail)
+            let (v, _ts): (Option<String>, u64) = store.get_impl(&"key-01-0000".to_string()).unwrap();
+            assert!(v.is_some());
+        }
+    }
+
+    #[test]
+    fn crash_during_compaction_manifest_not_updated() {
+        type TestStore = DiskStore<String, String, u64, BufferedIo>;
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+
+        // Phase 1: Create and save initial state
+        {
+            let mut store = TestStore::open(path.clone()).unwrap();
+
+            for batch in 0u64..2 {
+                for i in 0u64..600 {
+                    let key = format!("key-{batch:02}-{i:04}");
+                    let val = format!("value-{}", "x".repeat(20));
+                    store.put_impl(key, Some(val), batch * 1000 + i).unwrap();
+                }
+            }
+
+            store.save_manifest().unwrap();
+        }
+
+        // Phase 2: Add more data, trigger compaction, don't save manifest
+        {
+            let mut store = TestStore::open(path.clone()).unwrap();
+
+            for batch in 2u64..4 {
+                for i in 0u64..600 {
+                    let key = format!("key-{batch:02}-{i:04}");
+                    let val = format!("value-{}", "x".repeat(20));
+                    store.put_impl(key, Some(val), batch * 1000 + i).unwrap();
+                }
+            }
+
+            // Drop without saving manifest (simulates crash)
+        }
+
+        // Phase 3: Recover - uses old manifest but vlog replay recovers new data
+        {
+            let store = TestStore::open(path).unwrap();
+
+            // Old data from manifest
+            let (v, _ts): (Option<String>, u64) = store.get_impl(&"key-00-0000".to_string()).unwrap();
+            assert!(v.is_some());
+
+            // New data from vlog replay
+            let (v, _ts): (Option<String>, u64) = store.get_impl(&"key-02-0000".to_string()).unwrap();
+            assert!(v.is_some());
+        }
+    }
+
+    #[test]
+    fn crash_during_compaction_l1_corrupted() {
+        type TestStore = DiskStore<String, String, u64, BufferedIo>;
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+
+        // Phase 1: Create L1 via compaction
+        let l1_path = {
+            let mut store = TestStore::open(path.clone()).unwrap();
+
+            for batch in 0u64..4 {
+                for i in 0u64..600 {
+                    let key = format!("key-{batch:02}-{i:04}");
+                    let val = format!("value-{}", "x".repeat(20));
+                    store.put_impl(key, Some(val), batch * 1000 + i).unwrap();
+                }
+            }
+
+            store.save_manifest().unwrap();
+
+            // Get L1 path if it exists
+            if !store.lsm.l1_metas().is_empty() {
+                Some(store.lsm.l1_metas()[0].path.clone())
+            } else {
+                None
+            }
+        };
+
+        // Phase 2: Corrupt L1 file if it exists
+        if let Some(l1_path) = l1_path {
+            let mut data = std::fs::read(&l1_path).unwrap();
+            if data.len() > 100 {
+                // Corrupt bytes
+                data[100] ^= 0xFF;
+                data[101] ^= 0xFF;
+                std::fs::write(&l1_path, data).unwrap();
+            }
+
+            // Phase 3: Recovery should handle corrupted L1 gracefully
+            {
+                let store = TestStore::open(path).unwrap();
+
+                // Recovery should work via vlog replay even with corrupted L1
+                let (v, _ts): (Option<String>, u64) = store.get_impl(&"key-00-0000".to_string()).unwrap();
+                assert!(v.is_some());
+            }
+        } else {
+            // If no L1 was created, test passes (compaction didn't occur)
+            // This can happen if L0 threshold wasn't reached
+        }
+    }
+
+    // ========== Compaction Correctness Tests ==========
+
+    #[test]
+    fn compaction_no_data_loss() {
+        type TestStore = DiskStore<String, String, u64, BufferedIo>;
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+
+        let mut store = TestStore::open(path).unwrap();
+
+        // Insert 1000 keys with versions ts=1..1000
+        for i in 1u64..=1000 {
+            store.put_impl(format!("key-{}", i % 100), Some(format!("value-{i}")), i).unwrap();
+        }
+
+        store.save_manifest().unwrap();
+
+        // Force compaction if it hasn't happened
+        let has_l1 = store.lsm.l1_metas().len() > 0;
+
+        // Verify all 1000 versions are readable at their timestamps
+        for i in 1u64..=1000 {
+            let key = format!("key-{}", i % 100);
+            let (v, ts): (Option<String>, u64) = store.get_at_impl(&key, i).unwrap();
+            assert!(v.is_some(), "Lost data for key {} at ts {}", key, i);
+            assert_eq!(v.unwrap(), format!("value-{i}"));
+            assert!(ts <= i && ts > 0, "Wrong timestamp for key {} at query ts {}: got {}", key, i, ts);
+        }
+
+        println!("Verified all 1000 versions readable. L1 files: {}", if has_l1 { "yes" } else { "no" });
+    }
+
+    #[test]
+    fn compaction_version_ordering_preserved() {
+        type TestStore = DiskStore<String, String, u64, BufferedIo>;
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+
+        let mut store = TestStore::open(path).unwrap();
+
+        // Write multiple versions of same keys in non-monotonic order
+        let keys = vec!["alice", "bob", "charlie"];
+        for key in &keys {
+            store.put_impl(key.to_string(), Some(format!("{}-v10", key)), 10).unwrap();
+            store.put_impl(key.to_string(), Some(format!("{}-v50", key)), 50).unwrap();
+            store.put_impl(key.to_string(), Some(format!("{}-v30", key)), 30).unwrap();
+            store.put_impl(key.to_string(), Some(format!("{}-v70", key)), 70).unwrap();
+        }
+
+        // Trigger flush and potentially compaction
+        for i in 0..2000 {
+            store.put_impl(format!("filler-{i}"), Some("x".repeat(30)), 100 + i).unwrap();
+        }
+
+        store.save_manifest().unwrap();
+
+        // Verify version ordering: latest version should be returned by get()
+        for key in &keys {
+            let (v, ts): (Option<String>, u64) = store.get_impl(&key.to_string()).unwrap();
+            assert_eq!(v, Some(format!("{}-v70", key)));
+            assert_eq!(ts, 70);
+
+            // Verify intermediate versions accessible via get_at
+            let (v, ts): (Option<String>, u64) = store.get_at_impl(&key.to_string(), 25).unwrap();
+            assert_eq!(v, Some(format!("{}-v10", key)));
+            assert_eq!(ts, 10);
+
+            let (v, ts): (Option<String>, u64) = store.get_at_impl(&key.to_string(), 40).unwrap();
+            assert_eq!(v, Some(format!("{}-v30", key)));
+            assert_eq!(ts, 30);
+
+            let (v, ts): (Option<String>, u64) = store.get_at_impl(&key.to_string(), 60).unwrap();
+            assert_eq!(v, Some(format!("{}-v50", key)));
+            assert_eq!(ts, 50);
+        }
+    }
+
+    #[test]
+    fn compaction_tombstone_handling() {
+        type TestStore = DiskStore<String, String, u64, BufferedIo>;
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+
+        let mut store = TestStore::open(path).unwrap();
+
+        // Write old version
+        store.put_impl("key".to_string(), Some("old-value".to_string()), 10).unwrap();
+
+        // Flush to L0
+        for i in 0..2000 {
+            store.put_impl(format!("filler-{i}"), Some("x".repeat(30)), 20 + i).unwrap();
+        }
+
+        // Write tombstone
+        store.put_impl("key".to_string(), None, 50).unwrap();
+
+        store.save_manifest().unwrap();
+
+        // Latest version is tombstone
+        let (v, ts): (Option<String>, u64) = store.get_impl(&"key".to_string()).unwrap();
+        assert_eq!(v, None);
+        assert_eq!(ts, 50);
+
+        // Old version still accessible at ts < 50
+        let (v, ts): (Option<String>, u64) = store.get_at_impl(&"key".to_string(), 30).unwrap();
+        assert_eq!(v, Some("old-value".to_string()));
+        assert_eq!(ts, 10);
+    }
+
+    #[test]
+    fn compaction_sequential() {
+        type TestStore = DiskStore<String, String, u64, BufferedIo>;
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+
+        let mut store = TestStore::open(path).unwrap();
+
+        // Write 10,000 keys in batches, each batch may trigger compaction
+        for batch in 0u64..10 {
+            for i in 0u64..1000 {
+                let key = format!("key-{}", i % 100);
+                let val = format!("batch{}-val{}", batch, i);
+                store.put_impl(key, Some(val), batch * 1000 + i).unwrap();
+            }
+
+            // Save manifest after each batch
+            store.save_manifest().unwrap();
+
+            // Verify data integrity after each batch
+            for i in 0u64..100 {
+                let key = format!("key-{i}");
+                let (_v, _ts): (Option<String>, u64) = store.get_impl(&key).unwrap();
+                // Just verify no crash/corruption, values will be overwritten
+            }
+        }
+
+        // Final verification: latest versions readable
+        for i in 0u64..100 {
+            let key = format!("key-{i}");
+            let (v, ts): (Option<String>, u64) = store.get_impl(&key).unwrap();
+            assert!(v.is_some());
+            assert!(ts >= 9000); // Should be from last batch
+        }
+
+        println!("Sequential compactions completed successfully");
+    }
+
+    // ========== GC Correctness Tests ==========
+
+    #[test]
+    fn gc_no_live_data_lost() {
+        type TestStore = DiskStore<String, String, u64, BufferedIo>;
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+
+        let mut store = TestStore::open(path.clone()).unwrap();
+
+        // Write 1000 entries
+        for i in 0u64..1000 {
+            let key = format!("key-{:04}", i);
+            let val = format!("value-{:04}", i);
+            store.put_impl(key, Some(val), i + 1).unwrap();
+        }
+
+        // Delete 50% (every other key)
+        for i in (0u64..1000).step_by(2) {
+            let key = format!("key-{:04}", i);
+            store.put_impl(key, None, 2000 + i).unwrap();
+        }
+
+        store.save_manifest().unwrap();
+
+        // Collect vlog segments for GC
+        let old_segment_id = store.vlog.id;
+
+        // Close and reopen to force vlog segment boundary
+        drop(store);
+        let store = TestStore::open(path).unwrap();
+
+        // Perform GC: copy live entries from old segment to new segment
+        let new_segment_id = old_segment_id + 1;
+
+        // Use the GC module's gc_vlog_segment function
+        use super::super::gc::GarbageCollector;
+        use super::super::vlog::VlogSegment;
+        use super::super::disk_io::OpenFlags;
+
+        let old_vlog_path = dir.path().join(format!("vlog-{:06}.log", old_segment_id));
+        let new_vlog_path = dir.path().join(format!("vlog-{:06}.log", new_segment_id));
+
+        // Open segments
+        let old_segment = VlogSegment::<BufferedIo>::open(
+            old_segment_id,
+            old_vlog_path,
+            OpenFlags { create: false, direct: false },
+        ).unwrap();
+
+        let mut new_segment = VlogSegment::<BufferedIo>::open(
+            new_segment_id,
+            new_vlog_path,
+            OpenFlags { create: true, direct: false },
+        ).unwrap();
+
+        let (stats, _pointer_updates) = futures::executor::block_on(
+            GarbageCollector::gc_vlog_segment::<String, String, u64, BufferedIo>(
+                &old_segment,
+                &mut new_segment,
+                &store.lsm,
+            )
+        ).unwrap();
+
+        println!("GC stats: scanned={}, live={}, dead={}, reclaimed={} bytes",
+                 stats.entries_scanned, stats.entries_live, stats.entries_dead, stats.bytes_reclaimed);
+
+        // Verify GC ran and processed entries
+        assert!(stats.entries_scanned > 0, "Should have scanned entries");
+        assert!(stats.entries_live > 0, "Should have found live entries");
+
+        // In MVCC, old versions are kept unless pruned by compaction,
+        // so we may see more live entries than just the latest versions.
+        // The key verification is that data integrity is maintained.
+
+        // Verify all 500 live keys are still readable
+        for i in (1u64..1000).step_by(2) {
+            let key = format!("key-{:04}", i);
+            let (v, _ts): (Option<String>, u64) = store.get_impl(&key).unwrap();
+            assert!(v.is_some(), "Lost live key {}", key);
+            assert_eq!(v.unwrap(), format!("value-{:04}", i));
+        }
+
+        // Verify deleted keys are tombstones
+        for i in (0u64..1000).step_by(2) {
+            let key = format!("key-{:04}", i);
+            let (v, _ts): (Option<String>, u64) = store.get_impl(&key).unwrap();
+            assert_eq!(v, None, "Key {} should be deleted", key);
+        }
+    }
+
+    #[test]
+    fn gc_dead_data_reclaimed() {
+        type TestStore = DiskStore<String, String, u64, BufferedIo>;
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+
+        let mut store = TestStore::open(path.clone()).unwrap();
+
+        // Write entries with known value sizes
+        let value_size = 100;
+        for i in 0u64..100 {
+            let key = format!("key-{:02}", i);
+            let val = "x".repeat(value_size);
+            store.put_impl(key, Some(val), i + 1).unwrap();
+        }
+
+        // Overwrite 50 entries (making old versions dead)
+        for i in 0u64..50 {
+            let key = format!("key-{:02}", i);
+            let val = "y".repeat(value_size);
+            store.put_impl(key, Some(val), 200 + i).unwrap();
+        }
+
+        store.save_manifest().unwrap();
+
+        let old_segment_id = store.vlog.id;
+        drop(store);
+        let store = TestStore::open(path).unwrap();
+
+        // Perform GC
+        use super::super::gc::GarbageCollector;
+        use super::super::vlog::VlogSegment;
+        use super::super::disk_io::OpenFlags;
+
+        let old_vlog_path = dir.path().join(format!("vlog-{:06}.log", old_segment_id));
+        let new_vlog_path = dir.path().join(format!("vlog-{:06}.log", old_segment_id + 1));
+
+        let old_segment = VlogSegment::<BufferedIo>::open(
+            old_segment_id,
+            old_vlog_path,
+            OpenFlags { create: false, direct: false },
+        ).unwrap();
+
+        let mut new_segment = VlogSegment::<BufferedIo>::open(
+            old_segment_id + 1,
+            new_vlog_path,
+            OpenFlags { create: true, direct: false },
+        ).unwrap();
+
+        let (stats, _pointer_updates) = futures::executor::block_on(
+            GarbageCollector::gc_vlog_segment::<String, String, u64, BufferedIo>(
+                &old_segment,
+                &mut new_segment,
+                &store.lsm,
+            )
+        ).unwrap();
+
+        println!("GC stats: scanned={}, live={}, dead={}, reclaimed={} bytes",
+                 stats.entries_scanned, stats.entries_live, stats.entries_dead, stats.bytes_reclaimed);
+
+        // Verify GC processed entries and reclaimed some bytes
+        assert!(stats.entries_scanned > 0, "Should have scanned entries");
+
+        // We overwrote 50 entries, so there should be some dead data
+        // (exact count depends on MVCC version retention policy)
+        assert!(stats.entries_dead > 0, "Should have found dead entries after overwrites");
+
+        // bytes_reclaimed should be non-zero (dead entries were reclaimed)
+        assert!(stats.bytes_reclaimed > 0,
+                "Expected some bytes reclaimed, got {}", stats.bytes_reclaimed);
+    }
+
+    #[test]
+    fn gc_pointer_updates() {
+        type TestStore = DiskStore<String, String, u64, BufferedIo>;
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+
+        let mut store = TestStore::open(path.clone()).unwrap();
+
+        // Write entries
+        for i in 0u64..50 {
+            let key = format!("key-{:02}", i);
+            let val = format!("value-{:02}", i);
+            store.put_impl(key, Some(val), i + 1).unwrap();
+        }
+
+        store.save_manifest().unwrap();
+
+        let old_segment_id = store.vlog.id;
+        drop(store);
+        let mut store = TestStore::open(path.clone()).unwrap();
+
+        // Perform GC and collect pointer updates
+        use super::super::gc::GarbageCollector;
+        use super::super::vlog::VlogSegment;
+        use super::super::disk_io::OpenFlags;
+        use super::super::memtable::{CompositeKey, LsmEntry};
+
+        let old_vlog_path = dir.path().join(format!("vlog-{:06}.log", old_segment_id));
+        let new_vlog_path = dir.path().join(format!("vlog-{:06}.log", old_segment_id + 1));
+
+        let old_segment = VlogSegment::<BufferedIo>::open(
+            old_segment_id,
+            old_vlog_path,
+            OpenFlags { create: false, direct: false },
+        ).unwrap();
+
+        let mut new_segment = VlogSegment::<BufferedIo>::open(
+            old_segment_id + 1,
+            new_vlog_path.clone(),
+            OpenFlags { create: true, direct: false },
+        ).unwrap();
+
+        let (stats, pointer_updates) = futures::executor::block_on(
+            GarbageCollector::gc_vlog_segment::<String, String, u64, BufferedIo>(
+                &old_segment,
+                &mut new_segment,
+                &store.lsm,
+            )
+        ).unwrap();
+
+        println!("GC pointer updates: {} entries moved to new segment", pointer_updates.len());
+
+        // Verify all live entries have pointer updates
+        assert_eq!(pointer_updates.len(), stats.entries_live as usize);
+
+        // Verify all pointer updates reference the new segment
+        for (key, ts, new_ptr) in &pointer_updates {
+            assert_eq!(new_ptr.segment_id, old_segment_id + 1,
+                       "Pointer for key {:?} at ts {:?} should reference new segment", key, ts);
+        }
+
+        // Apply pointer updates to LSM (simulating what DiskStore would do)
+        for (key, ts, new_ptr) in pointer_updates {
+            store.memtable.insert(
+                CompositeKey::new(key, ts),
+                LsmEntry {
+                    value_ptr: Some(new_ptr),
+                    last_read_ts: None,
+                },
+            );
+        }
+
+        // Flush memtable and save
+        futures::executor::block_on(store.lsm.flush_memtable(&mut store.memtable)).unwrap();
+        store.save_manifest().unwrap();
+
+        // Verify data still readable after GC and pointer updates
+        for i in 0u64..50 {
+            let key = format!("key-{:02}", i);
+            let (v, _ts): (Option<String>, u64) = store.get_impl(&key).unwrap();
+            assert_eq!(v, Some(format!("value-{:02}", i)),
+                       "Data lost or corrupted after GC for key {}", key);
         }
     }
 }

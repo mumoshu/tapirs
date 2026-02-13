@@ -110,13 +110,17 @@ impl<IO: DiskIo> LsmTree<IO> {
     }
 
     /// Compact all L0 SSTables + L1 into new L1 SSTables.
-    pub async fn compact<K, TS>(&mut self) -> Result<(), StorageError>
+    ///
+    /// Returns a list of old SSTable files to be deleted by the caller
+    /// AFTER the manifest has been persisted. This ensures crash safety:
+    /// if we crash before manifest save, old files still exist and recovery works.
+    pub async fn compact<K, TS>(&mut self) -> Result<Vec<PathBuf>, StorageError>
     where
         K: Serialize + for<'de> Deserialize<'de> + Ord + Clone,
         TS: Serialize + for<'de> Deserialize<'de> + Ord + Clone,
     {
         if self.l0.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
 
         // Read all entries from L0 and L1.
@@ -139,7 +143,7 @@ impl<IO: DiskIo> LsmTree<IO> {
         }
 
         if merged.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
 
         // Write merged result as new L1 SSTable(s).
@@ -155,20 +159,17 @@ impl<IO: DiskIo> LsmTree<IO> {
             num_entries,
         };
 
-        // Remove old files.
+        // Build list of old files to be deleted by caller AFTER manifest save.
         let old_files: Vec<PathBuf> = self
             .l0
             .iter()
             .chain(self.l1.iter())
             .map(|m| m.path.clone())
             .collect();
-        for f in old_files {
-            let _ = std::fs::remove_file(&f);
-        }
 
         self.l0.clear();
         self.l1 = vec![new_meta];
-        Ok(())
+        Ok(old_files)
     }
 
     /// Look up the latest version of `key` with timestamp <= `ts`.
@@ -294,9 +295,15 @@ mod tests {
         assert_eq!(lsm.l0.len(), 4);
         assert!(lsm.needs_compaction());
 
-        lsm.compact::<u64, u64>().await.unwrap();
+        let old_files = lsm.compact::<u64, u64>().await.unwrap();
+        assert_eq!(old_files.len(), 4); // 4 L0 files to delete
         assert_eq!(lsm.l0.len(), 0);
         assert_eq!(lsm.l1.len(), 1);
+
+        // Simulate what disk_store does: delete old files after compaction
+        for f in old_files {
+            let _ = std::fs::remove_file(&f);
+        }
 
         // Verify data is still accessible.
         let result = lsm.get_at::<u64, u64>(&1, &100).await.unwrap();

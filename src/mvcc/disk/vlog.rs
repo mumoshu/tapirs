@@ -342,4 +342,132 @@ mod tests {
         let result: Result<VlogEntry<String, String, u64>, _> = seg2.read(&ptr).await;
         assert!(matches!(result, Err(StorageError::Corruption { .. })));
     }
+
+    // ========== Vlog Corruption Scenarios Tests ==========
+
+    #[tokio::test]
+    async fn partial_write_recovery_stops_at_truncation() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+        let flags = OpenFlags {
+            create: true,
+            direct: false,
+        };
+
+        // Write 5 entries (each is one 4 KiB block).
+        let mut seg = VlogSegment::<BufferedIo>::open(1, path.clone(), flags).unwrap();
+        for i in 0u64..5 {
+            let entry = VlogEntry::<String, String, u64> {
+                key: format!("key-{i}"),
+                timestamp: i + 1,
+                value: Some(format!("value-{i}")),
+            };
+            seg.append(&entry).await.unwrap();
+        }
+        seg.sync().await.unwrap();
+        drop(seg);
+
+        // Truncate to 2 blocks (8192 bytes) — simulates crash mid-write of entry #2.
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap();
+        file.set_len(8192).unwrap();
+        drop(file);
+
+        // Recovery should find exactly 2 entries (blocks 0 and 1).
+        let seg2 = VlogSegment::<BufferedIo>::open(1, path, flags).unwrap();
+        let recovered = seg2.recover_entries::<String, String, u64>(0).await.unwrap();
+
+        assert_eq!(recovered.len(), 2, "Should recover 2 entries before truncation point");
+        assert_eq!(recovered[0].0.key, "key-0");
+        assert_eq!(recovered[1].0.key, "key-1");
+    }
+
+    #[tokio::test]
+    async fn partial_write_at_offset_0_recover_nothing() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+        let flags = OpenFlags {
+            create: true,
+            direct: false,
+        };
+
+        // Write 3 entries.
+        let mut seg = VlogSegment::<BufferedIo>::open(1, path.clone(), flags).unwrap();
+        for i in 0u64..3 {
+            let entry = VlogEntry::<String, String, u64> {
+                key: format!("key-{i}"),
+                timestamp: i + 1,
+                value: Some(format!("value-{i}")),
+            };
+            seg.append(&entry).await.unwrap();
+        }
+        seg.sync().await.unwrap();
+        drop(seg);
+
+        // Truncate to less than one block — simulates crash during first entry write.
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap();
+        file.set_len(2048).unwrap();
+        drop(file);
+
+        // Recovery should find 0 entries (no complete block).
+        let seg2 = VlogSegment::<BufferedIo>::open(1, path, flags).unwrap();
+        let recovered = seg2.recover_entries::<String, String, u64>(0).await.unwrap();
+
+        assert_eq!(recovered.len(), 0, "Should recover nothing when first block is incomplete");
+    }
+
+    #[tokio::test]
+    async fn short_write_crc_fails_recovery_stops() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+        let flags = OpenFlags {
+            create: true,
+            direct: false,
+        };
+
+        // Write 3 complete entries
+        let mut seg = VlogSegment::<BufferedIo>::open(1, path.clone(), flags).unwrap();
+        for i in 0u64..3 {
+            let entry = VlogEntry::<String, String, u64> {
+                key: format!("key-{i}"),
+                timestamp: i + 1,
+                value: Some(format!("value-{i}")),
+            };
+            seg.append(&entry).await.unwrap();
+        }
+        seg.sync().await.unwrap();
+        drop(seg);
+
+        // Truncate file to simulate short write (less than 4 KiB)
+        // Get file size and truncate to an incomplete block
+        let metadata = std::fs::metadata(&path).unwrap();
+        let file_size = metadata.len();
+
+        // Truncate to middle of third block (simulating partial write)
+        if file_size > 8192 + 2000 {
+            let truncated_size = 8192 + 2000; // 2 complete blocks + partial third
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_len(truncated_size)
+                .unwrap();
+        }
+
+        // Recover - should recover first 2 entries, stop at partial third
+        let seg2 = VlogSegment::<BufferedIo>::open(1, path, flags).unwrap();
+        let recovered = seg2.recover_entries::<String, String, u64>(0).await.unwrap();
+
+        assert!(recovered.len() <= 2, "Should recover at most 2 complete entries, got {}", recovered.len());
+
+        // Verify recovered entries
+        for (i, (entry, _ptr)) in recovered.iter().enumerate() {
+            assert_eq!(entry.key, format!("key-{i}"));
+        }
+    }
 }
