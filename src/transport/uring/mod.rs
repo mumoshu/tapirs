@@ -7,6 +7,7 @@ mod codec;
 mod error;
 pub(crate) mod reactor;
 mod task;
+mod tcp;
 mod timer;
 
 pub use address::UringAddress;
