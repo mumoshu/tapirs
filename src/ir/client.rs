@@ -20,7 +20,7 @@ use std::{
     task::Context,
     time::Duration,
 };
-use tokio::select;
+use futures::future::Either;
 
 /// Randomly chosen id, unique to each IR client.
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
@@ -164,15 +164,15 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
                     futures.push(future);
                 }
 
-                let timeout = std::pin::pin!(T::sleep(Duration::from_millis(250)));
-
-                let response = select! {
-                    _ = timeout, if futures.len() < count => {
-                        continue;
+                let response = if futures.len() < count {
+                    let timeout = T::sleep(Duration::from_millis(250));
+                    futures::pin_mut!(timeout);
+                    match futures::future::select(timeout, futures.select_next_some()).await {
+                        Either::Left(_) => continue,
+                        Either::Right((response, _)) => response,
                     }
-                    response = futures.next() => {
-                        response.unwrap()
-                    }
+                } else {
+                    futures.next().await.unwrap()
                 };
                 let mut sync = inner.sync.lock().unwrap();
                 if response.view.number > sync.view.number {

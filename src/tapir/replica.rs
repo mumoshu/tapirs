@@ -11,7 +11,6 @@ use serde::{Deserialize, Serialize};
 use std::task::Context;
 use std::time::Duration;
 use std::{collections::HashMap, future::Future, hash::Hash};
-use tokio::time::timeout;
 use tracing::{trace, warn};
 
 /// Diverge from TAPIR and don't maintain a no-vote list. Instead, wait for a
@@ -605,7 +604,12 @@ impl<K: Key, V: Value> Replica<K, V> {
                 membership.clone(),
                 transport.clone(),
             );
-            tokio::spawn(timeout(Duration::from_secs(5), future));
+            T::spawn(async move {
+                futures::pin_mut!(future);
+                let timeout = T::sleep(Duration::from_secs(5));
+                futures::pin_mut!(timeout);
+                let _ = futures::future::select(future, timeout).await;
+            });
         }
     }
 }

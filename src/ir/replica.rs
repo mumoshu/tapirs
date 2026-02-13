@@ -44,7 +44,7 @@ pub trait Upcalls: Sized + Send + Serialize + DeserializeOwned + 'static {
     /// Consensus result.
     type CR: TransportMessage + Eq + Hash;
 
-    fn exec_unlogged(&mut self, op: Self::UO) -> Self::UR;
+    fn exec_unlogged(&self, op: Self::UO) -> Self::UR;
     fn exec_inconsistent(&mut self, op: &Self::IO);
     fn exec_consensus(&mut self, op: &Self::CO) -> Self::CR;
     /// Extension to TAPIR: Called when an entry becomes finalized. This
@@ -195,7 +195,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
 
     fn tick(&self) {
         let inner = Arc::downgrade(&self.inner);
-        tokio::spawn(async move {
+        T::spawn(async move {
             loop {
                 T::sleep(Self::VIEW_CHANGE_INTERVAL).await;
 
@@ -243,7 +243,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
     fn tick_app(&self) {
         let inner = Arc::downgrade(&self.inner);
         let transport = self.inner.transport.clone();
-        tokio::spawn(async move {
+        T::spawn(async move {
             loop {
                 T::sleep(Duration::from_secs(1)).await;
 

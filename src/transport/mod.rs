@@ -56,6 +56,9 @@ pub trait Transport<U: IrReplicaUpcalls>: Clone + Send + Sync + 'static {
 
     /// Send once and don't wait for a reply.
     fn do_send(&self, address: Self::Address, message: impl Into<IrMessage<U, Self>> + Debug);
+
+    /// Spawn a fire-and-forget async task.
+    fn spawn(future: impl Future<Output = ()> + Send + 'static);
 }
 
 pub trait TapirTransport<K: Key, V: Value>: Transport<TapirReplica<K, V>> {

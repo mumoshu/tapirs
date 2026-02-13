@@ -203,6 +203,10 @@ impl<U: IrReplicaUpcalls> Transport<U> for Channel<U> {
         }
     }
 
+    fn spawn(future: impl Future<Output = ()> + Send + 'static) {
+        tokio::spawn(future);
+    }
+
     fn do_send(&self, address: Self::Address, message: impl Into<IrMessage<U, Self>> + Debug) {
         let from = self.address;
         let should_drop = Self::should_drop(self.address, address);
@@ -215,7 +219,7 @@ impl<U: IrReplicaUpcalls> Transport<U> for Channel<U> {
         drop(inner);
         if let Some(callback) = callback {
             if !should_drop {
-                tokio::spawn(async move {
+                Self::spawn(async move {
                     Self::random_delay(1..50).await;
                     callback(from, message);
                 });

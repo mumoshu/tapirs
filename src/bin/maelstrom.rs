@@ -124,6 +124,10 @@ impl Transport<TapirReplica<K, V>> for Maelstrom {
         tokio::time::sleep(duration)
     }
 
+    fn spawn(future: impl futures::Future<Output = ()> + Send + 'static) {
+        tokio::spawn(future);
+    }
+
     fn send<R: TryFrom<IrMessage<TapirReplica<K, V>, Self>> + Send + std::fmt::Debug>(
         &self,
         address: Self::Address,

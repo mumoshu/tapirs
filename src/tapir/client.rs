@@ -14,7 +14,7 @@ use std::{
     task::Context,
     time::Duration,
 };
-use tokio::select;
+use futures::future::Either;
 use tracing::trace;
 
 pub struct Client<K: Key, V: Value, T: TapirTransport<K, V>> {
@@ -252,13 +252,11 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Transaction<K, V, T> {
         async move {
             if let Some(duration) = inject_fault {
                 let sleep = T::sleep(duration);
-                select! {
-                    _ = sleep => {
-                        std::future::pending::<Option<Timestamp>>().await
-                    }
-                    result = inner => {
-                        result
-                    }
+                futures::pin_mut!(sleep);
+                futures::pin_mut!(inner);
+                match futures::future::select(sleep, inner).await {
+                    Either::Left(_) => std::future::pending::<Option<Timestamp>>().await,
+                    Either::Right((result, _)) => result,
                 }
             } else {
                 inner.await
