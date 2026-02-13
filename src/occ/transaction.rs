@@ -81,10 +81,8 @@ impl<K: Eq + Hash, V: Eq, TS: Eq> Eq for Transaction<K, V, TS> {}
 
 impl<K, V, TS: Copy> Transaction<K, V, TS> {
     pub fn participants(&self) -> HashSet<ShardNumber> {
-        self.read_set
-            .iter()
-            .map(|(k, _)| k.shard)
-            .chain(self.write_set.iter().map(|(k, _)| k.shard))
+        self.read_set.keys().map(|k| k.shard)
+            .chain(self.write_set.keys().map(|k| k.shard))
             .chain(self.scan_set.iter().map(|e| e.shard))
             .collect()
     }

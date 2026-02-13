@@ -4,7 +4,7 @@ use super::memtable::{CompositeKey, LsmEntry, MaxValue, Memtable};
 use super::sstable::{SSTableReader, SSTableWriter};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Maximum number of L0 SSTables before triggering compaction.
 const L0_MAX_FILES: usize = 4;

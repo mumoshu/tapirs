@@ -3,7 +3,7 @@ use super::error::StorageError;
 use super::lsm::LsmTree;
 use super::manifest::Manifest;
 use super::memtable::{CompositeKey, LsmEntry, MaxValue, Memtable};
-use super::vlog::{ValuePointer, VlogEntry, VlogSegment};
+use super::vlog::{VlogEntry, VlogSegment};
 use crate::mvcc::backend::MvccBackend;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
@@ -110,7 +110,7 @@ where
         )?;
 
         // Replay vlog entries after the flushed offset into memtable.
-        let mut memtable = Memtable::new();
+        let memtable = Memtable::new();
         // For Phase 1, the manifest records the flushed offset. Entries
         // after that offset are replayed. The vlog is the WAL.
         // In practice, replay would scan from manifest.vlog_write_offset
@@ -308,7 +308,7 @@ where
         // In the BTreeMap, entries with Reverse<TS> are ordered so that
         // higher timestamps come first. We look for the entry whose
         // timestamp is just above `after_ts`.
-        let search = CompositeKey::new(key.clone(), after_ts);
+        let _search = CompositeKey::new(key.clone(), after_ts);
         for (ck, _) in self.memtable.iter() {
             if ck.key != *key {
                 if ck.key > *key {

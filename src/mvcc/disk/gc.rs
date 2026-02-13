@@ -2,8 +2,8 @@ use super::disk_io::{DiskIo, OpenFlags};
 use super::error::StorageError;
 use super::lsm::LsmTree;
 use super::memtable::{CompositeKey, LsmEntry};
-use super::sstable::{SSTableReader, SSTableWriter};
-use super::vlog::{VlogEntry, VlogSegment};
+use super::sstable::SSTableReader;
+use super::vlog::VlogSegment;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -16,14 +16,12 @@ impl GarbageCollector {
     ///
     /// An entry is "live" if it still exists in the LSM index (i.e.,
     /// the LSM entry's value_ptr points to this segment and offset).
-    pub async fn gc_vlog_segment<K, V, TS, IO>(
-        old_segment: &VlogSegment<IO>,
-        new_segment: &mut VlogSegment<IO>,
-        lsm: &LsmTree<IO>,
+    pub async fn gc_vlog_segment<TS, IO>(
+        _old_segment: &VlogSegment<IO>,
+        _new_segment: &mut VlogSegment<IO>,
+        _lsm: &LsmTree<IO>,
     ) -> Result<GcStats, StorageError>
     where
-        K: Serialize + for<'de> Deserialize<'de> + Ord + Clone,
-        V: Serialize + for<'de> Deserialize<'de> + Clone,
         TS: Serialize
             + for<'de> Deserialize<'de>
             + Ord
@@ -120,7 +118,6 @@ pub struct GcStats {
 mod tests {
     use super::*;
     use super::super::vlog::ValuePointer;
-    use std::cmp::Reverse;
 
     #[test]
     fn prune_old_versions() {

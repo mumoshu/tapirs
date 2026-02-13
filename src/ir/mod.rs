@@ -13,15 +13,13 @@ mod tests;
 pub use client::{Client, Id as ClientId};
 pub use membership::{Membership, Size as MembershipSize};
 pub use message::{
-    AddMember, Confirm, DoViewChange, FinalizeConsensus, FinalizeInconsistent, Message,
-    MessageImpl, ProposeConsensus, ProposeInconsistent, Reconfigure, RemoveMember, ReplyConsensus,
-    ReplyInconsistent, ReplyUnlogged, RequestUnlogged, StartView, ViewChangeAddendum,
+    AddMember, Confirm, DoViewChange, FinalizeConsensus, FinalizeInconsistent, Message, ProposeConsensus, ProposeInconsistent, RemoveMember, ReplyConsensus,
+    ReplyInconsistent, ReplyUnlogged, RequestUnlogged, StartView,
 };
 pub use op::Id as OpId;
 pub use record::{
-    ConsensusEntry as RecordConsensusEntry, Consistency,
+    ConsensusEntry as RecordConsensusEntry,
     InconsistentEntry as RecordInconsistentEntry, Record, State as RecordEntryState,
 };
-pub use replica::{Replica, Status as ReplicaStatus, Upcalls as ReplicaUpcalls};
-pub use shared_view::SharedView;
+pub use replica::{Replica, Upcalls as ReplicaUpcalls};
 pub use view::{Number as ViewNumber, View};

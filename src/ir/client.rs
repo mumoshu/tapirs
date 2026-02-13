@@ -27,6 +27,12 @@ use futures::future::Either;
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
 pub struct Id(pub u64);
 
+impl Default for Id {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Id {
     pub fn new() -> Self {
         Self(thread_rng().r#gen())

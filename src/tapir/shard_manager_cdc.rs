@@ -1,5 +1,5 @@
 use super::{
-    dynamic_router::ShardEntry, Change, Key, KeyRange, ShardNumber, Timestamp, Value,
+    dynamic_router::ShardEntry, Change, Key, KeyRange, ShardNumber, Value,
 };
 use crate::tapir::shard_manager::ShardManager;
 use crate::tapir::{Replica, Sharded};

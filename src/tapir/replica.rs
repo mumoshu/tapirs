@@ -219,11 +219,10 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
     fn exec_unlogged(&self, op: Self::UO) -> Self::UR {
         match op {
             UO::Get { key, timestamp } => {
-                if let Some(range) = &self.key_range {
-                    if !range.contains(&key) {
+                if let Some(range) = &self.key_range
+                    && !range.contains(&key) {
                         return UR::OutOfRange;
                     }
-                }
                 let (v, ts) = if let Some(timestamp) = timestamp {
                     self.inner.get_at(&key, timestamp)
                 } else {
@@ -236,13 +235,12 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
                 end_key,
                 timestamp,
             } => {
-                if let Some(range) = &self.key_range {
-                    if !range.contains(&start_key) || !range.contains(&end_key) {
+                if let Some(range) = &self.key_range
+                    && (!range.contains(&start_key) || !range.contains(&end_key)) {
                         return UR::OutOfRange;
                     }
-                }
                 // When no timestamp is specified, use latest (same semantics as Get).
-                let ts = timestamp.unwrap_or_else(|| {
+                let ts = timestamp.unwrap_or({
                     // Use maximum possible timestamp to get latest versions.
                     Timestamp {
                         time: u64::MAX,
@@ -360,7 +358,7 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
                 transaction_id,
                 commit,
             } => {
-                #[allow(clippy::blocks_in_if_conditions)]
+                #[allow(clippy::blocks_in_conditions)]
                 if commit
                     .map(|commit| {
                         debug_assert!(

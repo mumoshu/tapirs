@@ -10,16 +10,14 @@ pub struct KeyRange<K> {
 
 impl<K: Ord> KeyRange<K> {
     pub fn contains(&self, key: &K) -> bool {
-        if let Some(start) = &self.start {
-            if key < start {
+        if let Some(start) = &self.start
+            && key < start {
                 return false;
             }
-        }
-        if let Some(end) = &self.end {
-            if key >= end {
+        if let Some(end) = &self.end
+            && key >= end {
                 return false;
             }
-        }
         true
     }
 
@@ -30,17 +28,15 @@ impl<K: Ord> KeyRange<K> {
     /// Returns true if this range overlaps the inclusive range [start, end).
     pub fn overlaps_range(&self, start: &K, end: &K) -> bool {
         // No overlap if this range ends before the query starts.
-        if let Some(self_end) = &self.end {
-            if self_end <= start {
+        if let Some(self_end) = &self.end
+            && self_end <= start {
                 return false;
             }
-        }
         // No overlap if this range starts at or after the query ends.
-        if let Some(self_start) = &self.start {
-            if self_start >= end {
+        if let Some(self_start) = &self.start
+            && self_start >= end {
                 return false;
             }
-        }
         true
     }
 }

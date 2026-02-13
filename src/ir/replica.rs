@@ -394,8 +394,8 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                 }
             }
             Message::<U, T>::FinalizeConsensus(FinalizeConsensus { op_id, result }) => {
-                if sync.status.is_normal() {
-                    if let Some(entry) = Arc::make_mut(&mut sync.record).consensus.get_mut(&op_id) {
+                if sync.status.is_normal()
+                    && let Some(entry) = Arc::make_mut(&mut sync.record).consensus.get_mut(&op_id) {
                         // Don't allow a late `FinalizeConsensus` to overwrite
                         // a view change decision.
                         if entry.state.is_tentative() {
@@ -414,7 +414,6 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                             view: sync.view.clone(),
                         }));
                     }
-                }
             }
             Message::<U, T>::DoViewChange(msg) => {
                 if msg.view.number > sync.view.number

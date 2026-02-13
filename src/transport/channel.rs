@@ -76,6 +76,10 @@ impl<U: IrReplicaUpcalls> Registry<U> {
     pub fn len(&self) -> usize {
         self.inner.read().unwrap().callbacks.len()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 pub struct Channel<U: IrReplicaUpcalls> {
@@ -217,14 +221,13 @@ impl<U: IrReplicaUpcalls> Transport<U> for Channel<U> {
         let inner = self.inner.read().unwrap();
         let callback = inner.callbacks.get(address).map(Arc::clone);
         drop(inner);
-        if let Some(callback) = callback {
-            if !should_drop {
+        if let Some(callback) = callback
+            && !should_drop {
                 Self::spawn(async move {
                     Self::random_delay(1..50).await;
                     callback(from, message);
                 });
             }
-        }
     }
 }
 

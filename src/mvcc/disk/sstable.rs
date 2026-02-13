@@ -4,7 +4,7 @@ use super::error::StorageError;
 use super::memtable::{CompositeKey, LsmEntry};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// On-disk footer (last block of the SSTable file).
 #[derive(Debug, Serialize, Deserialize)]
@@ -37,7 +37,7 @@ impl BloomFilter {
     fn new(expected_items: usize) -> Self {
         // ~10 bits per item, 7 hashes => ~1% FP rate.
         let num_bits = (expected_items * 10).max(64);
-        let num_words = (num_bits + 63) / 64;
+        let num_words = num_bits.div_ceil(64);
         Self {
             bits: vec![0u64; num_words],
             num_hashes: 7,
@@ -81,7 +81,7 @@ impl SSTableWriter {
     /// Write `entries` (already sorted) to an SSTable file.
     /// Returns the number of entries written.
     pub async fn write<K, TS, IO>(
-        path: &PathBuf,
+        path: &Path,
         entries: &BTreeMap<CompositeKey<K, TS>, LsmEntry>,
         io_flags: super::disk_io::OpenFlags,
     ) -> Result<u64, StorageError>
@@ -411,8 +411,8 @@ impl<IO: DiskIo> SSTableReader<IO> {
         };
 
         // Scan blocks starting from block_idx.
-        for i in block_idx..index.len() {
-            let entries = self.read_block(&index[i]).await?;
+        for block in index.iter().skip(block_idx) {
+            let entries = self.read_block(block).await?;
             for (ck, entry) in entries {
                 if ck.key == *key && ck.timestamp.0 <= *ts {
                     return Ok(Some((ck, entry)));

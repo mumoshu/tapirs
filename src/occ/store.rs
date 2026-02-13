@@ -208,13 +208,12 @@ impl<K: Key, V: Value, TS: Timestamp> Store<K, V, TS> {
         let result = self.occ_check(&transaction, commit);
 
         // Avoid logical mutation in dry run.
-        if dry_run {
-            if let Some((commit, transaction, _)) = self.prepared.get(&id) {
+        if dry_run
+            && let Some((commit, transaction, _)) = self.prepared.get(&id) {
                 let transaction = transaction.clone();
                 let commit = *commit;
                 self.add_prepared_inner(&transaction, commit);
             }
-        }
 
         if result.is_ok() {
             if dry_run {
@@ -255,8 +254,8 @@ impl<K: Key, V: Value, TS: Timestamp> Store<K, V, TS> {
             }
 
             // There may be a pending write that would invalidate the read version.
-            if let Some(writes) = self.prepared_writes.get(key) {
-                if writes
+            if let Some(writes) = self.prepared_writes.get(key)
+                && writes
                     .range((
                         if self.linearizable {
                             Bound::Unbounded
@@ -271,7 +270,6 @@ impl<K: Key, V: Value, TS: Timestamp> Store<K, V, TS> {
                     // Read conflicts with later prepared write.
                     return PrepareResult::Abstain;
                 }
-            }
         }
 
         // Check for conflicts with the write set.
@@ -301,19 +299,17 @@ impl<K: Key, V: Value, TS: Timestamp> Store<K, V, TS> {
                 }
             }
 
-            if self.linearizable && let Some(writes) = self.prepared_writes.get(key) {
-                if let Some((write, _)) = writes.range((Bound::Excluded(&commit), Bound::Unbounded)).next() {
+            if self.linearizable && let Some(writes) = self.prepared_writes.get(key)
+                && let Some((write, _)) = writes.range((Bound::Excluded(&commit), Bound::Unbounded)).next() {
                     // Write conflicts with later prepared write.
                     return PrepareResult::Retry { proposed: write.time() };
                 }
-            }
 
-            if let Some(reads) = self.prepared_reads.get(key) {
-                if reads.range((Bound::Excluded(&commit), Bound::Unbounded)).next().is_some() {
+            if let Some(reads) = self.prepared_reads.get(key)
+                && reads.range((Bound::Excluded(&commit), Bound::Unbounded)).next().is_some() {
                     // Write conflicts with later prepared read.
                     return PrepareResult::Abstain;
                 }
-            }
         }
 
         // Check for conflicts with the scan set (phantom prevention).
