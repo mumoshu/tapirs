@@ -4,4 +4,4 @@ mod transaction;
 
 pub use store::{PrepareResult, Store};
 pub use timestamp::Timestamp;
-pub use transaction::{Id as TransactionId, SharedTransaction, Transaction};
+pub use transaction::{Id as TransactionId, ScanEntry, SharedTransaction, Transaction};

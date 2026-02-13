@@ -270,10 +270,17 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Transaction<K, V, T> {
 }
 
 pub fn max_read_timestamp<K, V>(transaction: &OccTransaction<K, V, Timestamp>) -> u64 {
-    transaction
+    let read_max = transaction
         .read_set
         .values()
         .map(|v| v.time)
         .max()
-        .unwrap_or_default()
+        .unwrap_or_default();
+    let scan_max = transaction
+        .scan_set
+        .iter()
+        .map(|e| e.timestamp.time)
+        .max()
+        .unwrap_or_default();
+    read_max.max(scan_max)
 }

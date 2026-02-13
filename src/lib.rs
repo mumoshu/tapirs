@@ -15,9 +15,9 @@ pub use ir::{
 };
 pub use mvcc::{MemoryStore as MvccMemoryStore, MvccBackend, Store as MvccStore};
 pub use occ::{
-    PrepareResult as OccPrepareResult, Store as OccStore, Timestamp as OccTimestamp,
-    SharedTransaction as OccSharedTransaction, Transaction as OccTransaction,
-    TransactionId as OccTransactionId,
+    PrepareResult as OccPrepareResult, ScanEntry as OccScanEntry, Store as OccStore,
+    Timestamp as OccTimestamp, SharedTransaction as OccSharedTransaction,
+    Transaction as OccTransaction, TransactionId as OccTransactionId,
 };
 pub use tapir::{
     Client as TapirClient, Replica as TapirReplica, ShardNumber, Timestamp as TapirTimestamp,
