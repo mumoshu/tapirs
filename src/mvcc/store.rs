@@ -176,7 +176,34 @@ impl<K: Ord, V, TS: Ord + Eq + Copy + Default> MemoryStore<K, V, TS> {
     }
 }
 
-impl<K: Ord, V: Clone, TS: Ord + Eq + Copy + Default + Send + std::fmt::Debug>
+impl<K: Ord + Clone, V: Clone, TS: Ord + Eq + Copy + Default> MemoryStore<K, V, TS> {
+    /// Return all key-value pairs in `[start..=end]` at the given timestamp.
+    pub fn scan(&self, start: &K, end: &K, timestamp: TS) -> Vec<(K, Option<V>, TS)> {
+        let mut results = Vec::new();
+        for (key, versions) in self.inner.range(start..=end) {
+            if let Some((ts, (value, _))) = versions.range(..=timestamp).next_back() {
+                results.push((key.clone(), value.clone(), *ts));
+            }
+        }
+        results
+    }
+
+    /// Check if any writes exist for keys in `[start..=end]` with timestamps in `(after_ts, before_ts)`.
+    pub fn has_writes_in_range(&self, start: &K, end: &K, after_ts: TS, before_ts: TS) -> bool {
+        for (_key, versions) in self.inner.range(start..=end) {
+            if versions
+                .range((Bound::Excluded(after_ts), Bound::Excluded(before_ts)))
+                .next()
+                .is_some()
+            {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+impl<K: Ord + Clone, V: Clone, TS: Ord + Eq + Copy + Default + Send + std::fmt::Debug>
     MvccBackend<K, V, TS> for MemoryStore<K, V, TS>
 where
     K: Send,
@@ -215,6 +242,14 @@ where
 
     fn get_last_read_at(&self, key: &K, timestamp: TS) -> Result<Option<TS>, Infallible> {
         Ok(MemoryStore::get_last_read_at(self, key, timestamp))
+    }
+
+    fn scan(&self, start: &K, end: &K, timestamp: TS) -> Result<Vec<(K, Option<V>, TS)>, Infallible> {
+        Ok(MemoryStore::scan(self, start, end, timestamp))
+    }
+
+    fn has_writes_in_range(&self, start: &K, end: &K, after_ts: TS, before_ts: TS) -> Result<bool, Infallible> {
+        Ok(MemoryStore::has_writes_in_range(self, start, end, after_ts, before_ts))
     }
 }
 

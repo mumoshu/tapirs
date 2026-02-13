@@ -14,4 +14,8 @@ pub trait MvccBackend<K, V, TS>: Send {
     fn commit_get(&mut self, key: K, read: TS, commit: TS) -> Result<(), Self::Error>;
     fn get_last_read(&self, key: &K) -> Result<Option<TS>, Self::Error>;
     fn get_last_read_at(&self, key: &K, timestamp: TS) -> Result<Option<TS>, Self::Error>;
+    /// Return all key-value pairs in `[start..=end]` at the given timestamp.
+    fn scan(&self, start: &K, end: &K, timestamp: TS) -> Result<Vec<(K, Option<V>, TS)>, Self::Error>;
+    /// Check if any writes exist for keys in `[start..=end]` with timestamps in `(after_ts, before_ts)`.
+    fn has_writes_in_range(&self, start: &K, end: &K, after_ts: TS, before_ts: TS) -> Result<bool, Self::Error>;
 }
