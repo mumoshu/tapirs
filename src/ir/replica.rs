@@ -88,6 +88,7 @@ impl<U: Upcalls, T: Transport<U>> Debug for Replica<U, T> {
 struct Inner<U: Upcalls, T: Transport<U>> {
     transport: T,
     app_tick: Option<fn(&U, &T, &Membership<T::Address>)>,
+    view_info_key: String,
     sync: Mutex<SyncInner<U, T>>,
 }
 
@@ -124,10 +125,12 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
             membership,
             number: ViewNumber(0),
         });
+        let view_info_key = format!("ir_replica_{}", transport.address());
         let ret = Self {
             inner: Arc::new(Inner {
                 transport,
                 app_tick,
+                view_info_key,
                 sync: Mutex::new(SyncInner {
                     status: Status::Normal,
                     latest_normal_view: view.clone(),
@@ -146,7 +149,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
         if let Some(persistent) = ret
             .inner
             .transport
-            .persisted::<PersistentViewInfo<T::Address>>(&ret.view_info_key())
+            .persisted::<PersistentViewInfo<T::Address>>(&ret.inner.view_info_key)
         {
             sync.status = Status::Recovering;
             sync.view = persistent.view;
@@ -177,16 +180,12 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
         self.inner.transport.address()
     }
 
-    fn view_info_key(&self) -> String {
-        format!("ir_replica_{}", self.inner.transport.address())
-    }
-
     fn persist_view_info(&self, sync: &SyncInner<U, T>) {
         if sync.view.membership.len() == 1 {
             return;
         }
         self.inner.transport.persist(
-            &self.view_info_key(),
+            &self.inner.view_info_key,
             Some(&PersistentViewInfo {
                 view: sync.view.clone(),
                 latest_normal_view: sync.latest_normal_view.clone(),
