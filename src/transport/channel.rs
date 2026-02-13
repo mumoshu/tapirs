@@ -15,6 +15,23 @@ use tracing::{trace, warn};
 
 const LOG: bool = true;
 
+#[derive(Clone, Debug)]
+pub struct RetryBackoff {
+    pub initial: Duration,
+    pub max: Duration,
+    pub multiplier: u32,
+}
+
+impl Default for RetryBackoff {
+    fn default() -> Self {
+        Self {
+            initial: Duration::from_millis(50),
+            max: Duration::from_millis(1000),
+            multiplier: 2,
+        }
+    }
+}
+
 pub struct Registry<U: IrReplicaUpcalls> {
     inner: Arc<RwLock<Inner<U>>>,
 }
@@ -67,6 +84,7 @@ impl<U: IrReplicaUpcalls> Registry<U> {
             persistent: Default::default(),
             inner: Arc::clone(&self.inner),
             epoch,
+            retry_backoff: RetryBackoff::default(),
         }
     }
 
@@ -89,6 +107,7 @@ pub struct Channel<U: IrReplicaUpcalls> {
     persistent: Arc<Mutex<HashMap<String, String>>>,
     inner: Arc<RwLock<Inner<U>>>,
     epoch: tokio::time::Instant,
+    retry_backoff: RetryBackoff,
 }
 
 impl<U: IrReplicaUpcalls> Clone for Channel<U> {
@@ -98,6 +117,7 @@ impl<U: IrReplicaUpcalls> Clone for Channel<U> {
             persistent: Arc::clone(&self.persistent),
             inner: Arc::clone(&self.inner),
             epoch: self.epoch,
+            retry_backoff: self.retry_backoff.clone(),
         }
     }
 }
@@ -161,7 +181,9 @@ impl<U: IrReplicaUpcalls> Transport<U> for Channel<U> {
         }
         let message = message.into();
         let inner = Arc::clone(&self.inner);
+        let backoff = self.retry_backoff.clone();
         async move {
+            let mut delay = backoff.initial;
             loop {
                 let callback = {
                     let inner = inner.read().unwrap();
@@ -176,10 +198,10 @@ impl<U: IrReplicaUpcalls> Transport<U> for Channel<U> {
                         }
                         break result;
                     } else {
-                        // Replica didn't respond (e.g., IR view change in
-                        // progress). Back off with a non-zero delay so
-                        // simulated time advances under start_paused=true.
-                        Self::sleep(Duration::from_millis(50)).await;
+                        // Replica didn't respond (e.g., view change in
+                        // progress). Back off before retrying.
+                        Self::sleep(delay).await;
+                        delay = (delay * backoff.multiplier).min(backoff.max);
                     }
                 } else {
                     warn!("unknown address {address:?}");

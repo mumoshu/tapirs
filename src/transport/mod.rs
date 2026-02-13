@@ -2,7 +2,7 @@ use crate::{
     tapir::{Key, Value},
     IrMembership, IrMessage, IrReplicaUpcalls, ShardNumber, TapirReplica,
 };
-pub use channel::{Channel, Registry as ChannelRegistry};
+pub use channel::{Channel, Registry as ChannelRegistry, RetryBackoff};
 pub use message::Message;
 pub use faulty_channel::{FaultyChannelTransport, NetworkFaultConfig, LatencyConfig};
 use serde::{de::DeserializeOwned, Serialize};
