@@ -62,7 +62,7 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
         start_key: K,
         end_key: K,
         timestamp: Option<Timestamp>,
-    ) -> impl Future<Output = (Vec<(K, Option<V>)>, Timestamp)> {
+    ) -> impl Future<Output = (Vec<(K, Option<V>)>, Timestamp)> + use<'_, K, V, T> {
         let future = self
             .inner
             .invoke_unlogged(UO::Scan { start_key, end_key, timestamp });

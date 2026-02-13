@@ -1,6 +1,7 @@
 use super::{Key, ShardClient, ShardNumber, Sharded, Timestamp, Value};
 use crate::{
-    util::join, IrClientId, OccPrepareResult, OccTransaction, OccTransactionId, TapirTransport,
+    util::join, IrClientId, OccPrepareResult, OccScanEntry, OccTransaction, OccTransactionId,
+    TapirTransport,
 };
 use futures::future::join_all;
 use rand::{thread_rng, Rng};
@@ -144,6 +145,76 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Transaction<K, V, T> {
         let key = key.into();
         let mut lock = self.inner.lock().unwrap();
         lock.inner.add_write(key, value);
+    }
+
+    /// Range scan across one or more shards. Returns key-value pairs in
+    /// `[start, end]`, overlaying the transaction's own buffered writes.
+    pub fn scan(
+        &self,
+        start: Sharded<K>,
+        end: Sharded<K>,
+    ) -> impl Future<Output = Vec<(K, V)>> {
+        let client = Arc::clone(&self.client);
+        let inner = Arc::clone(&self.inner);
+
+        async move {
+            // Determine which shards the range spans.
+            let shards = {
+                let lock = client.lock().unwrap();
+                lock.transport.shards_for_range(&start.key, &end.key)
+            };
+
+            // Ensure shard clients exist.
+            for &shard in &shards {
+                Inner::shard_client(&client, shard).await;
+            }
+
+            // Fan out shard-local scans sequentially (scan borrows shard client).
+            let shard_clients: Vec<_> = {
+                let lock = client.lock().unwrap();
+                shards
+                    .iter()
+                    .map(|shard| (*shard, lock.clients.get(shard).unwrap().clone()))
+                    .collect()
+            };
+
+            let mut merged = std::collections::BTreeMap::<K, Option<V>>::new();
+
+            for (shard, sc) in &shard_clients {
+                let (results, ts) = sc.scan(start.key.clone(), end.key.clone(), None).await;
+
+                // Record the scan entry for phantom prevention.
+                {
+                    let mut lock = inner.lock().unwrap();
+                    lock.inner.scan_set.push(OccScanEntry {
+                        shard: *shard,
+                        start_key: start.key.clone(),
+                        end_key: end.key.clone(),
+                        timestamp: ts,
+                    });
+                }
+
+                for (k, v) in results {
+                    merged.insert(k, v);
+                }
+            }
+
+            // Overlay the transaction's own buffered writes/deletes.
+            {
+                let lock = inner.lock().unwrap();
+                for (sharded_key, value) in &lock.inner.write_set {
+                    if sharded_key.key >= start.key && sharded_key.key <= end.key {
+                        merged.insert(sharded_key.key.clone(), value.clone());
+                    }
+                }
+            }
+
+            // Filter out tombstones (None values) and collect.
+            merged
+                .into_iter()
+                .filter_map(|(k, v)| v.map(|v| (k, v)))
+                .collect()
+        }
     }
 
     fn commit_inner(&self, only_prepare: bool) -> impl Future<Output = Option<Timestamp>> + use<K, V, T> {
