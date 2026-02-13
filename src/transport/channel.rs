@@ -3,7 +3,6 @@ use crate::{
     tapir::{Key, Value},
     IrMembership, IrMessage, IrReplicaUpcalls, ShardNumber, TapirReplica,
 };
-use rand::{thread_rng, Rng};
 use serde::{de::DeserializeOwned, Serialize};
 use std::{
     collections::HashMap,
@@ -11,7 +10,7 @@ use std::{
     future::Future,
     ops::Range,
     sync::{Arc, Mutex, RwLock},
-    time::{Duration, SystemTime},
+    time::Duration,
 };
 use tracing::{trace, warn};
 
@@ -39,6 +38,7 @@ struct Inner<U: IrReplicaUpcalls> {
         >,
     >,
     shards: HashMap<ShardNumber, IrMembership<usize>>,
+    epoch: tokio::time::Instant,
 }
 
 impl<U: IrReplicaUpcalls> Default for Inner<U> {
@@ -46,6 +46,7 @@ impl<U: IrReplicaUpcalls> Default for Inner<U> {
         Self {
             callbacks: Vec::new(),
             shards: Default::default(),
+            epoch: tokio::time::Instant::now(),
         }
     }
 }
@@ -60,11 +61,13 @@ impl<U: IrReplicaUpcalls> Registry<U> {
     ) -> Channel<U> {
         let mut inner = self.inner.write().unwrap();
         let address = inner.callbacks.len();
+        let epoch = inner.epoch;
         inner.callbacks.push(Arc::new(callback));
         Channel {
             address,
             persistent: Default::default(),
             inner: Arc::clone(&self.inner),
+            epoch,
         }
     }
 
@@ -86,6 +89,7 @@ pub struct Channel<U: IrReplicaUpcalls> {
     address: usize,
     persistent: Arc<Mutex<HashMap<String, String>>>,
     inner: Arc<RwLock<Inner<U>>>,
+    epoch: tokio::time::Instant,
 }
 
 impl<U: IrReplicaUpcalls> Clone for Channel<U> {
@@ -94,6 +98,7 @@ impl<U: IrReplicaUpcalls> Clone for Channel<U> {
             address: self.address,
             persistent: Arc::clone(&self.persistent),
             inner: Arc::clone(&self.inner),
+            epoch: self.epoch,
         }
     }
 }
@@ -123,19 +128,16 @@ impl<U: IrReplicaUpcalls> Transport<U> for Channel<U> {
     }
 
     fn time(&self) -> u64 {
-        self.time_offset(rand::thread_rng().gen_range(0..100))
+        (tokio::time::Instant::now() - self.epoch).as_nanos() as u64
     }
 
     fn time_offset(&self, offset: i64) -> u64 {
-        (SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64)
-            .saturating_add_signed(offset.saturating_mul(1000 * 1000 / 10))
+        self.time()
+            .saturating_add_signed(offset.saturating_mul(1_000_000))
     }
 
     fn sleep(duration: Duration) -> Self::Sleep {
-        tokio::time::sleep(duration / 10)
+        tokio::time::sleep(duration)
     }
 
     fn persist<T: Serialize>(&self, key: &str, value: Option<&T>) {

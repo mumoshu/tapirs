@@ -7,8 +7,9 @@ use crate::{
 use futures::future::join_all;
 use rand::{rngs::StdRng, thread_rng, Rng, SeedableRng};
 use std::{
+    collections::HashMap,
     sync::{
-        atomic::{AtomicI64, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
         Arc, Mutex,
     },
     time::Duration,
@@ -550,25 +551,52 @@ fn build_kv_faulty(
     Vec<Arc<IrReplica<TapirReplica<K, V>, FaultyTransport>>>,
     Vec<Arc<TapirClient<K, V, FaultyTransport>>>,
 ) {
+    let (mut shards, clients) =
+        build_sharded_kv_faulty(linearizable, 1, num_replicas, num_clients, config, seed);
+    (shards.remove(0), clients)
+}
+
+fn build_sharded_kv_faulty(
+    linearizable: bool,
+    num_shards: usize,
+    num_replicas: usize,
+    num_clients: usize,
+    config: &NetworkFaultConfig,
+    seed: u64,
+) -> (
+    Vec<Vec<Arc<IrReplica<TapirReplica<K, V>, FaultyTransport>>>>,
+    Vec<Arc<TapirClient<K, V, FaultyTransport>>>,
+) {
     init_tracing();
+
+    eprintln!("---------------------------");
+    eprintln!(
+        " linearizable={linearizable} num_shards={num_shards} num_replicas={num_replicas} seed={seed}"
+    );
+    eprintln!("---------------------------");
 
     let registry = ChannelRegistry::default();
 
-    let replicas = build_shard_faulty(
-        ShardNumber(0),
-        linearizable,
-        num_replicas,
-        &registry,
-        config,
-        seed,
-    );
+    let mut shards = Vec::new();
+    for shard in 0..num_shards {
+        let shard_seed = seed.wrapping_add(shard as u64 * 100);
+        let replicas = build_shard_faulty(
+            ShardNumber(shard as u32),
+            linearizable,
+            num_replicas,
+            &registry,
+            config,
+            shard_seed,
+        );
+        shards.push(replicas);
+    }
 
     let clients = build_clients_faulty(num_clients, &registry, config, seed.wrapping_add(5000));
 
-    (replicas, clients)
+    (shards, clients)
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn fuzz_tapir_transactions() {
     let seed: u64 = std::env::var("TAPI_TEST_SEED")
         .ok()
@@ -591,16 +619,26 @@ async fn fuzz_tapir_transactions() {
         clock_skew_nanos: 0,
     };
 
+    let num_shards = rng.gen_range(1..=3u32);
     let num_replicas = 3;
     let num_clients = 3;
     let num_keys: i64 = 5;
     let iterations_per_client = 20;
 
-    let (_replicas, clients) = build_kv_faulty(true, num_replicas, num_clients, &config, seed);
+    eprintln!("fuzz_tapir_transactions: num_shards={num_shards} seed={seed}");
 
-    // Track committed increments per key.
-    let committed_counts: Arc<Vec<AtomicI64>> =
-        Arc::new((0..num_keys).map(|_| AtomicI64::new(0)).collect());
+    let (_shards, clients) = build_sharded_kv_faulty(
+        true,
+        num_shards as usize,
+        num_replicas,
+        num_clients,
+        &config,
+        seed,
+    );
+
+    // Track committed increments per (shard, key).
+    let committed_counts: Arc<Mutex<HashMap<(u32, i64), i64>>> =
+        Arc::new(Mutex::new(HashMap::new()));
     let total_committed = Arc::new(AtomicU64::new(0));
     let total_attempted = Arc::new(AtomicU64::new(0));
 
@@ -622,16 +660,50 @@ async fn fuzz_tapir_transactions() {
                 let mut rng = StdRng::seed_from_u64(client_seed);
 
                 for _ in 0..iterations_per_client {
-                    let key: i64 = rng.gen_range(0..num_keys);
                     total_attempted.fetch_add(1, Ordering::Relaxed);
 
+                    let txn_type: u8 = rng.gen_range(0..100);
                     let txn = client.begin();
-                    let old = txn.get(key).await.unwrap_or(0);
-                    txn.put(key, Some(old + 1));
+                    // Track which (shard, key) pairs we wrote +1 to.
+                    let mut write_targets: Vec<(u32, i64)> = Vec::new();
+
+                    if txn_type < 60 {
+                        // Single-key read-modify-write.
+                        let shard = rng.gen_range(0..num_shards);
+                        let key: i64 = rng.gen_range(0..num_keys);
+                        let sk = Sharded { shard: ShardNumber(shard), key };
+                        let old = txn.get(sk.clone()).await.unwrap_or(0);
+                        txn.put(sk, Some(old + 1));
+                        write_targets.push((shard, key));
+                    } else if txn_type < 85 {
+                        // Cross-shard: read from one shard, write to another.
+                        let shard_a = rng.gen_range(0..num_shards);
+                        let shard_b = rng.gen_range(0..num_shards);
+                        let key_a: i64 = rng.gen_range(0..num_keys);
+                        let key_b: i64 = rng.gen_range(0..num_keys);
+                        let _val = txn
+                            .get(Sharded { shard: ShardNumber(shard_a), key: key_a })
+                            .await;
+                        let sk_b = Sharded { shard: ShardNumber(shard_b), key: key_b };
+                        let old_b = txn.get(sk_b.clone()).await.unwrap_or(0);
+                        txn.put(sk_b, Some(old_b + 1));
+                        write_targets.push((shard_b, key_b));
+                    } else {
+                        // Read-only transaction.
+                        let n_reads = rng.gen_range(1..=2u8);
+                        for _ in 0..n_reads {
+                            let shard = rng.gen_range(0..num_shards);
+                            let key: i64 = rng.gen_range(0..num_keys);
+                            txn.get(Sharded { shard: ShardNumber(shard), key }).await;
+                        }
+                    }
 
                     match timeout(Duration::from_secs(5), txn.commit()).await {
                         Ok(Some(_ts)) => {
-                            committed_counts[key as usize].fetch_add(1, Ordering::Relaxed);
+                            let mut counts = committed_counts.lock().unwrap();
+                            for (s, k) in write_targets {
+                                *counts.entry((s, k)).or_default() += 1;
+                            }
                             total_committed.fetch_add(1, Ordering::Relaxed);
                         }
                         Ok(None) | Err(_) => {
@@ -660,36 +732,44 @@ async fn fuzz_tapir_transactions() {
 
     let attempted = total_attempted.load(Ordering::Relaxed);
     let committed = total_committed.load(Ordering::Relaxed);
-    eprintln!("fuzz_tapir_transactions: attempted={attempted} committed={committed} seed={seed}");
+    eprintln!(
+        "fuzz_tapir_transactions: attempted={attempted} committed={committed} \
+         shards={num_shards} seed={seed}"
+    );
     assert!(committed > 0, "no transactions committed (seed={seed})");
 
     // Let replicas drain pending operations.
     FaultyTransport::sleep(Duration::from_secs(2)).await;
 
-    // Verify counter invariant: for each key, final value == number of committed increments.
+    // Verify counter invariant: for each (shard, key), final value == committed increments.
+    let counts = committed_counts.lock().unwrap().clone();
     let verify_client = &clients[0];
-    for key in 0..num_keys {
-        let expected = committed_counts[key as usize].load(Ordering::Relaxed);
-
+    for ((shard, key), expected) in &counts {
         let txn = verify_client.begin();
-        let actual = txn.get(key).await.unwrap_or(0);
+        let actual = txn
+            .get(Sharded { shard: ShardNumber(*shard), key: *key })
+            .await
+            .unwrap_or(0);
 
         match timeout(Duration::from_secs(5), txn.commit()).await {
             Ok(Some(_)) => {
                 assert_eq!(
-                    actual, expected,
-                    "counter invariant violated for key {key}: actual={actual} expected={expected} (seed={seed})"
+                    actual, *expected,
+                    "counter invariant violated for shard={shard} key={key}: \
+                     actual={actual} expected={expected} (seed={seed})"
                 );
             }
             _ => {
                 eprintln!(
-                    "warning: verification read for key {key} did not commit (seed={seed})"
+                    "warning: verification read for shard={shard} key={key} \
+                     did not commit (seed={seed})"
                 );
             }
         }
     }
 
     eprintln!(
-        "fuzz_tapir_transactions: seed={seed} {committed}/{attempted} committed, invariants passed"
+        "fuzz_tapir_transactions: seed={seed} shards={num_shards} \
+         {committed}/{attempted} committed, invariants passed"
     );
 }
