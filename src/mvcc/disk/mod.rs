@@ -2,6 +2,7 @@ pub mod aligned_buf;
 pub mod disk_io;
 pub mod disk_store;
 pub mod error;
+pub mod gc;
 pub mod lsm;
 pub mod manifest;
 pub mod memtable;
