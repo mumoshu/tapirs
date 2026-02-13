@@ -1,0 +1,199 @@
+use super::address::UringAddress;
+use super::codec::FrameCodec;
+use super::conn_pool::ConnectionPool;
+use super::reactor::with_reactor;
+use super::timer::UringSleep;
+use super::transport::{PendingReply, TransportState, UringTransport};
+use super::wire::{UringIrMessage, WireMessage};
+use crate::ir::ReplicaUpcalls;
+use crate::{IrMembership, IrMessage, ShardNumber};
+use crate::transport::{TapirTransport, Transport};
+use crate::tapir::{Key, Value};
+use crate::TapirReplica;
+use serde::{Serialize, de::DeserializeOwned};
+use std::cell::RefCell;
+use std::fmt::Debug;
+use std::future::Future;
+use std::pin::Pin;
+use std::rc::Rc;
+use std::task::{Context, Poll};
+use std::time::Duration;
+
+impl<U: ReplicaUpcalls> Transport<U> for UringTransport<U>
+where
+    U::UO: Serialize + DeserializeOwned,
+    U::UR: Serialize + DeserializeOwned,
+    U::IO: Serialize + DeserializeOwned,
+    U::CO: Serialize + DeserializeOwned,
+    U::CR: Serialize + DeserializeOwned,
+{
+    type Address = UringAddress;
+    type Sleep = UringSleep;
+
+    fn address(&self) -> UringAddress {
+        self.assert_thread();
+        self.address
+    }
+
+    fn sleep(duration: Duration) -> UringSleep {
+        UringSleep::new(duration)
+    }
+
+    fn persist<T: Serialize>(&self, key: &str, value: Option<&T>) {
+        self.assert_thread();
+        let state = self.state.borrow();
+        let dir = &state.persist_dir;
+        let path = format!("{dir}/{key}.bin");
+        if let Some(val) = value {
+            let data = bitcode::serialize(val).expect("serialize");
+            std::fs::create_dir_all(dir).ok();
+            std::fs::write(&path, data).expect("persist write");
+        } else {
+            std::fs::remove_file(&path).ok();
+        }
+    }
+
+    fn persisted<T: DeserializeOwned>(&self, key: &str) -> Option<T> {
+        self.assert_thread();
+        let state = self.state.borrow();
+        let path = format!("{}/{key}.bin", state.persist_dir);
+        std::fs::read(&path)
+            .ok()
+            .and_then(|data| bitcode::deserialize(&data).ok())
+    }
+
+    fn send<R: TryFrom<IrMessage<U, Self>> + Send + Debug>(
+        &self,
+        address: UringAddress,
+        message: impl Into<IrMessage<U, Self>> + Debug,
+    ) -> impl Future<Output = R> + Send + 'static {
+        self.assert_thread();
+        let message: UringIrMessage<U> = message.into();
+        let state = Rc::clone(&self.state);
+        let from = self.address;
+
+        let request_id = {
+            let mut s = state.borrow_mut();
+            let id = s.next_request_id;
+            s.next_request_id += 1;
+            s.pending_replies.insert(id, PendingReply {
+                result: None,
+                waker: None,
+            });
+            id
+        };
+
+        let wire = WireMessage::<U>::Request {
+            from,
+            request_id,
+            payload: message.clone(),
+        };
+        let frame = FrameCodec::encode(&wire);
+        {
+            let mut s = state.borrow_mut();
+            send_frame(&mut s, address, frame);
+        }
+
+        // SAFETY: Future contains Rc but is only used on the reactor
+        // thread. See UringTransport Send impl.
+        UnsafeSendFuture(async move {
+            std::future::poll_fn(move |cx| {
+                let mut s = state.borrow_mut();
+                if let Some(pending) = s.pending_replies.get_mut(&request_id) {
+                    if let Some(msg) = pending.result.take() {
+                        s.pending_replies.remove(&request_id);
+                        let result: R = msg.try_into().unwrap_or_else(|_| {
+                            panic!("unexpected reply type")
+                        });
+                        Poll::Ready(result)
+                    } else {
+                        pending.waker = Some(cx.waker().clone());
+                        Poll::Pending
+                    }
+                } else {
+                    Poll::Pending
+                }
+            })
+            .await
+        })
+    }
+
+    fn do_send(
+        &self,
+        address: UringAddress,
+        message: impl Into<IrMessage<U, Self>> + Debug,
+    ) {
+        self.assert_thread();
+        let message: UringIrMessage<U> = message.into();
+        let wire = WireMessage::<U>::FireAndForget {
+            from: self.address,
+            payload: message,
+        };
+        let frame = FrameCodec::encode(&wire);
+        let mut state = self.state.borrow_mut();
+        send_frame(&mut state, address, frame);
+    }
+
+    fn spawn(future: impl Future<Output = ()> + Send + 'static) {
+        with_reactor(|r| r.executor.spawn(future));
+    }
+}
+
+fn send_frame<U: ReplicaUpcalls>(
+    state: &mut TransportState<U>,
+    address: UringAddress,
+    frame: Vec<u8>,
+) {
+    let addr = address.socket_addr();
+    if state.conn_pool.is_connected(&addr) {
+        if let Some(conn) = state.conn_pool.get_mut(&addr) {
+            conn.write_queue.push_back(frame);
+        }
+    } else if state.conn_pool.is_connecting(&addr) {
+        state.conn_pool.queue_while_connecting(addr, frame);
+    } else {
+        state.conn_pool.start_connecting(addr);
+        state.conn_pool.queue_while_connecting(addr, frame);
+    }
+}
+
+/// Wrapper that implements Send for futures containing Rc.
+/// SAFETY: Only used on the reactor thread (thread-per-core guarantee).
+struct UnsafeSendFuture<F>(F);
+unsafe impl<F> Send for UnsafeSendFuture<F> {}
+
+impl<F: Future> Future for UnsafeSendFuture<F> {
+    type Output = F::Output;
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<F::Output> {
+        // SAFETY: We only project to the inner future, preserving pin.
+        let inner = unsafe { self.map_unchecked_mut(|s| &mut s.0) };
+        inner.poll(cx)
+    }
+}
+
+impl<K: Key, V: Value> TapirTransport<K, V> for UringTransport<TapirReplica<K, V>>
+where
+    <TapirReplica<K, V> as ReplicaUpcalls>::UO: Serialize + DeserializeOwned,
+    <TapirReplica<K, V> as ReplicaUpcalls>::UR: Serialize + DeserializeOwned,
+    <TapirReplica<K, V> as ReplicaUpcalls>::IO: Serialize + DeserializeOwned,
+    <TapirReplica<K, V> as ReplicaUpcalls>::CO: Serialize + DeserializeOwned,
+    <TapirReplica<K, V> as ReplicaUpcalls>::CR: Serialize + DeserializeOwned,
+{
+    fn shard_addresses(
+        &self,
+        shard: ShardNumber,
+    ) -> impl Future<Output = IrMembership<UringAddress>> + Send + 'static {
+        let state = Rc::clone(&self.state);
+        UnsafeSendFuture(async move {
+            loop {
+                {
+                    let s = state.borrow();
+                    if let Some(m) = s.shard_directory.get(&shard) {
+                        return m.clone();
+                    }
+                }
+                UringSleep::new(Duration::from_millis(100)).await;
+            }
+        })
+    }
+}

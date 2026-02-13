@@ -14,7 +14,7 @@ pub use client::{Client, Id as ClientId};
 pub use membership::{Membership, Size as MembershipSize};
 pub use message::{
     AddMember, Confirm, DoViewChange, FinalizeConsensus, FinalizeInconsistent, Message,
-    ProposeConsensus, ProposeInconsistent, Reconfigure, RemoveMember, ReplyConsensus,
+    MessageImpl, ProposeConsensus, ProposeInconsistent, Reconfigure, RemoveMember, ReplyConsensus,
     ReplyInconsistent, ReplyUnlogged, RequestUnlogged, StartView, ViewChangeAddendum,
 };
 pub use op::Id as OpId;

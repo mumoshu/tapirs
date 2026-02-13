@@ -11,7 +11,12 @@ pub(crate) mod reactor;
 mod task;
 mod tcp;
 mod timer;
+pub(crate) mod transport;
+mod transport_impl;
+mod wire;
 
 pub use address::UringAddress;
+pub use disk_io::UringDirectIo;
 pub use error::UringError;
 pub use timer::UringSleep;
+pub use transport::UringTransport;
