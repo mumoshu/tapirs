@@ -29,6 +29,8 @@ pub(crate) struct TransportState<U: ReplicaUpcalls> {
     pub next_request_id: u64,
     pub shard_directory: HashMap<ShardNumber, IrMembership<UringAddress>>,
     pub persist_dir: String,
+    pub connect_timeout_ms: u64,
+    pub request_timeout_ms: u64,
 }
 
 /// io_uring-based Transport implementation.
@@ -57,6 +59,15 @@ impl<U: ReplicaUpcalls> Clone for UringTransport<U> {
 
 impl<U: ReplicaUpcalls> UringTransport<U> {
     pub fn new(address: UringAddress, persist_dir: String) -> Self {
+        Self::new_with_config(address, persist_dir, 5000, 30000)
+    }
+
+    pub fn new_with_config(
+        address: UringAddress,
+        persist_dir: String,
+        connect_timeout_ms: u64,
+        request_timeout_ms: u64,
+    ) -> Self {
         Self {
             address,
             state: Rc::new(RefCell::new(TransportState {
@@ -66,6 +77,8 @@ impl<U: ReplicaUpcalls> UringTransport<U> {
                 next_request_id: 0,
                 shard_directory: HashMap::new(),
                 persist_dir,
+                connect_timeout_ms,
+                request_timeout_ms,
             })),
             #[cfg(debug_assertions)]
             thread_id: std::thread::current().id(),
@@ -122,7 +135,13 @@ impl<U: ReplicaUpcalls> UringTransport<U> {
                             request_id,
                             payload: reply,
                         };
-                        return Some(FrameCodec::encode(&reply_wire));
+                        return match FrameCodec::encode(&reply_wire) {
+                            Ok(frame) => Some(frame),
+                            Err(e) => {
+                                eprintln!("reply encode error: {e}");
+                                None // Drop reply on encode error
+                            }
+                        };
                     }
                 }
                 None
@@ -204,8 +223,13 @@ where
                 Err(_) => continue,
             };
             if let Some(reply_frame) = transport.dispatch(wire) {
-                if stream.send(&reply_frame).await.is_err() {
-                    return;
+                // Send reply - loop until all bytes sent
+                let mut sent = 0;
+                while sent < reply_frame.len() {
+                    match stream.send(&reply_frame[sent..]).await {
+                        Ok(n) => sent += n,
+                        Err(_) => return,
+                    }
                 }
             }
         }
@@ -260,11 +284,26 @@ where
 {
     use std::time::Duration;
 
-    // 1. Attempt connection with backoff on failure
+    // 1. Attempt connection with backoff and timeout
+    let connect_start = std::time::Instant::now();
+    let timeout_ms = {
+        let state = transport.state.borrow();
+        state.connect_timeout_ms
+    };
+
     let stream = loop {
         match super::tcp::TcpStream::connect(addr).await {
             Ok(s) => break s,
             Err(_) => {
+                // Check timeout
+                if connect_start.elapsed().as_millis() as u64 > timeout_ms {
+                    eprintln!("connect timeout after {timeout_ms}ms to {addr}");
+                    // Clean up connecting state
+                    let mut state = transport.state.borrow_mut();
+                    state.conn_pool.connecting.remove(&addr);
+                    return; // Give up
+                }
+
                 let backoff_ms = {
                     let mut state = transport.state.borrow_mut();
                     state.conn_pool.reconnect_backoff_ms(&addr)
@@ -314,28 +353,32 @@ where
 
         match frame_opt {
             Some(data) => {
-                // Send using our owned stream
-                match stream.send(&data).await {
-                    Ok(_) => {
-                        // Success - continue
-                    }
-                    Err(_) => {
-                        // Send failed - connection dead
-                        {
-                            let mut state = transport.state.borrow_mut();
-                            state.conn_pool.remove(&addr);
+                // Send using our owned stream - loop until all bytes sent
+                let mut sent = 0;
+                while sent < data.len() {
+                    match stream.send(&data[sent..]).await {
+                        Ok(n) => {
+                            sent += n;
                         }
+                        Err(_) => {
+                            // Send failed - connection dead
+                            {
+                                let mut state = transport.state.borrow_mut();
+                                state.conn_pool.remove(&addr);
+                            }
 
-                        // Respawn connect_and_write with backoff
-                        let t = transport.clone();
-                        reactor::with_reactor(|r| {
-                            r.executor.spawn(connect_and_write(addr, t));
-                        });
-                        return;
-                        // stream drops here, closing the fd
-                        // read_loop will get error and exit
+                            // Respawn connect_and_write with backoff
+                            let t = transport.clone();
+                            reactor::with_reactor(|r| {
+                                r.executor.spawn(connect_and_write(addr, t));
+                            });
+                            return;
+                            // stream drops here, closing the fd
+                            // read_loop will get error and exit
+                        }
                     }
                 }
+                // All bytes sent successfully - continue
             }
             None => {
                 // Queue empty - check if still connected

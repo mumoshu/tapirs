@@ -3,6 +3,9 @@ use super::tcp::TcpStream;
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 
+/// Maximum queued frames per connection before backpressure.
+const MAX_WRITE_QUEUE_SIZE: usize = 1000;
+
 /// A pooled TCP connection with read/write state.
 /// For inbound connections, stream and reader are used.
 /// For outbound connections, only write_queue is used (stream owned by connect_and_write task).
@@ -35,8 +38,24 @@ impl PooledConnection {
     }
 
     /// Queue a serialized frame for sending.
-    pub fn enqueue_frame<T: serde::Serialize>(&mut self, msg: &T) {
-        let frame = FrameCodec::encode(msg);
+    pub fn enqueue_frame<T: serde::Serialize>(&mut self, msg: &T) -> Result<(), bitcode::Error> {
+        let frame = FrameCodec::encode(msg)?;
+        self.write_queue.push_back(frame);
+        Ok(())
+    }
+
+    /// Queue a frame if capacity available.
+    /// Returns Ok(()) on success, Err(()) if queue is full (backpressure).
+    pub fn try_enqueue_frame(&mut self, frame: Vec<u8>) -> Result<(), ()> {
+        if self.write_queue.len() >= MAX_WRITE_QUEUE_SIZE {
+            return Err(()); // Queue full
+        }
+        self.write_queue.push_back(frame);
+        Ok(())
+    }
+
+    /// Queue a frame without capacity check (for internal use).
+    pub(crate) fn enqueue_frame_unchecked(&mut self, frame: Vec<u8>) {
         self.write_queue.push_back(frame);
     }
 }
@@ -45,8 +64,8 @@ impl PooledConnection {
 pub(crate) struct ConnectionPool {
     connections: HashMap<SocketAddr, PooledConnection>,
     /// Addresses currently being connected, with queued frames.
-    connecting: HashMap<SocketAddr, Vec<Vec<u8>>>,
-    reconnect_attempts: HashMap<SocketAddr, u32>,
+    pub(crate) connecting: HashMap<SocketAddr, Vec<Vec<u8>>>,
+    pub(crate) reconnect_attempts: HashMap<SocketAddr, u32>,
 }
 
 const MAX_BACKOFF_MS: u64 = 5000;

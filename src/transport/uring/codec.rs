@@ -9,13 +9,13 @@ pub(crate) struct FrameCodec;
 
 impl FrameCodec {
     /// Encode a message into a length-prefixed frame.
-    pub fn encode<T: Serialize>(msg: &T) -> Vec<u8> {
-        let payload = bitcode::serialize(msg).expect("serialize");
+    pub fn encode<T: Serialize>(msg: &T) -> Result<Vec<u8>, bitcode::Error> {
+        let payload = bitcode::serialize(msg)?;
         let len = payload.len() as u32;
         let mut buf = Vec::with_capacity(4 + payload.len());
         buf.extend_from_slice(&len.to_le_bytes());
         buf.extend_from_slice(&payload);
-        buf
+        Ok(buf)
     }
 
     /// Decode a bitcode payload (without length prefix).
@@ -88,7 +88,7 @@ mod tests {
     #[test]
     fn encode_decode_roundtrip() {
         let msg: Vec<u32> = vec![1, 2, 3, 42];
-        let frame = FrameCodec::encode(&msg);
+        let frame = FrameCodec::encode(&msg).unwrap();
         // First 4 bytes are length prefix.
         let len =
             u32::from_le_bytes(frame[..4].try_into().unwrap()) as usize;
@@ -101,7 +101,7 @@ mod tests {
     #[test]
     fn frame_reader_partial_reads() {
         let msg: String = "hello".to_string();
-        let frame = FrameCodec::encode(&msg);
+        let frame = FrameCodec::encode(&msg).unwrap();
         let mut reader = FrameReader::new();
 
         // Feed one byte at a time.
@@ -121,8 +121,8 @@ mod tests {
 
     #[test]
     fn frame_reader_two_frames() {
-        let f1 = FrameCodec::encode(&42u64);
-        let f2 = FrameCodec::encode(&99u64);
+        let f1 = FrameCodec::encode(&42u64).unwrap();
+        let f2 = FrameCodec::encode(&99u64).unwrap();
         let mut reader = FrameReader::new();
         let buf = reader.recv_buf();
         buf[..f1.len()].copy_from_slice(&f1);

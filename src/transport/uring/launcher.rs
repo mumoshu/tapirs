@@ -19,6 +19,23 @@ pub struct CoreConfig {
     pub shards: Vec<ShardAssignment>,
     pub ring_size: u32,
     pub persist_dir: String,
+    /// Connection timeout (milliseconds). Default: 5000ms.
+    pub connect_timeout_ms: u64,
+    /// Request timeout (milliseconds). Default: 30000ms (not yet implemented).
+    pub request_timeout_ms: u64,
+}
+
+impl Default for CoreConfig {
+    fn default() -> Self {
+        Self {
+            cpu_id: 0,
+            shards: Vec::new(),
+            ring_size: 256,
+            persist_dir: String::new(),
+            connect_timeout_ms: 5000,
+            request_timeout_ms: 30000,
+        }
+    }
 }
 
 /// Launches reactor threads, one per core.

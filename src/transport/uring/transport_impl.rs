@@ -88,10 +88,19 @@ where
             request_id,
             payload: message.clone(),
         };
-        let frame = FrameCodec::encode(&wire);
+        let frame = match FrameCodec::encode(&wire) {
+            Ok(f) => f,
+            Err(e) => {
+                // Serialization failed - remove pending reply and panic
+                eprintln!("encode error: {e}");
+                let mut s = state.borrow_mut();
+                s.pending_replies.remove(&request_id);
+                panic!("serialization failed: {e}");
+            }
+        };
         let should_spawn = {
             let mut s = state.borrow_mut();
-            send_frame(&mut s, address, frame)
+            send_frame(&mut s, address, frame).expect("write queue full (backpressure)")
         };
         if should_spawn {
             let t = self.clone();
@@ -135,10 +144,22 @@ where
             from: self.address,
             payload: message,
         };
-        let frame = FrameCodec::encode(&wire);
+        let frame = match FrameCodec::encode(&wire) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("encode error in do_send: {e}");
+                return; // Drop message silently on encode error
+            }
+        };
         let should_spawn = {
             let mut state = self.state.borrow_mut();
-            send_frame(&mut state, address, frame)
+            match send_frame(&mut state, address, frame) {
+                Ok(spawn) => spawn,
+                Err(()) => {
+                    eprintln!("write queue full for {address:?}, dropping message");
+                    return; // Drop message on backpressure
+                }
+            }
         };
         if should_spawn {
             let t = self.clone();
@@ -157,20 +178,26 @@ fn send_frame<U: ReplicaUpcalls>(
     state: &mut TransportState<U>,
     address: UringAddress,
     frame: Vec<u8>,
-) -> bool {
+) -> Result<bool, ()> {
     let addr = address.socket_addr();
     if state.conn_pool.is_connected(&addr) {
         if let Some(conn) = state.conn_pool.get_mut(&addr) {
-            conn.write_queue.push_back(frame);
+            conn.try_enqueue_frame(frame)?; // Propagate backpressure error
         }
-        false
+        Ok(false)
     } else if state.conn_pool.is_connecting(&addr) {
+        // Check connecting queue size too
+        if let Some(queue) = state.conn_pool.connecting.get(&addr) {
+            if queue.len() >= 1000 {
+                return Err(()); // Connecting queue full
+            }
+        }
         state.conn_pool.queue_while_connecting(addr, frame);
-        false  // Already connecting, don't spawn duplicate
+        Ok(false)  // Already connecting, don't spawn duplicate
     } else {
         state.conn_pool.start_connecting(addr);
         state.conn_pool.queue_while_connecting(addr, frame);
-        true  // New connection, spawn connect_and_write
+        Ok(true)  // New connection, spawn connect_and_write
     }
 }
 
