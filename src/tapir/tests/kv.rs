@@ -544,22 +544,6 @@ fn build_clients_faulty(
     (clients, transports)
 }
 
-fn build_kv_faulty(
-    linearizable: bool,
-    num_replicas: usize,
-    num_clients: usize,
-    config: &NetworkFaultConfig,
-    seed: u64,
-) -> (
-    Vec<Arc<IrReplica<TapirReplica<K, V>, FaultyTransport>>>,
-    Vec<Arc<TapirClient<K, V, FaultyTransport>>>,
-    Vec<FaultyTransport>,
-) {
-    let (mut shards, clients, client_transports) =
-        build_sharded_kv_faulty(linearizable, 1, num_replicas, num_clients, config, seed);
-    (shards.remove(0), clients, client_transports)
-}
-
 fn build_sharded_kv_faulty(
     linearizable: bool,
     num_shards: usize,
