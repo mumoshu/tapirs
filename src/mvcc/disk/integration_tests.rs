@@ -523,4 +523,132 @@ mod tests {
             }
         }
     }
+
+    // Key Boundary Condition Tests (A3)
+
+    #[test]
+    fn test_key_empty() {
+        let (_dir, mut store) = open_store();
+
+        // Write with empty key
+        MvccBackend::put(&mut store, "".into(), Some("value".into()), 10).unwrap();
+
+        // Read back
+        let (v, ts) = MvccBackend::get(&store, &"".into()).unwrap();
+        assert_eq!(v, Some("value".into()));
+        assert_eq!(ts, 10);
+
+        // Update with new version
+        MvccBackend::put(&mut store, "".into(), Some("value2".into()), 20).unwrap();
+
+        // Verify MVCC works with empty key
+        let (v, ts) = MvccBackend::get_at(&store, &"".into(), 15).unwrap();
+        assert_eq!(v, Some("value".into()));
+        assert_eq!(ts, 10);
+
+        // Latest version
+        let (v, ts) = MvccBackend::get(&store, &"".into()).unwrap();
+        assert_eq!(v, Some("value2".into()));
+        assert_eq!(ts, 20);
+    }
+
+    #[test]
+    fn test_key_very_long() {
+        let (_dir, mut store) = open_store();
+
+        // Generate 1 MB key deterministically
+        let long_key = "k".repeat(1_000_000);
+
+        MvccBackend::put(&mut store, long_key.clone(), Some("v1".into()), 10).unwrap();
+
+        // Verify round-trip
+        let (v, ts) = MvccBackend::get(&store, &long_key).unwrap();
+        assert_eq!(v, Some("v1".into()));
+        assert_eq!(ts, 10);
+
+        // Trigger flush with other keys
+        for i in 0u64..2000 {
+            let key = format!("short-{i:06}");
+            MvccBackend::put(&mut store, key, Some("val".into()), i + 100).unwrap();
+        }
+
+        // Verify long key still accessible after flush
+        let (v, ts) = MvccBackend::get(&store, &long_key).unwrap();
+        assert_eq!(v, Some("v1".into()));
+        assert_eq!(ts, 10);
+    }
+
+    #[test]
+    fn test_key_null_bytes() {
+        let (_dir, mut store) = open_store();
+
+        // Keys with null bytes in different positions
+        let keys = vec![
+            "key\0middle",   // Null in middle
+            "\0leading",     // Null at start
+            "trailing\0",    // Null at end
+            "multi\0\0ple",  // Multiple nulls
+        ];
+
+        // Write all keys
+        for (i, key) in keys.iter().enumerate() {
+            let ts = (i + 1) as u64 * 10;
+            MvccBackend::put(&mut store, key.to_string(), Some(format!("v{}", i)), ts).unwrap();
+        }
+
+        // Verify all keys readable
+        for (i, key) in keys.iter().enumerate() {
+            let (v, ts) = MvccBackend::get(&store, &key.to_string()).unwrap();
+            assert_eq!(v, Some(format!("v{}", i)));
+            assert_eq!(ts, (i + 1) as u64 * 10);
+        }
+
+        // Verify keys are distinct (null bytes preserved)
+        assert_ne!(keys[0], keys[1]);
+        assert_ne!(keys[1], keys[2]);
+        assert_ne!(keys[2], keys[3]);
+    }
+
+    #[test]
+    fn test_key_unicode() {
+        let (_dir, mut store) = open_store();
+
+        // Various Unicode keys
+        let keys = vec![
+            ("emoji", "🔑key"),           // Emoji
+            ("cjk", "键"),                // Chinese
+            ("arabic", "مفتاح"),          // Arabic (RTL)
+            ("latin_ext", "keÿ"),         // Latin Extended
+            ("combining", "e\u{0301}"),   // Combining character (é)
+            ("mixed", "key_ñ_键_🔑"),     // Mixed scripts
+        ];
+
+        // Write all keys
+        for (name, key) in &keys {
+            let ts = keys.iter().position(|k| k.0 == *name).unwrap() as u64 + 10;
+            MvccBackend::put(&mut store, key.to_string(), Some(format!("v_{}", name)), ts).unwrap();
+        }
+
+        // Verify all keys readable
+        for (name, key) in &keys {
+            let (v, ts) = MvccBackend::get(&store, &key.to_string()).unwrap();
+            assert_eq!(v, Some(format!("v_{}", name)));
+        }
+
+        // Verify keys are distinct
+        let key_set: std::collections::HashSet<_> = keys.iter().map(|(_, k)| k).collect();
+        assert_eq!(key_set.len(), keys.len(), "All Unicode keys should be distinct");
+
+        // Trigger flush and verify persistence
+        for i in 0u64..2000 {
+            let key = format!("filler-{i:06}");
+            MvccBackend::put(&mut store, key, Some("val".into()), i + 100).unwrap();
+        }
+
+        // Verify Unicode keys still readable after flush
+        for (name, key) in &keys {
+            let (v, _ts) = MvccBackend::get(&store, &key.to_string()).unwrap();
+            assert!(v.is_some(), "Unicode key {} should be readable after flush", name);
+        }
+    }
 }
