@@ -1,7 +1,10 @@
 use super::codec::{FrameCodec, FrameReader};
 use super::tcp::TcpStream;
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
+use std::time::Instant;
 
 /// Maximum queued frames per connection before backpressure.
 const MAX_WRITE_QUEUE_SIZE: usize = 1000;
@@ -66,10 +69,18 @@ pub(crate) struct ConnectionPool {
     /// Addresses currently being connected, with queued frames.
     pub(crate) connecting: HashMap<SocketAddr, Vec<Vec<u8>>>,
     pub(crate) reconnect_attempts: HashMap<SocketAddr, u32>,
+    /// Circuit breaker: addresses with open circuits and when they opened.
+    circuit_open: HashMap<SocketAddr, Instant>,
+    /// Circuit breaker: consecutive connection failures per address.
+    consecutive_failures: HashMap<SocketAddr, u32>,
+    /// Optional RNG for jitter (deterministic testing when seeded).
+    jitter_rng: Option<StdRng>,
 }
 
 const MAX_BACKOFF_MS: u64 = 5000;
 const BASE_BACKOFF_MS: u64 = 100;
+const CIRCUIT_BREAKER_THRESHOLD: u32 = 10;
+const CIRCUIT_BREAKER_COOLDOWN_MS: u64 = 30_000;
 
 impl ConnectionPool {
     pub fn new() -> Self {
@@ -77,6 +88,21 @@ impl ConnectionPool {
             connections: HashMap::new(),
             connecting: HashMap::new(),
             reconnect_attempts: HashMap::new(),
+            circuit_open: HashMap::new(),
+            consecutive_failures: HashMap::new(),
+            jitter_rng: None,
+        }
+    }
+
+    /// Create a connection pool with jitter enabled (uses seeded RNG for deterministic testing).
+    pub fn new_with_jitter(seed: u64) -> Self {
+        Self {
+            connections: HashMap::new(),
+            connecting: HashMap::new(),
+            reconnect_attempts: HashMap::new(),
+            circuit_open: HashMap::new(),
+            consecutive_failures: HashMap::new(),
+            jitter_rng: Some(StdRng::seed_from_u64(seed)),
         }
     }
 
@@ -91,6 +117,7 @@ impl ConnectionPool {
     /// Insert a newly-established connection.
     pub fn insert(&mut self, addr: SocketAddr, conn: PooledConnection) {
         self.reconnect_attempts.remove(&addr);
+        self.record_connect_success(&addr);
         self.connections.insert(addr, conn);
     }
 
@@ -128,20 +155,55 @@ impl ConnectionPool {
         self.connections.remove(addr);
     }
 
-    /// Get the backoff duration for reconnecting (exponential backoff).
+    /// Get the backoff duration for reconnecting (exponential backoff with jitter).
     pub fn reconnect_backoff_ms(&mut self, addr: &SocketAddr) -> u64 {
         let attempts = self
             .reconnect_attempts
             .entry(*addr)
             .or_insert(0);
         *attempts += 1;
-        let backoff = BASE_BACKOFF_MS * (1u64 << (*attempts - 1).min(6));
-        backoff.min(MAX_BACKOFF_MS)
+        let base_backoff = BASE_BACKOFF_MS * (1u64 << (*attempts - 1).min(6));
+        let capped_backoff = base_backoff.min(MAX_BACKOFF_MS);
+
+        // Add jitter: ±25% random variance
+        if let Some(rng) = &mut self.jitter_rng {
+            let jitter_range = (capped_backoff / 4) as i64; // 25% of backoff
+            let jitter = rng.gen_range(-jitter_range..=jitter_range);
+            let jittered = (capped_backoff as i64 + jitter).max(0) as u64;
+            jittered
+        } else {
+            capped_backoff
+        }
     }
 
     /// Check if an address has a live connection.
     pub fn is_connected(&self, addr: &SocketAddr) -> bool {
         self.connections.contains_key(addr)
+    }
+
+    /// Check if the circuit breaker is open for an address (in cooldown period).
+    pub fn is_circuit_open(&self, addr: &SocketAddr) -> bool {
+        if let Some(&opened_at) = self.circuit_open.get(addr) {
+            let elapsed = Instant::now().duration_since(opened_at);
+            elapsed.as_millis() < CIRCUIT_BREAKER_COOLDOWN_MS as u128
+        } else {
+            false
+        }
+    }
+
+    /// Record a connection failure. Opens circuit breaker after threshold failures.
+    pub fn record_connect_failure(&mut self, addr: &SocketAddr) {
+        let failures = self.consecutive_failures.entry(*addr).or_insert(0);
+        *failures += 1;
+        if *failures >= CIRCUIT_BREAKER_THRESHOLD {
+            self.circuit_open.insert(*addr, Instant::now());
+        }
+    }
+
+    /// Record a successful connection. Resets circuit breaker state.
+    pub fn record_connect_success(&mut self, addr: &SocketAddr) {
+        self.consecutive_failures.remove(addr);
+        self.circuit_open.remove(addr);
     }
 }
 
@@ -363,5 +425,128 @@ mod tests {
         pool.connecting.remove(&addr);
         assert!(!pool.is_connecting(&addr));
         assert!(!pool.is_connected(&addr));
+    }
+
+    #[test]
+    fn test_jitter_adds_variance() {
+        let mut pool = ConnectionPool::new_with_jitter(42);
+        let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+
+        // Collect multiple backoffs for same attempt level
+        let mut backoffs = Vec::new();
+        for _ in 0..10 {
+            let mut test_pool = ConnectionPool::new_with_jitter(42 + backoffs.len() as u64);
+            let backoff = test_pool.reconnect_backoff_ms(&addr);
+            backoffs.push(backoff);
+        }
+
+        // Verify jitter adds variance (not all the same)
+        let min = *backoffs.iter().min().unwrap();
+        let max = *backoffs.iter().max().unwrap();
+        assert!(max > min, "Jitter should create variance, got min={}, max={}", min, max);
+
+        // Verify jitter stays within ±25% of base (100ms)
+        // With jitter, range is [75ms, 125ms]
+        assert!(min >= 75, "Min backoff {} should be >= 75ms", min);
+        assert!(max <= 125, "Max backoff {} should be <= 125ms", max);
+    }
+
+    #[test]
+    fn test_jitter_disabled_by_default() {
+        let mut pool = ConnectionPool::new(); // No jitter
+        let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+
+        // Without jitter, backoff should be deterministic
+        let backoff1 = pool.reconnect_backoff_ms(&addr);
+        let mut pool2 = ConnectionPool::new();
+        let backoff2 = pool2.reconnect_backoff_ms(&addr);
+
+        assert_eq!(backoff1, backoff2, "Without jitter, backoffs should be identical");
+        assert_eq!(backoff1, 100, "First backoff should be 100ms");
+    }
+
+    #[test]
+    fn test_circuit_breaker_opens_after_threshold() {
+        let mut pool = ConnectionPool::new();
+        let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+
+        // Circuit should be closed initially
+        assert!(!pool.is_circuit_open(&addr));
+
+        // Record 9 failures - circuit should still be closed
+        for _ in 0..9 {
+            pool.record_connect_failure(&addr);
+            assert!(!pool.is_circuit_open(&addr), "Circuit should remain closed before threshold");
+        }
+
+        // 10th failure - circuit should open
+        pool.record_connect_failure(&addr);
+        assert!(pool.is_circuit_open(&addr), "Circuit should open after 10 failures");
+    }
+
+    #[tokio::test] // No start_paused - Instant::now() uses wall clock
+    async fn test_circuit_breaker_cooldown() {
+        let mut pool = ConnectionPool::new();
+        let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+
+        // Open circuit breaker
+        for _ in 0..10 {
+            pool.record_connect_failure(&addr);
+        }
+        assert!(pool.is_circuit_open(&addr));
+
+        // Wait 100ms - circuit should still be open (cooldown is 30s)
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        assert!(pool.is_circuit_open(&addr), "Circuit should remain open during cooldown");
+
+        // Manually advance time by modifying circuit_open timestamp (simulate 31s elapsed)
+        let opened_at = pool.circuit_open.get(&addr).unwrap();
+        let past = *opened_at - tokio::time::Duration::from_secs(31);
+        pool.circuit_open.insert(addr, past);
+
+        // Now circuit should be closed
+        assert!(!pool.is_circuit_open(&addr), "Circuit should close after cooldown");
+    }
+
+    #[test]
+    fn test_circuit_breaker_resets_on_success() {
+        let mut pool = ConnectionPool::new();
+        let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+
+        // Record 9 failures
+        for _ in 0..9 {
+            pool.record_connect_failure(&addr);
+        }
+
+        // Verify circuit is still closed but has failures tracked
+        assert!(!pool.is_circuit_open(&addr));
+        assert_eq!(pool.consecutive_failures.get(&addr), Some(&9));
+
+        // Successful connection should reset circuit breaker state
+        pool.record_connect_success(&addr);
+        assert!(!pool.is_circuit_open(&addr));
+        assert_eq!(pool.consecutive_failures.get(&addr), None);
+
+        // Next failure should start from 0 again
+        pool.record_connect_failure(&addr);
+        assert_eq!(pool.consecutive_failures.get(&addr), Some(&1));
+        assert!(!pool.is_circuit_open(&addr));
+    }
+
+    #[test]
+    fn test_insert_resets_circuit_breaker() {
+        let mut pool = ConnectionPool::new();
+        let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+
+        // Open circuit breaker
+        for _ in 0..10 {
+            pool.record_connect_failure(&addr);
+        }
+        assert!(pool.is_circuit_open(&addr));
+
+        // insert() should reset circuit breaker (successful connection)
+        pool.insert(addr, PooledConnection::new_outbound());
+        assert!(!pool.is_circuit_open(&addr));
+        assert_eq!(pool.consecutive_failures.get(&addr), None);
     }
 }
