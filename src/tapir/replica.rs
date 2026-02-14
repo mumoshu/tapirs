@@ -351,7 +351,6 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
                     );
                 }
                 self.inner.commit(*transaction_id, transaction, *commit);
-                self.recompute_validated_timestamp();
             }
             IO::Abort {
                 transaction_id,
@@ -398,7 +397,6 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
                     })
                 {
                     self.inner.remove_prepared(*transaction_id);
-                    self.recompute_validated_timestamp();
                 }
             }
         }
@@ -500,7 +498,6 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
                 self.min_prepare_time = self.min_prepare_time.max(self.finalized_min_prepare_time);
             }
         }
-        self.recompute_validated_timestamp();
     }
 
     fn sync(&mut self, local: &IrRecord<Self>, leader: &IrRecord<Self>) {
