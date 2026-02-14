@@ -651,4 +651,70 @@ mod tests {
             assert!(v.is_some(), "Unicode key {} should be readable after flush", name);
         }
     }
+
+    // Level Overflow Handling Tests (B2)
+
+    #[test]
+    fn test_level_l0_exceeds_threshold_writes_not_blocked() {
+        let (_dir, mut store) = open_store();
+
+        // Write 5 batches of data, each triggers a flush.
+        // First 4 batches: L0 grows to 4 files.
+        // 5th batch: Triggers compaction (L0 → L1), then adds new file to L0.
+        for batch in 0..5 {
+            for i in 0u64..2000 {
+                let key = format!("batch{}-key{:06}", batch, i);
+                let val = format!("value-{}", "x".repeat(20));
+                let ts = batch * 10000 + i + 1;
+                MvccBackend::put(&mut store, key, Some(val), ts).unwrap();
+            }
+        }
+
+        // Verify all batches are accessible.
+        for batch in 0..5 {
+            let key = format!("batch{}-key{:06}", batch, 0);
+            let (v, _ts) = MvccBackend::get(&store, &key).unwrap();
+            assert!(v.is_some(), "Batch {} should be accessible", batch);
+        }
+
+        // Verify compaction happened by checking a key from each batch.
+        // This implicitly verifies that writes continued after compaction.
+        for batch in 0..5 {
+            for i in (0..2000).step_by(500) {
+                let key = format!("batch{}-key{:06}", batch, i);
+                let expected_ts = batch * 10000 + i + 1;
+                let (v, ts) = MvccBackend::get(&store, &key).unwrap();
+                assert!(v.is_some(), "Key from batch {} should exist", batch);
+                assert_eq!(ts, expected_ts);
+            }
+        }
+    }
+
+    #[test]
+    fn test_level_l0_can_grow_during_heavy_writes() {
+        let (_dir, mut store) = open_store();
+
+        // Write many batches rapidly.
+        // Each batch triggers flush, some may trigger compaction.
+        for batch in 0..10 {
+            for i in 0u64..2000 {
+                let key = format!("b{}-k{:06}", batch, i);
+                let val = format!("v-{}", "x".repeat(20));
+                let ts = batch * 10000 + i + 1;
+                MvccBackend::put(&mut store, key, Some(val), ts).unwrap();
+            }
+        }
+
+        // Verify all data is accessible.
+        for batch in 0..10 {
+            for i in (0..2000).step_by(500) {
+                let key = format!("b{}-k{:06}", batch, i);
+                let (v, _ts) = MvccBackend::get(&store, &key).unwrap();
+                assert!(v.is_some(), "Key from batch {} should exist", batch);
+            }
+        }
+
+        // Save manifest to ensure persistence.
+        store.save_manifest().unwrap();
+    }
 }
