@@ -1,8 +1,10 @@
 #[cfg(test)]
 mod tests {
     use crate::mvcc::backend::MvccBackend;
-    use crate::mvcc::disk::disk_io::BufferedIo;
+    use crate::mvcc::disk::disk_io::{BufferedIo, OpenFlags};
     use crate::mvcc::disk::disk_store::DiskStore;
+    use crate::mvcc::disk::manifest::Manifest;
+    use crate::mvcc::disk::sstable::SSTableReader;
     use rand::{Rng, SeedableRng};
     use rand::rngs::StdRng;
     use tempfile::TempDir;
@@ -286,5 +288,239 @@ mod tests {
 
         // Save manifest succeeds without error.
         store.save_manifest().unwrap();
+    }
+
+    // Durability Verification Tests (E)
+
+    #[test]
+    fn test_recovery_manifest_crc_valid() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+
+        // Stage 1: Write data, flush, save manifest
+        {
+            let mut store = TestStore::open(path.clone()).unwrap();
+
+            // Write enough data to trigger flush (>64 KiB threshold)
+            for i in 0u64..2000 {
+                let key = format!("key-{i:06}");
+                let val = format!("value-{i:06}-{}", "x".repeat(20));
+                MvccBackend::put(&mut store, key, Some(val), i + 1).unwrap();
+            }
+
+            // Save manifest to persist state
+            store.save_manifest().unwrap();
+        }  // DROP: store closed
+
+        // Stage 2: Reopen triggers recovery with manifest CRC validation
+        {
+            // If manifest CRC is invalid, DiskStore::open() will return error
+            let store = TestStore::open(path).unwrap();
+
+            // Verify data is accessible (proves manifest had correct references)
+            let (v, ts) = MvccBackend::get(&store, &"key-000000".into()).unwrap();
+            assert!(v.is_some());
+            assert_eq!(ts, 1);
+
+            let (v, ts) = MvccBackend::get(&store, &"key-001999".into()).unwrap();
+            assert!(v.is_some());
+            assert_eq!(ts, 2000);
+        }
+    }
+
+    #[test]
+    fn test_recovery_all_sstables_exist_and_readable() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+
+        // Stage 1: Write data to create multiple SSTables
+        {
+            let mut store = TestStore::open(path.clone()).unwrap();
+
+            // Write enough to trigger flush and compaction
+            for i in 0u64..2000 {
+                let key = format!("key-{i:06}");
+                let val = format!("value-{i:06}-{}", "x".repeat(20));
+                MvccBackend::put(&mut store, key, Some(val), i + 1).unwrap();
+            }
+
+            store.save_manifest().unwrap();
+        }
+
+        // Stage 2: Verify all SSTables exist on disk
+        {
+            let manifest = Manifest::load(&path).unwrap().expect("manifest should exist");
+
+            // Check L0 files exist
+            for meta in &manifest.l0_sstables {
+                let metadata = std::fs::metadata(&meta.path)
+                    .expect("SSTable file should exist");
+                assert!(
+                    metadata.len() >= 4096,
+                    "SSTable file too small for footer"
+                );
+            }
+
+            // Check L1 files exist
+            for meta in &manifest.l1_sstables {
+                let metadata = std::fs::metadata(&meta.path)
+                    .expect("SSTable file should exist");
+                assert!(
+                    metadata.len() >= 4096,
+                    "SSTable file too small for footer"
+                );
+            }
+        }
+
+        // Stage 3: Verify SSTables are readable after recovery
+        {
+            let store = TestStore::open(path.clone()).unwrap();
+            let manifest = Manifest::load(&path).unwrap().unwrap();
+
+            // Read all SSTables and verify no CRC errors
+            for meta in manifest.l0_sstables.iter().chain(manifest.l1_sstables.iter()) {
+                let reader = futures::executor::block_on(
+                    SSTableReader::<BufferedIo>::open(
+                        meta.path.clone(),
+                        OpenFlags::default()
+                    )
+                ).expect("SSTable should open");
+
+                let entries = futures::executor::block_on(
+                    reader.read_all::<String, u64>()
+                ).expect("SSTable should be readable without CRC errors");
+
+                assert!(!entries.is_empty(), "SSTable should have entries");
+            }
+
+            // Verify data is still accessible through the store
+            let (v, _) = MvccBackend::get(&store, &"key-001000".into()).unwrap();
+            assert!(v.is_some());
+        }
+    }
+
+    #[test]
+    fn test_recovery_all_vlog_pointers_valid() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+
+        // Stage 1: Write keys with various value sizes
+        {
+            let mut store = TestStore::open(path.clone()).unwrap();
+
+            // Small values
+            for i in 0u64..10 {
+                let key = format!("small-{i:02}");
+                let val = format!("v{i}");
+                MvccBackend::put(&mut store, key, Some(val), i + 1).unwrap();
+            }
+
+            // Medium values
+            for i in 10u64..20 {
+                let key = format!("medium-{i:02}");
+                let val = format!("value-{}-{}", i, "x".repeat(100));
+                MvccBackend::put(&mut store, key, Some(val), i + 1).unwrap();
+            }
+
+            // Large values
+            for i in 20u64..30 {
+                let key = format!("large-{i:02}");
+                let val = format!("value-{}-{}", i, "x".repeat(5000));
+                MvccBackend::put(&mut store, key, Some(val), i + 1).unwrap();
+            }
+
+            // Trigger flush to create mix of memtable + SSTable entries
+            for i in 30u64..2000 {
+                let key = format!("flush-{i:04}");
+                let val = format!("value-{i:04}-{}", "x".repeat(20));
+                MvccBackend::put(&mut store, key, Some(val), i + 1).unwrap();
+            }
+
+            store.save_manifest().unwrap();
+        }
+
+        // Stage 2: Verify all vlog pointers are valid after recovery
+        {
+            let store = TestStore::open(path).unwrap();
+
+            // Verify all written data is accessible (proves vlog pointers are valid)
+            // If pointers had CRC errors, reads would fail
+
+            // Verify small values
+            for i in 0u64..10 {
+                let key = format!("small-{i:02}");
+                let (v, ts) = MvccBackend::get(&store, &key).unwrap();
+                assert!(v.is_some(), "Small value should be readable");
+                assert_eq!(ts, i + 1);
+            }
+
+            // Verify medium values
+            for i in 10u64..20 {
+                let key = format!("medium-{i:02}");
+                let (v, ts) = MvccBackend::get(&store, &key).unwrap();
+                assert!(v.is_some(), "Medium value should be readable");
+                assert_eq!(ts, i + 1);
+            }
+
+            // Verify large values
+            for i in 20u64..30 {
+                let key = format!("large-{i:02}");
+                let (v, ts) = MvccBackend::get(&store, &key).unwrap();
+                assert!(v.is_some(), "Large value should be readable");
+                assert_eq!(ts, i + 1);
+            }
+
+            // Spot-check flushed values
+            for i in (100..2000).step_by(200) {
+                let key = format!("flush-{i:04}");
+                let (v, ts) = MvccBackend::get(&store, &key).unwrap();
+                assert!(v.is_some(), "Flushed value should be readable");
+                assert_eq!(ts, i + 1);
+            }
+        }
+    }
+
+    #[test]
+    fn test_recovery_no_duplicate_versions() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+
+        // Stage 1: Write data and trigger flush
+        {
+            let mut store = TestStore::open(path.clone()).unwrap();
+
+            // Write many keys with unique timestamps
+            for i in 0u64..2000 {
+                let key = format!("key-{i:06}");
+                let val = format!("value-{i:06}-{}", "x".repeat(20));
+                MvccBackend::put(&mut store, key, Some(val), i + 1).unwrap();
+            }
+
+            store.save_manifest().unwrap();
+        }
+
+        // Stage 2: Verify MVCC consistency after recovery
+        {
+            let store = TestStore::open(path).unwrap();
+
+            // Verify each key has consistent, non-duplicate version
+            // If duplicates existed, get() and get_at() would conflict
+
+            for i in (100..1900).step_by(200) {
+                let key = format!("key-{i:06}");
+                let expected_ts = i + 1;
+
+                // Get latest version
+                let (v1, ts1) = MvccBackend::get(&store, &key).unwrap();
+                assert!(v1.is_some(), "Key should exist after recovery");
+
+                // get_at at exact timestamp should return same result
+                let (v2, ts2) = MvccBackend::get_at(&store, &key, expected_ts).unwrap();
+
+                // Verify no duplicates: get() and get_at() return consistent results
+                assert_eq!(ts1, ts2, "get() and get_at() should return same timestamp");
+                assert_eq!(v1, v2, "get() and get_at() should return same value");
+            }
+        }
     }
 }
