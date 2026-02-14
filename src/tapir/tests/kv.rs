@@ -1,7 +1,8 @@
 use super::invariant_checker::{InvariantChecker, ScanRecord, TxnOutcome, TxnRecord};
 use crate::{
-    tapir::dynamic_router::{ShardDirectory, ShardEntry},
+    tapir::dynamic_router::{DynamicRouter, ShardDirectory, ShardEntry},
     tapir::key_range::KeyRange,
+    tapir::shard_router::ShardRouter,
     tapir::Sharded,
     transport::{FaultyChannelTransport, LatencyConfig, NetworkFaultConfig},
     ChannelRegistry, ChannelTransport, IrMembership, IrReplica, ShardNumber, TapirClient,
@@ -13,7 +14,7 @@ use std::{
     collections::HashMap,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, RwLock,
     },
     time::Duration,
 };
@@ -613,21 +614,6 @@ fn build_shard_entries(num_shards: u32, num_keys: i64) -> Vec<ShardEntry<i64>> {
     entries
 }
 
-/// Determine which shard owns a given key, consistent with `build_shard_entries`.
-fn key_to_shard(key: i64, num_shards: u32, num_keys: i64) -> u32 {
-    let keys_per_shard = num_keys / num_shards as i64;
-    let remainder = num_keys % num_shards as i64;
-    let mut cursor: i64 = 0;
-    for s in 0..num_shards {
-        let size = keys_per_shard + if (s as i64) < remainder { 1 } else { 0 };
-        if key < cursor + size {
-            return s;
-        }
-        cursor += size;
-    }
-    panic!("key {key} out of range [0, {num_keys})");
-}
-
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn fuzz_tapir_transactions() {
     let seed: u64 = std::env::var("TAPI_TEST_SEED")
@@ -668,8 +654,9 @@ async fn fuzz_tapir_transactions() {
         seed,
     );
 
-    // Validate shard key ranges are non-overlapping and cover [0, num_keys).
-    let _shard_dir = ShardDirectory::new(build_shard_entries(num_shards, num_keys));
+    // Build router for key-to-shard mapping.
+    let shard_dir = ShardDirectory::new(build_shard_entries(num_shards, num_keys));
+    let router = Arc::new(DynamicRouter::new(Arc::new(RwLock::new(shard_dir))));
 
     // Track committed increments per (shard, key).
     let committed_counts: Arc<Mutex<HashMap<(u32, i64), i64>>> =
@@ -789,6 +776,7 @@ async fn fuzz_tapir_transactions() {
         .enumerate()
         .map(|(client_idx, client)| {
             let client = Arc::clone(client);
+            let router = Arc::clone(&router);
             let committed_counts = Arc::clone(&committed_counts);
             let total_committed = Arc::clone(&total_committed);
             let total_attempted = Arc::clone(&total_attempted);
@@ -823,34 +811,34 @@ async fn fuzz_tapir_transactions() {
                             if !used_keys.insert(key) {
                                 continue; // skip duplicate key within same txn
                             }
-                            let shard = key_to_shard(key, num_shards, num_keys);
-                            let sk = Sharded { shard: ShardNumber(shard), key };
+                            let shard = router.route(&key);
+                            let sk = Sharded { shard, key };
                             let raw = txn.get(sk.clone()).await;
-                            reads.push(((shard, key), raw));
+                            reads.push(((shard.0, key), raw));
                             let old = raw.unwrap_or(0);
                             txn.put(sk, Some(old + 1));
-                            writes.push(((shard, key), old + 1));
-                            write_targets.push((shard, key));
+                            writes.push(((shard.0, key), old + 1));
+                            write_targets.push((shard.0, key));
                         }
                         // Optionally include a scan (50% chance) for phantom detection.
                         if rng.gen_range(0..2u8) == 0 {
                             let lo: i64 = rng.gen_range(0..num_keys);
                             let hi: i64 = rng.gen_range(lo..num_keys);
-                            let shard = key_to_shard(lo, num_shards, num_keys);
-                            let scan_start = Sharded { shard: ShardNumber(shard), key: lo };
+                            let shard = router.route(&lo);
+                            let scan_start = Sharded { shard, key: lo };
                             // Scan within the same shard's key range to keep it single-shard.
-                            let scan_end = Sharded { shard: ShardNumber(shard), key: hi };
+                            let scan_end = Sharded { shard, key: hi };
                             let _results = txn.scan(scan_start, scan_end).await;
-                            scans.push(ScanRecord { shard, start_key: lo, end_key: hi });
+                            scans.push(ScanRecord { shard: shard.0, start_key: lo, end_key: hi });
                         }
                     } else {
                         // Read-only transaction (20%).
                         let n_reads = rng.gen_range(1..=2u8);
                         for _ in 0..n_reads {
                             let key: i64 = rng.gen_range(0..num_keys);
-                            let shard = key_to_shard(key, num_shards, num_keys);
-                            let val = txn.get(Sharded { shard: ShardNumber(shard), key }).await;
-                            reads.push(((shard, key), val));
+                            let shard = router.route(&key);
+                            let val = txn.get(Sharded { shard, key }).await;
+                            reads.push(((shard.0, key), val));
                         }
                     }
 
