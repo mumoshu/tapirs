@@ -3,10 +3,14 @@ mod tests {
     use crate::mvcc::backend::MvccBackend;
     use crate::mvcc::disk::disk_io::{BufferedIo, OpenFlags};
     use crate::mvcc::disk::disk_store::DiskStore;
+    use crate::mvcc::disk::faulty_disk_io::{DiskFaultConfig, FaultyDiskIo};
     use crate::mvcc::disk::manifest::Manifest;
     use crate::mvcc::disk::sstable::SSTableReader;
     use rand::{Rng, SeedableRng};
     use rand::rngs::StdRng;
+    use std::collections::{BTreeMap, HashSet};
+    use std::env;
+    use std::time::{SystemTime, UNIX_EPOCH};
     use tempfile::TempDir;
 
     type TestStore = DiskStore<String, String, u64, BufferedIo>;
@@ -631,7 +635,7 @@ mod tests {
 
         // Verify all keys readable
         for (name, key) in &keys {
-            let (v, ts) = MvccBackend::get(&store, &key.to_string()).unwrap();
+            let (v, _ts) = MvccBackend::get(&store, &key.to_string()).unwrap();
             assert_eq!(v, Some(format!("v_{}", name)));
         }
 
@@ -716,5 +720,173 @@ mod tests {
 
         // Save manifest to ensure persistence.
         store.save_manifest().unwrap();
+    }
+
+    // Fault-Injection Crash Recovery Fuzz Test
+
+    #[test]
+    fn test_faulty_disk_crash_recovery_fuzz() {
+        // 1. Master seed from environment or random
+        let seed = env::var("TAPI_TEST_SEED")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_else(|| {
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos() as u64
+            });
+        println!("test_faulty_disk_crash_recovery_fuzz seed={}", seed);
+
+        let mut rng = StdRng::seed_from_u64(seed);
+
+        // 2. Setup temp directory and fault state
+        let dir = TempDir::new().unwrap();
+
+        let initial_config = DiskFaultConfig {
+            fsync_fail_rate: 0.2,
+            read_corruption_rate: 0.05,
+            enospc_after_bytes: None,
+            slow_io_latency: None,
+        };
+
+        FaultyDiskIo::<BufferedIo>::enable_shared_fault_state(initial_config.clone(), seed);
+        let fault_handle = FaultyDiskIo::<BufferedIo>::get_shared_fault_state().unwrap();
+
+        // 3. Open store with FaultyDiskIo
+        type TestStore = DiskStore<String, String, u64, FaultyDiskIo<BufferedIo>>;
+        let mut store = TestStore::open(dir.path().to_path_buf()).unwrap();
+
+        // 4. State tracking
+        let mut committed_data: BTreeMap<(String, u64), String> = BTreeMap::new();
+        let mut pending_writes: Vec<(String, String, u64)> = Vec::new();
+        let mut all_keys: HashSet<String> = HashSet::new();
+
+        // 5. Workload execution (100 ops)
+        const NUM_OPS: usize = 100;
+        println!("executing {} random operations", NUM_OPS);
+
+        for i in 0..NUM_OPS {
+            let op_choice = rng.r#gen_range(0..10);
+            match op_choice {
+                0..=5 => {
+                    // PUT: 60%
+                    let key = format!("k{:03}", rng.r#gen_range(0..30));
+                    let value = format!("v{:08x}", rng.r#gen::<u32>());
+                    let ts = rng.r#gen_range(1..1000);
+
+                    match MvccBackend::put(&mut store, key.clone(), Some(value.clone()), ts) {
+                        Ok(_) => {
+                            pending_writes.push((key.clone(), value, ts));
+                            all_keys.insert(key);
+                        }
+                        Err(_) => {
+                            // ENOSPC or other write failure expected
+                        }
+                    }
+                }
+                6..=7 => {
+                    // GET: 20%
+                    if !all_keys.is_empty() {
+                        let key_vec: Vec<_> = all_keys.iter().collect();
+                        let key = key_vec[rng.r#gen_range(0..key_vec.len())];
+                        let _ = MvccBackend::get(&store, key); // May fail with corruption
+                    }
+                }
+                8 => {
+                    // SCAN: 10%
+                    if all_keys.len() >= 2 {
+                        let mut key_vec: Vec<_> = all_keys.iter().cloned().collect();
+                        key_vec.sort();
+                        let start_idx = rng.r#gen_range(0..key_vec.len());
+                        let end_idx = rng.r#gen_range(start_idx..key_vec.len());
+                        let ts = rng.r#gen_range(1..1000);
+                        let _ = MvccBackend::scan(&store, &key_vec[start_idx], &key_vec[end_idx], ts);
+                    }
+                }
+                9 => {
+                    // SYNC: 10%
+                    match store.sync() {
+                        Ok(_) => {
+                            // Commit all pending writes
+                            for (k, v, ts) in pending_writes.drain(..) {
+                                committed_data.insert((k, ts), v);
+                            }
+                            // Try to save manifest (may fail with ENOSPC)
+                            let _ = store.save_manifest();
+                        }
+                        Err(_) => {
+                            // Fsync failed - lose all pending writes
+                            pending_writes.clear();
+                        }
+                    }
+                }
+                _ => unreachable!(),
+            }
+
+            // Mutate faults periodically
+            if i > 0 && i % rng.r#gen_range(10..15) == 0 {
+                let mut state = fault_handle.lock().unwrap();
+                state.config.fsync_fail_rate = rng.r#gen_range(0.0..0.5);
+                state.config.read_corruption_rate = rng.r#gen_range(0.0..0.1);
+            }
+        }
+
+        // 6. Final sync attempt before crash
+        if store.sync().is_ok() {
+            for (k, v, ts) in pending_writes.drain(..) {
+                committed_data.insert((k, ts), v);
+            }
+            let _ = store.save_manifest();
+        }
+
+        println!("committed {} writes before crash", committed_data.len());
+
+        // 7. Crash simulation
+        drop(store);
+
+        // 8. Disable faults for clean recovery
+        {
+            let mut state = fault_handle.lock().unwrap();
+            state.config.fsync_fail_rate = 0.0;
+            state.config.read_corruption_rate = 0.0;
+            state.config.enospc_after_bytes = None;
+        }
+
+        println!("simulating crash recovery...");
+
+        // 9. Recovery
+        let recovered_store = TestStore::open(dir.path().to_path_buf()).unwrap();
+
+        // 10. Verification
+        println!("verifying {} committed writes", committed_data.len());
+
+        for ((key, ts), expected_value) in &committed_data {
+            let (actual, actual_ts) = MvccBackend::get_at(&recovered_store, key, *ts).unwrap();
+
+            assert_eq!(
+                actual.as_ref(),
+                Some(expected_value),
+                "Value mismatch for key={} ts={}: expected {:?}, got {:?}",
+                key,
+                ts,
+                Some(expected_value),
+                actual
+            );
+
+            assert_eq!(
+                actual_ts, *ts,
+                "Timestamp mismatch for key={}: expected {}, got {}",
+                key, ts, actual_ts
+            );
+        }
+
+        println!(
+            "all {} committed writes verified successfully",
+            committed_data.len()
+        );
+
+        // 11. Cleanup
+        FaultyDiskIo::<BufferedIo>::disable_shared_fault_state();
     }
 }
