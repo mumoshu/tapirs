@@ -184,7 +184,7 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
 
         async move {
             match future.await {
-                UR::ScanChanges { changes, validated_timestamp } => (changes, validated_timestamp),
+                UR::ScanChanges { changes, effective_end } => (changes, effective_end),
                 _ => {
                     debug_assert!(false);
                     (Vec::new(), 0)

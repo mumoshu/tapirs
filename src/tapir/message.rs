@@ -45,7 +45,7 @@ pub enum UR<K, V> {
             deserialize = "K: Deserialize<'de>, V: Deserialize<'de>"
         ))]
         changes: Vec<Change<K, V>>,
-        validated_timestamp: u64,
+        effective_end: u64,
     },
     /// Range scan results.
     Scan(

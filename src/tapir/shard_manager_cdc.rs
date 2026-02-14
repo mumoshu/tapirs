@@ -30,7 +30,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>> ShardManager
         self.register_shard(new_shard, new_membership, new_range.clone());
 
         // Phase 1: Bulk copy via scan_changes.
-        let (changes, mut last_validated) = self.shards[&source]
+        let (changes, mut last_end) = self.shards[&source]
             .client
             .scan_changes(0, u64::MAX)
             .await;
@@ -40,18 +40,18 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>> ShardManager
 
         // Phase 2: Catch-up tailing.
         loop {
-            let (changes, new_validated) = self.shards[&source]
+            let (changes, new_end) = self.shards[&source]
                 .client
-                .scan_changes(last_validated.saturating_add(1), u64::MAX)
+                .scan_changes(last_end.saturating_add(1), u64::MAX)
                 .await;
             let filtered = filter_changes(&changes, &split_key);
             if !filtered.is_empty() {
                 ship_changes(&self.shards[&new_shard].client, new_shard, &filtered).await;
             }
-            if new_validated == last_validated {
+            if new_end == last_end {
                 break;
             }
-            last_validated = new_validated;
+            last_end = new_end;
         }
 
         // Phase 3: Atomic cutover — narrow the source's key range.
@@ -63,20 +63,20 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>> ShardManager
         self.shards[&source].client.reconfigure(config);
         info!("split: reconfigured source shard, draining...");
 
-        // Poll until validated_timestamp catches up (pending prepares drain).
+        // Poll until effective_end catches up (pending prepares drain).
         loop {
-            let (changes, new_validated) = self.shards[&source]
+            let (changes, new_end) = self.shards[&source]
                 .client
-                .scan_changes(last_validated.saturating_add(1), u64::MAX)
+                .scan_changes(last_end.saturating_add(1), u64::MAX)
                 .await;
             let filtered = filter_changes(&changes, &split_key);
             if !filtered.is_empty() {
                 ship_changes(&self.shards[&new_shard].client, new_shard, &filtered).await;
             }
-            if new_validated == last_validated {
+            if new_end == last_end {
                 break;
             }
-            last_validated = new_validated;
+            last_end = new_end;
         }
 
         // Reconfigure the new shard with its key range.

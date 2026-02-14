@@ -327,7 +327,7 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
                     .collect();
                 UR::ScanChanges {
                     changes,
-                    validated_timestamp: self.validated_timestamp,
+                    effective_end: effective_end.time,
                 }
             }
         }
