@@ -161,63 +161,53 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Transaction<K, V, T> {
         lock.inner.add_write(key, value);
     }
 
-    /// Range scan across one or more shards. Returns key-value pairs in
-    /// `[start, end]`, overlaying the transaction's own buffered writes.
+    /// Range scan on a single shard. Returns key-value pairs in
+    /// `[start.key, end.key]`, overlaying the transaction's own buffered writes.
+    /// The caller provides the shard explicitly via `start.shard` (must equal
+    /// `end.shard`). Multi-shard scans should be split by the caller.
     pub fn scan(
         &self,
         start: Sharded<K>,
         end: Sharded<K>,
     ) -> impl Future<Output = Vec<(K, V)>> {
+        assert_eq!(
+            start.shard, end.shard,
+            "scan start and end must target the same shard"
+        );
+        let shard = start.shard;
         let client = Arc::clone(&self.client);
         let inner = Arc::clone(&self.inner);
 
         async move {
-            // Determine which shards the range spans.
-            let shards = {
-                let lock = client.lock().unwrap();
-                lock.transport.shards_for_range(&start.key, &end.key)
-            };
+            let sc = Inner::shard_client(&client, shard).await;
 
-            // Ensure shard clients exist.
-            for &shard in &shards {
-                Inner::shard_client(&client, shard).await;
+            let (results, ts) = sc.scan(start.key.clone(), end.key.clone(), None).await;
+
+            // Record the scan entry for phantom prevention.
+            {
+                let mut lock = inner.lock().unwrap();
+                lock.inner.scan_set.push(OccScanEntry {
+                    shard,
+                    start_key: start.key.clone(),
+                    end_key: end.key.clone(),
+                    timestamp: ts,
+                });
             }
-
-            // Fan out shard-local scans sequentially (scan borrows shard client).
-            let shard_clients: Vec<_> = {
-                let lock = client.lock().unwrap();
-                shards
-                    .iter()
-                    .map(|shard| (*shard, lock.clients.get(shard).unwrap().clone()))
-                    .collect()
-            };
 
             let mut merged = std::collections::BTreeMap::<K, Option<V>>::new();
 
-            for (shard, sc) in &shard_clients {
-                let (results, ts) = sc.scan(start.key.clone(), end.key.clone(), None).await;
-
-                // Record the scan entry for phantom prevention.
-                {
-                    let mut lock = inner.lock().unwrap();
-                    lock.inner.scan_set.push(OccScanEntry {
-                        shard: *shard,
-                        start_key: start.key.clone(),
-                        end_key: end.key.clone(),
-                        timestamp: ts,
-                    });
-                }
-
-                for (k, v) in results {
-                    merged.insert(k, v);
-                }
+            for (k, v) in results {
+                merged.insert(k, v);
             }
 
             // Overlay the transaction's own buffered writes/deletes.
             {
                 let lock = inner.lock().unwrap();
                 for (sharded_key, value) in &lock.inner.write_set {
-                    if sharded_key.key >= start.key && sharded_key.key <= end.key {
+                    if sharded_key.shard == shard
+                        && sharded_key.key >= start.key
+                        && sharded_key.key <= end.key
+                    {
                         merged.insert(sharded_key.key.clone(), value.clone());
                     }
                 }

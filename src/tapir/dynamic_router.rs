@@ -1,5 +1,6 @@
 use super::{KeyRange, ShardNumber};
 use crate::tapir::shard_router::ShardRouter;
+use std::fmt::Debug;
 use std::sync::{Arc, RwLock};
 
 /// A shard's key range assignment in the directory.
@@ -17,8 +18,24 @@ pub struct ShardDirectory<K> {
     entries: Vec<ShardEntry<K>>,
 }
 
-impl<K: Ord + Clone> ShardDirectory<K> {
+/// Panics if any two entries have overlapping key ranges.
+fn validate_no_overlaps<K: Ord + Clone + Debug>(entries: &[ShardEntry<K>]) {
+    let mut sorted: Vec<_> = entries.iter().collect();
+    sorted.sort_by(|a, b| a.range.start.cmp(&b.range.start));
+    for pair in sorted.windows(2) {
+        let a = &pair[0];
+        let b = &pair[1];
+        assert!(
+            !a.range.overlaps(&b.range),
+            "overlapping shard key ranges: shard {:?} range {:?} overlaps shard {:?} range {:?}",
+            a.shard, a.range, b.shard, b.range,
+        );
+    }
+}
+
+impl<K: Ord + Clone + Debug> ShardDirectory<K> {
     pub fn new(entries: Vec<ShardEntry<K>>) -> Self {
+        validate_no_overlaps(&entries);
         Self {
             generation: 0,
             entries,
@@ -31,8 +48,11 @@ impl<K: Ord + Clone> ShardDirectory<K> {
                 return entry.shard;
             }
         }
-        // Fallback to first shard if key not in any range.
-        self.entries.first().map(|e| e.shard).unwrap_or(ShardNumber(0))
+        panic!(
+            "key {:?} not covered by any shard range in directory ({} entries)",
+            key,
+            self.entries.len(),
+        );
     }
 
     pub fn shards_for_range(&self, start: &K, end: &K) -> Vec<ShardNumber> {
@@ -48,6 +68,7 @@ impl<K: Ord + Clone> ShardDirectory<K> {
     }
 
     pub fn update(&mut self, entries: Vec<ShardEntry<K>>) {
+        validate_no_overlaps(&entries);
         self.entries = entries;
         self.generation += 1;
     }
@@ -68,7 +89,7 @@ impl<K> DynamicRouter<K> {
     }
 }
 
-impl<K: Ord + Clone + Send + Sync + 'static> ShardRouter<K> for DynamicRouter<K> {
+impl<K: Ord + Clone + Debug + Send + Sync + 'static> ShardRouter<K> for DynamicRouter<K> {
     fn route(&self, key: &K) -> ShardNumber {
         self.directory.read().unwrap().route(key)
     }

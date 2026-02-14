@@ -1,5 +1,7 @@
 use super::invariant_checker::{InvariantChecker, ScanRecord, TxnOutcome, TxnRecord};
 use crate::{
+    tapir::dynamic_router::{ShardDirectory, ShardEntry},
+    tapir::key_range::KeyRange,
     tapir::Sharded,
     transport::{FaultyChannelTransport, LatencyConfig, NetworkFaultConfig},
     ChannelRegistry, ChannelTransport, IrMembership, IrReplica, ShardNumber, TapirClient,
@@ -586,6 +588,46 @@ fn build_sharded_kv_faulty(
     (shards, clients, client_transports)
 }
 
+/// Build non-overlapping key ranges covering `[0, num_keys)` across shards.
+///
+/// Keys are distributed as evenly as possible. With num_shards=3, num_keys=5:
+///   Shard 0: [0, 2) -> keys 0, 1
+///   Shard 1: [2, 4) -> keys 2, 3
+///   Shard 2: [4, 5) -> key 4
+fn build_shard_entries(num_shards: u32, num_keys: i64) -> Vec<ShardEntry<i64>> {
+    let keys_per_shard = num_keys / num_shards as i64;
+    let remainder = num_keys % num_shards as i64;
+    let mut entries = Vec::new();
+    let mut cursor: i64 = 0;
+    for s in 0..num_shards {
+        let size = keys_per_shard + if (s as i64) < remainder { 1 } else { 0 };
+        entries.push(ShardEntry {
+            shard: ShardNumber(s),
+            range: KeyRange {
+                start: Some(cursor),
+                end: Some(cursor + size),
+            },
+        });
+        cursor += size;
+    }
+    entries
+}
+
+/// Determine which shard owns a given key, consistent with `build_shard_entries`.
+fn key_to_shard(key: i64, num_shards: u32, num_keys: i64) -> u32 {
+    let keys_per_shard = num_keys / num_shards as i64;
+    let remainder = num_keys % num_shards as i64;
+    let mut cursor: i64 = 0;
+    for s in 0..num_shards {
+        let size = keys_per_shard + if (s as i64) < remainder { 1 } else { 0 };
+        if key < cursor + size {
+            return s;
+        }
+        cursor += size;
+    }
+    panic!("key {key} out of range [0, {num_keys})");
+}
+
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn fuzz_tapir_transactions() {
     let seed: u64 = std::env::var("TAPI_TEST_SEED")
@@ -625,6 +667,9 @@ async fn fuzz_tapir_transactions() {
         &config,
         seed,
     );
+
+    // Validate shard key ranges are non-overlapping and cover [0, num_keys).
+    let _shard_dir = ShardDirectory::new(build_shard_entries(num_shards, num_keys));
 
     // Track committed increments per (shard, key).
     let committed_counts: Arc<Mutex<HashMap<(u32, i64), i64>>> =
@@ -768,60 +813,42 @@ async fn fuzz_tapir_transactions() {
                     // Track which (shard, key) pairs we wrote +1 to.
                     let mut write_targets: Vec<(u32, i64)> = Vec::new();
 
-                    if txn_type < 50 {
-                        // Single-key read-modify-write (50%).
-                        let shard = rng.gen_range(0..num_shards);
-                        let key: i64 = rng.gen_range(0..num_keys);
-                        let sk = Sharded { shard: ShardNumber(shard), key };
-                        let raw = txn.get(sk.clone()).await;
-                        reads.push(((shard, key), raw));
-                        let old = raw.unwrap_or(0);
-                        txn.put(sk, Some(old + 1));
-                        writes.push(((shard, key), old + 1));
-                        write_targets.push((shard, key));
-                    } else if txn_type < 70 {
-                        // Cross-shard: read from one shard, write to another (20%).
-                        let shard_a = rng.gen_range(0..num_shards);
-                        let shard_b = rng.gen_range(0..num_shards);
-                        let key_a: i64 = rng.gen_range(0..num_keys);
-                        let key_b: i64 = rng.gen_range(0..num_keys);
-                        let val_a = txn
-                            .get(Sharded { shard: ShardNumber(shard_a), key: key_a })
-                            .await;
-                        reads.push(((shard_a, key_a), val_a));
-                        let sk_b = Sharded { shard: ShardNumber(shard_b), key: key_b };
-                        let raw_b = txn.get(sk_b.clone()).await;
-                        reads.push(((shard_b, key_b), raw_b));
-                        let old_b = raw_b.unwrap_or(0);
-                        txn.put(sk_b, Some(old_b + 1));
-                        writes.push(((shard_b, key_b), old_b + 1));
-                        write_targets.push((shard_b, key_b));
-                    } else if txn_type < 85 {
-                        // Scan-then-write: range scan + write on shard 0 (15%).
-                        // Exercises OCC phantom prevention (has_writes_in_range).
-                        // Channel transport's shards_for_range always returns shard 0,
-                        // so both scan and write must target shard 0 for phantom detection.
-                        let lo: i64 = rng.gen_range(0..num_keys);
-                        let hi: i64 = rng.gen_range(lo..num_keys);
-                        let scan_start = Sharded { shard: ShardNumber(0), key: lo };
-                        let scan_end = Sharded { shard: ShardNumber(0), key: hi };
-                        let _results = txn.scan(scan_start, scan_end).await;
-                        scans.push(ScanRecord { shard: 0, start_key: lo, end_key: hi });
-                        // Write a key on shard 0 (may or may not overlap the scanned range).
-                        let write_key: i64 = rng.gen_range(0..num_keys);
-                        let sk = Sharded { shard: ShardNumber(0), key: write_key };
-                        let raw = txn.get(sk.clone()).await;
-                        reads.push(((0, write_key), raw));
-                        let old = raw.unwrap_or(0);
-                        txn.put(sk, Some(old + 1));
-                        writes.push(((0, write_key), old + 1));
-                        write_targets.push((0, write_key));
+                    if txn_type < 80 {
+                        // RMW transaction (80%): 1-3 distinct random keys with optional scan.
+                        // Cross-shard happens naturally when keys map to different shards.
+                        let n_keys = rng.gen_range(1..=3u8);
+                        let mut used_keys = std::collections::HashSet::new();
+                        for _ in 0..n_keys {
+                            let key: i64 = rng.gen_range(0..num_keys);
+                            if !used_keys.insert(key) {
+                                continue; // skip duplicate key within same txn
+                            }
+                            let shard = key_to_shard(key, num_shards, num_keys);
+                            let sk = Sharded { shard: ShardNumber(shard), key };
+                            let raw = txn.get(sk.clone()).await;
+                            reads.push(((shard, key), raw));
+                            let old = raw.unwrap_or(0);
+                            txn.put(sk, Some(old + 1));
+                            writes.push(((shard, key), old + 1));
+                            write_targets.push((shard, key));
+                        }
+                        // Optionally include a scan (50% chance) for phantom detection.
+                        if rng.gen_range(0..2u8) == 0 {
+                            let lo: i64 = rng.gen_range(0..num_keys);
+                            let hi: i64 = rng.gen_range(lo..num_keys);
+                            let shard = key_to_shard(lo, num_shards, num_keys);
+                            let scan_start = Sharded { shard: ShardNumber(shard), key: lo };
+                            // Scan within the same shard's key range to keep it single-shard.
+                            let scan_end = Sharded { shard: ShardNumber(shard), key: hi };
+                            let _results = txn.scan(scan_start, scan_end).await;
+                            scans.push(ScanRecord { shard, start_key: lo, end_key: hi });
+                        }
                     } else {
-                        // Read-only transaction (15%).
+                        // Read-only transaction (20%).
                         let n_reads = rng.gen_range(1..=2u8);
                         for _ in 0..n_reads {
-                            let shard = rng.gen_range(0..num_shards);
                             let key: i64 = rng.gen_range(0..num_keys);
+                            let shard = key_to_shard(key, num_shards, num_keys);
                             let val = txn.get(Sharded { shard: ShardNumber(shard), key }).await;
                             reads.push(((shard, key), val));
                         }

@@ -538,10 +538,6 @@ impl<K: Key, V: Value> TapirTransport<K, V> for FaultyChannelTransport<TapirRepl
     ) -> impl Future<Output = IrMembership<Self::Address>> + Send + 'static {
         self.inner.shard_addresses(shard)
     }
-
-    fn shards_for_range(&self, start: &K, end: &K) -> Vec<ShardNumber> {
-        self.inner.shards_for_range(start, end)
-    }
 }
 
 #[cfg(test)]

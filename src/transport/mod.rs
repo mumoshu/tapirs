@@ -74,10 +74,4 @@ pub trait TapirTransport<K: Key, V: Value>: Transport<TapirReplica<K, V>> {
         shard: ShardNumber,
     ) -> impl Future<Output = IrMembership<Self::Address>> + Send + 'static;
 
-    /// Determine which shards a key range spans. For range-partitioned schemes,
-    /// returns all shards whose key ranges overlap `[start, end]`.
-    /// Default: single shard (shard 0).
-    fn shards_for_range(&self, _start: &K, _end: &K) -> Vec<ShardNumber> {
-        vec![ShardNumber(0)]
-    }
 }
