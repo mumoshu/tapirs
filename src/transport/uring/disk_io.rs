@@ -1,6 +1,7 @@
 use super::reactor::{with_reactor, Completion, OpKey};
-use crate::mvcc::disk::{AlignedBuf, OpenFlags, StorageError};
-use crate::mvcc::disk::DiskIo;
+use crate::mvcc::disk::aligned_buf::AlignedBuf;
+use crate::mvcc::disk::disk_io::{DiskIo, OpenFlags};
+use crate::mvcc::disk::StorageError;
 use io_uring::opcode;
 use io_uring::types::Fd;
 use std::future::Future;

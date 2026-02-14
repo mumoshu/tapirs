@@ -236,4 +236,132 @@ mod tests {
         pool.remove(&addr);
         assert!(!pool.is_connected(&addr));
     }
+
+    #[test]
+    fn test_pool_growth_multiple_addresses() {
+        let mut pool = ConnectionPool::new();
+        let addr1: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        let addr2: SocketAddr = "127.0.0.1:8081".parse().unwrap();
+        let addr3: SocketAddr = "127.0.0.1:8082".parse().unwrap();
+
+        // Connect to addr1 (succeeds)
+        pool.insert(addr1, PooledConnection::new_outbound());
+        assert!(pool.is_connected(&addr1));
+
+        // Connect to addr2 (succeeds)
+        pool.insert(addr2, PooledConnection::new_outbound());
+        assert!(pool.is_connected(&addr2));
+
+        // Connect to addr3 (fails - simulate by starting connect and incrementing backoff)
+        pool.start_connecting(addr3);
+        assert!(pool.is_connecting(&addr3));
+        assert_eq!(pool.reconnect_backoff_ms(&addr3), 100); // First attempt
+
+        // Verify all three addresses tracked independently
+        assert!(pool.is_connected(&addr1));
+        assert!(pool.is_connected(&addr2));
+        assert!(pool.is_connecting(&addr3));
+        assert!(!pool.is_connected(&addr3));
+
+        // Verify backoff for addr3 is independent (doesn't affect addr1, addr2)
+        assert!(!pool.reconnect_attempts.contains_key(&addr1));
+        assert!(!pool.reconnect_attempts.contains_key(&addr2));
+        assert_eq!(pool.reconnect_attempts.get(&addr3), Some(&1));
+    }
+
+    #[test]
+    fn test_dead_connection_removal_and_respawn() {
+        let mut pool = ConnectionPool::new();
+        let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+
+        // Establish connection
+        pool.insert(addr, PooledConnection::new_outbound());
+        assert!(pool.is_connected(&addr));
+        assert!(!pool.is_connecting(&addr));
+
+        // Simulate connection failure - remove connection
+        pool.remove(&addr);
+        assert!(!pool.is_connected(&addr));
+
+        // Simulate reconnect attempt - start connecting and increment backoff
+        pool.start_connecting(addr);
+        assert!(pool.is_connecting(&addr));
+        assert_eq!(pool.reconnect_backoff_ms(&addr), 100); // First reconnect attempt
+
+        // Verify state after reconnect initiation
+        assert!(!pool.is_connected(&addr)); // Not yet connected
+        assert!(pool.is_connecting(&addr)); // But connecting
+    }
+
+    #[test]
+    fn test_concurrent_send_single_connect() {
+        let mut pool = ConnectionPool::new();
+        let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+
+        // Simulate first send - initiates connect
+        pool.start_connecting(addr);
+        pool.queue_while_connecting(addr, vec![1, 2, 3]);
+
+        // Simulate concurrent sends to same address (while still connecting)
+        pool.queue_while_connecting(addr, vec![4, 5, 6]);
+        pool.queue_while_connecting(addr, vec![7, 8, 9]);
+
+        // Verify only one connect task (simulated by single connecting entry)
+        assert!(pool.is_connecting(&addr));
+        assert_eq!(pool.connecting.get(&addr).map(|q| q.len()), Some(3));
+
+        // Verify backoff counter only incremented once (single connect task)
+        assert_eq!(pool.reconnect_attempts.get(&addr), None); // Not failed yet
+
+        // Finish connecting - all frames should be queued in FIFO order
+        let frames = pool.finish_connecting(addr);
+        assert_eq!(
+            frames,
+            vec![vec![1, 2, 3], vec![4, 5, 6], vec![7, 8, 9]]
+        );
+    }
+
+    #[test]
+    fn test_timeout_gives_up_on_connect() {
+        let mut pool = ConnectionPool::new();
+        let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        let connect_timeout_ms = 3000u64;
+
+        // Simulate connection attempts with backoff until timeout
+        // Attempt 1: 100ms (total: 100ms < 3000ms) - continue
+        pool.start_connecting(addr);
+        let backoff1 = pool.reconnect_backoff_ms(&addr);
+        assert_eq!(backoff1, 100);
+        let elapsed_after_1 = backoff1;
+        assert!(elapsed_after_1 < connect_timeout_ms);
+
+        // Attempt 2: 200ms (total: 300ms < 3000ms) - continue
+        let backoff2 = pool.reconnect_backoff_ms(&addr);
+        assert_eq!(backoff2, 200);
+        let elapsed_after_2 = elapsed_after_1 + backoff2;
+        assert!(elapsed_after_2 < connect_timeout_ms);
+
+        // Attempt 3: 400ms (total: 700ms < 3000ms) - continue
+        let backoff3 = pool.reconnect_backoff_ms(&addr);
+        assert_eq!(backoff3, 400);
+        let elapsed_after_3 = elapsed_after_2 + backoff3;
+        assert!(elapsed_after_3 < connect_timeout_ms);
+
+        // Attempt 4: 800ms (total: 1500ms < 3000ms) - continue
+        let backoff4 = pool.reconnect_backoff_ms(&addr);
+        assert_eq!(backoff4, 800);
+        let elapsed_after_4 = elapsed_after_3 + backoff4;
+        assert!(elapsed_after_4 < connect_timeout_ms);
+
+        // Attempt 5: 1600ms (total: 3100ms > 3000ms) - should give up
+        let backoff5 = pool.reconnect_backoff_ms(&addr);
+        assert_eq!(backoff5, 1600);
+        let elapsed_after_5 = elapsed_after_4 + backoff5;
+        assert!(elapsed_after_5 > connect_timeout_ms);
+
+        // Simulate giving up - clean up connecting state
+        pool.connecting.remove(&addr);
+        assert!(!pool.is_connecting(&addr));
+        assert!(!pool.is_connected(&addr));
+    }
 }

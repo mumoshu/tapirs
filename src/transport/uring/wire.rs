@@ -1,6 +1,6 @@
 use super::address::UringAddress;
 use crate::ir::ReplicaUpcalls;
-use crate::ir::MessageImpl;
+use crate::ir::message::MessageImpl;
 use serde::{Deserialize, Serialize};
 
 /// Concrete IR message type for the UringTransport.
