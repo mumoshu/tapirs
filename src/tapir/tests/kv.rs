@@ -1,12 +1,11 @@
-use super::invariant_checker::{InvariantChecker, ScanRecord, TxnOutcome, TxnRecord};
+use super::invariant_checker::{InvariantChecker, TxnOutcome, TxnRecord};
 use crate::{
     tapir::dynamic_router::{DynamicRouter, ShardDirectory, ShardEntry},
     tapir::key_range::KeyRange,
-    tapir::shard_router::ShardRouter,
     tapir::Sharded,
     transport::{FaultyChannelTransport, LatencyConfig, NetworkFaultConfig},
-    ChannelRegistry, ChannelTransport, IrMembership, IrReplica, ShardNumber, TapirClient,
-    TapirReplica, TapirTimestamp, Transport as _,
+    ChannelRegistry, ChannelTransport, IrMembership, IrReplica, RoutingClient, ShardNumber,
+    TapirClient, TapirReplica, TapirTimestamp, Transport as _,
 };
 use futures::future::join_all;
 use rand::{rngs::StdRng, thread_rng, Rng, SeedableRng};
@@ -658,8 +657,14 @@ async fn fuzz_tapir_transactions() {
     let shard_dir = ShardDirectory::new(build_shard_entries(num_shards, num_keys));
     let router = Arc::new(DynamicRouter::new(Arc::new(RwLock::new(shard_dir))));
 
-    // Track committed increments per (shard, key).
-    let committed_counts: Arc<Mutex<HashMap<(u32, i64), i64>>> =
+    // Build RoutingClient instances for automatic key-to-shard routing.
+    let routing_clients: Vec<_> = clients
+        .iter()
+        .map(|c| Arc::new(RoutingClient::new(Arc::clone(c), Arc::clone(&router))))
+        .collect();
+
+    // Track committed increments per key.
+    let committed_counts: Arc<Mutex<HashMap<i64, i64>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let total_committed = Arc::new(AtomicU64::new(0));
     let total_attempted = Arc::new(AtomicU64::new(0));
@@ -771,12 +776,11 @@ async fn fuzz_tapir_transactions() {
     });
 
     // Spawn concurrent client workloads.
-    let handles: Vec<_> = clients
+    let handles: Vec<_> = routing_clients
         .iter()
         .enumerate()
-        .map(|(client_idx, client)| {
-            let client = Arc::clone(client);
-            let router = Arc::clone(&router);
+        .map(|(client_idx, routing_client)| {
+            let routing_client = Arc::clone(routing_client);
             let committed_counts = Arc::clone(&committed_counts);
             let total_committed = Arc::clone(&total_committed);
             let total_attempted = Arc::clone(&total_attempted);
@@ -793,13 +797,12 @@ async fn fuzz_tapir_transactions() {
 
                     let wall_start = tokio::time::Instant::now();
                     let txn_type: u8 = rng.gen_range(0..100);
-                    let txn = client.begin();
-                    // Track reads/writes/scans for invariant checking.
-                    let mut reads: Vec<((u32, i64), Option<i64>)> = Vec::new();
-                    let mut writes: Vec<((u32, i64), i64)> = Vec::new();
-                    let mut scans: Vec<ScanRecord> = Vec::new();
-                    // Track which (shard, key) pairs we wrote +1 to.
-                    let mut write_targets: Vec<(u32, i64)> = Vec::new();
+                    let txn = routing_client.begin();
+                    // Track reads/writes for invariant checking.
+                    let mut reads: Vec<(i64, Option<i64>)> = Vec::new();
+                    let mut writes: Vec<(i64, i64)> = Vec::new();
+                    // Track which keys we wrote +1 to.
+                    let mut write_targets: Vec<i64> = Vec::new();
 
                     if txn_type < 80 {
                         // RMW transaction (80%): 1-3 distinct random keys with optional scan.
@@ -811,34 +814,26 @@ async fn fuzz_tapir_transactions() {
                             if !used_keys.insert(key) {
                                 continue; // skip duplicate key within same txn
                             }
-                            let shard = router.route(&key);
-                            let sk = Sharded { shard, key };
-                            let raw = txn.get(sk.clone()).await;
-                            reads.push(((shard.0, key), raw));
+                            let raw = txn.get(key).await;
+                            reads.push((key, raw));
                             let old = raw.unwrap_or(0);
-                            txn.put(sk, Some(old + 1));
-                            writes.push(((shard.0, key), old + 1));
-                            write_targets.push((shard.0, key));
+                            txn.put(key, Some(old + 1));
+                            writes.push((key, old + 1));
+                            write_targets.push(key);
                         }
                         // Optionally include a scan (50% chance) for phantom detection.
                         if rng.gen_range(0..2u8) == 0 {
                             let lo: i64 = rng.gen_range(0..num_keys);
                             let hi: i64 = rng.gen_range(lo..num_keys);
-                            let shard = router.route(&lo);
-                            let scan_start = Sharded { shard, key: lo };
-                            // Scan within the same shard's key range to keep it single-shard.
-                            let scan_end = Sharded { shard, key: hi };
-                            let _results = txn.scan(scan_start, scan_end).await;
-                            scans.push(ScanRecord { shard: shard.0, start_key: lo, end_key: hi });
+                            let _results = txn.scan(lo, hi).await;
                         }
                     } else {
                         // Read-only transaction (20%).
                         let n_reads = rng.gen_range(1..=2u8);
                         for _ in 0..n_reads {
                             let key: i64 = rng.gen_range(0..num_keys);
-                            let shard = router.route(&key);
-                            let val = txn.get(Sharded { shard, key }).await;
-                            reads.push(((shard.0, key), val));
+                            let val = txn.get(key).await;
+                            reads.push((key, val));
                         }
                     }
 
@@ -846,8 +841,8 @@ async fn fuzz_tapir_transactions() {
                         Ok(Some(ts)) => {
                             let wall_end = tokio::time::Instant::now();
                             let mut counts = committed_counts.lock().unwrap();
-                            for &(s, k) in &write_targets {
-                                *counts.entry((s, k)).or_default() += 1;
+                            for &k in &write_targets {
+                                *counts.entry(k).or_default() += 1;
                             }
                             total_committed.fetch_add(1, Ordering::Relaxed);
                             collector.lock().unwrap().push(TxnRecord {
@@ -855,7 +850,6 @@ async fn fuzz_tapir_transactions() {
                                 client_id: client_idx,
                                 read_set: reads,
                                 write_set: writes,
-                                scan_set: scans,
                                 outcome: TxnOutcome::Committed(ts),
                                 wall_start,
                                 wall_end,
@@ -868,7 +862,6 @@ async fn fuzz_tapir_transactions() {
                                 client_id: client_idx,
                                 read_set: reads,
                                 write_set: writes,
-                                scan_set: scans,
                                 outcome: TxnOutcome::Aborted,
                                 wall_start,
                                 wall_end,
@@ -881,7 +874,6 @@ async fn fuzz_tapir_transactions() {
                                 client_id: client_idx,
                                 read_set: reads,
                                 write_set: writes,
-                                scan_set: scans,
                                 outcome: TxnOutcome::TimedOut,
                                 wall_start,
                                 wall_end,
@@ -926,7 +918,7 @@ async fn fuzz_tapir_transactions() {
     let checker = InvariantChecker::new(records, seed);
     checker.check_all();
 
-    // Counter invariant: for each (shard, key), final value == committed increments.
+    // Counter invariant: for each key, final value == committed increments.
     // Cross-validate checker's expected_counts against inline committed_counts.
     let checker_counts = checker.expected_counts();
     let inline_counts = committed_counts.lock().unwrap().clone();
@@ -935,28 +927,22 @@ async fn fuzz_tapir_transactions() {
         "checker vs inline committed_counts mismatch (seed={seed})"
     );
 
-    let verify_client = &clients[0];
-    for ((shard, key), expected) in &inline_counts {
+    let verify_client = RoutingClient::new(Arc::clone(&clients[0]), Arc::clone(&router));
+    for (key, expected) in &inline_counts {
         let txn = verify_client.begin();
-        let actual = txn
-            .get(Sharded {
-                shard: ShardNumber(*shard),
-                key: *key,
-            })
-            .await
-            .unwrap_or(0);
+        let actual = txn.get(*key).await.unwrap_or(0);
 
         match timeout(Duration::from_secs(10), txn.commit()).await {
             Ok(Some(_)) => {
                 assert_eq!(
                     actual, *expected,
-                    "counter invariant violated for shard={shard} key={key}: \
+                    "counter invariant violated for key={key}: \
                      actual={actual} expected={expected} (seed={seed})"
                 );
             }
             _ => {
                 eprintln!(
-                    "warning: verification read for shard={shard} key={key} \
+                    "warning: verification read for key={key} \
                      did not commit (seed={seed})"
                 );
             }

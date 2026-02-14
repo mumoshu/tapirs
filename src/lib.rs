@@ -21,7 +21,8 @@ pub use occ::{
     Transaction as OccTransaction, TransactionId as OccTransactionId,
 };
 pub use tapir::{
-    Client as TapirClient, Replica as TapirReplica, ShardNumber, Timestamp as TapirTimestamp,
+    Client as TapirClient, Replica as TapirReplica, RoutingClient, RoutingTransaction, ShardNumber,
+    Timestamp as TapirTimestamp,
 };
 pub use transport::{
     Channel as ChannelTransport, ChannelRegistry, Message as TransportMessage, TapirTransport,
