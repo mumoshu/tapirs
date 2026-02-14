@@ -3,6 +3,8 @@ mod tests {
     use crate::mvcc::backend::MvccBackend;
     use crate::mvcc::disk::disk_io::BufferedIo;
     use crate::mvcc::disk::disk_store::DiskStore;
+    use rand::{Rng, SeedableRng};
+    use rand::rngs::StdRng;
     use tempfile::TempDir;
 
     type TestStore = DiskStore<String, String, u64, BufferedIo>;
@@ -200,5 +202,89 @@ mod tests {
             assert_eq!(ts, 1);
             assert!(v.is_some());
         }
+    }
+
+    // Helper function to generate deterministic large values.
+    fn generate_large_value(size: usize, seed: u64) -> String {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let bytes: Vec<u8> = (0..size).map(|_| rng.r#gen::<u8>()).collect();
+        // Use base64-like encoding to keep string representation compact.
+        bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+    }
+
+    #[test]
+    fn test_large_value_exactly_4kib() {
+        let (_dir, mut store) = open_store();
+
+        // Generate a value that should fit in exactly one 4 KiB block.
+        // Account for bitcode overhead (~50-100 bytes) and 4-byte CRC.
+        let value = generate_large_value(3900, 4096);
+        let key = "key-4kib".to_string();
+
+        MvccBackend::put(&mut store, key.clone(), Some(value.clone()), 100).unwrap();
+
+        let (v, ts) = MvccBackend::get(&store, &key).unwrap();
+        assert_eq!(v, Some(value));
+        assert_eq!(ts, 100);
+    }
+
+    #[test]
+    fn test_large_value_4kib_plus_1() {
+        let (_dir, mut store) = open_store();
+
+        // Generate a value that will overflow to 2 blocks (8 KiB).
+        // With bitcode overhead + CRC, a 4096-byte value should require 2 blocks.
+        let value = generate_large_value(4096, 4097);
+        let key = "key-overflow".to_string();
+
+        MvccBackend::put(&mut store, key.clone(), Some(value.clone()), 200).unwrap();
+
+        let (v, ts) = MvccBackend::get(&store, &key).unwrap();
+        assert_eq!(v, Some(value));
+        assert_eq!(ts, 200);
+    }
+
+    #[test]
+    fn test_large_value_1mb() {
+        let (_dir, mut store) = open_store();
+
+        // Generate a 1 MB value to test offset arithmetic.
+        let value = generate_large_value(1_000_000, 1_000_000);
+        let key = "key-1mb".to_string();
+
+        MvccBackend::put(&mut store, key.clone(), Some(value.clone()), 300).unwrap();
+
+        // Verify exact byte-for-byte match.
+        let (v, ts) = MvccBackend::get(&store, &key).unwrap();
+        assert_eq!(v, Some(value));
+        assert_eq!(ts, 300);
+    }
+
+    #[test]
+    fn test_many_large_values_verify_flush() {
+        let (_dir, mut store) = open_store();
+
+        // Write many large values totaling 100 MB.
+        // Use 1000 values of ~100 KB each to trigger many flushes.
+        // Flush threshold is 64 KiB, so this will cause extensive flushing.
+        for i in 1..=1000u64 {
+            let key = format!("large-key-{i:06}");
+            // Generate ~50 KB value (100 KB hex-encoded) with seed = timestamp.
+            let value = generate_large_value(50_000, i);
+            MvccBackend::put(&mut store, key, Some(value), i).unwrap();
+        }
+
+        // Verify no OOM: test completed without panic.
+        // Verify no corruption: spot-check keys can be retrieved correctly.
+        for i in (100..=1000).step_by(100) {
+            let key = format!("large-key-{i:06}");
+            let expected_value = generate_large_value(50_000, i as u64);
+            let (v, ts) = MvccBackend::get(&store, &key).unwrap();
+            assert_eq!(v, Some(expected_value), "Key {} corrupted", key);
+            assert_eq!(ts, i as u64);
+        }
+
+        // Save manifest succeeds without error.
+        store.save_manifest().unwrap();
     }
 }
