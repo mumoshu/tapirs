@@ -1,3 +1,4 @@
+use super::invariant_checker::{InvariantChecker, ScanRecord, TxnOutcome, TxnRecord};
 use crate::{
     tapir::Sharded,
     transport::{FaultyChannelTransport, LatencyConfig, NetworkFaultConfig},
@@ -646,6 +647,8 @@ async fn fuzz_tapir_transactions() {
         Arc::new(Mutex::new(HashMap::new()));
     let total_committed = Arc::new(AtomicU64::new(0));
     let total_attempted = Arc::new(AtomicU64::new(0));
+    let collector: Arc<Mutex<Vec<TxnRecord>>> = Arc::new(Mutex::new(Vec::new()));
+    let next_txn_index = Arc::new(AtomicU64::new(0));
 
     // Generate per-client seeds up front (rng is not Send).
     let client_seeds: Vec<u64> = (0..num_clients).map(|_| rng.r#gen()).collect();
@@ -760,16 +763,24 @@ async fn fuzz_tapir_transactions() {
             let committed_counts = Arc::clone(&committed_counts);
             let total_committed = Arc::clone(&total_committed);
             let total_attempted = Arc::clone(&total_attempted);
+            let collector = Arc::clone(&collector);
+            let next_txn_index = Arc::clone(&next_txn_index);
             let client_seed = client_seeds[client_idx];
 
             tokio::spawn(async move {
                 let mut rng = StdRng::seed_from_u64(client_seed);
 
                 for _ in 0..iterations_per_client {
+                    let txn_index = next_txn_index.fetch_add(1, Ordering::Relaxed) as usize;
                     total_attempted.fetch_add(1, Ordering::Relaxed);
 
+                    let wall_start = tokio::time::Instant::now();
                     let txn_type: u8 = rng.gen_range(0..100);
                     let txn = client.begin();
+                    // Track reads/writes/scans for invariant checking.
+                    let mut reads: Vec<((u32, i64), Option<i64>)> = Vec::new();
+                    let mut writes: Vec<((u32, i64), i64)> = Vec::new();
+                    let mut scans: Vec<ScanRecord> = Vec::new();
                     // Track which (shard, key) pairs we wrote +1 to.
                     let mut write_targets: Vec<(u32, i64)> = Vec::new();
 
@@ -778,8 +789,11 @@ async fn fuzz_tapir_transactions() {
                         let shard = rng.gen_range(0..num_shards);
                         let key: i64 = rng.gen_range(0..num_keys);
                         let sk = Sharded { shard: ShardNumber(shard), key };
-                        let old = txn.get(sk.clone()).await.unwrap_or(0);
+                        let raw = txn.get(sk.clone()).await;
+                        reads.push(((shard, key), raw));
+                        let old = raw.unwrap_or(0);
                         txn.put(sk, Some(old + 1));
+                        writes.push(((shard, key), old + 1));
                         write_targets.push((shard, key));
                     } else if txn_type < 70 {
                         // Cross-shard: read from one shard, write to another (20%).
@@ -787,12 +801,16 @@ async fn fuzz_tapir_transactions() {
                         let shard_b = rng.gen_range(0..num_shards);
                         let key_a: i64 = rng.gen_range(0..num_keys);
                         let key_b: i64 = rng.gen_range(0..num_keys);
-                        let _val = txn
+                        let val_a = txn
                             .get(Sharded { shard: ShardNumber(shard_a), key: key_a })
                             .await;
+                        reads.push(((shard_a, key_a), val_a));
                         let sk_b = Sharded { shard: ShardNumber(shard_b), key: key_b };
-                        let old_b = txn.get(sk_b.clone()).await.unwrap_or(0);
+                        let raw_b = txn.get(sk_b.clone()).await;
+                        reads.push(((shard_b, key_b), raw_b));
+                        let old_b = raw_b.unwrap_or(0);
                         txn.put(sk_b, Some(old_b + 1));
+                        writes.push(((shard_b, key_b), old_b + 1));
                         write_targets.push((shard_b, key_b));
                     } else if txn_type < 85 {
                         // Scan-then-write: range scan + write on shard 0 (15%).
@@ -804,11 +822,15 @@ async fn fuzz_tapir_transactions() {
                         let scan_start = Sharded { shard: ShardNumber(0), key: lo };
                         let scan_end = Sharded { shard: ShardNumber(0), key: hi };
                         let _results = txn.scan(scan_start, scan_end).await;
+                        scans.push(ScanRecord { shard: 0, start_key: lo, end_key: hi });
                         // Write a key on shard 0 (may or may not overlap the scanned range).
                         let write_key: i64 = rng.gen_range(0..num_keys);
                         let sk = Sharded { shard: ShardNumber(0), key: write_key };
-                        let old = txn.get(sk.clone()).await.unwrap_or(0);
+                        let raw = txn.get(sk.clone()).await;
+                        reads.push(((0, write_key), raw));
+                        let old = raw.unwrap_or(0);
                         txn.put(sk, Some(old + 1));
+                        writes.push(((0, write_key), old + 1));
                         write_targets.push((0, write_key));
                     } else {
                         // Read-only transaction (15%).
@@ -816,20 +838,55 @@ async fn fuzz_tapir_transactions() {
                         for _ in 0..n_reads {
                             let shard = rng.gen_range(0..num_shards);
                             let key: i64 = rng.gen_range(0..num_keys);
-                            txn.get(Sharded { shard: ShardNumber(shard), key }).await;
+                            let val = txn.get(Sharded { shard: ShardNumber(shard), key }).await;
+                            reads.push(((shard, key), val));
                         }
                     }
 
                     match timeout(Duration::from_secs(10), txn.commit()).await {
-                        Ok(Some(_ts)) => {
+                        Ok(Some(ts)) => {
+                            let wall_end = tokio::time::Instant::now();
                             let mut counts = committed_counts.lock().unwrap();
-                            for (s, k) in write_targets {
+                            for &(s, k) in &write_targets {
                                 *counts.entry((s, k)).or_default() += 1;
                             }
                             total_committed.fetch_add(1, Ordering::Relaxed);
+                            collector.lock().unwrap().push(TxnRecord {
+                                index: txn_index,
+                                client_id: client_idx,
+                                read_set: reads,
+                                write_set: writes,
+                                scan_set: scans,
+                                outcome: TxnOutcome::Committed(ts),
+                                wall_start,
+                                wall_end,
+                            });
                         }
-                        Ok(None) | Err(_) => {
-                            // Aborted or timed out -- no side effect.
+                        Ok(None) => {
+                            let wall_end = tokio::time::Instant::now();
+                            collector.lock().unwrap().push(TxnRecord {
+                                index: txn_index,
+                                client_id: client_idx,
+                                read_set: reads,
+                                write_set: writes,
+                                scan_set: scans,
+                                outcome: TxnOutcome::Aborted,
+                                wall_start,
+                                wall_end,
+                            });
+                        }
+                        Err(_) => {
+                            let wall_end = tokio::time::Instant::now();
+                            collector.lock().unwrap().push(TxnRecord {
+                                index: txn_index,
+                                client_id: client_idx,
+                                read_set: reads,
+                                write_set: writes,
+                                scan_set: scans,
+                                outcome: TxnOutcome::TimedOut,
+                                wall_start,
+                                wall_end,
+                            });
                         }
                     }
 
@@ -864,10 +921,23 @@ async fn fuzz_tapir_transactions() {
     // Let replicas drain pending operations after all view changes settle.
     FaultyTransport::sleep(Duration::from_secs(5)).await;
 
-    // Verify counter invariant: for each (shard, key), final value == committed increments.
-    let counts = committed_counts.lock().unwrap().clone();
+    // Run invariant checker: serializability, strict serializability,
+    // cross-shard atomicity (via dependency graph + real-time ordering).
+    let records = collector.lock().unwrap().clone();
+    let checker = InvariantChecker::new(records, seed);
+    checker.check_all();
+
+    // Counter invariant: for each (shard, key), final value == committed increments.
+    // Cross-validate checker's expected_counts against inline committed_counts.
+    let checker_counts = checker.expected_counts();
+    let inline_counts = committed_counts.lock().unwrap().clone();
+    assert_eq!(
+        checker_counts, inline_counts,
+        "checker vs inline committed_counts mismatch (seed={seed})"
+    );
+
     let verify_client = &clients[0];
-    for ((shard, key), expected) in &counts {
+    for ((shard, key), expected) in &inline_counts {
         let txn = verify_client.begin();
         let actual = txn
             .get(Sharded {
