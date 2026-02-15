@@ -1,5 +1,9 @@
 use super::invariant_checker::{InvariantChecker, TxnOutcome, TxnRecord};
 use crate::{
+    discovery::{
+        DiscoveryShardDirectory, InMemoryDiscovery, InMemoryShardDirectory,
+        ShardDirectory as _,
+    },
     tapir::dynamic_router::{DynamicRouter, ShardDirectory, ShardEntry},
     tapir::key_range::KeyRange,
     tapir::Sharded,
@@ -58,6 +62,7 @@ fn build_shard(
                 let weak = weak.clone();
                 let channel =
                     registry.channel(move |from, message| weak.upgrade()?.receive(from, message));
+                channel.set_shard(shard);
                 let upcalls = TapirReplica::new(shard, linearizable);
                 IrReplica::new(
                     membership.clone(),
@@ -516,6 +521,7 @@ fn build_shard_faulty(
                     let channel = registry
                         .channel(move |from, message| weak.upgrade()?.receive(from, message));
                     let transport = FaultyChannelTransport::new(channel, config, node_seed);
+                    transport.set_shard(shard);
                     let upcalls = TapirReplica::new(shard, linearizable);
                     IrReplica::new(membership, upcalls, transport, Some(TapirReplica::tick))
                 },
@@ -553,6 +559,7 @@ fn build_sharded_kv_faulty(
     num_clients: usize,
     config: &NetworkFaultConfig,
     seed: u64,
+    address_directory: Arc<InMemoryShardDirectory<usize>>,
 ) -> (
     Vec<Vec<Arc<IrReplica<TapirReplica<K, V>, FaultyTransport>>>>,
     Vec<Arc<TapirClient<K, V, FaultyTransport>>>,
@@ -566,7 +573,7 @@ fn build_sharded_kv_faulty(
     );
     eprintln!("---------------------------");
 
-    let registry = ChannelRegistry::default();
+    let registry = ChannelRegistry::with_directory(address_directory);
 
     let mut shards = Vec::new();
     for shard in 0..num_shards {
@@ -644,6 +651,16 @@ async fn fuzz_tapir_transactions() {
 
     eprintln!("fuzz_tapir_transactions: num_shards={num_shards} seed={seed}");
 
+    // Create shared address directory and discovery for sync testing.
+    let address_directory = Arc::new(InMemoryShardDirectory::new());
+    let discovery = Arc::new(InMemoryDiscovery::new());
+    let disc_dir = DiscoveryShardDirectory::<usize, _>::new(
+        Arc::clone(&address_directory),
+        Arc::clone(&discovery),
+        Duration::from_millis(500),
+    );
+    disc_dir.set_own_shard(ShardNumber(0));
+
     let (shards, clients, client_transports) = build_sharded_kv_faulty(
         true,
         num_shards as usize,
@@ -651,6 +668,7 @@ async fn fuzz_tapir_transactions() {
         num_clients,
         &config,
         seed,
+        Arc::clone(&address_directory),
     );
 
     // Build router for key-to-shard mapping.
@@ -912,6 +930,26 @@ async fn fuzz_tapir_transactions() {
     // Let replicas drain pending operations after all view changes settle.
     FaultyTransport::sleep(Duration::from_secs(5)).await;
 
+    // Verify address directory is populated with all shards.
+    for s in 0..num_shards {
+        let shard = ShardNumber(s);
+        assert!(
+            address_directory.get(shard).is_some(),
+            "address directory should contain shard {s} (seed={seed})"
+        );
+    }
+
+    // Verify discovery received shard 0 via background sync push.
+    tokio::task::yield_now().await;
+    let disc_shard_0 = discovery.get_shard(0);
+    assert!(
+        disc_shard_0.is_some(),
+        "discovery should contain shard 0 after sync (seed={seed})"
+    );
+
+    // Keep DiscoveryShardDirectory alive until after assertions.
+    drop(disc_dir);
+
     // Run invariant checker: serializability, strict serializability,
     // cross-shard atomicity (via dependency graph + real-time ordering).
     let records = collector.lock().unwrap().clone();
@@ -997,6 +1035,7 @@ async fn test_add_replica_with_preload() {
             let weak = weak.clone();
             let channel =
                 registry.channel(move |from, message| weak.upgrade()?.receive(from, message));
+            channel.set_shard(shard);
             let upcalls = TapirReplica::new(shard, true);
             // Start with membership=[self] only — the real membership comes via AddMember.
             IrReplica::new(
@@ -1019,7 +1058,8 @@ async fn test_add_replica_with_preload() {
             end: None,
         },
     }])));
-    let mut manager = ShardManager::new(manager_channel, directory);
+    let address_directory = Arc::clone(registry.directory());
+    let mut manager = ShardManager::new(manager_channel, directory, address_directory);
     manager.register_shard(shard, original_membership, KeyRange {
         start: None,
         end: None,
