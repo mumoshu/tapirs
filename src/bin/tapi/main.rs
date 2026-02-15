@@ -2,6 +2,7 @@ mod admin_client;
 mod admin_server;
 mod client;
 mod config;
+mod discovery;
 mod node;
 mod repl;
 
@@ -35,6 +36,12 @@ enum Command {
     Client {
         #[arg(long)]
         config: Option<String>,
+    },
+    /// Run the cluster discovery service.
+    Discovery {
+        /// Address to listen on.
+        #[arg(long, default_value = "127.0.0.1:8080")]
+        listen_addr: String,
     },
 }
 
@@ -106,6 +113,9 @@ async fn main() {
                 .map(ClientConfig::from_file)
                 .unwrap_or_default();
             client::run(cfg).await;
+        }
+        Command::Discovery { listen_addr } => {
+            discovery::run(listen_addr).await;
         }
     }
 }

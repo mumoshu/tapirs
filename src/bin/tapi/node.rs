@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use tapirs::{
     IrMembership, IrReplica, ShardNumber, TapirReplica, TcpAddress, TcpTransport,
 };
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 type TapirIrReplica = IrReplica<TapirReplica<String, String>, TcpTransport<TapirReplica<String, String>>>;
 
@@ -109,6 +110,51 @@ impl Node {
     }
 }
 
+async fn register_with_discovery(replicas: &[ReplicaConfig], discovery_url: &str) {
+    // Parse "http://host:port" to get the socket address.
+    let addr_str = discovery_url
+        .strip_prefix("http://")
+        .unwrap_or(discovery_url);
+    let addr: std::net::SocketAddr = match addr_str.parse() {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::warn!("invalid discovery_url '{discovery_url}': {e}");
+            return;
+        }
+    };
+
+    for cfg in replicas {
+        let body = serde_json::to_string(&serde_json::json!({
+            "replicas": cfg.membership
+        }))
+        .unwrap();
+        let request = format!(
+            "POST /v1/shards/{} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            cfg.shard, addr_str, body.len(), body,
+        );
+
+        match tokio::net::TcpStream::connect(addr).await {
+            Ok(mut stream) => {
+                if stream.write_all(request.as_bytes()).await.is_err() {
+                    tracing::warn!(shard = cfg.shard, "failed to write to discovery service");
+                    continue;
+                }
+                let mut response = Vec::new();
+                let _ = stream.read_to_end(&mut response).await;
+                let resp_str = String::from_utf8_lossy(&response);
+                if resp_str.contains("200 OK") {
+                    tracing::info!(shard = cfg.shard, "registered with discovery service");
+                } else {
+                    tracing::warn!(shard = cfg.shard, response = %resp_str, "discovery registration returned non-success");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(shard = cfg.shard, %e, "failed to connect to discovery service");
+            }
+        }
+    }
+}
+
 pub async fn run(cfg: NodeConfig) {
     let persist_dir = cfg
         .persist_dir
@@ -128,6 +174,10 @@ pub async fn run(cfg: NodeConfig) {
         .unwrap_or_else(|e| panic!("invalid admin_listen_addr '{admin_listen_addr}': {e}"));
 
     crate::admin_server::start(admin_addr, Arc::clone(&node)).await;
+
+    if let Some(ref discovery_url) = cfg.discovery_url {
+        register_with_discovery(&cfg.replicas, discovery_url).await;
+    }
 
     tracing::info!(%admin_listen_addr, "node ready, press Ctrl-C to stop");
 
