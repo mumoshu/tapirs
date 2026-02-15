@@ -1,5 +1,5 @@
 use super::{
-    message::{LeaderRecord, RecordPayload, Reconfigure, ViewChangeAddendum},
+    message::{BootstrapRecord, LeaderRecord, LeaderRecordReply, RecordPayload, Reconfigure, ViewChangeAddendum},
     shared_view::SharedView, AddMember, Confirm, DoViewChange,
     FinalizeConsensus, FinalizeInconsistent, Membership, Message, OpId, ProposeConsensus,
     ProposeInconsistent, Record, RecordConsensusEntry, RecordEntryState, RecordInconsistentEntry,
@@ -817,6 +817,21 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
 
                     Self::broadcast_do_view_change(&self.inner.transport, sync);
                 }
+            }
+            Message::<U, T>::FetchLeaderRecord(_) => {
+                let (record, view) = sync.leader_record.as_ref()
+                    .map(|lr| (Some(Arc::clone(&lr.record)), Some(lr.view.clone())))
+                    .unwrap_or((None, None));
+                return Some(Message::<U, T>::LeaderRecordReply(LeaderRecordReply { record, view }));
+            }
+            Message::<U, T>::BootstrapRecord(BootstrapRecord { record, view }) => {
+                self.inner.transport.do_send(
+                    self.inner.transport.address(),
+                    Message::<U, T>::StartView(StartView {
+                        payload: RecordPayload::Full(record),
+                        view,
+                    }),
+                );
             }
             _ => {
                 debug_assert!(false);

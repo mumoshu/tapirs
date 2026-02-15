@@ -1,7 +1,8 @@
 use super::{
-    message::Reconfigure, shared_view::SharedView, Confirm, DoViewChange, FinalizeConsensus,
+    message::{BootstrapRecord, FetchLeaderRecord, LeaderRecordReply, Reconfigure},
+    shared_view::SharedView, AddMember, Confirm, DoViewChange, FinalizeConsensus,
     FinalizeInconsistent, Membership, MembershipSize, Message, OpId, ProposeConsensus,
-    ProposeInconsistent, ReplicaUpcalls, ReplyConsensus, ReplyInconsistent, ReplyUnlogged,
+    ProposeInconsistent, Record, ReplicaUpcalls, ReplyConsensus, ReplyInconsistent, ReplyUnlogged,
     RequestUnlogged, View, ViewNumber,
 };
 use crate::{
@@ -554,6 +555,57 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
             self.inner
                 .transport
                 .do_send(address, Reconfigure { config: config.clone() });
+        }
+    }
+
+    /// Fetch the stable leader_record from a random replica.
+    pub fn fetch_leader_record(
+        &self,
+    ) -> impl Future<Output = Option<(SharedView<T::Address>, Arc<Record<U>>)>> + Send + use<U, T>
+    {
+        let inner = Arc::clone(&self.inner);
+        async move {
+            let address = {
+                let sync = inner.sync.lock().unwrap();
+                let count = sync.view.membership.len();
+                sync.view.membership.get(thread_rng().gen_range(0..count)).unwrap()
+            };
+            let reply = inner
+                .transport
+                .send::<LeaderRecordReply<U::IO, U::CO, U::CR, T::Address>>(
+                    address,
+                    FetchLeaderRecord,
+                )
+                .await;
+            reply.view.zip(reply.record)
+        }
+    }
+
+    /// Send a `BootstrapRecord` to all replicas in this client's membership.
+    ///
+    /// Used with a standalone client (membership=[R4]) to pre-load a fresh
+    /// replica with a record before it joins the group.
+    pub fn bootstrap_record(&self, record: Record<U>, view: SharedView<T::Address>) {
+        let sync = self.inner.sync.lock().unwrap();
+        for address in &sync.view.membership {
+            self.inner.transport.do_send(
+                address,
+                BootstrapRecord {
+                    record: record.clone(),
+                    view: view.clone(),
+                },
+            );
+        }
+    }
+
+    /// Broadcast an `AddMember` to all replicas, triggering a view change
+    /// that adds the new address to the group membership.
+    pub fn add_member(&self, address: T::Address) {
+        let sync = self.inner.sync.lock().unwrap();
+        for addr in &sync.view.membership {
+            self.inner
+                .transport
+                .do_send(addr, AddMember { address: address.clone() });
         }
     }
 }

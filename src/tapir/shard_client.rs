@@ -1,7 +1,7 @@
 use super::{Change, Key, Replica, ShardNumber, Timestamp, Value, CO, CR, IO, UO, UR};
 use crate::{
-    transport::Transport, IrClient, IrClientId, IrMembership, OccPrepareResult,
-    OccSharedTransaction, OccTransaction, OccTransactionId,
+    transport::Transport, IrClient, IrClientId, IrMembership, IrRecord, IrSharedView,
+    OccPrepareResult, OccSharedTransaction, OccTransaction, OccTransactionId,
 };
 use std::future::Future;
 use std::sync::Arc;
@@ -211,6 +211,27 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
     /// that atomically updates the shard's app_config (e.g. key_range).
     pub fn reconfigure(&self, config: Vec<u8>) {
         self.inner.reconfigure(config);
+    }
+
+    pub fn fetch_leader_record(
+        &self,
+    ) -> impl Future<Output = Option<(IrSharedView<T::Address>, Arc<IrRecord<Replica<K, V>>>)>>
+           + Send
+           + use<K, V, T>
+    {
+        self.inner.fetch_leader_record()
+    }
+
+    pub fn bootstrap_record(
+        &self,
+        record: IrRecord<Replica<K, V>>,
+        view: IrSharedView<T::Address>,
+    ) {
+        self.inner.bootstrap_record(record, view);
+    }
+
+    pub fn add_member(&self, address: T::Address) {
+        self.inner.add_member(address);
     }
 
     pub fn raise_min_prepare_time(&self, time: u64) -> impl Future<Output = u64> + Send {

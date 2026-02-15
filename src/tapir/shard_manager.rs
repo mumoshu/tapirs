@@ -20,7 +20,7 @@ pub struct ManagedShard<K: Key, V: Value, T: Transport<Replica<K, V>>> {
 pub struct ShardManager<K: Key, V: Value, T: Transport<Replica<K, V>>> {
     pub(crate) shards: HashMap<ShardNumber, ManagedShard<K, V, T>>,
     pub(crate) directory: Arc<RwLock<ShardDirectory<K>>>,
-    transport: T,
+    pub(crate) transport: T,
     client_id: IrClientId,
 }
 

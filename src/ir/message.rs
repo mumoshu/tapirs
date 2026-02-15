@@ -30,6 +30,9 @@ pub enum MessageImpl<UO, UR, IO, CO, CR, A> {
     AddMember(AddMember<A>),
     RemoveMember(RemoveMember<A>),
     Reconfigure(Reconfigure),
+    FetchLeaderRecord(FetchLeaderRecord),
+    LeaderRecordReply(LeaderRecordReply<IO, CO, CR, A>),
+    BootstrapRecord(BootstrapRecord<IO, CO, CR, A>),
 }
 
 impl<UO: Debug, UR: Debug, IO: Debug, CO: Debug, CR: Debug, A: Debug> Debug
@@ -51,6 +54,9 @@ impl<UO: Debug, UR: Debug, IO: Debug, CO: Debug, CR: Debug, A: Debug> Debug
             Self::AddMember(r) => Debug::fmt(r, f),
             Self::RemoveMember(r) => Debug::fmt(r, f),
             Self::Reconfigure(r) => Debug::fmt(r, f),
+            Self::FetchLeaderRecord(r) => Debug::fmt(r, f),
+            Self::LeaderRecordReply(r) => Debug::fmt(r, f),
+            Self::BootstrapRecord(r) => Debug::fmt(r, f),
         }
     }
 }
@@ -215,4 +221,21 @@ pub struct RemoveMember<A> {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Reconfigure {
     pub config: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FetchLeaderRecord;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LeaderRecordReply<IO, CO, CR, A> {
+    pub record: Option<Arc<RecordImpl<IO, CO, CR>>>,
+    pub view: Option<SharedView<A>>,
+}
+
+/// Administrative message: client sends to a fresh replica to pre-load it
+/// with a record. The replica converts this to a self-directed StartView.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BootstrapRecord<IO, CO, CR, A> {
+    pub record: RecordImpl<IO, CO, CR>,
+    pub view: SharedView<A>,
 }
