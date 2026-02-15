@@ -16,4 +16,3 @@ pub mod vlog;
 
 pub use disk_store::DiskStore;
 pub use error::StorageError;
-pub use faulty_disk_io::{DiskFaultConfig, FaultyDiskIo};
