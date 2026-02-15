@@ -1,10 +1,10 @@
 use super::{OpId, ReplicaUpcalls, ViewNumber};
 use crate::util::vectorize;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, fmt::Debug};
+use std::{collections::{HashMap, HashSet}, fmt::Debug};
 
 /// The state of a record entry according to a replica.
-#[derive(Copy, Clone, Serialize, Deserialize)]
+#[derive(Copy, Clone, PartialEq, Serialize, Deserialize)]
 pub enum State {
     /// Operation was applied at the replica in some view.
     Finalized(ViewNumber),
@@ -58,13 +58,13 @@ impl Consistency {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InconsistentEntry<IO> {
     pub op: IO,
     pub state: State,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConsensusEntry<CO, CR> {
     pub op: CO,
     pub result: CR,
@@ -96,6 +96,25 @@ impl<IO, CO, CR> Default for RecordImpl<IO, CO, CR> {
         Self {
             inconsistent: Default::default(),
             consensus: Default::default(),
+        }
+    }
+}
+
+impl<IO: Clone, CO: Clone, CR: Clone> RecordImpl<IO, CO, CR> {
+    pub fn filter_by_op_ids(&self, op_ids: &HashSet<OpId>) -> Self {
+        Self {
+            inconsistent: self
+                .inconsistent
+                .iter()
+                .filter(|(id, _)| op_ids.contains(id))
+                .map(|(id, e)| (*id, e.clone()))
+                .collect(),
+            consensus: self
+                .consensus
+                .iter()
+                .filter(|(id, _)| op_ids.contains(id))
+                .map(|(id, e)| (*id, e.clone()))
+                .collect(),
         }
     }
 }

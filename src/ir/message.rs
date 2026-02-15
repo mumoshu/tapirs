@@ -3,7 +3,7 @@ use super::{
 };
 use crate::Transport;
 use serde::{Deserialize, Serialize};
-use std::fmt::Debug;
+use std::{fmt::Debug, sync::Arc};
 
 pub type Message<U, T> = MessageImpl<
     <U as ReplicaUpcalls>::UO,
@@ -121,6 +121,41 @@ pub struct Confirm<A> {
     pub view: SharedView<A>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum RecordPayload<IO, CO, CR> {
+    Full(RecordImpl<IO, CO, CR>),
+    Delta {
+        base_view: ViewNumber,
+        entries: RecordImpl<IO, CO, CR>,
+    },
+}
+
+impl<IO: Clone, CO: Clone, CR: Clone> RecordPayload<IO, CO, CR> {
+    pub fn resolve(self, base: Option<&RecordImpl<IO, CO, CR>>) -> RecordImpl<IO, CO, CR> {
+        match self {
+            Self::Full(record) => record,
+            Self::Delta { entries, .. } => {
+                let base = base.expect("delta requires matching base");
+                let mut full = base.clone();
+                // insert (overwrite), not or_insert: delta entries may be updates
+                // to existing entries (FinalizeConsensus changes result + state).
+                for (op_id, entry) in entries.inconsistent {
+                    full.inconsistent.insert(op_id, entry);
+                }
+                for (op_id, entry) in entries.consensus {
+                    full.consensus.insert(op_id, entry);
+                }
+                full
+            }
+        }
+    }
+}
+
+pub(crate) struct LeaderRecord<IO, CO, CR, A> {
+    pub record: Arc<RecordImpl<IO, CO, CR>>,
+    pub view: SharedView<A>,
+}
+
 /// Informs a replica about a new view.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DoViewChange<IO, CO, CR, A> {
@@ -134,8 +169,8 @@ pub struct DoViewChange<IO, CO, CR, A> {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ViewChangeAddendum<IO, CO, CR, A> {
-    /// Sender replica's record.
-    pub record: RecordImpl<IO, CO, CR>,
+    /// Sender replica's record (full or delta).
+    pub payload: RecordPayload<IO, CO, CR>,
     /// Latest view in which sender replica had a normal state.
     pub latest_normal_view: SharedView<A>,
 }
@@ -151,8 +186,8 @@ impl<IO, CO, CR, A: Debug> Debug for ViewChangeAddendum<IO, CO, CR, A> {
 /// From leader to inform a replica that a new view has begun.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct StartView<IO, CO, CR, A> {
-    /// Leader's merged record.
-    pub record: RecordImpl<IO, CO, CR>,
+    /// Leader's merged record (full or delta).
+    pub payload: RecordPayload<IO, CO, CR>,
     /// New view.
     pub view: SharedView<A>,
 }
