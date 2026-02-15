@@ -1,5 +1,6 @@
 use super::{TapirTransport, Transport};
 use crate::{
+    discovery::{InMemoryShardDirectory, ShardDirectory as _},
     tapir::{Key, Value},
     IrMembership, IrMessage, IrReplicaUpcalls, ShardNumber, TapirReplica,
 };
@@ -34,12 +35,14 @@ impl Default for RetryBackoff {
 
 pub struct Registry<U: IrReplicaUpcalls> {
     inner: Arc<RwLock<Inner<U>>>,
+    directory: Arc<InMemoryShardDirectory<usize>>,
 }
 
 impl<M: IrReplicaUpcalls> Default for Registry<M> {
     fn default() -> Self {
         Self {
             inner: Default::default(),
+            directory: Arc::new(InMemoryShardDirectory::new()),
         }
     }
 }
@@ -53,7 +56,6 @@ struct Inner<U: IrReplicaUpcalls> {
                 + Sync,
         >,
     >,
-    shards: HashMap<ShardNumber, IrMembership<usize>>,
     epoch: tokio::time::Instant,
 }
 
@@ -61,13 +63,19 @@ impl<U: IrReplicaUpcalls> Default for Inner<U> {
     fn default() -> Self {
         Self {
             callbacks: Vec::new(),
-            shards: Default::default(),
             epoch: tokio::time::Instant::now(),
         }
     }
 }
 
 impl<U: IrReplicaUpcalls> Registry<U> {
+    pub fn with_directory(directory: Arc<InMemoryShardDirectory<usize>>) -> Self {
+        Self {
+            inner: Default::default(),
+            directory,
+        }
+    }
+
     pub fn channel(
         &self,
         callback: impl Fn(usize, IrMessage<U, Channel<U>>) -> Option<IrMessage<U, Channel<U>>>
@@ -83,14 +91,19 @@ impl<U: IrReplicaUpcalls> Registry<U> {
             address,
             persistent: Default::default(),
             inner: Arc::clone(&self.inner),
+            directory: Arc::clone(&self.directory),
+            shard: Arc::new(RwLock::new(None)),
             epoch,
             retry_backoff: RetryBackoff::default(),
         }
     }
 
     pub fn put_shard_addresses(&self, shard: ShardNumber, membership: IrMembership<usize>) {
-        let mut inner = self.inner.write().unwrap();
-        inner.shards.insert(shard, membership);
+        self.directory.put(shard, membership);
+    }
+
+    pub fn directory(&self) -> &Arc<InMemoryShardDirectory<usize>> {
+        &self.directory
     }
 
     pub fn len(&self) -> usize {
@@ -106,6 +119,8 @@ pub struct Channel<U: IrReplicaUpcalls> {
     address: usize,
     persistent: Arc<Mutex<HashMap<String, String>>>,
     inner: Arc<RwLock<Inner<U>>>,
+    directory: Arc<InMemoryShardDirectory<usize>>,
+    shard: Arc<RwLock<Option<ShardNumber>>>,
     epoch: tokio::time::Instant,
     retry_backoff: RetryBackoff,
 }
@@ -116,12 +131,19 @@ impl<U: IrReplicaUpcalls> Clone for Channel<U> {
             address: self.address,
             persistent: Arc::clone(&self.persistent),
             inner: Arc::clone(&self.inner),
+            directory: Arc::clone(&self.directory),
+            shard: Arc::clone(&self.shard),
             epoch: self.epoch,
             retry_backoff: self.retry_backoff.clone(),
         }
     }
 }
 
+impl<U: IrReplicaUpcalls> Channel<U> {
+    pub fn set_shard(&self, shard: ShardNumber) {
+        *self.shard.write().unwrap() = Some(shard);
+    }
+}
 
 impl<U: IrReplicaUpcalls> Transport<U> for Channel<U> {
     type Address = usize;
@@ -229,6 +251,19 @@ impl<U: IrReplicaUpcalls> Transport<U> for Channel<U> {
             });
         }
     }
+
+    fn on_membership_changed(&self, membership: &IrMembership<Self::Address>) {
+        // Called synchronously by IrReplica after a view change completes.
+        // This MUST NOT block or fail — the IR/TAPIR view change protocol
+        // (proved by TLA+) is the source of truth for intra-shard membership.
+        // Discovery is eventually consistent: a background task on
+        // DiscoveryShardDirectory periodically pushes local state to the
+        // external discovery service and pulls remote state, with graceful
+        // retry on failure. This write only updates the local HashMap.
+        if let Some(shard) = *self.shard.read().unwrap() {
+            self.directory.put(shard, membership.clone());
+        }
+    }
 }
 
 impl<K: Key, V: Value> TapirTransport<K, V> for Channel<TapirReplica<K, V>> {
@@ -236,14 +271,11 @@ impl<K: Key, V: Value> TapirTransport<K, V> for Channel<TapirReplica<K, V>> {
         &self,
         shard: ShardNumber,
     ) -> impl Future<Output = IrMembership<Self::Address>> + Send + 'static {
-        let inner = Arc::clone(&self.inner);
+        let directory = Arc::clone(&self.directory);
         async move {
             loop {
-                {
-                    let inner = inner.read().unwrap();
-                    if let Some(membership) = inner.shards.get(&shard) {
-                        break membership.clone();
-                    }
+                if let Some(membership) = directory.get(shard) {
+                    break membership;
                 }
 
                 <Self as Transport<TapirReplica<K, V>>>::sleep(Duration::from_millis(100)).await;

@@ -212,7 +212,7 @@ impl<A: Clone + Send + Sync + 'static> ShardDirectory<A> for InMemoryShardDirect
 /// All [`ShardDirectory`] methods operate on the local `InMemoryShardDirectory`
 /// only — they never block or fail due to discovery unavailability.
 pub struct DiscoveryShardDirectory<A, C> {
-    local: InMemoryShardDirectory<A>,
+    local: Arc<InMemoryShardDirectory<A>>,
     discovery: Arc<C>,
     own_shard: RwLock<Option<ShardNumber>>,
 }
@@ -227,12 +227,20 @@ where
     /// Create a new discovery-backed shard directory and spawn the background
     /// sync task.
     ///
+    /// The `local` backing store is shared with the transport — the transport
+    /// reads/writes it directly, and this directory's background sync task
+    /// pushes/pulls changes to/from the external discovery service.
+    ///
     /// The sync task runs every `sync_interval`, pulling remote topology and
     /// pushing the own shard's membership. It exits automatically when the
     /// returned `Arc` (and all clones) are dropped.
-    pub fn new(discovery: Arc<C>, sync_interval: Duration) -> Arc<Self> {
+    pub fn new(
+        local: Arc<InMemoryShardDirectory<A>>,
+        discovery: Arc<C>,
+        sync_interval: Duration,
+    ) -> Arc<Self> {
         let dir = Arc::new(Self {
-            local: InMemoryShardDirectory::new(),
+            local,
             discovery,
             own_shard: RwLock::new(None),
         });
@@ -490,7 +498,8 @@ mod tests {
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn discovery_directory_local_operations() {
         let disc = Arc::new(InMemoryDiscovery::new());
-        let dir = DiscoveryShardDirectory::<usize, _>::new(disc, Duration::from_secs(60));
+        let local = Arc::new(InMemoryShardDirectory::new());
+        let dir = DiscoveryShardDirectory::<usize, _>::new(local, disc, Duration::from_secs(60));
 
         // Local put/get work immediately.
         let shard = ShardNumber(1);
@@ -503,8 +512,9 @@ mod tests {
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn discovery_directory_push_to_discovery() {
         let disc = Arc::new(InMemoryDiscovery::new());
+        let local = Arc::new(InMemoryShardDirectory::new());
         let dir =
-            DiscoveryShardDirectory::<usize, _>::new(Arc::clone(&disc), Duration::from_millis(100));
+            DiscoveryShardDirectory::<usize, _>::new(local, Arc::clone(&disc), Duration::from_millis(100));
 
         let shard = ShardNumber(1);
         dir.put(shard, IrMembership::new(vec![10, 20, 30]));
@@ -527,8 +537,9 @@ mod tests {
             .await
             .unwrap();
 
+        let local = Arc::new(InMemoryShardDirectory::new());
         let dir =
-            DiscoveryShardDirectory::<usize, _>::new(Arc::clone(&disc), Duration::from_millis(100));
+            DiscoveryShardDirectory::<usize, _>::new(local, Arc::clone(&disc), Duration::from_millis(100));
 
         // Initially local doesn't have shard 2.
         assert!(dir.get(ShardNumber(2)).is_none());

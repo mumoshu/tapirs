@@ -190,6 +190,10 @@ impl<U: IrReplicaUpcalls> FaultyChannelTransport<U> {
         self.state.read().unwrap().config.clone()
     }
 
+    pub fn set_shard(&self, shard: ShardNumber) {
+        self.inner.set_shard(shard);
+    }
+
     pub fn set_clock_skew(&self, skew_nanos: i64) {
         self.state.write().unwrap().config.clock_skew_nanos = skew_nanos;
     }
@@ -534,6 +538,10 @@ impl<U: IrReplicaUpcalls> Transport<U> for FaultyChannelTransport<U> {
 
     fn spawn(future: impl Future<Output = ()> + Send + 'static) {
         Channel::<U>::spawn(future)
+    }
+
+    fn on_membership_changed(&self, membership: &IrMembership<Self::Address>) {
+        self.inner.on_membership_changed(membership);
     }
 }
 

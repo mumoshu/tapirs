@@ -1,5 +1,6 @@
 use super::address::TcpAddress;
 use super::wire::TcpIrMessage;
+use crate::discovery::{InMemoryShardDirectory, ShardDirectory as _};
 use crate::ir::ReplicaUpcalls;
 use crate::{IrMembership, ShardNumber};
 use std::collections::HashMap;
@@ -39,7 +40,7 @@ pub(super) struct TransportInner<U: ReplicaUpcalls> {
         >,
     >,
     /// Shard directory for TapirTransport::shard_addresses().
-    pub shard_directory: RwLock<HashMap<ShardNumber, IrMembership<TcpAddress>>>,
+    pub directory: Arc<InMemoryShardDirectory<TcpAddress>>,
     /// Shard number for this transport's replica group, set by set_shard_addresses().
     pub shard: RwLock<Option<ShardNumber>>,
     /// Directory for persistent state files.
@@ -48,6 +49,14 @@ pub(super) struct TransportInner<U: ReplicaUpcalls> {
 
 impl<U: ReplicaUpcalls> TcpTransport<U> {
     pub fn new(address: TcpAddress, persist_dir: String) -> Self {
+        Self::with_directory(address, persist_dir, Arc::new(InMemoryShardDirectory::new()))
+    }
+
+    pub fn with_directory(
+        address: TcpAddress,
+        persist_dir: String,
+        directory: Arc<InMemoryShardDirectory<TcpAddress>>,
+    ) -> Self {
         Self {
             address,
             inner: Arc::new(TransportInner {
@@ -55,11 +64,15 @@ impl<U: ReplicaUpcalls> TcpTransport<U> {
                 next_request_id: AtomicU64::new(0),
                 connections: Mutex::new(HashMap::new()),
                 receive_callback: Mutex::new(None),
-                shard_directory: RwLock::new(HashMap::new()),
+                directory,
                 shard: RwLock::new(None),
                 persist_dir,
             }),
         }
+    }
+
+    pub fn directory(&self) -> &Arc<InMemoryShardDirectory<TcpAddress>> {
+        &self.inner.directory
     }
 
     /// Register the replica's receive callback. Called before `listen()`.
@@ -74,10 +87,6 @@ impl<U: ReplicaUpcalls> TcpTransport<U> {
     /// Also stores the shard number so on_membership_changed can update the right entry.
     pub fn set_shard_addresses(&self, shard: ShardNumber, membership: IrMembership<TcpAddress>) {
         *self.inner.shard.write().unwrap() = Some(shard);
-        self.inner
-            .shard_directory
-            .write()
-            .unwrap()
-            .insert(shard, membership);
+        self.inner.directory.put(shard, membership);
     }
 }

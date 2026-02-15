@@ -6,6 +6,7 @@ use super::wire::{TcpIrMessage, WireMessage};
 use crate::ir::ReplicaUpcalls;
 use crate::tapir::{Key, Value};
 use crate::transport::{TapirTransport, Transport};
+use crate::discovery::ShardDirectory as _;
 use crate::{IrMembership, IrMessage, ShardNumber, TapirReplica};
 use serde::{de::DeserializeOwned, Serialize};
 use std::fmt::Debug;
@@ -142,12 +143,15 @@ where
     }
 
     fn on_membership_changed(&self, membership: &IrMembership<Self::Address>) {
+        // Called synchronously by IrReplica after a view change completes.
+        // This MUST NOT block or fail — the IR/TAPIR view change protocol
+        // (proved by TLA+) is the source of truth for intra-shard membership.
+        // Discovery is eventually consistent: a background task on
+        // DiscoveryShardDirectory periodically pushes local state to the
+        // external discovery service and pulls remote state, with graceful
+        // retry on failure. This write only updates the local HashMap.
         if let Some(shard) = *self.inner.shard.read().unwrap() {
-            self.inner
-                .shard_directory
-                .write()
-                .unwrap()
-                .insert(shard, membership.clone());
+            self.inner.directory.put(shard, membership.clone());
         }
     }
 }
@@ -164,14 +168,11 @@ where
         &self,
         shard: ShardNumber,
     ) -> impl Future<Output = IrMembership<TcpAddress>> + Send + 'static {
-        let inner = Arc::clone(&self.inner);
+        let directory = Arc::clone(&self.inner.directory);
         async move {
             loop {
-                {
-                    let dir = inner.shard_directory.read().unwrap();
-                    if let Some(m) = dir.get(&shard) {
-                        return m.clone();
-                    }
+                if let Some(m) = directory.get(shard) {
+                    return m;
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
