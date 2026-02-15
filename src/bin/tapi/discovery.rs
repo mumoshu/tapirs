@@ -1,18 +1,91 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+pub use tapirs::discovery::{ClusterTopology, ShardMembership};
+use tapirs::discovery::{DiscoveryClient, DiscoveryError};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ShardMembership {
-    pub id: u32,
-    pub replicas: Vec<String>,
+/// HTTP client for the tapi discovery service, implementing [`DiscoveryClient`].
+pub struct HttpDiscoveryClient {
+    addr: std::net::SocketAddr,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ClusterTopology {
-    pub shards: Vec<ShardMembership>,
+impl HttpDiscoveryClient {
+    pub fn new(discovery_url: &str) -> Self {
+        let addr_str = discovery_url
+            .strip_prefix("http://")
+            .unwrap_or(discovery_url);
+        let addr: std::net::SocketAddr = addr_str
+            .parse()
+            .unwrap_or_else(|e| panic!("invalid discovery_url '{discovery_url}': {e}"));
+        Self { addr }
+    }
+
+    /// Helper to send an HTTP request and return the response body.
+    async fn http_request(&self, request: &str) -> Result<(String, String), DiscoveryError> {
+        let mut stream = tokio::net::TcpStream::connect(self.addr)
+            .await
+            .map_err(|e| DiscoveryError::ConnectionFailed(e.to_string()))?;
+        stream
+            .write_all(request.as_bytes())
+            .await
+            .map_err(|e| DiscoveryError::ConnectionFailed(e.to_string()))?;
+        let mut response = Vec::new();
+        stream
+            .read_to_end(&mut response)
+            .await
+            .map_err(|e| DiscoveryError::ConnectionFailed(e.to_string()))?;
+        let resp_str = String::from_utf8_lossy(&response).to_string();
+        let body = resp_str
+            .split_once("\r\n\r\n")
+            .map(|(_, b)| b.to_string())
+            .unwrap_or_default();
+        Ok((resp_str, body))
+    }
+}
+
+impl DiscoveryClient for HttpDiscoveryClient {
+    async fn register_shard(&self, id: u32, replicas: Vec<String>) -> Result<(), DiscoveryError> {
+        let body = serde_json::to_string(&serde_json::json!({ "replicas": replicas }))
+            .map_err(|e| DiscoveryError::InvalidResponse(e.to_string()))?;
+        let addr_str = self.addr.to_string();
+        let request = format!(
+            "POST /v1/shards/{id} HTTP/1.1\r\nHost: {addr_str}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len(),
+        );
+        let (resp, _) = self.http_request(&request).await?;
+        if resp.contains("200 OK") {
+            Ok(())
+        } else {
+            Err(DiscoveryError::InvalidResponse(resp))
+        }
+    }
+
+    async fn deregister_shard(&self, id: u32) -> Result<(), DiscoveryError> {
+        let addr_str = self.addr.to_string();
+        let request = format!(
+            "DELETE /v1/shards/{id} HTTP/1.1\r\nHost: {addr_str}\r\nConnection: close\r\n\r\n",
+        );
+        let (resp, _) = self.http_request(&request).await?;
+        if resp.contains("200 OK") {
+            Ok(())
+        } else if resp.contains("404") {
+            Err(DiscoveryError::NotFound)
+        } else {
+            Err(DiscoveryError::InvalidResponse(resp))
+        }
+    }
+
+    async fn get_topology(&self) -> Result<ClusterTopology, DiscoveryError> {
+        let addr_str = self.addr.to_string();
+        let request = format!(
+            "GET /v1/cluster HTTP/1.1\r\nHost: {addr_str}\r\nConnection: close\r\n\r\n",
+        );
+        let (_, body) = self.http_request(&request).await?;
+        serde_json::from_str(&body)
+            .map_err(|e| DiscoveryError::InvalidResponse(format!("{e}\nbody: {body}")))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -89,20 +162,10 @@ fn status_text(code: u16) -> &'static str {
     }
 }
 
-pub async fn run(listen_addr: String) {
+async fn serve(listener: TcpListener) {
     let state = Arc::new(DiscoveryState {
         shards: RwLock::new(HashMap::new()),
     });
-
-    let addr: std::net::SocketAddr = listen_addr
-        .parse()
-        .unwrap_or_else(|e| panic!("invalid discovery listen address '{listen_addr}': {e}"));
-
-    let listener = TcpListener::bind(addr)
-        .await
-        .unwrap_or_else(|e| panic!("discovery: failed to bind {addr}: {e}"));
-
-    tracing::info!(%addr, "discovery server starting");
 
     loop {
         match listener.accept().await {
@@ -176,6 +239,20 @@ pub async fn run(listen_addr: String) {
             }
         }
     }
+}
+
+pub async fn run(listen_addr: String) {
+    let addr: std::net::SocketAddr = listen_addr
+        .parse()
+        .unwrap_or_else(|e| panic!("invalid discovery listen address '{listen_addr}': {e}"));
+
+    let listener = TcpListener::bind(addr)
+        .await
+        .unwrap_or_else(|e| panic!("discovery: failed to bind {addr}: {e}"));
+
+    tracing::info!(%addr, "discovery server starting");
+
+    serve(listener).await;
 }
 
 #[cfg(test)]
@@ -290,5 +367,150 @@ mod tests {
         let s = state();
         let (code, _) = handle_request(&s, "DELETE", "/v1/shards/99", "");
         assert_eq!(code, 404);
+    }
+
+    /// Start a discovery server on an ephemeral port and return the address.
+    async fn start_test_server() -> std::net::SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(serve(listener));
+        addr
+    }
+
+    #[tokio::test]
+    async fn http_client_register_and_topology() {
+        let addr = start_test_server().await;
+        let client = HttpDiscoveryClient::new(&addr.to_string());
+
+        // Register two shards.
+        client
+            .register_shard(1, vec!["127.0.0.1:5001".into(), "127.0.0.1:5002".into()])
+            .await
+            .unwrap();
+        client
+            .register_shard(2, vec!["127.0.0.1:6001".into()])
+            .await
+            .unwrap();
+
+        // Query full topology.
+        let topo = client.get_topology().await.unwrap();
+        assert_eq!(topo.shards.len(), 2);
+        assert_eq!(topo.shards[0].id, 1);
+        assert_eq!(topo.shards[0].replicas, vec!["127.0.0.1:5001", "127.0.0.1:5002"]);
+        assert_eq!(topo.shards[1].id, 2);
+        assert_eq!(topo.shards[1].replicas, vec!["127.0.0.1:6001"]);
+    }
+
+    #[tokio::test]
+    async fn http_client_deregister() {
+        let addr = start_test_server().await;
+        let client = HttpDiscoveryClient::new(&addr.to_string());
+
+        client
+            .register_shard(1, vec!["127.0.0.1:5001".into()])
+            .await
+            .unwrap();
+        client.deregister_shard(1).await.unwrap();
+
+        let topo = client.get_topology().await.unwrap();
+        assert!(topo.shards.is_empty());
+    }
+
+    #[tokio::test]
+    async fn http_client_deregister_nonexistent() {
+        let addr = start_test_server().await;
+        let client = HttpDiscoveryClient::new(&addr.to_string());
+
+        let result = client.deregister_shard(99).await;
+        assert!(matches!(result, Err(DiscoveryError::NotFound)));
+    }
+
+    #[tokio::test]
+    async fn http_client_connection_failure() {
+        // Point at a port where nothing is listening.
+        let client = HttpDiscoveryClient::new("127.0.0.1:1");
+
+        let result = client.get_topology().await;
+        assert!(matches!(result, Err(DiscoveryError::ConnectionFailed(_))));
+    }
+
+    #[tokio::test]
+    async fn discovery_shard_directory_push_pull_with_http() {
+        use tapirs::discovery::{
+            DiscoveryShardDirectory, InMemoryShardDirectory, ShardDirectory as _,
+        };
+        use tapirs::{IrMembership, ShardNumber, TcpAddress};
+
+        let addr = start_test_server().await;
+        let directory = Arc::new(InMemoryShardDirectory::new());
+        let client = Arc::new(HttpDiscoveryClient::new(&addr.to_string()));
+        let dir = DiscoveryShardDirectory::<TcpAddress, _>::new(
+            Arc::clone(&directory),
+            Arc::clone(&client),
+            std::time::Duration::from_millis(50),
+        );
+
+        // PUSH: put membership locally, register as own shard.
+        let membership = IrMembership::new(vec![
+            TcpAddress("127.0.0.1:5001".parse().unwrap()),
+            TcpAddress("127.0.0.1:5002".parse().unwrap()),
+        ]);
+        dir.put(ShardNumber(1), membership);
+        dir.add_own_shard(ShardNumber(1));
+
+        // Wait for background sync to push.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Verify it was pushed to discovery.
+        let topo = client.get_topology().await.unwrap();
+        assert_eq!(topo.shards.len(), 1);
+        assert_eq!(topo.shards[0].id, 1);
+
+        // PULL: register another shard directly on discovery (simulates another node).
+        client
+            .register_shard(2, vec!["127.0.0.1:7001".into(), "127.0.0.1:7002".into()])
+            .await
+            .unwrap();
+
+        // Wait for background sync to pull.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Verify it was pulled into the local directory.
+        let pulled = dir.get(ShardNumber(2)).unwrap();
+        assert_eq!(pulled.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn discovery_shard_directory_resilience() {
+        use tapirs::discovery::{
+            DiscoveryShardDirectory, InMemoryShardDirectory, ShardDirectory as _,
+        };
+        use tapirs::{IrMembership, ShardNumber, TcpAddress};
+
+        // Point at a non-existent server.
+        let directory = Arc::new(InMemoryShardDirectory::new());
+        let client = Arc::new(HttpDiscoveryClient::new("127.0.0.1:1"));
+        let dir = DiscoveryShardDirectory::<TcpAddress, _>::new(
+            Arc::clone(&directory),
+            client,
+            std::time::Duration::from_millis(50),
+        );
+
+        // Local operations succeed despite discovery being unavailable.
+        let membership = IrMembership::new(vec![
+            TcpAddress("127.0.0.1:5001".parse().unwrap()),
+        ]);
+        dir.put(ShardNumber(1), membership);
+        dir.add_own_shard(ShardNumber(1));
+
+        let got = dir.get(ShardNumber(1)).unwrap();
+        assert_eq!(got.len(), 1);
+
+        // Background sync fails silently — no panic.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Local data is unaffected.
+        let got = dir.get(ShardNumber(1)).unwrap();
+        assert_eq!(got.len(), 1);
     }
 }

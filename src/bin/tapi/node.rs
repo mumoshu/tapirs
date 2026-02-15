@@ -1,10 +1,11 @@
 use crate::config::{NodeConfig, ReplicaConfig};
+use crate::discovery::HttpDiscoveryClient;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use tapirs::discovery::{DiscoveryShardDirectory, InMemoryShardDirectory};
 use tapirs::{
     IrMembership, IrReplica, ShardNumber, TapirReplica, TcpAddress, TcpTransport,
 };
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 type TapirIrReplica = IrReplica<TapirReplica<String, String>, TcpTransport<TapirReplica<String, String>>>;
 
@@ -16,6 +17,10 @@ pub struct ReplicaHandle {
 pub struct Node {
     pub replicas: Mutex<HashMap<ShardNumber, ReplicaHandle>>,
     persist_dir: String,
+    directory: Arc<InMemoryShardDirectory<TcpAddress>>,
+    // Holds the DiscoveryShardDirectory alive so its background sync task
+    // continues running. When None, no discovery sync is active.
+    _discovery_dir: Option<Arc<DiscoveryShardDirectory<TcpAddress, HttpDiscoveryClient>>>,
 }
 
 impl Node {
@@ -23,6 +28,24 @@ impl Node {
         Self {
             replicas: Mutex::new(HashMap::new()),
             persist_dir,
+            directory: Arc::new(InMemoryShardDirectory::new()),
+            _discovery_dir: None,
+        }
+    }
+
+    fn with_discovery(persist_dir: String, discovery_url: &str) -> Self {
+        let directory = Arc::new(InMemoryShardDirectory::new());
+        let client = Arc::new(HttpDiscoveryClient::new(discovery_url));
+        let discovery_dir = DiscoveryShardDirectory::new(
+            Arc::clone(&directory),
+            client,
+            std::time::Duration::from_secs(10),
+        );
+        Self {
+            replicas: Mutex::new(HashMap::new()),
+            persist_dir,
+            directory,
+            _discovery_dir: Some(discovery_dir),
         }
     }
 
@@ -47,10 +70,16 @@ impl Node {
 
         let persist_dir = format!("{}/shard_{}", self.persist_dir, cfg.shard);
         let address = TcpAddress(listen_addr);
-        let transport = TcpTransport::new(address, persist_dir);
+        let transport =
+            TcpTransport::with_directory(address, persist_dir, Arc::clone(&self.directory));
 
         // Populate shard directory so TapirTransport::shard_addresses works.
         transport.set_shard_addresses(shard, membership.clone());
+
+        // If discovery is configured, register this shard for push.
+        if let Some(ref dir) = self._discovery_dir {
+            dir.add_own_shard(shard);
+        }
 
         // Start listener BEFORE creating replica (IrReplica::new starts tick tasks).
         transport
@@ -82,6 +111,11 @@ impl Node {
     pub fn remove_replica(&self, shard: ShardNumber) -> bool {
         let removed = self.replicas.lock().unwrap().remove(&shard);
         if removed.is_some() {
+            // Remove from discovery push list. Discovery deregistration
+            // happens on the next background sync cycle.
+            if let Some(ref dir) = self._discovery_dir {
+                dir.remove_own_shard(shard);
+            }
             tracing::info!(?shard, "replica removed");
             true
         } else {
@@ -110,51 +144,6 @@ impl Node {
     }
 }
 
-async fn register_with_discovery(replicas: &[ReplicaConfig], discovery_url: &str) {
-    // Parse "http://host:port" to get the socket address.
-    let addr_str = discovery_url
-        .strip_prefix("http://")
-        .unwrap_or(discovery_url);
-    let addr: std::net::SocketAddr = match addr_str.parse() {
-        Ok(a) => a,
-        Err(e) => {
-            tracing::warn!("invalid discovery_url '{discovery_url}': {e}");
-            return;
-        }
-    };
-
-    for cfg in replicas {
-        let body = serde_json::to_string(&serde_json::json!({
-            "replicas": cfg.membership
-        }))
-        .unwrap();
-        let request = format!(
-            "POST /v1/shards/{} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            cfg.shard, addr_str, body.len(), body,
-        );
-
-        match tokio::net::TcpStream::connect(addr).await {
-            Ok(mut stream) => {
-                if stream.write_all(request.as_bytes()).await.is_err() {
-                    tracing::warn!(shard = cfg.shard, "failed to write to discovery service");
-                    continue;
-                }
-                let mut response = Vec::new();
-                let _ = stream.read_to_end(&mut response).await;
-                let resp_str = String::from_utf8_lossy(&response);
-                if resp_str.contains("200 OK") {
-                    tracing::info!(shard = cfg.shard, "registered with discovery service");
-                } else {
-                    tracing::warn!(shard = cfg.shard, response = %resp_str, "discovery registration returned non-success");
-                }
-            }
-            Err(e) => {
-                tracing::warn!(shard = cfg.shard, %e, "failed to connect to discovery service");
-            }
-        }
-    }
-}
-
 pub async fn run(cfg: NodeConfig) {
     let persist_dir = cfg
         .persist_dir
@@ -163,7 +152,11 @@ pub async fn run(cfg: NodeConfig) {
         .admin_listen_addr
         .unwrap_or_else(|| "127.0.0.1:9000".to_string());
 
-    let node = Arc::new(Node::new(persist_dir));
+    let node = if let Some(ref discovery_url) = cfg.discovery_url {
+        Arc::new(Node::with_discovery(persist_dir, discovery_url))
+    } else {
+        Arc::new(Node::new(persist_dir))
+    };
 
     for replica_cfg in &cfg.replicas {
         node.add_replica(replica_cfg).await;
@@ -174,10 +167,6 @@ pub async fn run(cfg: NodeConfig) {
         .unwrap_or_else(|e| panic!("invalid admin_listen_addr '{admin_listen_addr}': {e}"));
 
     crate::admin_server::start(admin_addr, Arc::clone(&node)).await;
-
-    if let Some(ref discovery_url) = cfg.discovery_url {
-        register_with_discovery(&cfg.replicas, discovery_url).await;
-    }
 
     tracing::info!(%admin_listen_addr, "node ready, press Ctrl-C to stop");
 

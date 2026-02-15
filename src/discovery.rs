@@ -214,7 +214,7 @@ impl<A: Clone + Send + Sync + 'static> ShardDirectory<A> for InMemoryShardDirect
 pub struct DiscoveryShardDirectory<A, C> {
     local: Arc<InMemoryShardDirectory<A>>,
     discovery: Arc<C>,
-    own_shard: RwLock<Option<ShardNumber>>,
+    own_shards: RwLock<Vec<ShardNumber>>,
 }
 
 impl<A, C> DiscoveryShardDirectory<A, C>
@@ -242,7 +242,7 @@ where
         let dir = Arc::new(Self {
             local,
             discovery,
-            own_shard: RwLock::new(None),
+            own_shards: RwLock::new(Vec::new()),
         });
 
         let weak = Arc::downgrade(&dir);
@@ -262,11 +262,11 @@ where
                     }
                 }
 
-                // PUSH: re-register own shard's current membership
+                // PUSH: re-register own shards' current membership
                 // (retries on next cycle if failed).
-                // Read own_shard and drop the RwLockReadGuard before awaiting.
-                let own_shard = *dir.own_shard.read().unwrap();
-                if let Some(shard) = own_shard {
+                // Clone the list and drop the RwLockReadGuard before awaiting.
+                let own_shards: Vec<ShardNumber> = dir.own_shards.read().unwrap().clone();
+                for shard in own_shards {
                     if let Some(membership) = dir.local.get(shard) {
                         let _ = dir
                             .discovery
@@ -280,10 +280,18 @@ where
         dir
     }
 
-    /// Set which shard this directory should push to discovery.
-    /// Typically the shard that the owning replica belongs to.
-    pub fn set_own_shard(&self, shard: ShardNumber) {
-        *self.own_shard.write().unwrap() = Some(shard);
+    /// Register a shard to push to discovery during background sync.
+    /// Typically the shard(s) that the owning node's replicas belong to.
+    pub fn add_own_shard(&self, shard: ShardNumber) {
+        let mut shards = self.own_shards.write().unwrap();
+        if !shards.contains(&shard) {
+            shards.push(shard);
+        }
+    }
+
+    /// Unregister a shard from being pushed to discovery.
+    pub fn remove_own_shard(&self, shard: ShardNumber) {
+        self.own_shards.write().unwrap().retain(|s| *s != shard);
     }
 }
 
@@ -518,7 +526,7 @@ mod tests {
 
         let shard = ShardNumber(1);
         dir.put(shard, IrMembership::new(vec![10, 20, 30]));
-        dir.set_own_shard(shard);
+        dir.add_own_shard(shard);
 
         // Advance time past one sync cycle.
         tokio::time::sleep(Duration::from_millis(150)).await;

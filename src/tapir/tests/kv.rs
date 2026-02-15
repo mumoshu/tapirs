@@ -659,7 +659,7 @@ async fn fuzz_tapir_transactions() {
         Arc::clone(&discovery),
         Duration::from_millis(500),
     );
-    disc_dir.set_own_shard(ShardNumber(0));
+    disc_dir.add_own_shard(ShardNumber(0));
 
     let (shards, clients, client_transports) = build_sharded_kv_faulty(
         true,
