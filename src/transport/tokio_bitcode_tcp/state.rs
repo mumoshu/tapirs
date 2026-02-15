@@ -40,6 +40,8 @@ pub(super) struct TransportInner<U: ReplicaUpcalls> {
     >,
     /// Shard directory for TapirTransport::shard_addresses().
     pub shard_directory: RwLock<HashMap<ShardNumber, IrMembership<TcpAddress>>>,
+    /// Shard number for this transport's replica group, set by set_shard_addresses().
+    pub shard: RwLock<Option<ShardNumber>>,
     /// Directory for persistent state files.
     pub persist_dir: String,
 }
@@ -54,6 +56,7 @@ impl<U: ReplicaUpcalls> TcpTransport<U> {
                 connections: Mutex::new(HashMap::new()),
                 receive_callback: Mutex::new(None),
                 shard_directory: RwLock::new(HashMap::new()),
+                shard: RwLock::new(None),
                 persist_dir,
             }),
         }
@@ -68,7 +71,9 @@ impl<U: ReplicaUpcalls> TcpTransport<U> {
     }
 
     /// Populate the shard directory with membership information.
+    /// Also stores the shard number so on_membership_changed can update the right entry.
     pub fn set_shard_addresses(&self, shard: ShardNumber, membership: IrMembership<TcpAddress>) {
+        *self.inner.shard.write().unwrap() = Some(shard);
         self.inner
             .shard_directory
             .write()

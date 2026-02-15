@@ -69,6 +69,10 @@ pub trait Transport<U: IrReplicaUpcalls>: Clone + Send + Sync + 'static {
 
     /// Spawn a fire-and-forget async task.
     fn spawn(future: impl Future<Output = ()> + Send + 'static);
+
+    /// Called after a view change completes with the new group membership.
+    /// Default: no-op.
+    fn on_membership_changed(&self, _membership: &IrMembership<Self::Address>) {}
 }
 
 pub trait TapirTransport<K: Key, V: Value>: Transport<TapirReplica<K, V>> {

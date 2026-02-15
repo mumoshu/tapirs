@@ -140,6 +140,16 @@ where
     fn spawn(future: impl Future<Output = ()> + Send + 'static) {
         tokio::spawn(future);
     }
+
+    fn on_membership_changed(&self, membership: &IrMembership<Self::Address>) {
+        if let Some(shard) = *self.inner.shard.read().unwrap() {
+            self.inner
+                .shard_directory
+                .write()
+                .unwrap()
+                .insert(shard, membership.clone());
+        }
+    }
 }
 
 impl<K: Key, V: Value> TapirTransport<K, V> for TcpTransport<TapirReplica<K, V>>

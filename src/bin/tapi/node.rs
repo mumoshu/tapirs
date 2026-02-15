@@ -9,8 +9,6 @@ type TapirIrReplica = IrReplica<TapirReplica<String, String>, TcpTransport<Tapir
 
 pub struct ReplicaHandle {
     pub replica: Arc<TapirIrReplica>,
-    #[allow(dead_code)]
-    pub transport: TcpTransport<TapirReplica<String, String>>,
     pub listen_addr: std::net::SocketAddr,
 }
 
@@ -75,7 +73,6 @@ impl Node {
             shard,
             ReplicaHandle {
                 replica,
-                transport,
                 listen_addr,
             },
         );

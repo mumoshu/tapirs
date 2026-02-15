@@ -644,6 +644,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                                 &format!("checkpoint_{}", sync.view.number.0),
                                 Some(&sync.upcalls),
                             );
+                            self.inner.transport.on_membership_changed(&sync.view.membership);
                         }
                     }
                 } else if !msg.from_client && let Some(leader_record) = sync.leader_record.as_ref() && leader_record.view.number >= msg.view.number {
@@ -670,6 +671,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                     sync.changed_view_recently = true;
                     sync.leader_record = Some(StartView { record: new_record, view });
                     self.persist_view_info(&*sync);
+                    self.inner.transport.on_membership_changed(&sync.view.membership);
                 }
             }
             Message::<U, T>::AddMember(AddMember{address}) => {
