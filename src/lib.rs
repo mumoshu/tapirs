@@ -1,5 +1,6 @@
 #![allow(clippy::type_complexity)]
 
+pub mod discovery;
 mod ir;
 mod mvcc;
 mod occ;

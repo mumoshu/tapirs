@@ -18,6 +18,14 @@ impl From<SocketAddr> for TcpAddress {
     }
 }
 
+impl std::str::FromStr for TcpAddress {
+    type Err = std::net::AddrParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        s.parse::<SocketAddr>().map(TcpAddress)
+    }
+}
+
 impl TcpAddress {
     pub fn socket_addr(&self) -> SocketAddr {
         self.0
