@@ -77,7 +77,6 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Client<K, V, T> {
     /// designated leader. This delegates to the IR client's
     /// `force_view_change`, which bumps the view and sends `DoViewChange`
     /// with `from_client: true` to all replicas in the shard.
-    #[cfg(test)]
     pub fn force_view_change(&self, shard: ShardNumber) {
         let inner = self.inner.lock().unwrap();
         if let Some(client) = inner.clients.get(&shard) {

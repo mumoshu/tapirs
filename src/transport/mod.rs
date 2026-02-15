@@ -20,6 +20,8 @@ pub use faulty_channel::{FaultyChannelTransport, NetworkFaultConfig, LatencyConf
 #[cfg(test)]
 mod faulty_channel;
 
+pub mod tokio_bitcode_tcp;
+
 #[cfg(all(target_os = "linux", feature = "io-uring"))]
 pub mod uring;
 

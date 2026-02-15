@@ -21,13 +21,15 @@ pub use occ::{
     Transaction as OccTransaction, TransactionId as OccTransactionId,
 };
 pub use tapir::{
-    Client as TapirClient, Replica as TapirReplica, RoutingClient, RoutingTransaction, ShardNumber,
-    Timestamp as TapirTimestamp,
+    Client as TapirClient, KeyRange, Replica as TapirReplica, RoutingClient, RoutingTransaction,
+    Sharded, ShardNumber, Timestamp as TapirTimestamp,
 };
+pub use tapir::dynamic_router::{DynamicRouter, ShardDirectory, ShardEntry};
 pub use transport::{
     Channel as ChannelTransport, ChannelRegistry, Message as TransportMessage, TapirTransport,
     Transport,
 };
+pub use transport::tokio_bitcode_tcp::{TcpAddress, TcpTransport};
 
 #[cfg(all(target_os = "linux", feature = "io-uring"))]
 pub use transport::uring::{

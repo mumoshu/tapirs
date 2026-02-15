@@ -746,7 +746,6 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
     /// The replica designated by `view.leader()` only serves as the view
     /// change *coordinator* (collecting addenda and running sync/merge),
     /// NOT as the initiator.
-    #[cfg(test)]
     pub fn force_view_change(&self) {
         let mut sync = self.inner.sync.lock().unwrap();
         if sync.status.is_normal() {
