@@ -478,6 +478,62 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Client<K, V, T> {
 }
 
 impl<K: Key, V: Value, T: TapirTransport<K, V>> ReadOnlyTransaction<K, V, T> {
+    /// Range scan on a single shard. Returns key-value pairs in
+    /// `[start.key, end.key]` at the snapshot timestamp.
+    ///
+    /// Fast path: try `scan_validated` (1 RTT) — succeeds if a prior
+    /// QuorumScan recorded a covering range_read at f+1 replicas.
+    /// Slow path: fall through to `quorum_scan` (2 RTT) — records
+    /// range_read via `commit_scan` at FINALIZE time.
+    pub fn scan(
+        &self,
+        start: Sharded<K>,
+        end: Sharded<K>,
+    ) -> impl Future<Output = Vec<(K, V)>> {
+        assert_eq!(
+            start.shard, end.shard,
+            "scan start and end must target the same shard"
+        );
+        let client = Arc::clone(&self.client);
+        let read_cache = Arc::clone(&self.read_cache);
+        let snapshot_ts = self.snapshot_ts;
+
+        async move {
+            let shard_client = Inner::shard_client(&client, start.shard).await;
+
+            // Fast path: check if replicas have covering range_reads.
+            let scan_results = if let Some(results) = shard_client
+                .scan_validated(start.key.clone(), end.key.clone(), snapshot_ts)
+                .await
+            {
+                results
+            } else {
+                // Slow path: quorum scan via IR inconsistent op.
+                shard_client
+                    .quorum_scan(start.key.clone(), end.key.clone(), snapshot_ts)
+                    .await
+            };
+
+            // Populate read cache (don't overwrite earlier reads).
+            {
+                let mut cache = read_cache.lock().unwrap();
+                for (key, value, _write_ts) in &scan_results {
+                    let sharded = Sharded {
+                        shard: start.shard,
+                        key: key.clone(),
+                    };
+                    cache.entry(sharded).or_insert_with(|| value.clone());
+                }
+            }
+
+            // Filter tombstones and return.
+            scan_results
+                .into_iter()
+                .filter_map(|(k, v, _ts)| v.map(|v| (k, v)))
+                .collect()
+        }
+    }
+
     pub fn get(&self, key: impl Into<Sharded<K>>) -> impl Future<Output = Option<V>> {
         let key = key.into();
         let client = Arc::clone(&self.client);

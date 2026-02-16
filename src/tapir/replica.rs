@@ -224,7 +224,7 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
     type UO = UO<K>;
     type UR = UR<K, V>;
     type IO = IO<K, V>;
-    type IR = IR<V>;
+    type IR = IR<K, V>;
     type CO = CO<K, V>;
     type CR = CR;
 
@@ -323,6 +323,17 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
                         return UR::OutOfRange;
                     }
                 UR::ReadValidated(self.inner.get_validated(&key, timestamp))
+            }
+            UO::ScanValidated {
+                start_key,
+                end_key,
+                snapshot_ts,
+            } => {
+                if let Some(range) = &self.key_range
+                    && (!range.contains(&start_key) || !range.contains(&end_key)) {
+                        return UR::OutOfRange;
+                    }
+                UR::ScanValidated(self.inner.scan_validated(&start_key, &end_key, snapshot_ts))
             }
             UO::ScanChanges {
                 start_ts,
@@ -428,6 +439,18 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
                     }
                 let (value, write_ts) = self.inner.quorum_read(key.clone(), *timestamp);
                 Some(IR::QuorumRead(value, write_ts))
+            }
+            IO::QuorumScan {
+                start_key,
+                end_key,
+                snapshot_ts,
+            } => {
+                if let Some(range) = &self.key_range
+                    && (!range.contains(start_key) || !range.contains(end_key)) {
+                        return Some(IR::OutOfRange);
+                    }
+                let results = self.inner.quorum_scan(start_key.clone(), end_key.clone(), *snapshot_ts);
+                Some(IR::QuorumScan(results))
             }
         }
     }

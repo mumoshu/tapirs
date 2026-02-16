@@ -36,6 +36,14 @@ pub enum UO<K> {
         key: K,
         timestamp: Timestamp,
     },
+    /// Read-only transaction scan fast path: check if a replica has a covering
+    /// range_read (read_ts >= snapshot_ts). If so, scan the MVCC store and
+    /// return results without requiring a quorum.
+    ScanValidated {
+        start_key: K,
+        end_key: K,
+        snapshot_ts: Timestamp,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,6 +80,16 @@ pub enum UR<K, V> {
             deserialize = "V: Deserialize<'de>"
         ))]
         Option<(Option<V>, Timestamp)>,
+    ),
+    /// Read-only transaction scan fast path result.
+    /// `None` = no covering range_read at this replica (fall back to QuorumScan).
+    /// `Some(vec)` = `(key, value, write_ts)` scan results from MVCC store.
+    ScanValidated(
+        #[serde(bound(
+            serialize = "K: Serialize, V: Serialize",
+            deserialize = "K: Deserialize<'de>, V: Deserialize<'de>"
+        ))]
+        Option<Vec<(K, Option<V>, Timestamp)>>,
     ),
 }
 
@@ -112,6 +130,17 @@ pub enum IO<K, V> {
         key: K,
         timestamp: Timestamp,
     },
+    /// Read-only transaction scan slow path: quorum scan via IR inconsistent op.
+    /// At FINALIZE time, each replica scans the MVCC store and calls
+    /// `commit_scan(start, end, snapshot_ts)` to record a range_read protecting
+    /// the entire range from future writes at commit_ts < snapshot_ts.
+    QuorumScan {
+        #[serde(bound(deserialize = "K: Deserialize<'de>"))]
+        start_key: K,
+        #[serde(bound(deserialize = "K: Deserialize<'de>"))]
+        end_key: K,
+        snapshot_ts: Timestamp,
+    },
 }
 
 impl<K: Eq + Hash, V: PartialEq> PartialEq for IO<K, V> {
@@ -150,6 +179,22 @@ impl<K: Eq + Hash, V: PartialEq> PartialEq for IO<K, V> {
                     timestamp: other_timestamp,
                 },
             ) => key == other_key && timestamp == other_timestamp,
+            (
+                Self::QuorumScan {
+                    start_key,
+                    end_key,
+                    snapshot_ts,
+                },
+                Self::QuorumScan {
+                    start_key: other_start_key,
+                    end_key: other_end_key,
+                    snapshot_ts: other_snapshot_ts,
+                },
+            ) => {
+                start_key == other_start_key
+                    && end_key == other_end_key
+                    && snapshot_ts == other_snapshot_ts
+            }
             _ => false,
         }
     }
@@ -209,9 +254,9 @@ pub enum CR {
     RaiseMinPrepareTime { time: u64 },
 }
 
-/// Inconsistent result type for read-only transaction QuorumRead.
+/// Inconsistent result type for read-only transaction operations.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum IR<V> {
+pub enum IR<K, V> {
     QuorumRead(
         #[serde(bound(
             serialize = "V: Serialize",
@@ -219,6 +264,14 @@ pub enum IR<V> {
         ))]
         Option<V>,
         Timestamp,
+    ),
+    /// QuorumScan results: `(key, value, write_ts)` for each key in range.
+    QuorumScan(
+        #[serde(bound(
+            serialize = "K: Serialize, V: Serialize",
+            deserialize = "K: Deserialize<'de>, V: Deserialize<'de>"
+        ))]
+        Vec<(K, Option<V>, Timestamp)>,
     ),
     OutOfRange,
 }

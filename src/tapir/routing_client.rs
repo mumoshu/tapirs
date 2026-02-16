@@ -111,4 +111,28 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>, R: ShardRouter<K>>
         let shard = self.router.route(&key);
         self.inner.get(Sharded { shard, key })
     }
+
+    pub fn scan(&self, start: K, end: K) -> impl Future<Output = Vec<(K, V)>> {
+        let shards = self.router.shards_for_range(&start, &end);
+
+        let shard_scans: Vec<_> = shards
+            .into_iter()
+            .map(|shard| {
+                self.inner.scan(
+                    Sharded { shard, key: start.clone() },
+                    Sharded { shard, key: end.clone() },
+                )
+            })
+            .collect();
+
+        async move {
+            let mut merged = BTreeMap::<K, V>::new();
+            for scan_fut in shard_scans {
+                for (k, v) in scan_fut.await {
+                    merged.insert(k, v);
+                }
+            }
+            merged.into_iter().collect()
+        }
+    }
 }

@@ -221,6 +221,54 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
         (future, membership_size)
     }
 
+    /// Send an unlogged request to ALL replicas and wait for f+1 replies.
+    /// Returns the collected results. Used for read-only scan validation
+    /// where we need f+1 responses to merge.
+    pub fn invoke_unlogged_quorum(&self, op: U::UO) -> impl Future<Output = Vec<U::UR>> + Send + use<U, T> {
+        let inner = Arc::clone(&self.inner);
+
+        async move {
+            let (membership_size, future) = {
+                let sync = inner.sync.lock().unwrap();
+                let membership_size = sync.view.membership.size();
+
+                let future = join(sync.view.membership.iter().map(|address| {
+                    (
+                        address,
+                        inner.transport.send::<ReplyUnlogged<U::UR, T::Address>>(
+                            address,
+                            RequestUnlogged { op: op.clone() },
+                        ),
+                    )
+                }));
+                (membership_size, future)
+            };
+
+            let mut hard_timeout = std::pin::pin!(T::sleep(Duration::from_millis(5000)));
+
+            let results = future
+                .until(
+                    move |results: &HashMap<T::Address, ReplyUnlogged<U::UR, T::Address>>,
+                          cx: &mut Context<'_>| {
+                        results.len() >= membership_size.f_plus_one()
+                            || hard_timeout.as_mut().poll(cx).is_ready()
+                    },
+                )
+                .await;
+
+            {
+                let mut sync = inner.sync.lock().unwrap();
+                Self::update_view(
+                    &inner.transport,
+                    &mut *sync,
+                    results.iter().map(|(i, r)| (*i, &r.view)),
+                );
+            }
+
+            results.into_values().map(|r| r.result).collect()
+        }
+    }
+
     /// Returns when the inconsistent operation is finalized, retrying indefinitely.
     pub fn invoke_inconsistent(&self, op: U::IO) -> impl Future<Output = ()> + use<U, T> {
         let inner = Arc::clone(&self.inner);

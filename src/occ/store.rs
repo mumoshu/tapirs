@@ -45,6 +45,14 @@ pub struct Store<K, V, TS> {
         )
     )]
     prepared_writes: BTreeMap<K, TimestampSet<TS>>,
+    /// Range-level read timestamps from read-only QuorumScan operations.
+    /// Each entry `(start_key, end_key, read_ts)` protects the entire range
+    /// from future writes at commit_ts < read_ts (both overwrites and insertions).
+    #[serde(bound(
+        serialize = "K: Serialize + Ord, TS: Serialize",
+        deserialize = "K: Deserialize<'de> + Ord, TS: Deserialize<'de>"
+    ))]
+    range_reads: Vec<(K, K, TS)>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -150,6 +158,7 @@ impl<K: Key, V: Value, TS> Store<K, V, TS> {
             prepared: Default::default(),
             prepared_reads: Default::default(),
             prepared_writes: Default::default(),
+            range_reads: Vec::new(),
         }
     }
 }
@@ -209,6 +218,40 @@ impl<K: Key, V: Value, TS: Timestamp> Store<K, V, TS> {
         let value = value.cloned();
         self.inner.commit_get(key, snapshot_ts, snapshot_ts);
         (value, write_ts)
+    }
+
+    /// Read-only scan fast path: check if a covering range_read exists.
+    /// Returns `Some(results)` if the range is covered (read_ts >= snapshot_ts),
+    /// `None` otherwise (fall back to QuorumScan).
+    pub fn scan_validated(&self, start: &K, end: &K, snapshot_ts: TS) -> Option<Vec<(K, Option<V>, TS)>>
+    where
+        K: Clone,
+        V: Clone,
+    {
+        let covered = self.range_reads.iter().any(|(rs, re, rts)| {
+            rs <= start && re >= end && *rts >= snapshot_ts
+        });
+        if !covered {
+            return None;
+        }
+        Some(self.inner.scan(start, end, snapshot_ts))
+    }
+
+    /// Record a range-level read timestamp protecting `[start, end]` from
+    /// future writes at commit_ts < snapshot_ts.
+    pub fn commit_scan(&mut self, start: K, end: K, snapshot_ts: TS) {
+        self.range_reads.push((start, end, snapshot_ts));
+    }
+
+    /// Read-only scan slow path: scan the MVCC store and record range protection.
+    pub fn quorum_scan(&mut self, start: K, end: K, snapshot_ts: TS) -> Vec<(K, Option<V>, TS)>
+    where
+        K: Clone,
+        V: Clone,
+    {
+        let results = self.inner.scan(&start, &end, snapshot_ts);
+        self.commit_scan(start, end, snapshot_ts);
+        results
     }
 
     pub fn prepare(
@@ -338,6 +381,13 @@ impl<K: Key, V: Value, TS: Timestamp> Store<K, V, TS> {
                     // Write conflicts with later prepared read.
                     return PrepareResult::Abstain;
                 }
+
+            // Check for conflicts with range-level reads from read-only QuorumScan.
+            for (start, end, read_ts) in &self.range_reads {
+                if key >= start && key <= end && *read_ts > commit {
+                    return PrepareResult::Retry { proposed: read_ts.time() };
+                }
+            }
         }
 
         // Check for conflicts with the scan set (phantom prevention).
@@ -1078,6 +1128,107 @@ mod tests {
 
         // get_validated with snapshot_ts(15,1): read_ts=ts(10,1) < ts(15,1) → None.
         assert_eq!(store.get_validated(&"x".to_string(), ts(15, 1)), None);
+    }
+
+    // ── scan_validated / commit_scan / quorum_scan (read-only range scans) ──
+
+    #[test]
+    fn scan_validated_no_range_coverage() {
+        let mut store = new_store(false);
+        // Write a key.
+        let t1 = make_txn(vec![], vec![("b", Some("v1"))], vec![]);
+        store.commit(txn_id(1, 1), &t1, ts(3, 1));
+
+        // scan_validated without prior commit_scan → returns None.
+        assert_eq!(
+            store.scan_validated(&"a".to_string(), &"c".to_string(), ts(5, 1)),
+            None
+        );
+    }
+
+    #[test]
+    fn scan_validated_with_coverage() {
+        let mut store = new_store(false);
+        // Write a key.
+        let t1 = make_txn(vec![], vec![("b", Some("v1"))], vec![]);
+        store.commit(txn_id(1, 1), &t1, ts(3, 1));
+
+        // commit_scan records range_read at snapshot_ts(10,1).
+        store.commit_scan("a".to_string(), "c".to_string(), ts(10, 1));
+
+        // scan_validated with snapshot_ts(5,1) — covered (10 >= 5).
+        let result = store.scan_validated(&"a".to_string(), &"c".to_string(), ts(5, 1));
+        assert!(result.is_some());
+        let entries = result.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, "b".to_string());
+        assert_eq!(entries[0].1, Some("v1".to_string()));
+
+        // scan_validated with snapshot_ts(15,1) — NOT covered (10 < 15).
+        assert_eq!(
+            store.scan_validated(&"a".to_string(), &"c".to_string(), ts(15, 1)),
+            None
+        );
+    }
+
+    #[test]
+    fn commit_scan_blocks_overwrite() {
+        let mut store = new_store(false);
+        // Write a key.
+        let t1 = make_txn(vec![], vec![("b", Some("v1"))], vec![]);
+        store.commit(txn_id(1, 1), &t1, ts(3, 1));
+
+        // commit_scan at snapshot_ts(10,1) — protects range [a,c].
+        store.commit_scan("a".to_string(), "c".to_string(), ts(10, 1));
+
+        // Prepare a write to existing key "b" at commit_ts(7,2) — read_ts(10) > commit(7) → Retry.
+        let t2 = make_txn(vec![], vec![("b", Some("v2"))], vec![]);
+        assert_eq!(
+            store.prepare(txn_id(2, 1), t2, ts(7, 2), false),
+            PrepareResult::Retry { proposed: 10 }
+        );
+    }
+
+    #[test]
+    fn quorum_scan_range_read_blocks_phantom() {
+        let mut store = new_store(false);
+        // quorum_scan [a,z] at snapshot_ts(10,1).
+        let _results = store.quorum_scan("a".to_string(), "z".to_string(), ts(10, 1));
+
+        // Prepare a write of NEW key "m" at commit_ts(7,2) — range_read(10) > commit(7) → Retry.
+        let t2 = make_txn(vec![], vec![("m", Some("v1"))], vec![]);
+        assert_eq!(
+            store.prepare(txn_id(2, 1), t2, ts(7, 2), false),
+            PrepareResult::Retry { proposed: 10 }
+        );
+    }
+
+    #[test]
+    fn quorum_scan_range_read_allows_later_write() {
+        let mut store = new_store(false);
+        // quorum_scan [a,z] at snapshot_ts(10,1).
+        let _results = store.quorum_scan("a".to_string(), "z".to_string(), ts(10, 1));
+
+        // Prepare a write of "m" at commit_ts(15,2) — range_read(10) < commit(15) → Ok.
+        let t2 = make_txn(vec![], vec![("m", Some("v1"))], vec![]);
+        assert_eq!(
+            store.prepare(txn_id(2, 1), t2, ts(15, 2), false),
+            PrepareResult::Ok
+        );
+    }
+
+    #[test]
+    fn quorum_scan_range_read_outside_range() {
+        let mut store = new_store(false);
+        // quorum_scan [a,c] at snapshot_ts(10,1).
+        let _results = store.quorum_scan("a".to_string(), "c".to_string(), ts(10, 1));
+
+        // Prepare a write of "z" at commit_ts(7,2) — "z" outside range [a,c] → Ok.
+        let t2 = make_txn(vec![], vec![("z", Some("v1"))], vec![]);
+        assert_eq!(
+            store.prepare(txn_id(2, 1), t2, ts(7, 2), false),
+            PrepareResult::Ok
+        );
     }
 
     #[test]

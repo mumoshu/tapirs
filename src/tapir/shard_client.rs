@@ -210,6 +210,99 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
         }
     }
 
+    /// Read-only scan fast path: send ScanValidated to all replicas,
+    /// wait for f+1 replies. If any replica returned `None` (no covering
+    /// range_read), returns `None` (fall through to QuorumScan). Otherwise,
+    /// merges results: for each key, pick highest `write_ts`.
+    pub fn scan_validated(
+        &self,
+        start_key: K,
+        end_key: K,
+        snapshot_ts: Timestamp,
+    ) -> impl Future<Output = Option<Vec<(K, Option<V>, Timestamp)>>> + Send + use<K, V, T> {
+        let future = self.inner.invoke_unlogged_quorum(UO::ScanValidated {
+            start_key,
+            end_key,
+            snapshot_ts,
+        });
+        async move {
+            let results = future.await;
+            let mut merged = std::collections::BTreeMap::<K, (Option<V>, Timestamp)>::new();
+            for ur in results {
+                match ur {
+                    UR::ScanValidated(Some(entries)) => {
+                        for (key, value, write_ts) in entries {
+                            merged
+                                .entry(key)
+                                .and_modify(|(v, ts)| {
+                                    if write_ts > *ts {
+                                        *v = value.clone();
+                                        *ts = write_ts;
+                                    }
+                                })
+                                .or_insert((value, write_ts));
+                        }
+                    }
+                    UR::ScanValidated(None) => {
+                        // No covering range_read at this replica — fast path fails.
+                        return None;
+                    }
+                    _ => {
+                        // OutOfRange or unexpected — fast path fails.
+                        return None;
+                    }
+                }
+            }
+            Some(
+                merged
+                    .into_iter()
+                    .map(|(k, (v, ts))| (k, v, ts))
+                    .collect(),
+            )
+        }
+    }
+
+    /// Read-only scan slow path: QuorumScan via IR inconsistent op.
+    /// Sends IO::QuorumScan, waits for f+1 finalize replies, merges
+    /// results by picking highest `write_ts` per key.
+    pub fn quorum_scan(
+        &self,
+        start_key: K,
+        end_key: K,
+        snapshot_ts: Timestamp,
+    ) -> impl Future<Output = Vec<(K, Option<V>, Timestamp)>> + Send + use<K, V, T> {
+        let future = self
+            .inner
+            .invoke_inconsistent_with_result(IO::QuorumScan {
+                start_key,
+                end_key,
+                snapshot_ts,
+            });
+        async move {
+            let results = future.await;
+            let mut merged = std::collections::BTreeMap::<K, (Option<V>, Timestamp)>::new();
+            for ir in results {
+                if let IR::QuorumScan(entries) = ir {
+                    for (key, value, write_ts) in entries {
+                        merged
+                            .entry(key)
+                            .and_modify(|(v, ts)| {
+                                if write_ts > *ts {
+                                    *v = value.clone();
+                                    *ts = write_ts;
+                                }
+                            })
+                            .or_insert((value, write_ts));
+                    }
+                }
+            }
+            merged
+                .into_iter()
+                .map(|(k, (v, ts))| (k, v, ts))
+                .collect()
+        }
+    }
+
     /// Request committed changes in a timestamp range for CDC-based resharding.
     pub fn scan_changes(
         &self,
