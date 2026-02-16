@@ -1,6 +1,5 @@
-use super::{
-    dynamic_router::ShardEntry, Change, Key, KeyRange, ShardNumber, Value,
-};
+use super::{Change, Key, KeyRange, ShardNumber, Value};
+use crate::discovery::ShardDirectory as AddressDirectory;
 use crate::tapir::shard_manager::ShardManager;
 use crate::tapir::{Replica, Sharded};
 use crate::transport::Transport;
@@ -8,7 +7,7 @@ use crate::{IrClientId, IrMembership, OccTransaction, OccTransactionId};
 use std::collections::HashMap;
 use tracing::info;
 
-impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>> ShardManager<K, V, T> {
+impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDirectory<T::Address>> ShardManager<K, V, T, D> {
     /// Split a shard at `split_key`: keys < split_key stay on `source`,
     /// keys >= split_key move to `new_shard`.
     pub async fn split(
@@ -88,12 +87,8 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>> ShardManager
             managed.key_range = narrowed_range.clone();
         }
 
-        // Update directory.
-        let mut dir = self.directory.write().unwrap();
-        dir.update(vec![
-            ShardEntry { shard: source, range: narrowed_range },
-            ShardEntry { shard: new_shard, range: new_range },
-        ]);
+        // Rebuild directory from all registered shards (not just source + new).
+        self.rebuild_directory();
         info!("split: complete");
     }
 }

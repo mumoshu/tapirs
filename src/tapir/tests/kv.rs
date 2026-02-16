@@ -996,7 +996,6 @@ async fn fuzz_tapir_transactions() {
 #[tokio::test(start_paused = true)]
 async fn test_add_replica_with_preload() {
     use crate::tapir::shard_manager::ShardManager;
-    use crate::tapir::dynamic_router::ShardDirectory;
 
     init_tracing();
 
@@ -1051,15 +1050,8 @@ async fn test_add_replica_with_preload() {
     let manager_channel = registry.channel(move |_, _| None);
     let original_membership =
         IrMembership::new((0..3).collect::<Vec<_>>());
-    let directory = Arc::new(RwLock::new(ShardDirectory::new(vec![ShardEntry {
-        shard,
-        range: KeyRange {
-            start: None,
-            end: None,
-        },
-    }])));
     let address_directory = Arc::clone(registry.directory());
-    let mut manager = ShardManager::new(manager_channel, directory, address_directory);
+    let mut manager = ShardManager::new(manager_channel, address_directory);
     manager.register_shard(shard, original_membership, KeyRange {
         start: None,
         end: None,

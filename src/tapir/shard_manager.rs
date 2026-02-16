@@ -1,12 +1,12 @@
 use super::{
-    dynamic_router::ShardDirectory, Key, KeyRange, ShardClient, ShardNumber, Value,
+    dynamic_router::{ShardDirectory, ShardEntry},
+    Key, KeyRange, ShardClient, ShardNumber, Value,
 };
-use crate::discovery::{InMemoryShardDirectory, ShardDirectory as _};
+use crate::discovery::ShardDirectory as AddressDirectory;
 use crate::transport::Transport;
 use crate::tapir::Replica;
 use crate::{IrClientId, IrMembership};
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
 
 /// A shard group managed by the ShardManager.
 pub struct ManagedShard<K: Key, V: Value, T: Transport<Replica<K, V>>> {
@@ -18,23 +18,22 @@ pub struct ManagedShard<K: Key, V: Value, T: Transport<Replica<K, V>>> {
 /// Sidecar that orchestrates resharding operations (split, merge, migrate)
 /// using `IrClient` to interact with shard groups via the normal protocol.
 /// NOT in the message path — uses the same API as application clients.
-pub struct ShardManager<K: Key, V: Value, T: Transport<Replica<K, V>>> {
+pub struct ShardManager<K: Key, V: Value, T: Transport<Replica<K, V>>, D: AddressDirectory<T::Address>> {
     pub(crate) shards: HashMap<ShardNumber, ManagedShard<K, V, T>>,
-    pub(crate) directory: Arc<RwLock<ShardDirectory<K>>>,
-    pub(crate) address_directory: Arc<InMemoryShardDirectory<T::Address>>,
+    pub(crate) directory: ShardDirectory<K>,
+    pub(crate) address_directory: D,
     pub(crate) transport: T,
     client_id: IrClientId,
 }
 
-impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardManager<K, V, T> {
+impl<K: Key, V: Value, T: Transport<Replica<K, V>>, D: AddressDirectory<T::Address>> ShardManager<K, V, T, D> {
     pub fn new(
         transport: T,
-        directory: Arc<RwLock<ShardDirectory<K>>>,
-        address_directory: Arc<InMemoryShardDirectory<T::Address>>,
+        address_directory: D,
     ) -> Self {
         Self {
             shards: HashMap::new(),
-            directory,
+            directory: ShardDirectory::new(vec![]),
             address_directory,
             transport: transport.clone(),
             client_id: IrClientId::new(),
@@ -59,18 +58,28 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardManager<K, V, T> {
             key_range,
             client,
         });
+        self.rebuild_directory();
     }
 
     pub fn deregister_shard(&mut self, shard: ShardNumber) {
         self.shards.remove(&shard);
         self.address_directory.remove(shard);
+        self.rebuild_directory();
     }
 
     pub fn shard_client(&self, shard: ShardNumber) -> Option<&ShardClient<K, V, T>> {
         self.shards.get(&shard).map(|s| &s.client)
     }
 
-    pub fn directory(&self) -> &Arc<RwLock<ShardDirectory<K>>> {
-        &self.directory
+    pub(crate) fn rebuild_directory(&mut self) {
+        let entries = self
+            .shards
+            .values()
+            .map(|s| ShardEntry {
+                shard: s.shard,
+                range: s.key_range.clone(),
+            })
+            .collect();
+        self.directory = ShardDirectory::new(entries);
     }
 }

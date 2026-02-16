@@ -150,6 +150,21 @@ pub trait ShardDirectory<A: Clone + Send + Sync + 'static>: Send + Sync + 'stati
     fn all(&self) -> Vec<(ShardNumber, IrMembership<A>)>;
 }
 
+impl<A: Clone + Send + Sync + 'static, T: ShardDirectory<A>> ShardDirectory<A> for Arc<T> {
+    fn get(&self, shard: ShardNumber) -> Option<IrMembership<A>> {
+        (**self).get(shard)
+    }
+    fn put(&self, shard: ShardNumber, membership: IrMembership<A>) {
+        (**self).put(shard, membership)
+    }
+    fn remove(&self, shard: ShardNumber) {
+        (**self).remove(shard)
+    }
+    fn all(&self) -> Vec<(ShardNumber, IrMembership<A>)> {
+        (**self).all()
+    }
+}
+
 // ---- InMemoryShardDirectory ----
 
 /// Pure in-memory shard directory backed by a `HashMap` behind `RwLock`.
