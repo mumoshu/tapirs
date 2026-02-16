@@ -27,6 +27,7 @@ fn env_or(var: &str, default: u32) -> u32 {
 
 struct TestCluster {
     discovery_addr: SocketAddr,
+    shard_manager_addr: SocketAddr,
     nodes: Vec<Arc<Node>>,
     replica_addrs: Vec<Vec<SocketAddr>>, // [shard][replica_idx]
     _temp_dirs: Vec<TempDir>,
@@ -114,6 +115,7 @@ async fn bootstrap_cluster(
 
     TestCluster {
         discovery_addr,
+        shard_manager_addr: mgr_addr,
         nodes,
         replica_addrs,
         _temp_dirs: temp_dirs,
@@ -329,4 +331,174 @@ async fn test_remove_replica() {
     // Data should still be readable from remaining 2 replicas.
     let val = rw_get(&client, "before", "before_read").await;
     assert_eq!(val, Some("ok".to_string()));
+}
+
+/// Verify a shard survives complete replica replacement.
+///
+/// Continuously adds new replicas then removes original ones via the
+/// leave API (RemoveMember → view change), until no bootstrapped
+/// replicas remain. Verifies R/W availability before and after each add.
+///
+/// With the leave API keeping IR membership clean, quorum stays bounded:
+///
+///   Step           IR membership  n  f  quorum(f+1)  alive
+///   Start          {A,B,C}        3  1  2            3
+///   +D (add)       {A,B,C,D}      4  1  2            4
+///   -A (leave)     {B,C,D}        3  1  2            3
+///   +E (add)       {B,C,D,E}      4  1  2            4
+///   -B (leave)     {C,D,E}        3  1  2            3
+///   +F (add)       {C,D,E,F}      4  1  2            4
+///   -C (leave)     {D,E,F}        3  1  2            3
+///
+/// n stays bounded at 3-4, f=1, quorum=2 throughout. Always 1+ replica
+/// of headroom above quorum, unlike raw remove_replica which would grow
+/// IR membership to 6 with f=2, quorum=3 and zero headroom.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_rolling_membership_replacement() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init();
+
+    let cluster = bootstrap_cluster(1, 3, 3).await;
+    let (client, _td, _disc_dir) = create_test_client(&cluster).await;
+    let disc_client = HttpDiscoveryClient::new(&cluster.discovery_addr.to_string());
+    let shard = ShardNumber(0);
+
+    // Write initial data and verify R/W.
+    let txn = client.begin();
+    txn.put("data".to_string(), Some("initial".to_string()));
+    assert!(txn.commit().await.is_some(), "initial put should commit");
+
+    let val = rw_get(&client, "data", "data_check").await;
+    assert_eq!(val, Some("initial".to_string()));
+
+    let original_addrs = cluster.replica_addrs[0].clone();
+    let mut live_addrs: Vec<SocketAddr> = original_addrs.clone();
+
+    let discovery_url = format!("http://{}", cluster.discovery_addr);
+    let shard_manager_url = format!("http://{}", cluster.shard_manager_addr);
+
+    // Keep new nodes and temp dirs alive for the duration of the test.
+    let mut new_nodes: Vec<Arc<Node>> = Vec::new();
+    let mut _new_temp_dirs: Vec<TempDir> = Vec::new();
+
+    // Rolling replacement: for each original replica, add a new one then
+    // leave+remove the old one.
+    for i in 0..3 {
+        tracing::info!("--- round {i}: adding new replica ---");
+
+        // === ADD new replica ===
+        let td = TempDir::new().unwrap();
+        let new_node = Arc::new(Node::with_discovery_and_shard_manager(
+            td.path().to_str().unwrap().to_string(),
+            &discovery_url,
+            &shard_manager_url,
+        ));
+
+        let new_addr = loop {
+            let candidate = alloc_addr();
+            match new_node.create_replica(shard, candidate).await {
+                Ok(()) => break candidate,
+                Err(e) if e.contains("already in use") => continue,
+                Err(e) => panic!("create_replica failed in round {i}: {e}"),
+            }
+        };
+
+        // Register new address in discovery.
+        live_addrs.push(new_addr);
+        let registered: Vec<String> = live_addrs.iter().map(|a| a.to_string()).collect();
+        disc_client.register_shard(0, registered).await.unwrap();
+
+        // Wait for AddMember view change to settle.
+        tokio::time::sleep(Duration::from_secs(10)).await;
+
+        // Verify R/W after add.
+        let txn = client.begin();
+        txn.put(
+            format!("after_add_{i}"),
+            Some(format!("added_{i}")),
+        );
+        assert!(
+            txn.commit().await.is_some(),
+            "put after add round {i} should commit"
+        );
+        let val = rw_get(&client, "data", &format!("data_after_add_{i}")).await;
+        assert_eq!(val, Some("initial".to_string()));
+
+        new_nodes.push(new_node);
+        _new_temp_dirs.push(td);
+
+        // === LEAVE + REMOVE original replica ===
+        tracing::info!("--- round {i}: leaving original replica ---");
+
+        cluster.nodes[i]
+            .leave_shard(shard)
+            .await
+            .unwrap_or_else(|e| panic!("leave_shard failed in round {i}: {e}"));
+
+        // Wait for RemoveMember view change to settle.
+        tokio::time::sleep(Duration::from_secs(10)).await;
+
+        // Drop the local handle.
+        assert!(
+            cluster.nodes[i].remove_replica(shard),
+            "remove_replica should succeed in round {i}"
+        );
+
+        // Update discovery: remove old address.
+        live_addrs.retain(|a| *a != original_addrs[i]);
+        let registered: Vec<String> = live_addrs.iter().map(|a| a.to_string()).collect();
+        disc_client.register_shard(0, registered).await.unwrap();
+
+        // Let discovery sync propagate to client.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        // Verify R/W after remove.
+        let txn = client.begin();
+        txn.put(
+            format!("after_remove_{i}"),
+            Some(format!("removed_{i}")),
+        );
+        assert!(
+            txn.commit().await.is_some(),
+            "put after remove round {i} should commit"
+        );
+        let val = rw_get(&client, "data", &format!("data_after_remove_{i}")).await;
+        assert_eq!(val, Some("initial".to_string()));
+    }
+
+    // === Final assertions ===
+
+    // No original nodes should have shard 0.
+    for (i, node) in cluster.nodes.iter().enumerate() {
+        let shards = node.shard_list();
+        assert!(
+            !shards.iter().any(|(s, _)| *s == shard),
+            "original node {i} should not have shard 0"
+        );
+    }
+
+    // All new nodes should have shard 0.
+    for (i, node) in new_nodes.iter().enumerate() {
+        let shards = node.shard_list();
+        assert!(
+            shards.iter().any(|(s, _)| *s == shard),
+            "new node {i} should have shard 0"
+        );
+    }
+
+    // Verify all data from all rounds is still readable.
+    let val = rw_get(&client, "data", "data_final").await;
+    assert_eq!(val, Some("initial".to_string()));
+    for i in 0..3 {
+        let val = rw_get(&client, &format!("after_add_{i}"), &format!("final_add_{i}")).await;
+        assert_eq!(val, Some(format!("added_{i}")));
+        let val = rw_get(
+            &client,
+            &format!("after_remove_{i}"),
+            &format!("final_remove_{i}"),
+        )
+        .await;
+        assert_eq!(val, Some(format!("removed_{i}")));
+    }
 }
