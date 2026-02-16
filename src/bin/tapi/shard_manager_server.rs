@@ -114,6 +114,72 @@ async fn handle_request(
             state.manager.bootstrap(shard, new_addr);
             (200, r#"{"ok":true}"#.to_string())
         }
+    } else if method == "POST" && path == "/v1/leave" {
+        let req: JoinRequest = match serde_json::from_str(body) {
+            Ok(r) => r,
+            Err(e) => {
+                return (400, format!(r#"{{"error":"invalid JSON: {e}"}}"#));
+            }
+        };
+        let shard = ShardNumber(req.shard);
+        let addr: TcpAddress = match req.listen_addr.parse() {
+            Ok(a) => TcpAddress(a),
+            Err(e) => {
+                return (400, format!(r#"{{"error":"invalid listen_addr: {e}"}}"#));
+            }
+        };
+
+        // Query discovery for existing membership.
+        let existing = state
+            .discovery_client
+            .get_topology()
+            .await
+            .ok()
+            .and_then(|t| t.shards.into_iter().find(|s| s.id == req.shard))
+            .filter(|s| !s.replicas.is_empty());
+
+        let Some(entry) = existing else {
+            return (
+                400,
+                format!(r#"{{"error":"shard {} not found in discovery"}}"#, req.shard),
+            );
+        };
+
+        let addrs: Vec<TcpAddress> = match entry
+            .replicas
+            .iter()
+            .map(|a| a.parse().map(TcpAddress))
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(a) => a,
+            Err(e) => {
+                return (
+                    500,
+                    format!(r#"{{"error":"bad replica addr from discovery: {e}"}}"#),
+                );
+            }
+        };
+
+        // Verify the address is part of the shard.
+        if !addrs.contains(&addr) {
+            return (
+                400,
+                format!(
+                    r#"{{"error":"address {} not in shard {}"}}"#,
+                    req.listen_addr, req.shard
+                ),
+            );
+        }
+
+        // Populate address directory so manager.leave() can discover membership.
+        state
+            .directory
+            .put(shard, IrMembership::new(addrs));
+
+        match state.manager.leave(shard, addr) {
+            Ok(()) => (200, r#"{"ok":true}"#.to_string()),
+            Err(e) => (500, format!(r#"{{"error":"leave failed: {e}"}}"#)),
+        }
     } else {
         (404, r#"{"error":"not found"}"#.to_string())
     }

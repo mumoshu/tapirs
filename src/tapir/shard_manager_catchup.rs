@@ -109,4 +109,29 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         }
         Err(last_err)
     }
+
+    /// Coordinate removing a replica from an existing shard.
+    ///
+    /// Discovers the current membership from the address directory, then
+    /// broadcasts RemoveMember to trigger a view change that removes the
+    /// address from the group. Symmetric with `join` which sends AddMember.
+    pub fn leave(
+        &self,
+        shard: ShardNumber,
+        address: T::Address,
+    ) -> Result<(), String> {
+        let membership = self
+            .address_directory
+            .get(shard)
+            .ok_or_else(|| format!("shard {shard:?} not found in address directory"))?;
+
+        let client = ShardClient::<K, V, T>::new(
+            IrClientId::new(),
+            shard,
+            membership,
+            self.transport.clone(),
+        );
+        client.remove_member(address);
+        Ok(())
+    }
 }

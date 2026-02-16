@@ -1,6 +1,7 @@
 use super::{
     message::{BootstrapRecord, FetchLeaderRecord, LeaderRecordReply, Reconfigure},
     shared_view::SharedView, AddMember, Confirm, DoViewChange, FinalizeConsensus,
+    RemoveMember,
     FinalizeInconsistent, Membership, MembershipSize, Message, OpId, ProposeConsensus,
     ProposeInconsistent, Record, ReplicaUpcalls, ReplyConsensus, ReplyInconsistent, ReplyUnlogged,
     RequestUnlogged, View, ViewNumber,
@@ -606,6 +607,17 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
             self.inner
                 .transport
                 .do_send(addr, AddMember { address: address.clone() });
+        }
+    }
+
+    /// Broadcast a `RemoveMember` to all replicas, triggering a view change
+    /// that removes the address from the group membership.
+    pub fn remove_member(&self, address: T::Address) {
+        let sync = self.inner.sync.lock().unwrap();
+        for addr in &sync.view.membership {
+            self.inner
+                .transport
+                .do_send(addr, RemoveMember { address: address.clone() });
         }
     }
 }

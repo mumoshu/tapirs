@@ -224,6 +224,98 @@ impl Node {
         Ok(())
     }
 
+    /// Coordinate removing this node's replica from a shard via the shard-manager.
+    ///
+    /// Protocol flow:
+    ///   1. POST /v1/leave { shard, listen_addr } to shard manager
+    ///   2. Shard manager queries discovery, verifies addr is in shard
+    ///   3. ShardManager::leave creates ShardClient with discovery membership
+    ///   4. Broadcasts RemoveMember(addr) to all replicas
+    ///   5. Replicas remove addr from membership, enter ViewChanging, view += 3
+    ///   6. DoViewChange → leader collects f+1 addenda → StartView
+    ///   7. Remaining replicas transition to Normal with clean membership
+    ///   8. Removed replica is orphaned — safe to drop via remove_replica()
+    ///
+    /// After this returns, call `remove_replica(shard)` to drop the local handle.
+    pub async fn leave_shard(&self, shard: ShardNumber) -> Result<(), String> {
+        let listen_addr = {
+            let replicas = self.replicas.lock().unwrap();
+            let handle = replicas
+                .get(&shard)
+                .ok_or_else(|| format!("shard {shard:?} not found on this node"))?;
+            handle.listen_addr
+        };
+        self.shard_manager_leave(shard, listen_addr).await
+    }
+
+    async fn shard_manager_leave(
+        &self,
+        shard: ShardNumber,
+        listen_addr: SocketAddr,
+    ) -> Result<(), String> {
+        let url = self
+            .shard_manager_url
+            .as_ref()
+            .ok_or_else(|| "no shard-manager-url configured".to_string())?;
+
+        let addr_str = url.strip_prefix("http://").unwrap_or(url);
+        let addr: SocketAddr = addr_str
+            .parse()
+            .map_err(|e| format!("invalid shard-manager-url '{url}': {e}"))?;
+
+        let body = serde_json::to_string(&serde_json::json!({
+            "shard": shard.0,
+            "listen_addr": listen_addr.to_string(),
+        }))
+        .map_err(|e| format!("serialize leave request: {e}"))?;
+
+        let request = format!(
+            "POST /v1/leave HTTP/1.1\r\nHost: {addr_str}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len(),
+        );
+
+        let mut stream = tokio::net::TcpStream::connect(addr)
+            .await
+            .map_err(|e| format!("connect to shard-manager at {addr}: {e}"))?;
+
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        stream
+            .write_all(request.as_bytes())
+            .await
+            .map_err(|e| format!("send leave request: {e}"))?;
+
+        let mut response = Vec::new();
+        stream
+            .read_to_end(&mut response)
+            .await
+            .map_err(|e| format!("read leave response: {e}"))?;
+
+        let resp_str = String::from_utf8_lossy(&response);
+        let resp_body = resp_str
+            .split_once("\r\n\r\n")
+            .map(|(_, b)| b)
+            .unwrap_or("");
+
+        let status_ok = resp_str
+            .lines()
+            .next()
+            .map(|line| line.contains("200"))
+            .unwrap_or(false);
+
+        if !status_ok {
+            #[derive(serde::Deserialize)]
+            struct ErrResp {
+                error: String,
+            }
+            if let Ok(err) = serde_json::from_str::<ErrResp>(resp_body) {
+                return Err(err.error);
+            }
+            return Err(format!("shard-manager returned error (body: {resp_body})"));
+        }
+
+        Ok(())
+    }
+
     pub fn remove_replica(&self, shard: ShardNumber) -> bool {
         let removed = self.replicas.lock().unwrap().remove(&shard);
         if removed.is_some() {

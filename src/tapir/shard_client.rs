@@ -234,6 +234,10 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
         self.inner.add_member(address);
     }
 
+    pub fn remove_member(&self, address: T::Address) {
+        self.inner.remove_member(address);
+    }
+
     pub fn raise_min_prepare_time(&self, time: u64) -> impl Future<Output = u64> + Send {
         let future =
             self.inner
