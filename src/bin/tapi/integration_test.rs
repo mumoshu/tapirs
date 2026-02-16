@@ -649,3 +649,245 @@ async fn test_disaster_recovery_backup_restore() {
 
     tracing::info!("disaster recovery test passed");
 }
+
+/// Send a single JSON-line admin request and return the raw response string.
+async fn send_admin_line(addr: &SocketAddr, request: &str) -> String {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let stream = tokio::net::TcpStream::connect(addr)
+        .await
+        .unwrap_or_else(|e| panic!("connect to admin at {addr}: {e}"));
+    let (reader, mut writer) = stream.into_split();
+    let mut line = request.to_string();
+    line.push('\n');
+    writer.write_all(line.as_bytes()).await.unwrap();
+    let mut lines = BufReader::new(reader).lines();
+    lines.next_line().await.unwrap().unwrap_or_default()
+}
+
+/// Test cluster-level backup and restore via admin protocol.
+///
+/// This exercises the full admin protocol codepath for multi-shard
+/// disaster recovery:
+///   1. Bootstrap a 2-shard, 3-replica, 3-node cluster
+///   2. Write test data to both shards
+///   3. Take cluster backup via admin protocol (status + view_change + backup_shard)
+///   4. Destroy all replicas
+///   5. Restore via admin protocol (restore_shard commands)
+///   6. Verify all data survives restoration
+///   7. Verify new writes work on restored cluster
+#[tokio::test(flavor = "multi_thread")]
+async fn test_cluster_backup_restore_via_admin() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init();
+
+    // 1. Bootstrap cluster: 2 shards, 3 replicas, 3 nodes.
+    let cluster = bootstrap_cluster(2, 3, 3).await;
+    let (client, _td, _disc_dir) = create_test_client(&cluster).await;
+    let disc_client = HttpDiscoveryClient::new(&cluster.discovery_addr.to_string());
+
+    // 2. Write test data -- keys distributed across both shards.
+    //    With 2 shards: shard 0 = [a..n), shard 1 = [n..z).
+    let test_data = vec![
+        ("apple", "red"),
+        ("banana", "yellow"),
+        ("orange", "orange"),
+        ("plum", "purple"),
+    ];
+    for (key, value) in &test_data {
+        let txn = client.begin();
+        txn.put(key.to_string(), Some(value.to_string()));
+        assert!(
+            txn.commit().await.is_some(),
+            "put {key}={value} should commit"
+        );
+    }
+    for (key, value) in &test_data {
+        let val = rw_get(&client, key, &format!("{key}_pre")).await;
+        assert_eq!(val, Some(value.to_string()), "pre-backup read of {key}");
+    }
+
+    // 3. Start admin servers on each node.
+    let mut admin_addrs: Vec<SocketAddr> = Vec::new();
+    for node in &cluster.nodes {
+        let addr = alloc_addr();
+        crate::admin_server::start(addr, Arc::clone(node)).await;
+        admin_addrs.push(addr);
+    }
+
+    // 4. Backup each shard via admin protocol.
+    let backup_dir = TempDir::new().unwrap();
+    let backup_path = backup_dir.path().to_str().unwrap().to_string();
+
+    // Query status to discover shards.
+    let mut shard_to_admin: std::collections::BTreeMap<u32, SocketAddr> =
+        std::collections::BTreeMap::new();
+    let mut replicas_per_shard: std::collections::HashMap<u32, usize> =
+        std::collections::HashMap::new();
+
+    for &admin_addr in &admin_addrs {
+        let resp = send_admin_line(&admin_addr, r#"{"command":"status"}"#).await;
+        let parsed: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert!(parsed["ok"].as_bool().unwrap(), "status should succeed");
+        if let Some(shards) = parsed["shards"].as_array() {
+            for s in shards {
+                let shard_id = s["shard"].as_u64().unwrap() as u32;
+                shard_to_admin.entry(shard_id).or_insert(admin_addr);
+                *replicas_per_shard.entry(shard_id).or_default() += 1;
+            }
+        }
+    }
+    assert_eq!(shard_to_admin.len(), 2, "should have 2 shards");
+
+    // Force view changes and backup each shard.
+    for (&shard_id, &admin_addr) in &shard_to_admin {
+        let vc_req = format!(r#"{{"command":"view_change","shard":{shard_id}}}"#);
+        let resp = send_admin_line(&admin_addr, &vc_req).await;
+        let parsed: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert!(
+            parsed["ok"].as_bool().unwrap(),
+            "view_change shard {shard_id}"
+        );
+        tokio::time::sleep(Duration::from_secs(5)).await;
+
+        let backup_req = format!(r#"{{"command":"backup_shard","shard":{shard_id}}}"#);
+        let resp = send_admin_line(&admin_addr, &backup_req).await;
+        let parsed: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert!(
+            parsed["ok"].as_bool().unwrap(),
+            "backup_shard {shard_id} should succeed"
+        );
+        assert!(
+            parsed["backup"].is_object(),
+            "backup data should be present for shard {shard_id}"
+        );
+
+        let path = format!("{backup_path}/shard_{shard_id}.json");
+        std::fs::write(&path, serde_json::to_string(&parsed["backup"]).unwrap()).unwrap();
+    }
+
+    // Write cluster.json metadata.
+    let metadata = serde_json::json!({
+        "shards": shard_to_admin.keys().collect::<Vec<_>>(),
+        "replicas_per_shard": replicas_per_shard,
+    });
+    std::fs::write(
+        format!("{backup_path}/cluster.json"),
+        serde_json::to_string_pretty(&metadata).unwrap(),
+    )
+    .unwrap();
+
+    tracing::info!("cluster backup complete: 2 shards");
+
+    // 5. Destroy all replicas.
+    for shard_id in 0..2u32 {
+        for node in &cluster.nodes {
+            node.remove_replica(ShardNumber(shard_id));
+        }
+    }
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // 6. Create new nodes and restore via admin protocol.
+    let discovery_url = format!("http://{}", cluster.discovery_addr);
+    let shard_manager_url = format!("http://{}", cluster.shard_manager_addr);
+
+    let mut new_nodes: Vec<Arc<Node>> = Vec::new();
+    let mut _new_temp_dirs: Vec<TempDir> = Vec::new();
+    let mut new_admin_addrs: Vec<SocketAddr> = Vec::new();
+
+    for _ in 0..3 {
+        let td = TempDir::new().unwrap();
+        let node = Arc::new(Node::with_discovery_and_shard_manager(
+            td.path().to_str().unwrap().to_string(),
+            &discovery_url,
+            &shard_manager_url,
+        ));
+        let admin_addr = alloc_addr();
+        crate::admin_server::start(admin_addr, Arc::clone(&node)).await;
+        new_admin_addrs.push(admin_addr);
+        new_nodes.push(node);
+        _new_temp_dirs.push(td);
+    }
+
+    // Restore each shard via admin protocol.
+    for shard_id in 0..2u32 {
+        let backup_json = std::fs::read_to_string(format!("{backup_path}/shard_{shard_id}.json"))
+            .unwrap_or_else(|e| panic!("read shard_{shard_id}.json: {e}"));
+        let backup_value: serde_json::Value = serde_json::from_str(&backup_json).unwrap();
+
+        // Allocate listen addresses for each replica (3 replicas, one per node).
+        let mut new_addrs: Vec<SocketAddr> = Vec::new();
+        for _ in 0..3 {
+            new_addrs.push(alloc_addr());
+        }
+        let new_membership: Vec<String> = new_addrs.iter().map(|a| a.to_string()).collect();
+
+        // Send restore_shard to each node.
+        for i in 0..3 {
+            let req = serde_json::json!({
+                "command": "restore_shard",
+                "shard": shard_id,
+                "listen_addr": new_addrs[i].to_string(),
+                "backup": backup_value,
+                "new_membership": new_membership,
+            });
+
+            loop {
+                let resp =
+                    send_admin_line(&new_admin_addrs[i], &serde_json::to_string(&req).unwrap())
+                        .await;
+                let parsed: serde_json::Value = serde_json::from_str(&resp).unwrap();
+                if parsed["ok"].as_bool().unwrap() {
+                    break;
+                }
+                let msg = parsed["message"].as_str().unwrap_or("");
+                if msg.contains("already in use") {
+                    // Port conflict — reallocate and retry with a fresh address.
+                    tracing::info!("port conflict for shard {shard_id} node {i}, retrying");
+                    continue;
+                }
+                panic!(
+                    "restore shard {shard_id} on node {i} failed: {:?}",
+                    parsed["message"]
+                );
+            }
+        }
+
+        // Register restored shard with discovery.
+        disc_client
+            .register_shard(shard_id, new_membership)
+            .await
+            .unwrap();
+    }
+
+    // 7. Wait for restoration to settle.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    // 8. Create fresh client and verify all data survived.
+    let (client2, _td2, _disc_dir2) = create_test_client(&cluster).await;
+
+    for (key, value) in &test_data {
+        let val = rw_get(&client2, key, &format!("{key}_post")).await;
+        assert_eq!(
+            val,
+            Some(value.to_string()),
+            "post-restore read of {key} should return {value}"
+        );
+    }
+
+    // 9. Verify new writes work on restored cluster.
+    let txn = client2.begin();
+    txn.put(
+        "cluster_after_restore".to_string(),
+        Some("works".to_string()),
+    );
+    assert!(
+        txn.commit().await.is_some(),
+        "write after cluster restore should commit"
+    );
+
+    let val = rw_get(&client2, "cluster_after_restore", "cluster_ar_read").await;
+    assert_eq!(val, Some("works".to_string()));
+
+    tracing::info!("cluster backup/restore via admin test passed");
+}

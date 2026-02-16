@@ -99,6 +99,21 @@ enum AdminAction {
         #[arg(long)]
         output: String,
     },
+    /// Restore a cluster from backup.
+    Restore {
+        /// Directory containing backup files (cluster.json + shard_N.json).
+        #[arg(long)]
+        backup_dir: String,
+        /// Comma-separated admin server addresses for target nodes.
+        #[arg(long)]
+        admin_addrs: String,
+        /// Base port for restored shard replicas (each node allocates ports sequentially from here).
+        #[arg(long)]
+        base_port: u16,
+        /// Optional discovery URL to register restored shards.
+        #[arg(long)]
+        discovery_url: Option<String>,
+    },
 }
 
 #[tokio::main]

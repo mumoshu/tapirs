@@ -12,6 +12,10 @@ struct AdminRequest {
     shard: Option<u32>,
     #[serde(default)]
     listen_addr: Option<String>,
+    #[serde(default)]
+    backup: Option<crate::node::ShardBackup>,
+    #[serde(default)]
+    new_membership: Option<Vec<String>>,
 }
 
 #[derive(Serialize)]
@@ -193,6 +197,86 @@ async fn handle_request(node: &Node, line: &str) -> AdminResponse {
                 None => AdminResponse {
                     ok: false,
                     message: Some(format!("shard {shard_id} not found or backup failed")),
+                    shards: None,
+                    backup: None,
+                },
+            }
+        }
+        "restore_shard" => {
+            let Some(shard_id) = req.shard else {
+                return AdminResponse {
+                    ok: false,
+                    message: Some("missing 'shard' field".into()),
+                    shards: None,
+                    backup: None,
+                };
+            };
+            let Some(listen_addr_str) = req.listen_addr else {
+                return AdminResponse {
+                    ok: false,
+                    message: Some("missing 'listen_addr' field".into()),
+                    shards: None,
+                    backup: None,
+                };
+            };
+            let listen_addr: std::net::SocketAddr = match listen_addr_str.parse() {
+                Ok(a) => a,
+                Err(e) => {
+                    return AdminResponse {
+                        ok: false,
+                        message: Some(format!("invalid listen_addr: {e}")),
+                        shards: None,
+                        backup: None,
+                    };
+                }
+            };
+            let Some(backup) = req.backup else {
+                return AdminResponse {
+                    ok: false,
+                    message: Some("missing 'backup' field".into()),
+                    shards: None,
+                    backup: None,
+                };
+            };
+            let Some(new_membership_strs) = req.new_membership else {
+                return AdminResponse {
+                    ok: false,
+                    message: Some("missing 'new_membership' field".into()),
+                    shards: None,
+                    backup: None,
+                };
+            };
+            let new_membership: Vec<std::net::SocketAddr> = match new_membership_strs
+                .iter()
+                .map(|a| {
+                    a.parse()
+                        .map_err(|e| format!("invalid membership addr '{a}': {e}"))
+                })
+                .collect::<Result<Vec<_>, _>>()
+            {
+                Ok(addrs) => addrs,
+                Err(e) => {
+                    return AdminResponse {
+                        ok: false,
+                        message: Some(e),
+                        shards: None,
+                        backup: None,
+                    };
+                }
+            };
+            match node
+                .restore_shard(ShardNumber(shard_id), listen_addr, &backup, new_membership)
+                .await
+            {
+                Ok(()) => AdminResponse {
+                    ok: true,
+                    message: Some(format!("shard {shard_id} restored at {listen_addr}")),
+                    shards: None,
+                    backup: None,
+                },
+                Err(e) => AdminResponse {
+                    ok: false,
+                    message: Some(format!("restore_shard failed: {e}")),
                     shards: None,
                     backup: None,
                 },
