@@ -1,5 +1,5 @@
 use super::{
-    message::{BootstrapRecord, LeaderRecord, LeaderRecordReply, RecordPayload, Reconfigure, ViewChangeAddendum},
+    message::{BootstrapRecord, FinalizeInconsistentReply, LeaderRecord, LeaderRecordReply, RecordPayload, Reconfigure, ViewChangeAddendum},
     shared_view::SharedView, AddMember, Confirm, DoViewChange,
     FinalizeConsensus, FinalizeInconsistent, Membership, Message, OpId, ProposeConsensus,
     ProposeInconsistent, Record, RecordConsensusEntry, RecordEntryState, RecordInconsistentEntry,
@@ -41,13 +41,15 @@ pub trait Upcalls: Sized + Send + Serialize + DeserializeOwned + 'static {
     type UR: TransportMessage;
     /// Inconsistent operation.
     type IO: TransportMessage + Eq;
+    /// Inconsistent result (returned from exec_inconsistent at FINALIZE time).
+    type IR: TransportMessage;
     /// Consensus operation.
     type CO: TransportMessage + Eq;
     /// Consensus result.
     type CR: TransportMessage + Eq + Hash;
 
     fn exec_unlogged(&self, op: Self::UO) -> Self::UR;
-    fn exec_inconsistent(&mut self, op: &Self::IO);
+    fn exec_inconsistent(&mut self, op: &Self::IO) -> Option<Self::IR>;
     fn exec_consensus(&mut self, op: &Self::CO) -> Self::CR;
     /// Extension to TAPIR: Called when an entry becomes finalized. This
     /// addresses a potential issue with `merge` rolling back finalized
@@ -417,8 +419,16 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
             Message::<U, T>::FinalizeInconsistent(FinalizeInconsistent { op_id }) => {
                 if sync.status.is_normal() && let Some(entry) = Arc::make_mut(&mut sync.record).inconsistent.get_mut(&op_id) && entry.state.is_tentative() {
                     entry.state = RecordEntryState::Finalized(sync.view.number);
-                    sync.upcalls.exec_inconsistent(&entry.op);
+                    let result = sync.upcalls.exec_inconsistent(&entry.op);
                     sync.delta_op_ids.insert(op_id);
+
+                    if let Some(result) = result {
+                        return Some(Message::<U, T>::FinalizeInconsistentReply(FinalizeInconsistentReply {
+                            op_id,
+                            result,
+                            view: sync.view.clone(),
+                        }));
+                    }
                 }
             }
             Message::<U, T>::FinalizeConsensus(FinalizeConsensus { op_id, result }) => {
@@ -872,6 +882,9 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                         view,
                     }),
                 );
+            }
+            Message::<U, T>::FinalizeInconsistentReply(_) => {
+                // Handled by the client via transport.send() future resolution.
             }
             _ => {
                 debug_assert!(false);

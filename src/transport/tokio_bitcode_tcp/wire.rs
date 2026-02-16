@@ -8,6 +8,7 @@ pub(crate) type TcpIrMessage<U> = MessageImpl<
     <U as ReplicaUpcalls>::UO,
     <U as ReplicaUpcalls>::UR,
     <U as ReplicaUpcalls>::IO,
+    <U as ReplicaUpcalls>::IR,
     <U as ReplicaUpcalls>::CO,
     <U as ReplicaUpcalls>::CR,
     TcpAddress,
@@ -26,24 +27,24 @@ pub(crate) enum WireMessage<U: ReplicaUpcalls> {
         from: TcpAddress,
         request_id: u64,
         #[serde(bound(
-            serialize = "U::UO: Serialize, U::UR: Serialize, U::IO: Serialize, U::CO: Serialize, U::CR: Serialize",
-            deserialize = "U::UO: Deserialize<'de>, U::UR: Deserialize<'de>, U::IO: Deserialize<'de>, U::CO: Deserialize<'de>, U::CR: Deserialize<'de>"
+            serialize = "U::UO: Serialize, U::UR: Serialize, U::IO: Serialize, U::IR: Serialize, U::CO: Serialize, U::CR: Serialize",
+            deserialize = "U::UO: Deserialize<'de>, U::UR: Deserialize<'de>, U::IO: Deserialize<'de>, U::IR: Deserialize<'de>, U::CO: Deserialize<'de>, U::CR: Deserialize<'de>"
         ))]
         payload: TcpIrMessage<U>,
     },
     Reply {
         request_id: u64,
         #[serde(bound(
-            serialize = "U::UO: Serialize, U::UR: Serialize, U::IO: Serialize, U::CO: Serialize, U::CR: Serialize",
-            deserialize = "U::UO: Deserialize<'de>, U::UR: Deserialize<'de>, U::IO: Deserialize<'de>, U::CO: Deserialize<'de>, U::CR: Deserialize<'de>"
+            serialize = "U::UO: Serialize, U::UR: Serialize, U::IO: Serialize, U::IR: Serialize, U::CO: Serialize, U::CR: Serialize",
+            deserialize = "U::UO: Deserialize<'de>, U::UR: Deserialize<'de>, U::IO: Deserialize<'de>, U::IR: Deserialize<'de>, U::CO: Deserialize<'de>, U::CR: Deserialize<'de>"
         ))]
         payload: TcpIrMessage<U>,
     },
     FireAndForget {
         from: TcpAddress,
         #[serde(bound(
-            serialize = "U::UO: Serialize, U::UR: Serialize, U::IO: Serialize, U::CO: Serialize, U::CR: Serialize",
-            deserialize = "U::UO: Deserialize<'de>, U::UR: Deserialize<'de>, U::IO: Deserialize<'de>, U::CO: Deserialize<'de>, U::CR: Deserialize<'de>"
+            serialize = "U::UO: Serialize, U::UR: Serialize, U::IO: Serialize, U::IR: Serialize, U::CO: Serialize, U::CR: Serialize",
+            deserialize = "U::UO: Deserialize<'de>, U::UR: Deserialize<'de>, U::IO: Deserialize<'de>, U::IR: Deserialize<'de>, U::CO: Deserialize<'de>, U::CR: Deserialize<'de>"
         ))]
         payload: TcpIrMessage<U>,
     },

@@ -183,6 +183,34 @@ impl<K: Key, V: Value, TS: Timestamp> Store<K, V, TS> {
         self.inner.scan(start, end, timestamp)
     }
 
+    /// Check if the version at `snapshot_ts` is "validated": has `read_ts >= snapshot_ts`.
+    /// Returns `Some((value, write_ts))` if validated, `None` otherwise.
+    pub fn get_validated(&self, key: &K, snapshot_ts: TS) -> Option<(Option<V>, TS)>
+    where
+        V: Clone,
+    {
+        let read_ts = self.inner.get_last_read_at(key, snapshot_ts)?;
+        if read_ts >= snapshot_ts {
+            let (value, write_ts) = self.inner.get_at(key, snapshot_ts);
+            Some((value.cloned(), write_ts))
+        } else {
+            None
+        }
+    }
+
+    /// Get value at `snapshot_ts` and update the read timestamp to block future
+    /// writes from overwriting the version.
+    pub fn quorum_read(&mut self, key: K, snapshot_ts: TS) -> (Option<V>, TS)
+    where
+        K: Clone,
+        V: Clone,
+    {
+        let (value, write_ts) = self.inner.get_at(&key, snapshot_ts);
+        let value = value.cloned();
+        self.inner.commit_get(key, snapshot_ts, snapshot_ts);
+        (value, write_ts)
+    }
+
     pub fn prepare(
         &mut self,
         id: TransactionId,
@@ -1006,5 +1034,75 @@ mod tests {
         // Original prepare still intact.
         assert!(store.prepared_writes.get("x").unwrap().contains_key(&ts(10, 1)));
         assert_eq!(store.prepared.get(&id).unwrap().0, ts(10, 1));
+    }
+
+    // ── get_validated / quorum_read (read-only transactions) ──
+
+    #[test]
+    fn get_validated_returns_none_when_no_read_ts() {
+        let store = new_store(false);
+        // No data and no reads → get_validated returns None.
+        assert_eq!(store.get_validated(&"x".to_string(), ts(5, 1)), None);
+    }
+
+    #[test]
+    fn get_validated_returns_none_when_unread() {
+        let mut store = new_store(false);
+        // Write a value but never read it.
+        let t1 = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
+        store.commit(txn_id(1, 1), &t1, ts(3, 1));
+
+        // Version exists at ts(3,1) but has no read_ts → None.
+        assert_eq!(store.get_validated(&"x".to_string(), ts(5, 1)), None);
+    }
+
+    #[test]
+    fn get_validated_returns_some_when_read_ts_sufficient() {
+        let mut store = new_store(false);
+
+        // Write "x" at ts(3,1).
+        let t1 = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
+        store.commit(txn_id(1, 1), &t1, ts(3, 1));
+
+        // Read "x" with a read-write txn that commits at ts(10,1).
+        // This sets read_ts on the version at ts(3,1) to ts(10,1).
+        let t2 = make_txn(vec![("x", ts(3, 1))], vec![], vec![]);
+        store.commit(txn_id(2, 1), &t2, ts(10, 1));
+
+        // get_validated with snapshot_ts(5,1): read_ts=ts(10,1) >= ts(5,1) → Some.
+        let result = store.get_validated(&"x".to_string(), ts(5, 1));
+        assert!(result.is_some());
+        let (value, write_ts) = result.unwrap();
+        assert_eq!(value, Some("v1".to_string()));
+        assert_eq!(write_ts, ts(3, 1));
+
+        // get_validated with snapshot_ts(15,1): read_ts=ts(10,1) < ts(15,1) → None.
+        assert_eq!(store.get_validated(&"x".to_string(), ts(15, 1)), None);
+    }
+
+    #[test]
+    fn quorum_read_updates_read_ts_and_blocks_writes() {
+        let mut store = new_store(false);
+
+        // Write "x" at ts(3,1).
+        let t1 = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
+        store.commit(txn_id(1, 1), &t1, ts(3, 1));
+
+        // quorum_read at snapshot_ts(10,1) should return the value and set read_ts.
+        let (value, write_ts) = store.quorum_read("x".to_string(), ts(10, 1));
+        assert_eq!(value, Some("v1".to_string()));
+        assert_eq!(write_ts, ts(3, 1));
+
+        // Now get_validated should succeed at ts(10,1) since we just set read_ts.
+        let result = store.get_validated(&"x".to_string(), ts(10, 1));
+        assert!(result.is_some());
+
+        // A subsequent write at ts(7,2) should be rejected because
+        // read_ts(ts(10,1)) > commit_ts(ts(7,2)).
+        let t2 = make_txn(vec![], vec![("x", Some("v2"))], vec![]);
+        assert_eq!(
+            store.prepare(txn_id(3, 1), t2, ts(7, 2), false),
+            PrepareResult::Retry { proposed: 10 }
+        );
     }
 }

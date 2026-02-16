@@ -88,6 +88,7 @@ async fn lock_server(num_replicas: usize) {
         type UO = ();
         type UR = ();
         type IO = Unlock;
+        type IR = ();
         type CO = Lock;
         type CR = LockResult;
 
@@ -96,10 +97,11 @@ async fn lock_server(num_replicas: usize) {
             unreachable!();
         }
 
-        fn exec_inconsistent(&mut self, op: &Self::IO) {
+        fn exec_inconsistent(&mut self, op: &Self::IO) -> Option<Self::IR> {
             if Some(op.0) == self.locked {
                 self.locked = None;
             }
+            None
         }
 
         fn exec_consensus(&mut self, op: &Self::CO) -> Self::CR {

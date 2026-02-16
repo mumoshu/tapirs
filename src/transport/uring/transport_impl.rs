@@ -24,6 +24,7 @@ where
     U::UO: Serialize + DeserializeOwned,
     U::UR: Serialize + DeserializeOwned,
     U::IO: Serialize + DeserializeOwned,
+    U::IR: Serialize + DeserializeOwned,
     U::CO: Serialize + DeserializeOwned,
     U::CR: Serialize + DeserializeOwned,
 {
@@ -220,6 +221,7 @@ where
     <TapirReplica<K, V> as ReplicaUpcalls>::UO: Serialize + DeserializeOwned,
     <TapirReplica<K, V> as ReplicaUpcalls>::UR: Serialize + DeserializeOwned,
     <TapirReplica<K, V> as ReplicaUpcalls>::IO: Serialize + DeserializeOwned,
+    <TapirReplica<K, V> as ReplicaUpcalls>::IR: Serialize + DeserializeOwned,
     <TapirReplica<K, V> as ReplicaUpcalls>::CO: Serialize + DeserializeOwned,
     <TapirReplica<K, V> as ReplicaUpcalls>::CR: Serialize + DeserializeOwned,
 {

@@ -1,5 +1,5 @@
 use super::{
-    message::{BootstrapRecord, FetchLeaderRecord, LeaderRecordReply, Reconfigure},
+    message::{BootstrapRecord, FetchLeaderRecord, FinalizeInconsistentReply, LeaderRecordReply, Reconfigure},
     shared_view::SharedView, AddMember, Confirm, DoViewChange, FinalizeConsensus,
     RemoveMember,
     FinalizeInconsistent, Membership, MembershipSize, Message, OpId, ProposeConsensus,
@@ -318,6 +318,148 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
                         .do_send(address, FinalizeInconsistent { op_id });
                 }
                 return;
+            }
+        }
+    }
+
+    /// Like `invoke_inconsistent`, but waits for f+1 `FinalizeInconsistentReply`
+    /// responses and returns the collected results.
+    ///
+    /// Used by read-only transactions (QuorumRead): the IR protocol executes
+    /// `ExecInconsistent` at FINALIZE time, so this method sends PROPOSE,
+    /// waits for f+1 replies, then sends FINALIZE and waits for f+1 finalize
+    /// replies that carry the execution results.
+    pub fn invoke_inconsistent_with_result(&self, op: U::IO) -> impl Future<Output = Vec<U::IR>> + Send + use<U, T> {
+        let inner = Arc::clone(&self.inner);
+
+        let op_id = {
+            let mut sync = inner.sync.lock().unwrap();
+
+            OpId {
+                client_id: self.id,
+                number: sync.next_number(),
+            }
+        };
+
+        fn has_ancient<A>(results: &HashMap<A, ReplyInconsistent<A>>) -> bool {
+            results.values().any(|v| v.state.is_none())
+        }
+
+        fn has_quorum<A>(
+            membership: MembershipSize,
+            results: &HashMap<A, ReplyInconsistent<A>>,
+            check_views: bool,
+        ) -> bool {
+            if check_views {
+                for result in results.values() {
+                    let matching = results
+                        .values()
+                        .filter(|other| other.view.number == result.view.number)
+                        .count();
+                    if matching >= result.view.membership.size().f_plus_one() {
+                        return true;
+                    }
+                }
+                false
+            } else {
+                results.len() >= membership.f_plus_one()
+            }
+        }
+
+        async move {
+            loop {
+                // Phase 1: Propose (same as invoke_inconsistent)
+                let (membership_size, future) = {
+                    let sync = inner.sync.lock().unwrap();
+                    let membership_size = sync.view.membership.size();
+
+                    let future = join(sync.view.membership.iter().map(|address| {
+                        (
+                            address,
+                            inner.transport.send::<ReplyInconsistent<T::Address>>(
+                                address,
+                                ProposeInconsistent {
+                                    op_id,
+                                    op: op.clone(),
+                                    recent: sync.view.number,
+                                },
+                            ),
+                        )
+                    }));
+                    (membership_size, future)
+                };
+
+                let mut soft_timeout = std::pin::pin!(T::sleep(Duration::from_millis(250)));
+                let mut hard_timeout = std::pin::pin!(T::sleep(Duration::from_millis(5000)));
+
+                let results = future
+                    .until(
+                        move |results: &HashMap<T::Address, ReplyInconsistent<T::Address>>,
+                              cx: &mut Context<'_>| {
+                            has_ancient(results)
+                                || has_quorum(
+                                    membership_size,
+                                    results,
+                                    soft_timeout.as_mut().poll(cx).is_ready(),
+                                )
+                                || hard_timeout.as_mut().poll(cx).is_ready()
+                        },
+                    )
+                    .await;
+
+                let phase2 = {
+                    let mut sync = inner.sync.lock().unwrap();
+                    Self::update_view(
+                        &inner.transport,
+                        &mut *sync,
+                        results.iter().map(|(i, r)| (*i, &r.view)),
+                    );
+
+                    if has_ancient(&results) || !has_quorum(membership_size, &results, true) {
+                        None
+                    } else {
+                        // Phase 2: Finalize — send FinalizeInconsistent and wait for f+1 replies
+                        let finalize_future = join(sync.view.membership.iter().map(|address| {
+                            (
+                                address,
+                                inner.transport.send::<FinalizeInconsistentReply<U::IR, T::Address>>(
+                                    address,
+                                    FinalizeInconsistent { op_id },
+                                ),
+                            )
+                        }));
+                        let finalize_membership_size = sync.view.membership.size();
+                        Some((finalize_future, finalize_membership_size))
+                    }
+                };
+
+                let Some((finalize_future, finalize_membership_size)) = phase2 else {
+                    continue;
+                };
+
+                let mut finalize_timeout = std::pin::pin!(T::sleep(Duration::from_millis(5000)));
+
+                let finalize_results = finalize_future
+                    .until(
+                        move |results: &HashMap<T::Address, FinalizeInconsistentReply<U::IR, T::Address>>,
+                              cx: &mut Context<'_>| {
+                            results.len() >= finalize_membership_size.f_plus_one()
+                                || finalize_timeout.as_mut().poll(cx).is_ready()
+                        },
+                    )
+                    .await;
+
+                if finalize_results.len() >= finalize_membership_size.f_plus_one() {
+                    let mut sync = inner.sync.lock().unwrap();
+                    Self::update_view(
+                        &inner.transport,
+                        &mut *sync,
+                        finalize_results.iter().map(|(i, r)| (*i, &r.view)),
+                    );
+                    return finalize_results.into_values().map(|r| r.result).collect();
+                }
+
+                // Not enough finalize replies — retry from the beginning
             }
         }
     }

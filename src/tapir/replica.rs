@@ -1,4 +1,4 @@
-use super::{Change, Key, KeyRange, ShardNumber, Timestamp, Value, CO, CR, IO, UO, UR};
+use super::{Change, Key, KeyRange, ShardNumber, Timestamp, Value, CO, CR, IO, IR, UO, UR};
 use crate::ir::ReplyUnlogged;
 use crate::tapir::ShardClient;
 use crate::util::vectorize;
@@ -224,6 +224,7 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
     type UO = UO<K>;
     type UR = UR<K, V>;
     type IO = IO<K, V>;
+    type IR = IR<V>;
     type CO = CO<K, V>;
     type CR = CR;
 
@@ -316,6 +317,13 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
                     OccPrepareResult::Abstain
                 })
             }
+            UO::ReadValidated { key, timestamp } => {
+                if let Some(range) = &self.key_range
+                    && !range.contains(&key) {
+                        return UR::OutOfRange;
+                    }
+                UR::ReadValidated(self.inner.get_validated(&key, timestamp))
+            }
             UO::ScanChanges {
                 start_ts,
                 end_ts_inclusive,
@@ -345,7 +353,7 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
         }
     }
 
-    fn exec_inconsistent(&mut self, op: &Self::IO) {
+    fn exec_inconsistent(&mut self, op: &Self::IO) -> Option<Self::IR> {
         match op {
             IO::Commit {
                 transaction_id,
@@ -363,6 +371,7 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
                     );
                 }
                 self.inner.commit(*transaction_id, transaction, *commit);
+                None
             }
             IO::Abort {
                 transaction_id,
@@ -410,6 +419,15 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
                 {
                     self.inner.remove_prepared(*transaction_id);
                 }
+                None
+            }
+            IO::QuorumRead { key, timestamp } => {
+                if let Some(range) = &self.key_range
+                    && !range.contains(key) {
+                        return Some(IR::OutOfRange);
+                    }
+                let (value, write_ts) = self.inner.quorum_read(key.clone(), *timestamp);
+                Some(IR::QuorumRead(value, write_ts))
             }
         }
     }

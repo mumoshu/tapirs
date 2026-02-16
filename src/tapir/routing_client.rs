@@ -1,4 +1,4 @@
-use super::{client::Transaction, Client, Key, Sharded, Timestamp, Value};
+use super::{client::{ReadOnlyTransaction, Transaction}, Client, Key, Sharded, Timestamp, Value};
 use crate::tapir::shard_router::ShardRouter;
 use crate::TapirTransport;
 use std::collections::BTreeMap;
@@ -35,6 +35,13 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>, R: ShardRouter<K>> RoutingClient
     pub fn begin(&self) -> RoutingTransaction<K, V, T, R> {
         RoutingTransaction {
             inner: self.inner.begin(),
+            router: Arc::clone(&self.router),
+        }
+    }
+
+    pub fn begin_read_only(&self) -> RoutingReadOnlyTransaction<K, V, T, R> {
+        RoutingReadOnlyTransaction {
+            inner: self.inner.begin_read_only(),
             router: Arc::clone(&self.router),
         }
     }
@@ -88,5 +95,20 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>, R: ShardRouter<K>> RoutingTransa
 
     pub fn commit(self) -> impl Future<Output = Option<Timestamp>> {
         self.inner.commit()
+    }
+}
+
+pub struct RoutingReadOnlyTransaction<K: Key, V: Value, T: TapirTransport<K, V>, R: ShardRouter<K>>
+{
+    inner: ReadOnlyTransaction<K, V, T>,
+    router: Arc<R>,
+}
+
+impl<K: Key, V: Value, T: TapirTransport<K, V>, R: ShardRouter<K>>
+    RoutingReadOnlyTransaction<K, V, T, R>
+{
+    pub fn get(&self, key: K) -> impl Future<Output = Option<V>> {
+        let shard = self.router.route(&key);
+        self.inner.get(Sharded { shard, key })
     }
 }

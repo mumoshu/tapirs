@@ -20,12 +20,12 @@ mod shard;
 #[cfg(test)]
 mod tests;
 
-pub use client::Client;
+pub use client::{Client, ReadOnlyTransaction};
 pub use key_range::KeyRange;
 pub use key_value::{Key, Value};
-pub use message::{Change, CO, CR, IO, UO, UR};
+pub use message::{Change, CO, CR, IO, IR, UO, UR};
 pub use replica::Replica;
-pub use routing_client::{RoutingClient, RoutingTransaction};
+pub use routing_client::{RoutingClient, RoutingReadOnlyTransaction, RoutingTransaction};
 pub use shard::{Number as ShardNumber, Sharded};
 pub use shard_client::ShardClient;
 pub use timestamp::Timestamp;

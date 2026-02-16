@@ -1,4 +1,4 @@
-use super::{Change, Key, Replica, ShardNumber, Timestamp, Value, CO, CR, IO, UO, UR};
+use super::{Change, Key, Replica, ShardNumber, Timestamp, Value, CO, CR, IO, IR, UO, UR};
 use crate::{
     transport::Transport, IrClient, IrClientId, IrMembership, IrRecord, IrSharedView,
     OccPrepareResult, OccSharedTransaction, OccTransaction, OccTransactionId,
@@ -170,6 +170,44 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
                 commit: Some(prepared_timestamp),
             }
         })
+    }
+
+    /// Fast-path read: check if one replica has a validated version.
+    pub fn read_validated(
+        &self,
+        key: K,
+        timestamp: Timestamp,
+    ) -> impl Future<Output = Option<(Option<V>, Timestamp)>> {
+        let future = self.inner.invoke_unlogged(UO::ReadValidated { key, timestamp });
+        async move {
+            match future.await {
+                UR::ReadValidated(result) => result,
+                _ => None,
+            }
+        }
+    }
+
+    /// Quorum read via IR inconsistent op. Sends to all replicas,
+    /// waits for f+1 finalize replies, picks highest write_ts.
+    pub fn quorum_read(
+        &self,
+        key: K,
+        timestamp: Timestamp,
+    ) -> impl Future<Output = (Option<V>, Timestamp)> + Send + use<K, V, T> {
+        let future = self
+            .inner
+            .invoke_inconsistent_with_result(IO::QuorumRead { key, timestamp });
+        async move {
+            let results = future.await;
+            results
+                .into_iter()
+                .filter_map(|ir| match ir {
+                    IR::QuorumRead(value, ts) => Some((value, ts)),
+                    _ => None,
+                })
+                .max_by_key(|(_, ts)| *ts)
+                .unwrap_or((None, Timestamp::default()))
+        }
     }
 
     /// Request committed changes in a timestamp range for CDC-based resharding.

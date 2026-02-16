@@ -6,7 +6,6 @@ use std::hash::Hash;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum UO<K> {
     Get {
-        // TODO: Used by read-only extension:  transaction_id: OccTransactionId,
         /// Key to get the latest version of
         key: K,
         /// Get a different version instead (not part of normal TAPIR).
@@ -29,6 +28,13 @@ pub enum UO<K> {
     ScanChanges {
         start_ts: u64,
         end_ts_inclusive: u64,
+    },
+    /// Read-only transaction fast path: check if a replica has a "validated"
+    /// version (read_ts >= snapshot_ts). If so, return the value without
+    /// requiring a quorum.
+    ReadValidated {
+        key: K,
+        timestamp: Timestamp,
     },
 }
 
@@ -58,6 +64,15 @@ pub enum UR<K, V> {
     ),
     /// The requested key is outside this shard's current key range.
     OutOfRange,
+    /// Read-only transaction fast path result: `Some((value, write_ts))` if the
+    /// version is validated, `None` otherwise.
+    ReadValidated(
+        #[serde(bound(
+            serialize = "V: Serialize",
+            deserialize = "V: Deserialize<'de>"
+        ))]
+        Option<(Option<V>, Timestamp)>,
+    ),
 }
 
 /// A committed key-value change at a specific timestamp.
@@ -88,6 +103,14 @@ pub enum IO<K, V> {
         /// Same as unsuccessfully prepared commit timestamp for backup coordinators or `None`
         /// used by clients to abort at every timestamp.
         commit: Option<Timestamp>,
+    },
+    /// Read-only transaction slow path: quorum read via IR inconsistent op.
+    /// Executed at FINALIZE time per the IR protocol. Sets read_ts to block
+    /// future writes from overwriting the version.
+    QuorumRead {
+        #[serde(bound(deserialize = "K: Deserialize<'de>"))]
+        key: K,
+        timestamp: Timestamp,
     },
 }
 
@@ -120,6 +143,13 @@ impl<K: Eq + Hash, V: PartialEq> PartialEq for IO<K, V> {
                     commit: other_commit,
                 },
             ) => transaction_id == other_transaction_id && commit == other_commit,
+            (
+                Self::QuorumRead { key, timestamp },
+                Self::QuorumRead {
+                    key: other_key,
+                    timestamp: other_timestamp,
+                },
+            ) => key == other_key && timestamp == other_timestamp,
             _ => false,
         }
     }
@@ -177,4 +207,18 @@ impl<K: Eq + Hash, V: Eq> Eq for CO<K, V> {}
 pub enum CR {
     Prepare(OccPrepareResult<Timestamp>),
     RaiseMinPrepareTime { time: u64 },
+}
+
+/// Inconsistent result type for read-only transaction QuorumRead.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum IR<V> {
+    QuorumRead(
+        #[serde(bound(
+            serialize = "V: Serialize",
+            deserialize = "V: Deserialize<'de>"
+        ))]
+        Option<V>,
+        Timestamp,
+    ),
+    OutOfRange,
 }

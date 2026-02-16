@@ -343,6 +343,178 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Transaction<K, V, T> {
     }
 }
 
+/// Read-only transaction for TAPIR (Section 6.1 of the paper).
+///
+/// # Context
+///
+/// TAPIR currently supports read-write transactions (OCC prepare/commit) and unlogged gets
+/// (fast but potentially stale). Read-only transactions fill the gap: **consistent, up-to-date
+/// reads** at a snapshot timestamp without prepare/commit overhead.
+///
+/// Per the TAPIR paper (Section 6.1):
+/// - **Fast path** (1 replica, 1 RTT): if the replica has a "validated" version
+///   (read_ts >= snapshot_ts)
+/// - **Slow path** (quorum, 2 RTT): QuorumRead via IR inconsistent operation — FINALIZE
+///   triggers `ExecInconsistent` which updates read timestamps and returns values. Record
+///   entry ensures view-change durability.
+///
+/// # Design Decisions
+///
+/// - **QuorumRead goes through IR inconsistent operations**, faithful to the paper.
+/// - **Execution happens at FINALIZE** (per IR protocol: "On FINALIZE, replicas upcall into
+///   the application protocol with ExecInconsistent(op)"). No propose-time execution.
+/// - **New associated type `IR`** added to Upcalls trait (parallel to `CR`), so
+///   `exec_inconsistent` can return results.
+/// - **`FinalizeInconsistentReply`** message added so clients receive results from FINALIZE.
+/// - **2 RTTs** on the slow path: propose (f+1 replies) + finalize (f+1 replies with results).
+///   Concurrent writes that prepare before QuorumRead's FINALIZE are concurrent transactions,
+///   not "later" writes — this is correct per the paper's guarantees.
+///
+/// # Rejected Alternatives and Correctness Analysis
+///
+/// ## Why adding `propose_inconsistent` is wrong
+///
+/// The IR protocol (Section 5 of the paper) defines inconsistent operation processing as:
+///
+/// 1. The client sends `<PROPOSE, id, op>` to all replicas.
+/// 2. Each replica writes id and op to its record as TENTATIVE, then responds to the client
+///    with `<REPLY, id>`.
+/// 3. Once the client receives replies from at least f+1 replicas, the client sends
+///    `<FINALIZE, id>` to all replicas.
+/// 4. On FINALIZE, replicas upcall into the application protocol with `ExecInconsistent(op)`
+///    and mark the record entry as FINALIZED.
+///
+/// There is **no upcall at PROPOSE time**. Replicas only record the operation as TENTATIVE and
+/// reply with an acknowledgment — they do not execute anything. Adding a `propose_inconsistent`
+/// hook would violate the IR protocol specification by introducing an upcall that IR does not
+/// define. The only application-level upcall for inconsistent operations is `ExecInconsistent`,
+/// and it happens exclusively at FINALIZE.
+///
+/// A `propose_inconsistent` hook would also break IR's guarantees: IR ensures that inconsistent
+/// operations are durable by recording them before execution. If we executed at PROPOSE time,
+/// results could be returned to the client before the operation is recorded at a quorum, meaning
+/// a view change could lose the operation while the client already acted on its results.
+///
+/// ## Why executing QuorumRead as an IR consensus operation is unnecessary
+///
+/// IR consensus operations (like TAPIR's Prepare) use a 2-phase protocol with a `decide`
+/// function that merges results from a superquorum (f+1 matching replies or 3f/2+1 total).
+/// This machinery exists because consensus operations need **agreement** — all replicas must
+/// converge on the same result.
+///
+/// QuorumRead does not need agreement. Each replica independently reads the value at the
+/// snapshot timestamp and sets the read timestamp. The client picks the result with the highest
+/// write timestamp — there is no need for replicas to agree or for a decide function to
+/// reconcile conflicting replies. Using consensus operations would add unnecessary overhead
+/// (superquorum instead of simple quorum) and complexity (a decide function that just passes
+/// through results) for no correctness benefit.
+///
+/// The paper explicitly places QuorumRead in the inconsistent operation category: it is a
+/// "simple quorum" operation where each replica executes independently, and correctness comes
+/// from the read timestamp being set at a quorum of replicas (f+1), which is exactly what IR
+/// inconsistent operations provide.
+///
+/// ## Why executing QuorumRead at IR inconsistent PROPOSE (not FINALIZE) is incorrect
+///
+/// Consider what happens if `exec_inconsistent` runs at PROPOSE time and returns results
+/// immediately:
+///
+/// 1. Client sends `PROPOSE QuorumRead(key, snapshot_ts)` to all replicas.
+/// 2. Replica executes QuorumRead: reads value, sets `read_ts = snapshot_ts`, returns result
+///    in `ReplyInconsistent`.
+/// 3. Client receives f+1 replies with results and picks the one with the highest write
+///    timestamp.
+///
+/// The problem: **the client now has results, but the operation is only TENTATIVE at f+1
+/// replicas**. The client hasn't sent FINALIZE yet. If a view change happens between receiving
+/// PROPOSE replies and sending FINALIZE:
+///
+/// - The TENTATIVE QuorumRead entries may be lost during view change reconciliation (they
+///   require only f+1 replicas, and view change contacts 2f+1).
+/// - However, the replicas that did execute have already set `read_ts`, and the replicas that
+///   didn't have **not** set `read_ts`.
+/// - A concurrent write could successfully prepare at the replicas that never received the
+///   PROPOSE, bypassing the read timestamp protection.
+///
+/// More fundamentally, executing at PROPOSE time means TAPIR returns read results to the client
+/// **before the read_ts has been durably persisted** at a quorum. The read_ts is what blocks
+/// future writes from overwriting the version the client read. If TAPIR returns results before
+/// read_ts is persisted, and a failure occurs, the client may have acted on a value that a later
+/// write can now overwrite — violating the read-only transaction guarantee that "a later write
+/// transaction cannot overwrite the version returned by the read-only transaction."
+///
+/// By executing at FINALIZE time:
+/// - FINALIZE is only sent after f+1 replicas have the operation in their record (TENTATIVE).
+/// - At FINALIZE, replicas execute `ExecInconsistent(QuorumRead)` which sets `read_ts` and
+///   returns results.
+/// - The client receives results only after `read_ts` is set at the executing replicas.
+/// - The record entry is FINALIZED, ensuring durability across view changes.
+///
+/// **Concurrent writes that prepare between PROPOSE and FINALIZE** are not a correctness
+/// concern. These are *concurrent* transactions, not *later* transactions. The paper's guarantee
+/// (2) states: "a later write transaction cannot overwrite the version returned by the read-only
+/// transaction." "Later" means writes starting **after** the QuorumRead completes (after
+/// FINALIZE). Concurrent writes are expected and handled correctly — they may or may not see
+/// the read_ts depending on timing, which is the correct behavior for concurrent operations.
+pub struct ReadOnlyTransaction<K: Key, V: Value, T: TapirTransport<K, V>> {
+    snapshot_ts: Timestamp,
+    client: Arc<Mutex<Inner<K, V, T>>>,
+    read_cache: Arc<Mutex<HashMap<Sharded<K>, Option<V>>>>,
+}
+
+impl<K: Key, V: Value, T: TapirTransport<K, V>> Client<K, V, T> {
+    pub fn begin_read_only(&self) -> ReadOnlyTransaction<K, V, T> {
+        let inner = self.inner.lock().unwrap();
+        let snapshot_ts = Timestamp {
+            time: inner.transport.time(),
+            client_id: inner.id,
+        };
+        ReadOnlyTransaction {
+            snapshot_ts,
+            client: Arc::clone(&self.inner),
+            read_cache: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+}
+
+impl<K: Key, V: Value, T: TapirTransport<K, V>> ReadOnlyTransaction<K, V, T> {
+    pub fn get(&self, key: impl Into<Sharded<K>>) -> impl Future<Output = Option<V>> {
+        let key = key.into();
+        let client = Arc::clone(&self.client);
+        let read_cache = Arc::clone(&self.read_cache);
+        let snapshot_ts = self.snapshot_ts;
+
+        async move {
+            // Check read cache for consistent reads within the transaction.
+            {
+                let cache = read_cache.lock().unwrap();
+                if let Some(value) = cache.get(&key) {
+                    return value.clone();
+                }
+            }
+
+            let shard_client = Inner::shard_client(&client, key.shard).await;
+
+            // Fast path: check if one replica has a validated version.
+            if let Some((value, _write_ts)) =
+                shard_client.read_validated(key.key.clone(), snapshot_ts).await
+            {
+                let mut cache = read_cache.lock().unwrap();
+                cache.entry(key).or_insert(value.clone());
+                return value;
+            }
+
+            // Slow path: quorum read via IR inconsistent op.
+            let (value, _write_ts) =
+                shard_client.quorum_read(key.key.clone(), snapshot_ts).await;
+
+            let mut cache = read_cache.lock().unwrap();
+            cache.entry(key).or_insert(value.clone());
+            value
+        }
+    }
+}
+
 pub fn max_read_timestamp<K, V>(transaction: &OccTransaction<K, V, Timestamp>) -> u64 {
     let read_max = transaction
         .read_set

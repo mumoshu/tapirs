@@ -9,13 +9,14 @@ pub type Message<U, T> = MessageImpl<
     <U as ReplicaUpcalls>::UO,
     <U as ReplicaUpcalls>::UR,
     <U as ReplicaUpcalls>::IO,
+    <U as ReplicaUpcalls>::IR,
     <U as ReplicaUpcalls>::CO,
     <U as ReplicaUpcalls>::CR,
     <T as Transport<U>>::Address,
 >;
 
 #[derive(Clone, derive_more::From, derive_more::TryInto, Serialize, Deserialize)]
-pub enum MessageImpl<UO, UR, IO, CO, CR, A> {
+pub enum MessageImpl<UO, UR, IO, IR, CO, CR, A> {
     RequestUnlogged(RequestUnlogged<UO>),
     ReplyUnlogged(ReplyUnlogged<UR, A>),
     ProposeInconsistent(ProposeInconsistent<IO>),
@@ -23,6 +24,7 @@ pub enum MessageImpl<UO, UR, IO, CO, CR, A> {
     ReplyInconsistent(ReplyInconsistent<A>),
     ReplyConsensus(ReplyConsensus<CR, A>),
     FinalizeInconsistent(FinalizeInconsistent),
+    FinalizeInconsistentReply(FinalizeInconsistentReply<IR, A>),
     FinalizeConsensus(FinalizeConsensus<CR>),
     Confirm(Confirm<A>),
     DoViewChange(DoViewChange<IO, CO, CR, A>),
@@ -35,8 +37,8 @@ pub enum MessageImpl<UO, UR, IO, CO, CR, A> {
     BootstrapRecord(BootstrapRecord<IO, CO, CR, A>),
 }
 
-impl<UO: Debug, UR: Debug, IO: Debug, CO: Debug, CR: Debug, A: Debug> Debug
-    for MessageImpl<UO, UR, IO, CO, CR, A>
+impl<UO: Debug, UR: Debug, IO: Debug, IR: Debug, CO: Debug, CR: Debug, A: Debug> Debug
+    for MessageImpl<UO, UR, IO, IR, CO, CR, A>
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -47,6 +49,7 @@ impl<UO: Debug, UR: Debug, IO: Debug, CO: Debug, CR: Debug, A: Debug> Debug
             Self::ReplyInconsistent(r) => Debug::fmt(r, f),
             Self::ReplyConsensus(r) => Debug::fmt(r, f),
             Self::FinalizeInconsistent(r) => Debug::fmt(r, f),
+            Self::FinalizeInconsistentReply(r) => Debug::fmt(r, f),
             Self::FinalizeConsensus(r) => Debug::fmt(r, f),
             Self::Confirm(r) => Debug::fmt(r, f),
             Self::DoViewChange(r) => Debug::fmt(r, f),
@@ -113,6 +116,13 @@ pub struct ReplyConsensus<CR, A> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FinalizeInconsistent {
     pub op_id: OpId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FinalizeInconsistentReply<IR, A> {
+    pub op_id: OpId,
+    pub result: IR,
+    pub view: SharedView<A>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

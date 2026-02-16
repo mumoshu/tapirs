@@ -24,6 +24,7 @@ where
     U::UO: Serialize + DeserializeOwned,
     U::UR: Serialize + DeserializeOwned,
     U::IO: Serialize + DeserializeOwned,
+    U::IR: Serialize + DeserializeOwned,
     U::CO: Serialize + DeserializeOwned,
     U::CR: Serialize + DeserializeOwned,
 {
@@ -81,6 +82,7 @@ async fn read_loop_outbound<U: ReplicaUpcalls>(
     U::UO: Serialize + DeserializeOwned,
     U::UR: Serialize + DeserializeOwned,
     U::IO: Serialize + DeserializeOwned,
+    U::IR: Serialize + DeserializeOwned,
     U::CO: Serialize + DeserializeOwned,
     U::CR: Serialize + DeserializeOwned,
 {

@@ -1096,3 +1096,158 @@ async fn test_add_replica_with_preload() {
     drop(new_replica);
     drop(replicas);
 }
+
+// ── Read-only transaction tests ──
+
+#[tokio::test(start_paused = true)]
+async fn read_only_basic() {
+    let (_replicas, clients) = build_kv(true, 3, 2);
+
+    // Write a value via read-write transaction.
+    let txn = clients[0].begin();
+    txn.put(
+        Sharded {
+            shard: ShardNumber(0),
+            key: 42,
+        },
+        Some(100),
+    );
+    assert!(txn.commit().await.is_some());
+
+    // Advance time so the read-only snapshot is strictly after the commit.
+    tokio::time::advance(Duration::from_millis(1)).await;
+
+    // Read it back via read-only transaction.
+    let ro = clients[1].begin_read_only();
+    let val = ro
+        .get(Sharded {
+            shard: ShardNumber(0),
+            key: 42,
+        })
+        .await;
+    assert_eq!(val, Some(100));
+
+    // Non-existent key returns None.
+    let val = ro
+        .get(Sharded {
+            shard: ShardNumber(0),
+            key: 999,
+        })
+        .await;
+    assert_eq!(val, None);
+
+    drop(_replicas);
+}
+
+#[tokio::test(start_paused = true)]
+async fn read_only_consistent_snapshot() {
+    let (_replicas, clients) = build_kv(true, 3, 2);
+
+    // Write two keys via read-write transaction.
+    let txn = clients[0].begin();
+    txn.put(
+        Sharded {
+            shard: ShardNumber(0),
+            key: 1,
+        },
+        Some(10),
+    );
+    txn.put(
+        Sharded {
+            shard: ShardNumber(0),
+            key: 2,
+        },
+        Some(20),
+    );
+    assert!(txn.commit().await.is_some());
+
+    // Advance time so the read-only snapshot is strictly after the commit.
+    tokio::time::advance(Duration::from_millis(1)).await;
+
+    // Read-only transaction sees a consistent snapshot of both keys.
+    let ro = clients[1].begin_read_only();
+    let v1 = ro
+        .get(Sharded {
+            shard: ShardNumber(0),
+            key: 1,
+        })
+        .await;
+    let v2 = ro
+        .get(Sharded {
+            shard: ShardNumber(0),
+            key: 2,
+        })
+        .await;
+    assert_eq!(v1, Some(10));
+    assert_eq!(v2, Some(20));
+
+    // Reading the same key again within the transaction returns cached value.
+    let v1_again = ro
+        .get(Sharded {
+            shard: ShardNumber(0),
+            key: 1,
+        })
+        .await;
+    assert_eq!(v1_again, Some(10));
+
+    drop(_replicas);
+}
+
+#[tokio::test(start_paused = true)]
+async fn read_only_multi_key_sharded() {
+    let (_shards, clients) = build_sharded_kv(true, 3, 3, 2);
+
+    // Write keys across different shards.
+    let txn = clients[0].begin();
+    txn.put(
+        Sharded {
+            shard: ShardNumber(0),
+            key: 1,
+        },
+        Some(100),
+    );
+    txn.put(
+        Sharded {
+            shard: ShardNumber(1),
+            key: 2,
+        },
+        Some(200),
+    );
+    txn.put(
+        Sharded {
+            shard: ShardNumber(2),
+            key: 3,
+        },
+        Some(300),
+    );
+    assert!(txn.commit().await.is_some());
+
+    // Advance time so the read-only snapshot is strictly after the commit.
+    tokio::time::advance(Duration::from_millis(1)).await;
+
+    // Read-only transaction reads across all shards.
+    let ro = clients[1].begin_read_only();
+    let v1 = ro
+        .get(Sharded {
+            shard: ShardNumber(0),
+            key: 1,
+        })
+        .await;
+    let v2 = ro
+        .get(Sharded {
+            shard: ShardNumber(1),
+            key: 2,
+        })
+        .await;
+    let v3 = ro
+        .get(Sharded {
+            shard: ShardNumber(2),
+            key: 3,
+        })
+        .await;
+    assert_eq!(v1, Some(100));
+    assert_eq!(v2, Some(200));
+    assert_eq!(v3, Some(300));
+
+    drop(_shards);
+}

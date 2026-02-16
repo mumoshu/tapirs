@@ -19,6 +19,7 @@ where
     U::UO: Serialize + DeserializeOwned,
     U::UR: Serialize + DeserializeOwned,
     U::IO: Serialize + DeserializeOwned,
+    U::IR: Serialize + DeserializeOwned,
     U::CO: Serialize + DeserializeOwned,
     U::CR: Serialize + DeserializeOwned,
 {
@@ -35,6 +36,7 @@ async fn accept_loop<U: ReplicaUpcalls>(
     U::UO: Serialize + DeserializeOwned,
     U::UR: Serialize + DeserializeOwned,
     U::IO: Serialize + DeserializeOwned,
+    U::IR: Serialize + DeserializeOwned,
     U::CO: Serialize + DeserializeOwned,
     U::CR: Serialize + DeserializeOwned,
 {
@@ -65,6 +67,7 @@ async fn read_loop_inbound<U: ReplicaUpcalls>(
     U::UO: Serialize + DeserializeOwned,
     U::UR: Serialize + DeserializeOwned,
     U::IO: Serialize + DeserializeOwned,
+    U::IR: Serialize + DeserializeOwned,
     U::CO: Serialize + DeserializeOwned,
     U::CR: Serialize + DeserializeOwned,
 {
