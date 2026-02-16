@@ -1,11 +1,10 @@
 use crate::discovery::HttpDiscoveryClient;
 use serde::Deserialize;
 use std::sync::Arc;
-use tapirs::discovery::{DiscoveryClient as _, InMemoryShardDirectory};
-use tapirs::{IrMembership, KeyRange, ShardManager, ShardNumber, TapirReplica, TcpAddress, TcpTransport};
+use tapirs::discovery::{DiscoveryClient as _, InMemoryShardDirectory, ShardDirectory as _};
+use tapirs::{IrMembership, ShardManager, ShardNumber, TapirReplica, TcpAddress, TcpTransport};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
-use tokio::sync::Mutex as TokioMutex;
 
 type TapirShardManager = ShardManager<
     String,
@@ -15,7 +14,8 @@ type TapirShardManager = ShardManager<
 >;
 
 struct ShardManagerState {
-    manager: TokioMutex<TapirShardManager>,
+    manager: TapirShardManager,
+    directory: Arc<InMemoryShardDirectory<TcpAddress>>,
     discovery_client: Arc<HttpDiscoveryClient>,
 }
 
@@ -36,7 +36,8 @@ impl ShardManagerState {
         );
         let manager = ShardManager::new(transport, Arc::clone(&directory));
         Self {
-            manager: TokioMutex::new(manager),
+            manager,
+            directory,
             discovery_client: Arc::new(HttpDiscoveryClient::new(discovery_url)),
         }
     }
@@ -93,19 +94,25 @@ async fn handle_request(
                     );
                 }
             };
-            let membership = IrMembership::new(addrs);
 
-            let mut mgr = state.manager.lock().await;
-            mgr.register_shard(shard, membership, KeyRange { start: None, end: None });
+            // Populate address directory so manager.join() can discover membership.
+            state
+                .directory
+                .put(shard, IrMembership::new(addrs));
 
-            let new_membership = IrMembership::new(vec![new_addr]);
-            mgr.add_replica(shard, new_addr, new_membership).await;
-            mgr.deregister_shard(shard);
-
-            (200, r#"{"ok":true,"joined":true}"#.to_string())
+            match state.manager.join(shard, new_addr).await {
+                Ok(()) => (200, r#"{"ok":true}"#.to_string()),
+                Err(e) => {
+                    (
+                        500,
+                        format!(r#"{{"error":"join failed: {e}"}}"#),
+                    )
+                }
+            }
         } else {
-            // First replica — caller does force_view_change.
-            (200, r#"{"ok":true,"joined":false}"#.to_string())
+            // First replica — bootstrap via BootstrapRecord → StartView.
+            state.manager.bootstrap(shard, new_addr);
+            (200, r#"{"ok":true}"#.to_string())
         }
     } else {
         (404, r#"{"error":"not found"}"#.to_string())

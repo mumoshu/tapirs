@@ -122,17 +122,16 @@ impl Node {
         );
     }
 
-    /// Create a replica and coordinate join via the shard-manager server.
+    /// Create a replica and coordinate bootstrap/join via the shard-manager.
     ///
     /// 1. Create a local replica with membership=[self].
-    /// 2. POST /v1/join to the shard-manager.
-    /// 3. If first replica (joined=false), do force_view_change locally.
+    /// 2. POST /v1/join to the shard-manager, which decides whether to
+    ///    bootstrap (first replica) or join (subsequent).
     pub async fn create_replica(
         &self,
         shard: ShardNumber,
         listen_addr: SocketAddr,
     ) -> Result<(), String> {
-        // Create local replica with self-only membership.
         let cfg = ReplicaConfig {
             shard: shard.0,
             listen_addr: listen_addr.to_string(),
@@ -140,20 +139,8 @@ impl Node {
         };
         self.add_replica(&cfg).await;
 
-        // Call shard-manager for join coordination.
-        let joined = match self.shard_manager_join(shard, listen_addr).await {
-            Ok(j) => j,
-            Err(e) => {
-                tracing::warn!("shard-manager join failed: {e}");
-                false
-            }
-        };
-
-        if !joined {
-            // First replica — force_view_change to populate leader_record.
-            self.force_view_change(shard);
-        }
-
+        // Shard-manager handles both bootstrap (first replica) and join (subsequent).
+        self.shard_manager_join(shard, listen_addr).await?;
         Ok(())
     }
 
@@ -161,7 +148,7 @@ impl Node {
         &self,
         shard: ShardNumber,
         listen_addr: SocketAddr,
-    ) -> Result<bool, String> {
+    ) -> Result<(), String> {
         let url = self
             .shard_manager_url
             .as_ref()
@@ -207,17 +194,26 @@ impl Node {
             .map(|(_, b)| b)
             .unwrap_or("");
 
-        #[derive(serde::Deserialize)]
-        struct JoinResp {
-            #[allow(dead_code)]
-            ok: bool,
-            joined: bool,
+        // Parse HTTP status line for error detection.
+        let status_ok = resp_str
+            .lines()
+            .next()
+            .map(|line| line.contains("200"))
+            .unwrap_or(false);
+
+        if !status_ok {
+            // Try to extract error message from JSON body.
+            #[derive(serde::Deserialize)]
+            struct ErrResp {
+                error: String,
+            }
+            if let Ok(err) = serde_json::from_str::<ErrResp>(resp_body) {
+                return Err(err.error);
+            }
+            return Err(format!("shard-manager returned error (body: {resp_body})"));
         }
 
-        let resp: JoinResp = serde_json::from_str(resp_body)
-            .map_err(|e| format!("parse join response: {e} (body: {resp_body})"))?;
-
-        Ok(resp.joined)
+        Ok(())
     }
 
     pub fn remove_replica(&self, shard: ShardNumber) -> bool {
