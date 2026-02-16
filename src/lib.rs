@@ -26,6 +26,7 @@ pub use tapir::{
     Sharded, ShardNumber, Timestamp as TapirTimestamp,
 };
 pub use tapir::dynamic_router::{DynamicRouter, ShardDirectory, ShardEntry};
+pub use tapir::shard_manager::ShardManager;
 pub use transport::{
     Channel as ChannelTransport, ChannelRegistry, Message as TransportMessage, TapirTransport,
     Transport,

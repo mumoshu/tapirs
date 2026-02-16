@@ -162,7 +162,7 @@ fn status_text(code: u16) -> &'static str {
     }
 }
 
-async fn serve(listener: TcpListener) {
+pub(crate) async fn serve(listener: TcpListener) {
     let state = Arc::new(DiscoveryState {
         shards: RwLock::new(HashMap::new()),
     });

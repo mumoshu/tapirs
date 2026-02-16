@@ -5,6 +5,7 @@ mod config;
 mod discovery;
 mod node;
 mod repl;
+mod shard_manager_server;
 
 use clap::{Parser, Subcommand};
 use config::{ClientConfig, NodeConfig};
@@ -42,6 +43,15 @@ enum Command {
         /// Address to listen on.
         #[arg(long, default_value = "127.0.0.1:8080")]
         listen_addr: String,
+    },
+    /// Run a standalone shard manager server.
+    ShardManager {
+        /// Address to listen on.
+        #[arg(long, default_value = "127.0.0.1:9001")]
+        listen_addr: String,
+        /// Discovery service URL.
+        #[arg(long)]
+        discovery_url: String,
     },
 }
 
@@ -116,6 +126,12 @@ async fn main() {
         }
         Command::Discovery { listen_addr } => {
             discovery::run(listen_addr).await;
+        }
+        Command::ShardManager {
+            listen_addr,
+            discovery_url,
+        } => {
+            shard_manager_server::run(listen_addr, discovery_url).await;
         }
     }
 }
