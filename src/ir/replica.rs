@@ -94,6 +94,7 @@ struct Inner<U: Upcalls, T: Transport<U>> {
     transport: T,
     app_tick: Option<fn(&U, &T, &Membership<T::Address>)>,
     view_info_key: String,
+    view_change_interval: Duration,
     // Single Mutex for all state — faithfully implements the TLA+ single-threaded
     // state machine model. A RwLock<Upcalls> + Mutex<ProtocolState> split was
     // considered to make RequestUnlogged (exec_unlogged(&self)) concurrently
@@ -137,6 +138,17 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
         transport: T,
         app_tick: Option<fn(&U, &T, &Membership<T::Address>)>,
     ) -> Self {
+        Self::with_view_change_interval(membership, upcalls, transport, app_tick, None)
+    }
+
+    pub fn with_view_change_interval(
+        membership: Membership<T::Address>,
+        upcalls: U,
+        transport: T,
+        app_tick: Option<fn(&U, &T, &Membership<T::Address>)>,
+        view_change_interval: Option<Duration>,
+    ) -> Self {
+        let interval = view_change_interval.unwrap_or(Self::VIEW_CHANGE_INTERVAL);
         let view = SharedView::new(View {
             membership,
             number: ViewNumber(0),
@@ -148,6 +160,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                 transport,
                 app_tick,
                 view_info_key,
+                view_change_interval: interval,
                 sync: Mutex::new(SyncInner {
                     status: Status::Normal,
                     latest_normal_view: view.clone(),
@@ -212,10 +225,11 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
     }
 
     fn tick(&self) {
+        let view_change_interval = self.inner.view_change_interval;
         let inner = Arc::downgrade(&self.inner);
         T::spawn(async move {
             loop {
-                T::sleep(Self::VIEW_CHANGE_INTERVAL).await;
+                T::sleep(view_change_interval).await;
 
                 let Some(inner) = inner.upgrade() else {
                     break;

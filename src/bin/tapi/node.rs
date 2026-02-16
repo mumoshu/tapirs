@@ -3,6 +3,7 @@ use crate::discovery::HttpDiscoveryClient;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tapirs::discovery::{DiscoveryShardDirectory, InMemoryShardDirectory};
 use tapirs::{
     IrMembership, IrReplica, ShardNumber, TapirReplica, TcpAddress, TcpTransport,
@@ -63,23 +64,22 @@ impl Node {
         node
     }
 
-    pub async fn add_replica(&self, cfg: &ReplicaConfig) {
+    pub async fn add_replica(&self, cfg: &ReplicaConfig) -> Result<(), String> {
         let shard = ShardNumber(cfg.shard);
         let listen_addr: SocketAddr = cfg
             .listen_addr
             .parse()
-            .unwrap_or_else(|e| panic!("invalid listen_addr '{}': {e}", cfg.listen_addr));
+            .map_err(|e| format!("invalid listen_addr '{}': {e}", cfg.listen_addr))?;
 
         let membership_addrs: Vec<TcpAddress> = cfg
             .membership
             .iter()
             .map(|a| {
-                TcpAddress(
-                    a.parse()
-                        .unwrap_or_else(|e| panic!("invalid membership addr '{a}': {e}")),
-                )
+                a.parse()
+                    .map(TcpAddress)
+                    .map_err(|e| format!("invalid membership addr '{a}': {e}"))
             })
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
         let membership = IrMembership::new(membership_addrs);
 
         let persist_dir = format!("{}/shard_{}", self.persist_dir, cfg.shard);
@@ -99,7 +99,7 @@ impl Node {
         transport
             .listen(listen_addr)
             .await
-            .unwrap_or_else(|e| panic!("failed to listen on {listen_addr}: {e}"));
+            .map_err(|e| format!("failed to listen on {listen_addr}: {e}"))?;
 
         let transport_for_replica = transport.clone();
         let replica = Arc::new_cyclic(|weak: &std::sync::Weak<TapirIrReplica>| {
@@ -108,7 +108,13 @@ impl Node {
                 weak.upgrade()?.receive(from, message)
             });
             let upcalls = TapirReplica::new(shard, false);
-            IrReplica::new(membership, upcalls, transport_for_replica.clone(), Some(TapirReplica::tick))
+            IrReplica::with_view_change_interval(
+                membership,
+                upcalls,
+                transport_for_replica.clone(),
+                Some(TapirReplica::tick),
+                Some(Duration::from_secs(10)),
+            )
         });
 
         tracing::info!(?shard, %listen_addr, "replica started");
@@ -120,6 +126,8 @@ impl Node {
                 listen_addr,
             },
         );
+
+        Ok(())
     }
 
     /// Create a replica and coordinate bootstrap/join via the shard-manager.
@@ -137,7 +145,7 @@ impl Node {
             listen_addr: listen_addr.to_string(),
             membership: vec![listen_addr.to_string()],
         };
-        self.add_replica(&cfg).await;
+        self.add_replica(&cfg).await?;
 
         // Shard-manager handles both bootstrap (first replica) and join (subsequent).
         self.shard_manager_join(shard, listen_addr).await?;
@@ -269,7 +277,7 @@ pub async fn run(cfg: NodeConfig) {
     };
 
     for replica_cfg in &cfg.replicas {
-        node.add_replica(replica_cfg).await;
+        node.add_replica(replica_cfg).await.unwrap();
     }
 
     let admin_addr: SocketAddr = admin_listen_addr

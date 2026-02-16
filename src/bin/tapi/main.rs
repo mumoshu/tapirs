@@ -7,6 +7,9 @@ mod node;
 mod repl;
 mod shard_manager_server;
 
+#[cfg(test)]
+mod integration_test;
+
 use clap::{Parser, Subcommand};
 use config::{ClientConfig, NodeConfig};
 
