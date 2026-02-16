@@ -13,6 +13,7 @@ pub use ir::{
     MembershipSize as IrMembershipSize, Message as IrMessage, OpId as IrOpId, Record as IrRecord,
     RecordConsensusEntry as IrRecordConsensusEntry, Replica as IrReplica,
     ReplicaUpcalls as IrReplicaUpcalls, SharedView as IrSharedView,
+    View as IrView, ViewNumber as IrViewNumber,
 };
 pub use mvcc::{MemoryStore as MvccMemoryStore, MvccBackend, Store as MvccStore};
 pub use mvcc::disk::{DiskStore as MvccDiskStore, StorageError};

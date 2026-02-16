@@ -6,7 +6,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tapirs::discovery::{DiscoveryShardDirectory, InMemoryShardDirectory};
 use tapirs::{
-    IrMembership, IrReplica, ShardNumber, TapirReplica, TcpAddress, TcpTransport,
+    IrClient, IrMembership, IrRecord, IrReplica, IrSharedView, IrView, IrViewNumber,
+    ShardNumber, TapirReplica, TcpAddress, TcpTransport,
 };
 
 type TapirIrReplica = IrReplica<TapirReplica<String, String>, TcpTransport<TapirReplica<String, String>>>;
@@ -14,6 +15,24 @@ type TapirIrReplica = IrReplica<TapirReplica<String, String>, TcpTransport<Tapir
 pub struct ReplicaHandle {
     pub replica: Arc<TapirIrReplica>,
     pub listen_addr: SocketAddr,
+}
+
+/// A shard backup containing the IR record and view.
+///
+/// The record holds all IR operations (consensus: Prepare with results;
+/// inconsistent: Commit/Abort). When fed to a fresh replica via
+/// IrClient::bootstrap_record() → BootstrapRecord → StartView → sync(),
+/// TAPIR replays all operations to reconstruct OCC + MVCC state.
+///
+/// The backup reflects state as of the last completed view change.
+/// In TAPIR's leaderless design, the IR record is NOT consistent
+/// across intra-shard replicas until a view change merges their
+/// divergent records. Operations committed after the last view change
+/// may not be captured. Force a view change before backup to ensure
+/// the most up-to-date state.
+pub struct ShardBackup {
+    pub record: IrRecord<TapirReplica<String, String>>,
+    pub view: IrSharedView<TcpAddress>,
 }
 
 pub struct Node {
@@ -349,6 +368,86 @@ impl Node {
             .iter()
             .map(|(shard, handle)| (*shard, handle.listen_addr))
             .collect()
+    }
+
+    /// Take a backup of a shard by fetching the leader_record from
+    /// the local replica.
+    ///
+    /// Returns the IR record and view from the last completed view change.
+    /// Force a view change before backup if the most up-to-date state is
+    /// needed — view change is TAPIR's synchronization mechanism.
+    pub async fn backup_shard(&self, shard: ShardNumber) -> Option<ShardBackup> {
+        let (transport, addr) = {
+            let replicas = self.replicas.lock().unwrap();
+            let handle = replicas.get(&shard)?;
+            (handle.replica.transport().clone(), handle.listen_addr)
+        };
+        let client = IrClient::new(
+            IrMembership::new(vec![TcpAddress(addr)]),
+            transport,
+        );
+        let (view, record) = client.fetch_leader_record().await?;
+        Some(ShardBackup {
+            record: (*record).clone(),
+            view,
+        })
+    }
+
+    /// Restore a shard from backup onto this node.
+    ///
+    /// Creates a fresh replica at listen_addr, then sends a BootstrapRecord
+    /// with the backup data via IrClient::bootstrap_record(). The replica
+    /// converts it to a self-directed StartView, and TAPIR's sync() replays
+    /// all operations from the record to reconstruct the OCC+MVCC state.
+    ///
+    /// For multi-replica restore: call on each node with the same
+    /// new_membership list, then register with discovery.
+    pub async fn restore_shard(
+        &self,
+        shard: ShardNumber,
+        listen_addr: SocketAddr,
+        backup: &ShardBackup,
+        new_membership: Vec<SocketAddr>,
+    ) -> Result<(), String> {
+        // Create fresh replica with membership=[self].
+        let cfg = ReplicaConfig {
+            shard: shard.0,
+            listen_addr: listen_addr.to_string(),
+            membership: vec![listen_addr.to_string()],
+        };
+        self.add_replica(&cfg).await?;
+
+        // Build restore view: new membership, advanced view number,
+        // preserved app_config (shard key ranges).
+        let restore_view = IrSharedView::new(IrView {
+            membership: IrMembership::new(
+                new_membership.into_iter().map(TcpAddress).collect(),
+            ),
+            number: IrViewNumber(backup.view.number.0 + 10),
+            app_config: backup.view.app_config.clone(),
+        });
+
+        // Clone the replica's transport and create a temporary IrClient
+        // to send BootstrapRecord — same pattern as ShardManager::bootstrap()
+        // in shard_manager_catchup.rs.
+        let transport = {
+            let replicas = self.replicas.lock().unwrap();
+            let handle = replicas.get(&shard)
+                .ok_or_else(|| format!("shard {shard:?} not found after creation"))?;
+            handle.replica.transport().clone()
+        };
+        let client = IrClient::new(
+            IrMembership::new(vec![TcpAddress(listen_addr)]),
+            transport,
+        );
+        client.bootstrap_record(backup.record.clone(), restore_view);
+
+        if let Some(ref dir) = self._discovery_dir {
+            dir.add_own_shard(shard);
+        }
+
+        tracing::info!(?shard, %listen_addr, "shard restored from backup");
+        Ok(())
     }
 }
 
