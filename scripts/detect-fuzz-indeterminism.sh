@@ -8,9 +8,10 @@
 #   FUZZ_SEED=12345 FUZZ_RUNS=10 ./scripts/detect-fuzz-indeterminism.sh
 #
 # Environment variables:
-#   FUZZ_SEED      - Random seed (default: randomly generated)
-#   FUZZ_RUNS      - Number of repetitions (default: 5)
-#   FUZZ_TEST_NAME - Test function name (default: fuzz_tapir_transactions)
+#   FUZZ_SEED             - Random seed (default: randomly generated)
+#   FUZZ_RUNS             - Number of repetitions (default: 5)
+#   FUZZ_TEST_NAME        - Test function name (default: fuzz_tapir_transactions)
+#   FUZZ_STOP_ON_DETECTED - If set to 1, stop immediately on first divergence (default: 0)
 
 set -euo pipefail
 
@@ -18,6 +19,7 @@ set -euo pipefail
 SEED="${FUZZ_SEED:-$(od -An -tu8 -N8 /dev/urandom | tr -d ' ')}"
 RUNS="${FUZZ_RUNS:-5}"
 TEST_NAME="${FUZZ_TEST_NAME:-fuzz_tapir_transactions}"
+STOP_ON_DETECTED="${FUZZ_STOP_ON_DETECTED:-0}"
 
 echo "=== Fuzz Determinism Detector ==="
 echo "Seed:  ${SEED}"
@@ -82,6 +84,14 @@ for (( i=1; i<=RUNS; i++ )); do
     else
         hash_to_runs["${run_hash}"]="${i}"
         hash_to_first["${run_hash}"]="${i}"
+    fi
+
+    # Early exit: stop as soon as we see a second distinct hash
+    if [[ "${STOP_ON_DETECTED}" == "1" ]] && (( ${#hash_to_runs[@]} > 1 )); then
+        echo ""
+        echo "Indeterminism detected on run ${i}, stopping early (FUZZ_STOP_ON_DETECTED=1)."
+        RUNS="${i}"
+        break
     fi
 done
 
