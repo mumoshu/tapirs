@@ -12,8 +12,8 @@
 use std::io::{self, BufRead, Write};
 use std::sync::Arc;
 use tapirs::{
-    DynamicRouter, RoutingClient, RoutingTransaction, TapirClient, TcpTransport,
-    TapirReplica,
+    DynamicRouter, RoutingClient, RoutingReadOnlyTransaction, RoutingTransaction, TapirClient,
+    TcpTransport, TapirReplica,
 };
 
 type Client = RoutingClient<
@@ -30,6 +30,18 @@ type Txn = RoutingTransaction<
     DynamicRouter<String>,
 >;
 
+type RoTxn = RoutingReadOnlyTransaction<
+    String,
+    String,
+    TcpTransport<TapirReplica<String, String>>,
+    DynamicRouter<String>,
+>;
+
+enum ActiveTxn {
+    ReadWrite(Txn),
+    ReadOnly(RoTxn),
+}
+
 pub async fn run(
     tapir_client: Arc<TapirClient<String, String, TcpTransport<TapirReplica<String, String>>>>,
     router: Arc<DynamicRouter<String>>,
@@ -38,14 +50,14 @@ pub async fn run(
     let stdin = io::stdin();
     let is_tty = atty_check();
 
-    let mut active_txn: Option<Txn> = None;
+    let mut active_txn: Option<ActiveTxn> = None;
 
     loop {
         if is_tty {
-            let prompt = if active_txn.is_some() {
-                "tapi:txn> "
-            } else {
-                "tapi> "
+            let prompt = match &active_txn {
+                Some(ActiveTxn::ReadWrite(_)) => "tapi:txn> ",
+                Some(ActiveTxn::ReadOnly(_)) => "tapi:ro> ",
+                None => "tapi> ",
             };
             print!("{prompt}");
             io::stdout().flush().ok();
@@ -67,8 +79,11 @@ pub async fn run(
             "begin" => {
                 if active_txn.is_some() {
                     println!("Error: transaction already active. Use 'commit' or 'abort' first.");
+                } else if parts.get(1) == Some(&"ro") {
+                    active_txn = Some(ActiveTxn::ReadOnly(client.begin_read_only()));
+                    println!("Read-only transaction started.");
                 } else {
-                    active_txn = Some(client.begin());
+                    active_txn = Some(ActiveTxn::ReadWrite(client.begin()));
                     println!("Transaction started.");
                 }
             }
@@ -77,14 +92,20 @@ pub async fn run(
                     println!("Usage: get <key>");
                     continue;
                 }
-                let Some(txn) = &active_txn else {
-                    println!("Error: no active transaction. Use 'begin' to start one.");
-                    continue;
-                };
-                let key = parts[1].to_string();
-                match txn.get(key.clone()).await {
-                    Some(val) => println!("{key} = \"{val}\""),
-                    None => println!("{key} = (not found)"),
+                match &active_txn {
+                    Some(ActiveTxn::ReadWrite(txn)) => {
+                        let key = parts[1].to_string();
+                        match txn.get(key.clone()).await {
+                            Some(val) => println!("{key} = \"{val}\""),
+                            None => println!("{key} = (not found)"),
+                        }
+                    }
+                    Some(ActiveTxn::ReadOnly(_)) => {
+                        println!("Error: 'get' in read-only transactions is not yet supported.");
+                    }
+                    None => {
+                        println!("Error: no active transaction. Use 'begin' to start one.");
+                    }
                 }
             }
             "put" => {
@@ -92,56 +113,76 @@ pub async fn run(
                     println!("Usage: put <key> <value>");
                     continue;
                 }
-                let Some(txn) = &active_txn else {
-                    println!("Error: no active transaction. Use 'begin' to start one.");
-                    continue;
-                };
-                let key = parts[1].to_string();
-                let value = parts[2..].join(" ");
-                txn.put(key, Some(value));
-                println!("OK (buffered in write set)");
+                match &active_txn {
+                    Some(ActiveTxn::ReadWrite(txn)) => {
+                        let key = parts[1].to_string();
+                        let value = parts[2..].join(" ");
+                        txn.put(key, Some(value));
+                        println!("OK (buffered in write set)");
+                    }
+                    Some(ActiveTxn::ReadOnly(_)) => {
+                        println!("Error: 'put' is not available in a read-only transaction.");
+                    }
+                    None => {
+                        println!("Error: no active transaction. Use 'begin' to start one.");
+                    }
+                }
             }
             "delete" => {
                 if parts.len() < 2 {
                     println!("Usage: delete <key>");
                     continue;
                 }
-                let Some(txn) = &active_txn else {
-                    println!("Error: no active transaction. Use 'begin' to start one.");
-                    continue;
-                };
-                let key = parts[1].to_string();
-                txn.put(key, None);
-                println!("OK (buffered in write set)");
+                match &active_txn {
+                    Some(ActiveTxn::ReadWrite(txn)) => {
+                        let key = parts[1].to_string();
+                        txn.put(key, None);
+                        println!("OK (buffered in write set)");
+                    }
+                    Some(ActiveTxn::ReadOnly(_)) => {
+                        println!("Error: 'delete' is not available in a read-only transaction.");
+                    }
+                    None => {
+                        println!("Error: no active transaction. Use 'begin' to start one.");
+                    }
+                }
             }
             "scan" => {
                 if parts.len() < 3 {
                     println!("Usage: scan <start> <end>");
                     continue;
                 }
-                let Some(txn) = &active_txn else {
-                    println!("Error: no active transaction. Use 'begin' to start one.");
-                    continue;
-                };
-                let start = parts[1].to_string();
-                let end = parts[2].to_string();
-                let results = txn.scan(start, end).await;
-                if results.is_empty() {
-                    println!("(no results)");
-                } else {
-                    for (k, v) in &results {
-                        println!("  {k} = \"{v}\"");
+                match &active_txn {
+                    Some(ActiveTxn::ReadWrite(txn)) => {
+                        let start = parts[1].to_string();
+                        let end = parts[2].to_string();
+                        let results = txn.scan(start, end).await;
+                        if results.is_empty() {
+                            println!("(no results)");
+                        } else {
+                            for (k, v) in &results {
+                                println!("  {k} = \"{v}\"");
+                            }
+                        }
+                    }
+                    Some(ActiveTxn::ReadOnly(_)) => {
+                        println!("Error: 'scan' in read-only transactions is not yet supported.");
+                    }
+                    None => {
+                        println!("Error: no active transaction. Use 'begin' to start one.");
                     }
                 }
             }
             "commit" => {
-                let Some(txn) = active_txn.take() else {
+                if matches!(&active_txn, Some(ActiveTxn::ReadOnly(_))) {
+                    println!("Error: read-only transactions cannot be committed. Use 'abort' to end.");
+                } else if let Some(ActiveTxn::ReadWrite(txn)) = active_txn.take() {
+                    match txn.commit().await {
+                        Some(ts) => println!("Committed at timestamp {ts:?}."),
+                        None => println!("Commit failed (transaction aborted by OCC)."),
+                    }
+                } else {
                     println!("Error: no active transaction. Use 'begin' to start one.");
-                    continue;
-                };
-                match txn.commit().await {
-                    Some(ts) => println!("Committed at timestamp {ts:?}."),
-                    None => println!("Commit failed (transaction aborted by OCC)."),
                 }
             }
             "abort" => {
@@ -153,12 +194,13 @@ pub async fn run(
             }
             "help" => {
                 println!("Commands:");
-                println!("  begin            Start a new transaction");
+                println!("  begin            Start a read-write transaction");
+                println!("  begin ro         Start a read-only transaction");
                 println!("  get <key>        Read a key (requires active txn)");
-                println!("  put <key> <val>  Write a key-value pair (requires active txn)");
-                println!("  delete <key>     Delete a key (requires active txn)");
+                println!("  put <key> <val>  Write a key-value pair (read-write txn only)");
+                println!("  delete <key>     Delete a key (read-write txn only)");
                 println!("  scan <start> <end>  Range scan (requires active txn)");
-                println!("  commit           Commit the active transaction");
+                println!("  commit           Commit the active transaction (read-write only)");
                 println!("  abort            Abort the active transaction");
                 println!("  help             Show this help");
                 println!("  quit / exit      Exit the REPL");
