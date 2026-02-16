@@ -150,24 +150,21 @@ pub async fn run(
                     println!("Usage: scan <start> <end>");
                     continue;
                 }
-                match &active_txn {
-                    Some(ActiveTxn::ReadWrite(txn)) => {
-                        let start = parts[1].to_string();
-                        let end = parts[2].to_string();
-                        let results = txn.scan(start, end).await;
-                        if results.is_empty() {
-                            println!("(no results)");
-                        } else {
-                            for (k, v) in &results {
-                                println!("  {k} = \"{v}\"");
-                            }
-                        }
-                    }
-                    Some(ActiveTxn::ReadOnly(_)) => {
-                        println!("Error: 'scan' in read-only transactions is not yet supported.");
-                    }
+                let start = parts[1].to_string();
+                let end = parts[2].to_string();
+                let results = match &active_txn {
+                    Some(ActiveTxn::ReadWrite(txn)) => txn.scan(start, end).await,
+                    Some(ActiveTxn::ReadOnly(txn)) => txn.scan(start, end).await,
                     None => {
                         println!("Error: no active transaction. Use 'begin' to start one.");
+                        continue;
+                    }
+                };
+                if results.is_empty() {
+                    println!("(no results)");
+                } else {
+                    for (k, v) in &results {
+                        println!("  {k} = \"{v}\"");
                     }
                 }
             }
