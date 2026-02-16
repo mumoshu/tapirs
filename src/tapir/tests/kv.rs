@@ -1223,6 +1223,14 @@ async fn read_only_multi_key_sharded() {
     assert!(txn.commit().await.is_some());
 
     // Advance time so the read-only snapshot is strictly after the commit.
+    //
+    // The Timestamp uses (time, client_id) lexicographic ordering.
+    // With start_paused = true, transport.time() returns the same value,
+    // so timestamp ordering depends on client_id.
+    //
+    // If the writing client's ID > reading client's ID,
+    // the commit timestamp > snapshot timestamp, and
+    // the read-only transaction won't see the write.
     tokio::time::advance(Duration::from_millis(1)).await;
 
     // Read-only transaction reads across all shards.
