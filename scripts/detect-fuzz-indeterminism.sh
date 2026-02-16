@@ -126,39 +126,43 @@ echo "Runs:     ${RUNS}"
 echo "Seed:     ${SEED}"
 echo ""
 
-printf "%-8s %-14s %-6s %s\n" "Variant" "Hash" "Count" "Runs"
-printf "%-8s %-14s %-6s %s\n" "-------" "------------" "-----" "----"
+printf "%-14s %-6s %s\n" "Result Hash" "Count" "Runs"
+printf "%-14s %-6s %s\n" "------------" "-----" "----"
 
-variant_num=0
-declare -a variant_filtered
+# Organize logs into per-hash directories and build summary table
+declare -a hash_dirs  # ordered list of per-hash directory paths
 
 for hash in "${!hash_to_runs[@]}"; do
-    (( variant_num++ ))
     runs_str="${hash_to_runs[${hash}]}"
     count=$(echo "${runs_str}" | wc -w)
     short="${hash:0:12}"
     runs_display=$(echo "${runs_str}" | sed 's/^ //;s/ /,/g')
 
-    printf "%-8d %-14s %-6d %s\n" "${variant_num}" "${short}" "${count}" "${runs_display}"
+    printf "%-14s %-6d %s\n" "${short}" "${count}" "${runs_display}"
 
-    # Create representative log and filtered version for this variant
+    # Create per-hash directory and move matching run logs into it
+    hash_dir="${LOGDIR}/${short}"
+    mkdir -p "${hash_dir}"
+    for run_num in ${runs_str}; do
+        mv "${LOGDIR}/run-${run_num}.log" "${hash_dir}/run-${run_num}.log"
+    done
+    # Create filtered version from the first run's log
     first_run="${hash_to_first[${hash}]}"
-    cp "${LOGDIR}/run-${first_run}.log" "${LOGDIR}/variant-${variant_num}.log"
-    filter_log "${LOGDIR}/run-${first_run}.log" > "${LOGDIR}/variant-${variant_num}.filtered"
+    filter_log "${hash_dir}/run-${first_run}.log" > "${hash_dir}/filtered.log"
 
-    variant_filtered[${variant_num}]="${LOGDIR}/variant-${variant_num}.filtered"
+    hash_dirs+=("${hash_dir}")
 done
 
 echo ""
-echo "Representative logs:"
-for (( v=1; v<=variant_num; v++ )); do
-    echo "  ${LOGDIR}/variant-${v}.log"
+echo "Log directories:"
+for dir in "${hash_dirs[@]}"; do
+    echo "  ${dir}/"
 done
 echo ""
 
 # Diff first two variants (filtered to remove harness noise)
-echo "--- Diff (variant 1 vs variant 2, filtered) ---"
-diff -u "${variant_filtered[1]}" "${variant_filtered[2]}" | head -80 || true
+echo "--- Diff (filtered) ---"
+diff -u "${hash_dirs[0]}/filtered.log" "${hash_dirs[1]}/filtered.log" | head -80 || true
 echo ""
 
 cat <<GUIDANCE
@@ -194,8 +198,8 @@ echo "  2. Add eprintln! at suspected divergence points to narrow where output f
 echo ""
 echo "  3. Reduce iterations_per_client or num_clients for a minimal reproduction."
 echo ""
-echo "  4. Full diff:"
-echo "       diff -u ${LOGDIR}/variant-1.log ${LOGDIR}/variant-2.log | less"
+echo "  4. Full diff (pick any run log from each hash directory):"
+echo "       diff -u ${hash_dirs[0]}/filtered.log ${hash_dirs[1]}/filtered.log | less"
 echo ""
 echo "Logs preserved in: ${LOGDIR}"
 exit 1
