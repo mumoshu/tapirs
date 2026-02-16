@@ -697,6 +697,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                                     .map(|bv| {
                                         sync.outstanding_do_view_changes
                                             .get(&address)
+                                            .filter(|dvc| dvc.view.number == sync.view.number)
                                             .and_then(|dvc| dvc.addendum.as_ref())
                                             .map(|a| a.latest_normal_view.number == bv)
                                             .unwrap_or(false)
@@ -746,6 +747,31 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                 {
                     info!("starting view {:?} (was {:?} in {:?})", view.number, sync.status, sync.view.number);
                     let base = sync.leader_record.as_ref().map(|lr| &*lr.record);
+                    // Validate Delta base before resolving — the leader-side
+                    // view filter should prevent this, but defend against it.
+                    if let RecordPayload::Delta { base_view, .. } = &payload {
+                        let base_ok = sync.leader_record.as_ref()
+                            .map(|lr| lr.view.number == *base_view)
+                            .unwrap_or(false);
+                        // Should never fire after the leader-side fix. If it does,
+                        // it indicates a new bug in the Delta optimization.
+                        debug_assert!(base_ok,
+                            "Delta StartView with mismatched base: expected base_view={base_view:?}, \
+                             leader_record view={:?}",
+                            sync.leader_record.as_ref().map(|lr| lr.view.number));
+                        if !base_ok {
+                            warn!(
+                                ?base_view,
+                                leader_record_view = ?sync.leader_record.as_ref().map(|lr| lr.view.number),
+                                "ignoring Delta StartView: base mismatch or missing"
+                            );
+                            // TODO: Send a NAK back to the leader so it can retry with
+                            // Full payload, rather than silently dropping the StartView.
+                            // For now, the replica will stay in ViewChanging and the next
+                            // tick-driven view change will recover.
+                            return None;
+                        }
+                    }
                     let new_record = payload.resolve(base);
                     sync.upcalls.sync(&sync.record, &new_record);
                     let new_record = Arc::new(new_record);
