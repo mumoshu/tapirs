@@ -21,6 +21,8 @@ struct AdminResponse {
     message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     shards: Option<Vec<ShardInfo>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    backup: Option<crate::node::ShardBackup>,
 }
 
 #[derive(Serialize)]
@@ -65,6 +67,7 @@ async fn handle_request(node: &Node, line: &str) -> AdminResponse {
                 ok: false,
                 message: Some(format!("invalid JSON: {e}")),
                 shards: None,
+                backup: None,
             }
         }
     };
@@ -83,6 +86,7 @@ async fn handle_request(node: &Node, line: &str) -> AdminResponse {
                         })
                         .collect(),
                 ),
+                backup: None,
             }
         }
         "add_replica" => {
@@ -91,6 +95,7 @@ async fn handle_request(node: &Node, line: &str) -> AdminResponse {
                     ok: false,
                     message: Some("missing 'shard' field".into()),
                     shards: None,
+                    backup: None,
                 };
             };
             let Some(listen_addr_str) = req.listen_addr else {
@@ -98,6 +103,7 @@ async fn handle_request(node: &Node, line: &str) -> AdminResponse {
                     ok: false,
                     message: Some("missing 'listen_addr' field".into()),
                     shards: None,
+                    backup: None,
                 };
             };
             let listen_addr: std::net::SocketAddr = match listen_addr_str.parse() {
@@ -107,6 +113,7 @@ async fn handle_request(node: &Node, line: &str) -> AdminResponse {
                         ok: false,
                         message: Some(format!("invalid listen_addr: {e}")),
                         shards: None,
+                        backup: None,
                     };
                 }
             };
@@ -115,11 +122,13 @@ async fn handle_request(node: &Node, line: &str) -> AdminResponse {
                     ok: true,
                     message: Some(format!("replica for shard {shard_id} created")),
                     shards: None,
+                    backup: None,
                 },
                 Err(e) => AdminResponse {
                     ok: false,
                     message: Some(format!("create_replica failed: {e}")),
                     shards: None,
+                    backup: None,
                 },
             }
         }
@@ -129,6 +138,7 @@ async fn handle_request(node: &Node, line: &str) -> AdminResponse {
                     ok: false,
                     message: Some("missing 'shard' field".into()),
                     shards: None,
+                    backup: None,
                 };
             };
             let ok = node.force_view_change(ShardNumber(shard_id));
@@ -140,6 +150,7 @@ async fn handle_request(node: &Node, line: &str) -> AdminResponse {
                     format!("shard {shard_id} not found")
                 }),
                 shards: None,
+                backup: None,
             }
         }
         "remove_replica" => {
@@ -148,6 +159,7 @@ async fn handle_request(node: &Node, line: &str) -> AdminResponse {
                     ok: false,
                     message: Some("missing 'shard' field".into()),
                     shards: None,
+                    backup: None,
                 };
             };
             let ok = node.remove_replica(ShardNumber(shard_id));
@@ -159,12 +171,38 @@ async fn handle_request(node: &Node, line: &str) -> AdminResponse {
                     format!("shard {shard_id} not found")
                 }),
                 shards: None,
+                backup: None,
+            }
+        }
+        "backup_shard" => {
+            let Some(shard_id) = req.shard else {
+                return AdminResponse {
+                    ok: false,
+                    message: Some("missing 'shard' field".into()),
+                    shards: None,
+                    backup: None,
+                };
+            };
+            match node.backup_shard(ShardNumber(shard_id)).await {
+                Some(backup) => AdminResponse {
+                    ok: true,
+                    message: Some(format!("shard {shard_id} backed up")),
+                    shards: None,
+                    backup: Some(backup),
+                },
+                None => AdminResponse {
+                    ok: false,
+                    message: Some(format!("shard {shard_id} not found or backup failed")),
+                    shards: None,
+                    backup: None,
+                },
             }
         }
         other => AdminResponse {
             ok: false,
             message: Some(format!("unknown command: {other}")),
             shards: None,
+            backup: None,
         },
     }
 }

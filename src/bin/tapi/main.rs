@@ -90,6 +90,15 @@ enum AdminAction {
         #[arg(long)]
         shard: u32,
     },
+    /// Take a full cluster backup.
+    Backup {
+        /// Comma-separated admin server addresses (e.g. "127.0.0.1:9000,127.0.0.1:9001").
+        #[arg(long)]
+        admin_addrs: String,
+        /// Output directory for backup files.
+        #[arg(long)]
+        output: String,
+    },
 }
 
 #[tokio::main]

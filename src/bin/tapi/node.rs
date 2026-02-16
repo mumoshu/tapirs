@@ -1,5 +1,6 @@
 use crate::config::{NodeConfig, ReplicaConfig};
 use crate::discovery::HttpDiscoveryClient;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -30,6 +31,7 @@ pub struct ReplicaHandle {
 /// divergent records. Operations committed after the last view change
 /// may not be captured. Force a view change before backup to ensure
 /// the most up-to-date state.
+#[derive(Serialize, Deserialize)]
 pub struct ShardBackup {
     pub record: IrRecord<TapirReplica<String, String>>,
     pub view: IrSharedView<TcpAddress>,
