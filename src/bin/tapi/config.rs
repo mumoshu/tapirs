@@ -9,6 +9,8 @@ pub struct NodeConfig {
     #[serde(default)]
     pub discovery_url: Option<String>,
     #[serde(default)]
+    pub shard_manager_url: Option<String>,
+    #[serde(default)]
     pub replicas: Vec<ReplicaConfig>,
 }
 

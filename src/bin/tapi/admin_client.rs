@@ -11,9 +11,10 @@ pub async fn run(action: AdminAction) {
         AdminAction::AddReplica {
             admin_listen_addr,
             shard,
+            listen_addr,
         } => (
             admin_listen_addr,
-            format!(r#"{{"command":"add_replica","shard":{shard}}}"#),
+            format!(r#"{{"command":"add_replica","shard":{shard},"listen_addr":"{listen_addr}"}}"#),
         ),
         AdminAction::RemoveReplica {
             admin_listen_addr,

@@ -10,6 +10,8 @@ struct AdminRequest {
     command: String,
     #[serde(default)]
     shard: Option<u32>,
+    #[serde(default)]
+    listen_addr: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -40,7 +42,7 @@ pub async fn start(addr: std::net::SocketAddr, node: Arc<Node>) {
                         let (reader, mut writer) = stream.into_split();
                         let mut lines = BufReader::new(reader).lines();
                         while let Ok(Some(line)) = lines.next_line().await {
-                            let resp = handle_request(&node, &line);
+                            let resp = handle_request(&node, &line).await;
                             let mut out = serde_json::to_string(&resp).unwrap();
                             out.push('\n');
                             let _ = writer.write_all(out.as_bytes()).await;
@@ -55,7 +57,7 @@ pub async fn start(addr: std::net::SocketAddr, node: Arc<Node>) {
     });
 }
 
-fn handle_request(node: &Node, line: &str) -> AdminResponse {
+async fn handle_request(node: &Node, line: &str) -> AdminResponse {
     let req: AdminRequest = match serde_json::from_str(line) {
         Ok(r) => r,
         Err(e) => {
@@ -81,6 +83,44 @@ fn handle_request(node: &Node, line: &str) -> AdminResponse {
                         })
                         .collect(),
                 ),
+            }
+        }
+        "add_replica" => {
+            let Some(shard_id) = req.shard else {
+                return AdminResponse {
+                    ok: false,
+                    message: Some("missing 'shard' field".into()),
+                    shards: None,
+                };
+            };
+            let Some(listen_addr_str) = req.listen_addr else {
+                return AdminResponse {
+                    ok: false,
+                    message: Some("missing 'listen_addr' field".into()),
+                    shards: None,
+                };
+            };
+            let listen_addr: std::net::SocketAddr = match listen_addr_str.parse() {
+                Ok(a) => a,
+                Err(e) => {
+                    return AdminResponse {
+                        ok: false,
+                        message: Some(format!("invalid listen_addr: {e}")),
+                        shards: None,
+                    };
+                }
+            };
+            match node.create_replica(ShardNumber(shard_id), listen_addr).await {
+                Ok(()) => AdminResponse {
+                    ok: true,
+                    message: Some(format!("replica for shard {shard_id} created")),
+                    shards: None,
+                },
+                Err(e) => AdminResponse {
+                    ok: false,
+                    message: Some(format!("create_replica failed: {e}")),
+                    shards: None,
+                },
             }
         }
         "view_change" => {

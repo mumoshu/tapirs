@@ -27,6 +27,8 @@ enum Command {
         admin_listen_addr: Option<String>,
         #[arg(long)]
         persist_dir: Option<String>,
+        #[arg(long)]
+        shard_manager_url: Option<String>,
     },
     /// Admin operations on a running node.
     Admin {
@@ -68,6 +70,8 @@ enum AdminAction {
         admin_listen_addr: String,
         #[arg(long)]
         shard: u32,
+        #[arg(long)]
+        listen_addr: String,
     },
     /// Remove a replica for a shard.
     RemoveReplica {
@@ -101,6 +105,7 @@ async fn main() {
             config: config_path,
             admin_listen_addr,
             persist_dir,
+            shard_manager_url,
         } => {
             let mut cfg = config_path
                 .as_deref()
@@ -111,6 +116,9 @@ async fn main() {
             }
             if let Some(dir) = persist_dir {
                 cfg.persist_dir = Some(dir);
+            }
+            if let Some(url) = shard_manager_url {
+                cfg.shard_manager_url = Some(url);
             }
             node::run(cfg).await;
         }

@@ -1,6 +1,7 @@
 use crate::config::{NodeConfig, ReplicaConfig};
 use crate::discovery::HttpDiscoveryClient;
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tapirs::discovery::{DiscoveryShardDirectory, InMemoryShardDirectory};
 use tapirs::{
@@ -11,7 +12,7 @@ type TapirIrReplica = IrReplica<TapirReplica<String, String>, TcpTransport<Tapir
 
 pub struct ReplicaHandle {
     pub replica: Arc<TapirIrReplica>,
-    pub listen_addr: std::net::SocketAddr,
+    pub listen_addr: SocketAddr,
 }
 
 pub struct Node {
@@ -21,19 +22,21 @@ pub struct Node {
     // Holds the DiscoveryShardDirectory alive so its background sync task
     // continues running. When None, no discovery sync is active.
     _discovery_dir: Option<Arc<DiscoveryShardDirectory<TcpAddress, HttpDiscoveryClient>>>,
+    shard_manager_url: Option<String>,
 }
 
 impl Node {
-    fn new(persist_dir: String) -> Self {
+    pub(crate) fn new(persist_dir: String) -> Self {
         Self {
             replicas: Mutex::new(HashMap::new()),
             persist_dir,
             directory: Arc::new(InMemoryShardDirectory::new()),
             _discovery_dir: None,
+            shard_manager_url: None,
         }
     }
 
-    fn with_discovery(persist_dir: String, discovery_url: &str) -> Self {
+    pub(crate) fn with_discovery(persist_dir: String, discovery_url: &str) -> Self {
         let directory = Arc::new(InMemoryShardDirectory::new());
         let client = Arc::new(HttpDiscoveryClient::new(discovery_url));
         let discovery_dir = DiscoveryShardDirectory::new(
@@ -46,12 +49,23 @@ impl Node {
             persist_dir,
             directory,
             _discovery_dir: Some(discovery_dir),
+            shard_manager_url: None,
         }
+    }
+
+    pub(crate) fn with_discovery_and_shard_manager(
+        persist_dir: String,
+        discovery_url: &str,
+        shard_manager_url: &str,
+    ) -> Self {
+        let mut node = Self::with_discovery(persist_dir, discovery_url);
+        node.shard_manager_url = Some(shard_manager_url.to_string());
+        node
     }
 
     pub async fn add_replica(&self, cfg: &ReplicaConfig) {
         let shard = ShardNumber(cfg.shard);
-        let listen_addr: std::net::SocketAddr = cfg
+        let listen_addr: SocketAddr = cfg
             .listen_addr
             .parse()
             .unwrap_or_else(|e| panic!("invalid listen_addr '{}': {e}", cfg.listen_addr));
@@ -108,6 +122,104 @@ impl Node {
         );
     }
 
+    /// Create a replica and coordinate join via the shard-manager server.
+    ///
+    /// 1. Create a local replica with membership=[self].
+    /// 2. POST /v1/join to the shard-manager.
+    /// 3. If first replica (joined=false), do force_view_change locally.
+    pub async fn create_replica(
+        &self,
+        shard: ShardNumber,
+        listen_addr: SocketAddr,
+    ) -> Result<(), String> {
+        // Create local replica with self-only membership.
+        let cfg = ReplicaConfig {
+            shard: shard.0,
+            listen_addr: listen_addr.to_string(),
+            membership: vec![listen_addr.to_string()],
+        };
+        self.add_replica(&cfg).await;
+
+        // Call shard-manager for join coordination.
+        let joined = match self.shard_manager_join(shard, listen_addr).await {
+            Ok(j) => j,
+            Err(e) => {
+                tracing::warn!("shard-manager join failed: {e}");
+                false
+            }
+        };
+
+        if !joined {
+            // First replica — force_view_change to populate leader_record.
+            self.force_view_change(shard);
+        }
+
+        Ok(())
+    }
+
+    async fn shard_manager_join(
+        &self,
+        shard: ShardNumber,
+        listen_addr: SocketAddr,
+    ) -> Result<bool, String> {
+        let url = self
+            .shard_manager_url
+            .as_ref()
+            .ok_or_else(|| "no shard-manager-url configured".to_string())?;
+
+        let addr_str = url
+            .strip_prefix("http://")
+            .unwrap_or(url);
+        let addr: SocketAddr = addr_str
+            .parse()
+            .map_err(|e| format!("invalid shard-manager-url '{url}': {e}"))?;
+
+        let body = serde_json::to_string(&serde_json::json!({
+            "shard": shard.0,
+            "listen_addr": listen_addr.to_string(),
+        }))
+        .map_err(|e| format!("serialize join request: {e}"))?;
+
+        let request = format!(
+            "POST /v1/join HTTP/1.1\r\nHost: {addr_str}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len(),
+        );
+
+        let mut stream = tokio::net::TcpStream::connect(addr)
+            .await
+            .map_err(|e| format!("connect to shard-manager at {addr}: {e}"))?;
+
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        stream
+            .write_all(request.as_bytes())
+            .await
+            .map_err(|e| format!("send join request: {e}"))?;
+
+        let mut response = Vec::new();
+        stream
+            .read_to_end(&mut response)
+            .await
+            .map_err(|e| format!("read join response: {e}"))?;
+
+        let resp_str = String::from_utf8_lossy(&response);
+        let resp_body = resp_str
+            .split_once("\r\n\r\n")
+            .map(|(_, b)| b)
+            .unwrap_or("");
+
+        #[derive(serde::Deserialize)]
+        struct JoinResp {
+            #[allow(dead_code)]
+            ok: bool,
+            joined: bool,
+        }
+
+        let resp: JoinResp = serde_json::from_str(resp_body)
+            .map_err(|e| format!("parse join response: {e} (body: {resp_body})"))?;
+
+        Ok(resp.joined)
+    }
+
     pub fn remove_replica(&self, shard: ShardNumber) -> bool {
         let removed = self.replicas.lock().unwrap().remove(&shard);
         if removed.is_some() {
@@ -134,7 +246,7 @@ impl Node {
         }
     }
 
-    pub fn shard_list(&self) -> Vec<(ShardNumber, std::net::SocketAddr)> {
+    pub fn shard_list(&self) -> Vec<(ShardNumber, SocketAddr)> {
         self.replicas
             .lock()
             .unwrap()
@@ -152,17 +264,19 @@ pub async fn run(cfg: NodeConfig) {
         .admin_listen_addr
         .unwrap_or_else(|| "127.0.0.1:9000".to_string());
 
-    let node = if let Some(ref discovery_url) = cfg.discovery_url {
-        Arc::new(Node::with_discovery(persist_dir, discovery_url))
-    } else {
-        Arc::new(Node::new(persist_dir))
+    let node = match (&cfg.discovery_url, &cfg.shard_manager_url) {
+        (Some(disc), Some(mgr)) => {
+            Arc::new(Node::with_discovery_and_shard_manager(persist_dir, disc, mgr))
+        }
+        (Some(disc), None) => Arc::new(Node::with_discovery(persist_dir, disc)),
+        _ => Arc::new(Node::new(persist_dir)),
     };
 
     for replica_cfg in &cfg.replicas {
         node.add_replica(replica_cfg).await;
     }
 
-    let admin_addr: std::net::SocketAddr = admin_listen_addr
+    let admin_addr: SocketAddr = admin_listen_addr
         .parse()
         .unwrap_or_else(|e| panic!("invalid admin_listen_addr '{admin_listen_addr}': {e}"));
 
