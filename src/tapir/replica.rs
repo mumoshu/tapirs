@@ -17,6 +17,15 @@ fn none<T>() -> Option<T> {
     None
 }
 
+/// Shard configuration applied via reconfigure→view change.
+#[derive(Serialize, Deserialize)]
+pub(crate) struct ShardConfig<K> {
+    #[serde(default = "none")]
+    pub key_range: Option<KeyRange<K>>,
+    #[serde(default)]
+    pub read_only: bool,
+}
+
 /// Diverge from TAPIR and don't maintain a no-vote list. Instead, wait for a
 /// view change to syncronize each participant shard's prepare result and then
 /// let one or more of many possible backup coordinators take them at face-value.
@@ -55,6 +64,8 @@ pub struct Replica<K, V> {
     /// Not persisted: re-applied from view.app_config via apply_config after each view change.
     #[serde(skip_serializing, skip_deserializing, default = "none", bound(deserialize = ""))]
     key_range: Option<KeyRange<K>>,
+    #[serde(skip_serializing, skip_deserializing, default, bound(deserialize = ""))]
+    read_only: bool,
 }
 
 impl<K: Key, V: Value> Replica<K, V> {
@@ -67,6 +78,7 @@ impl<K: Key, V: Value> Replica<K, V> {
             finalized_min_prepare_time: 0,
             validated_timestamp: 0,
             key_range: None,
+            read_only: false,
         }
     }
 
@@ -420,6 +432,9 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
                         return CR::Prepare(OccPrepareResult::OutOfRange);
                     }
                 }
+                if self.read_only {
+                    return CR::Prepare(OccPrepareResult::Fail);
+                }
                 CR::Prepare(if commit.time < self.gc_watermark {
                 // In theory, could check the other conditions first, but
                 // that might hide bugs.
@@ -669,7 +684,12 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
     }
 
     fn apply_config(&mut self, config: &[u8]) {
-        if let Ok(range) = serde_json::from_slice::<KeyRange<K>>(config) {
+        if let Ok(cfg) = serde_json::from_slice::<ShardConfig<K>>(config) {
+            if let Some(range) = cfg.key_range {
+                self.key_range = Some(range);
+            }
+            self.read_only = cfg.read_only;
+        } else if let Ok(range) = serde_json::from_slice::<KeyRange<K>>(config) {
             self.key_range = Some(range);
         }
     }

@@ -1,3 +1,4 @@
+use super::replica::ShardConfig;
 use super::{Change, Key, KeyRange, ShardNumber, Value};
 use crate::discovery::ShardDirectory as AddressDirectory;
 use crate::tapir::shard_manager::ShardManager;
@@ -53,16 +54,20 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
             last_end = new_end;
         }
 
-        // Phase 3: Atomic cutover — narrow the source's key range.
+        // Phase 3a: Freeze source — reject all Prepare with Fail.
+        let freeze = serde_json::to_vec(&ShardConfig::<K> {
+            key_range: None,
+            read_only: true,
+        })
+        .expect("serialize freeze config");
+        self.shards[&source].client.reconfigure(freeze);
+        info!("split: source frozen, draining...");
+
+        // Phase 3b: Drain — poll until no more changes arrive.
         let narrowed_range = KeyRange {
             start: source_range.start.clone(),
             end: Some(split_key.clone()),
         };
-        let config = serde_json::to_vec(&narrowed_range).expect("serialize key range");
-        self.shards[&source].client.reconfigure(config);
-        info!("split: reconfigured source shard, draining...");
-
-        // Poll until effective_end catches up (pending prepares drain).
         loop {
             let (changes, new_end) = self.shards[&source]
                 .client
@@ -77,6 +82,14 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
             }
             last_end = new_end;
         }
+
+        // Phase 3c: Unfreeze source and narrow its key range.
+        let unfreeze = serde_json::to_vec(&ShardConfig {
+            key_range: Some(narrowed_range.clone()),
+            read_only: false,
+        })
+        .expect("serialize unfreeze config");
+        self.shards[&source].client.reconfigure(unfreeze);
 
         // Reconfigure the new shard with its key range.
         let new_config = serde_json::to_vec(&new_range).expect("serialize key range");
