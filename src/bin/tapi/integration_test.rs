@@ -502,3 +502,150 @@ async fn test_rolling_membership_replacement() {
         assert_eq!(val, Some(format!("removed_{i}")));
     }
 }
+
+/// Test disaster recovery: backup a shard, destroy all replicas,
+/// restore to fresh replicas from backup, verify data survives.
+///
+/// Test flow:
+/// 1. bootstrap_cluster(1, 3, 3) — 1 shard, 3 replicas, 3 nodes
+/// 2. Write 3 key-value pairs via OCC transactions, verify readable
+/// 3. Force view change — ensures leader_record reflects all committed
+///    data. IR records are NOT consistent across intra-shard replicas
+///    until view change merges their divergent records.
+/// 4. Wait for view change to settle
+/// 5. node.backup_shard(shard).await — fetches leader_record as backup
+/// 6. node.remove_replica(shard) on all 3 nodes — destroy entire shard
+/// 7. Create 3 new nodes, allocate 3 new addresses
+/// 8. node.restore_shard(shard, addr, &backup, new_addrs) on each
+/// 9. Register new addresses in discovery
+/// 10. Wait for StartView processing + view change settlement
+/// 11. Create fresh client, verify all 3 keys readable from restored shard
+/// 12. Write new data to restored shard, verify it commits and is readable
+#[tokio::test(flavor = "multi_thread")]
+async fn test_disaster_recovery_backup_restore() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init();
+
+    // 1. Bootstrap cluster: 1 shard, 3 replicas, 3 nodes.
+    let cluster = bootstrap_cluster(1, 3, 3).await;
+    let (client, _td, _disc_dir) = create_test_client(&cluster).await;
+    let disc_client = HttpDiscoveryClient::new(&cluster.discovery_addr.to_string());
+    let shard = ShardNumber(0);
+
+    // 2. Write test data.
+    let test_data = vec![
+        ("dr_key1", "value1"),
+        ("dr_key2", "value2"),
+        ("dr_key3", "value3"),
+    ];
+    for (key, value) in &test_data {
+        let txn = client.begin();
+        txn.put(key.to_string(), Some(value.to_string()));
+        assert!(
+            txn.commit().await.is_some(),
+            "put {key}={value} should commit"
+        );
+    }
+
+    // Verify data is readable before backup.
+    for (key, value) in &test_data {
+        let val = rw_get(&client, key, &format!("{key}_pre")).await;
+        assert_eq!(val, Some(value.to_string()), "pre-backup read of {key}");
+    }
+
+    // 3. Force view change to synchronize leader_record with current state.
+    //    IR records diverge across replicas between view changes — this
+    //    ensures the backup captures all committed operations.
+    cluster.nodes[0].force_view_change(shard);
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    // 5. Take backup from node 0's replica.
+    let backup = cluster.nodes[0]
+        .backup_shard(shard)
+        .await
+        .expect("backup should succeed");
+
+    tracing::info!(
+        "backup taken: view={:?}, consensus_entries={}, inconsistent_entries={}",
+        backup.view.number,
+        backup.record.consensus.len(),
+        backup.record.inconsistent.len(),
+    );
+
+    // 6. Destroy ALL original replicas.
+    for node in &cluster.nodes {
+        node.remove_replica(shard);
+    }
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // 7. Create new nodes and allocate addresses.
+    let discovery_url = format!("http://{}", cluster.discovery_addr);
+    let shard_manager_url = format!("http://{}", cluster.shard_manager_addr);
+
+    let mut new_nodes: Vec<Arc<Node>> = Vec::new();
+    let mut _new_temp_dirs: Vec<TempDir> = Vec::new();
+    let mut new_addrs: Vec<SocketAddr> = Vec::new();
+
+    for _ in 0..3 {
+        new_addrs.push(alloc_addr());
+        let td = TempDir::new().unwrap();
+        let node = Arc::new(Node::with_discovery_and_shard_manager(
+            td.path().to_str().unwrap().to_string(),
+            &discovery_url,
+            &shard_manager_url,
+        ));
+        new_nodes.push(node);
+        _new_temp_dirs.push(td);
+    }
+
+    // 8. Restore each replica from the backup.
+    for i in 0..3 {
+        loop {
+            match new_nodes[i]
+                .restore_shard(shard, new_addrs[i], &backup, new_addrs.clone())
+                .await
+            {
+                Ok(()) => break,
+                Err(e) if e.contains("already in use") => {
+                    new_addrs[i] = alloc_addr();
+                    continue;
+                }
+                Err(e) => panic!("restore_shard failed for node {i}: {e}"),
+            }
+        }
+    }
+
+    // 9. Register new addresses in discovery.
+    let registered: Vec<String> = new_addrs.iter().map(|a| a.to_string()).collect();
+    disc_client.register_shard(0, registered).await.unwrap();
+
+    // 10. Wait for StartView processing + discovery sync.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    // 11. Create a fresh client that discovers the new replicas.
+    let (client2, _td2, _disc_dir2) = create_test_client(&cluster).await;
+
+    // Verify ALL data is readable from restored shard.
+    for (key, value) in &test_data {
+        let val = rw_get(&client2, key, &format!("{key}_post")).await;
+        assert_eq!(
+            val,
+            Some(value.to_string()),
+            "post-restore read of {key} should return {value}"
+        );
+    }
+
+    // 12. Verify new writes work on restored shard.
+    let txn = client2.begin();
+    txn.put("dr_after_restore".to_string(), Some("works".to_string()));
+    assert!(
+        txn.commit().await.is_some(),
+        "write after restore should commit"
+    );
+
+    let val = rw_get(&client2, "dr_after_restore", "dr_after_restore_read").await;
+    assert_eq!(val, Some("works".to_string()));
+
+    tracing::info!("disaster recovery test passed");
+}
