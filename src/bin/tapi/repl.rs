@@ -92,20 +92,18 @@ pub async fn run(
                     println!("Usage: get <key>");
                     continue;
                 }
-                match &active_txn {
-                    Some(ActiveTxn::ReadWrite(txn)) => {
-                        let key = parts[1].to_string();
-                        match txn.get(key.clone()).await {
-                            Some(val) => println!("{key} = \"{val}\""),
-                            None => println!("{key} = (not found)"),
-                        }
-                    }
-                    Some(ActiveTxn::ReadOnly(_)) => {
-                        println!("Error: 'get' in read-only transactions is not yet supported.");
-                    }
+                let key = parts[1].to_string();
+                let result = match &active_txn {
+                    Some(ActiveTxn::ReadWrite(txn)) => txn.get(key.clone()).await,
+                    Some(ActiveTxn::ReadOnly(txn)) => txn.get(key.clone()).await,
                     None => {
                         println!("Error: no active transaction. Use 'begin' to start one.");
+                        continue;
                     }
+                };
+                match result {
+                    Some(val) => println!("{key} = \"{val}\""),
+                    None => println!("{key} = (not found)"),
                 }
             }
             "put" => {
