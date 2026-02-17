@@ -305,13 +305,37 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
     }
 
     /// Request committed changes by view number for CDC-based resharding.
-    /// Queries f+1 replicas and merges their leader record deltas.
+    /// Queries f+1 replicas from the same view and returns changes.
+    ///
+    /// If any response has `pending_prepares == 0`, uses that single
+    /// response's data directly — by quorum intersection, such a replica
+    /// is at the intersection of the view change quorum and the commit
+    /// quorum, so its state is authoritative. Otherwise, falls back to
+    /// merging all responses with `max(pending_prepares)`.
     pub async fn scan_changes(&self, from_view: u64) -> ScanChangesResult<K, V> {
         let responses = self
             .inner
             .invoke_unlogged_quorum(UO::ScanChanges { from_view })
             .await;
 
+        // Fast path: pick the first response with pp=0 (authoritative by
+        // quorum intersection). Use its data directly.
+        for r in &responses {
+            if let UR::ScanChanges {
+                deltas,
+                effective_end_view,
+                pending_prepares: 0,
+            } = r
+            {
+                return ScanChangesResult {
+                    deltas: deltas.clone(),
+                    effective_end_view: *effective_end_view,
+                    pending_prepares: 0,
+                };
+            }
+        }
+
+        // Slow path: no replica has pp=0 yet. Merge all responses.
         let mut delta_lists = Vec::new();
         let mut effective_end_view = 0u64;
         let mut pending_prepares = 0usize;
