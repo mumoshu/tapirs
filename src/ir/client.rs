@@ -221,10 +221,37 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
         (future, membership_size)
     }
 
-    /// Send an unlogged request to ALL replicas and wait for f+1 replies.
-    /// Returns the collected results. Used for read-only scan validation
-    /// where we need f+1 responses to merge.
+    /// Send an unlogged request to ALL replicas and wait for f+1 replies
+    /// from the SAME view. Returns the view-consistent results. Used for
+    /// read-only scan validation and CDC scan_changes where we need f+1
+    /// view-consistent responses to merge.
     pub fn invoke_unlogged_quorum(&self, op: U::UO) -> impl Future<Output = Vec<U::UR>> + Send + use<U, T> {
+        fn has_quorum_same_view<UR, A: Eq + Hash>(
+            results: &HashMap<A, ReplyUnlogged<UR, A>>,
+            f_plus_one: usize,
+        ) -> bool {
+            let mut counts = HashMap::<ViewNumber, usize>::new();
+            for r in results.values() {
+                *counts.entry(r.view.number).or_default() += 1;
+            }
+            counts.values().any(|&c| c >= f_plus_one)
+        }
+
+        fn find_majority_view<UR, A: Eq + Hash>(
+            results: &HashMap<A, ReplyUnlogged<UR, A>>,
+            f_plus_one: usize,
+        ) -> Option<ViewNumber> {
+            let mut counts = HashMap::<ViewNumber, usize>::new();
+            for r in results.values() {
+                *counts.entry(r.view.number).or_default() += 1;
+            }
+            counts
+                .into_iter()
+                .filter(|&(_, c)| c >= f_plus_one)
+                .max_by_key(|&(v, _)| v)
+                .map(|(v, _)| v)
+        }
+
         let inner = Arc::clone(&self.inner);
 
         async move {
@@ -244,13 +271,14 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
                 (membership_size, future)
             };
 
+            let f_plus_one = membership_size.f_plus_one();
             let mut hard_timeout = std::pin::pin!(T::sleep(Duration::from_millis(5000)));
 
             let results = future
                 .until(
                     move |results: &HashMap<T::Address, ReplyUnlogged<U::UR, T::Address>>,
                           cx: &mut Context<'_>| {
-                        results.len() >= membership_size.f_plus_one()
+                        has_quorum_same_view(results, f_plus_one)
                             || hard_timeout.as_mut().poll(cx).is_ready()
                     },
                 )
@@ -265,7 +293,14 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
                 );
             }
 
-            results.into_values().map(|r| r.result).collect()
+            // Return only results from the majority-view group (f+1 from same view).
+            // On hard timeout (no group reaches f+1), fall back to all results.
+            let majority_view = find_majority_view(&results, f_plus_one);
+            results
+                .into_values()
+                .filter(|r| majority_view.map_or(true, |v| r.view.number == v))
+                .map(|r| r.result)
+                .collect()
         }
     }
 
