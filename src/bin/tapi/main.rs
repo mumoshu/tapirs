@@ -38,10 +38,30 @@ enum Command {
         #[command(subcommand)]
         action: AdminAction,
     },
-    /// Interactive transactional REPL client.
+    /// Transactional REPL client (interactive or scripted).
+    ///
+    /// Without flags, starts an interactive REPL. Use -e to run inline
+    /// commands or -s to run a script file for non-interactive use.
     Client {
+        /// Path to client configuration file (TOML).
         #[arg(long)]
         config: Option<String>,
+
+        /// Execute commands inline (semicolons separate commands).
+        /// Can be specified multiple times.
+        ///
+        /// Examples:
+        ///   -e "begin; put foo bar; commit"
+        ///   -e "begin" -e "put foo bar" -e "commit"
+        #[arg(short = 'e', long = "execute")]
+        execute: Vec<String>,
+
+        /// Read commands from a script file instead of stdin.
+        ///
+        /// The file should contain one command per line, same syntax
+        /// as the interactive REPL.
+        #[arg(short = 's', long = "script")]
+        script: Option<String>,
     },
     /// Run the cluster discovery service.
     Discovery {
@@ -152,12 +172,26 @@ async fn main() {
         Command::Admin { action } => {
             admin_client::run(action).await;
         }
-        Command::Client { config: config_path } => {
+        Command::Client {
+            config: config_path,
+            execute,
+            script,
+        } => {
             let cfg = config_path
                 .as_deref()
                 .map(ClientConfig::from_file)
                 .unwrap_or_default();
-            client::run(cfg).await;
+
+            let input_source = if !execute.is_empty() {
+                repl::InputSource::Commands(execute)
+            } else if let Some(path) = script {
+                repl::InputSource::File(std::path::PathBuf::from(path))
+            } else {
+                repl::InputSource::Stdin
+            };
+
+            let exit_code = client::run(cfg, input_source).await;
+            std::process::exit(exit_code);
         }
         Command::Discovery { listen_addr } => {
             discovery::run(listen_addr).await;

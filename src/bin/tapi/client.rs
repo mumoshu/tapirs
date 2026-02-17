@@ -10,7 +10,7 @@ use tapirs::{
 };
 use std::sync::RwLock;
 
-pub async fn run(cfg: ClientConfig) {
+pub async fn run(cfg: ClientConfig, input_source: crate::repl::InputSource) -> i32 {
     let shards = if cfg.shards.is_empty() {
         if let Some(ref url) = cfg.discovery_url {
             let client = HttpDiscoveryClient::new(url);
@@ -88,5 +88,5 @@ pub async fn run(cfg: ClientConfig) {
     let router = Arc::new(DynamicRouter::new(directory));
     let tapir_client = Arc::new(TapirClient::new(transport));
 
-    crate::repl::run(tapir_client, router).await;
+    crate::repl::run(tapir_client, router, input_source).await
 }
