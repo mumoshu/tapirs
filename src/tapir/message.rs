@@ -24,10 +24,9 @@ pub enum UO<K> {
         end_key: K,
         timestamp: Option<Timestamp>,
     },
-    /// For CDC-based resharding: read committed changes in a timestamp range.
+    /// For CDC-based resharding: read committed changes by view number.
     ScanChanges {
-        start_ts: u64,
-        end_ts_inclusive: u64,
+        from_view: u64,
     },
     /// Read-only transaction fast path: check if a replica has a "validated"
     /// version (read_ts >= snapshot_ts). If so, return the value without
@@ -52,14 +51,21 @@ pub enum UR<K, V> {
     Get(Option<V>, Timestamp),
     /// To backup coordinators.
     CheckPrepare(OccPrepareResult<Timestamp>),
-    /// CDC scan results.
+    /// CDC scan results: leader record deltas for views >= from_view.
     ScanChanges {
         #[serde(bound(
             serialize = "K: Serialize, V: Serialize",
             deserialize = "K: Deserialize<'de>, V: Deserialize<'de>"
         ))]
-        changes: Vec<Change<K, V>>,
-        effective_end: u64,
+        deltas: Vec<LeaderRecordDelta<K, V>>,
+        /// The highest base_view for which this replica has a delta.
+        /// A delta keyed by base_view=N contains changes that accumulated
+        /// DURING view N (committed before the transition to view N+1).
+        /// Caller advances cursor with `from_view = effective_end_view + 1`.
+        effective_end_view: u64,
+        /// Number of unresolved prepared transactions at this replica.
+        /// Used by resharding drain to wait until all prepares resolve.
+        pending_prepares: usize,
     },
     /// Range scan results.
     Scan(
@@ -96,9 +102,26 @@ pub enum UR<K, V> {
 /// A committed key-value change at a specific timestamp.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Change<K, V> {
+    pub transaction_id: OccTransactionId,
     pub key: K,
     pub value: Option<V>,
     pub timestamp: Timestamp,
+}
+
+/// Committed KV changes observed during a single view transition.
+/// `from_view` is the view this replica was in before the transition.
+/// `to_view` is the view it transitioned to.
+/// For a replica that participated in every view change, from_view = to_view - 1.
+/// For a replica that skipped views, from_view < to_view - 1 (coarse delta).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LeaderRecordDelta<K, V> {
+    pub from_view: u64,
+    pub to_view: u64,
+    #[serde(bound(
+        serialize = "K: Serialize, V: Serialize",
+        deserialize = "K: Deserialize<'de>, V: Deserialize<'de>"
+    ))]
+    pub changes: Vec<Change<K, V>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

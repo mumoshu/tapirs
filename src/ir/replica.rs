@@ -72,6 +72,18 @@ pub trait Upcalls: Sized + Send + Serialize + DeserializeOwned + 'static {
     /// Called after a view change completes with the current `app_config`.
     /// Default: no-op (static setups ignore config).
     fn apply_config(&mut self, _config: &[u8]) {}
+
+    /// Called during a view change with the delta record — the IR ops that
+    /// changed during `base_view` (the view preceding the new view).
+    /// `new_view` is the view the shard is transitioning to.
+    /// Default: no-op.
+    fn on_install_leader_record_delta(
+        &mut self,
+        _base_view: u64,
+        _new_view: u64,
+        _delta: &Record<Self>,
+    ) {
+    }
 }
 
 pub struct Replica<U: Upcalls, T: Transport<U>> {
@@ -704,6 +716,21 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                                 sync.record.filter_by_op_ids(&delta_ids)
                             });
 
+                            // CDC: notify upcalls of the delta record for this view transition.
+                            {
+                                let base_view_num = base_view.map(|bv| bv.0).unwrap_or(0);
+                                if let Some(ref delta) = delta_entries {
+                                    sync.upcalls.on_install_leader_record_delta(
+                                        base_view_num, msg_view_number.0, delta,
+                                    );
+                                } else {
+                                    // First view: entire record is the delta.
+                                    sync.upcalls.on_install_leader_record_delta(
+                                        0, msg_view_number.0, &sync.record,
+                                    );
+                                }
+                            }
+
                             let merged_record = Arc::new((*sync.record).clone());
                             sync.leader_record = Some(LeaderRecord {
                                 record: Arc::clone(&merged_record),
@@ -794,6 +821,21 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                             // For now, the replica will stay in ViewChanging and the next
                             // tick-driven view change will recover.
                             return None;
+                        }
+                    }
+                    // CDC: notify upcalls of the delta record before resolve consumes payload.
+                    {
+                        let cdc = match &payload {
+                            RecordPayload::Delta { base_view, entries } =>
+                                Some((base_view.0, entries)),
+                            RecordPayload::Full(record) if sync.leader_record.is_none() =>
+                                Some((0u64, record)),
+                            RecordPayload::Full(_) => None,
+                        };
+                        if let Some((base_view_num, delta)) = cdc {
+                            sync.upcalls.on_install_leader_record_delta(
+                                base_view_num, view.number.0, delta,
+                            );
                         }
                     }
                     let new_record = payload.resolve(base);

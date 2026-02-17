@@ -1,13 +1,14 @@
-use super::{Change, Key, KeyRange, ShardNumber, Timestamp, Value, CO, CR, IO, IR, UO, UR};
+use super::{Change, Key, KeyRange, LeaderRecordDelta, ShardNumber, Timestamp, Value, CO, CR, IO, IR, UO, UR};
 use crate::ir::ReplyUnlogged;
 use crate::tapir::ShardClient;
-use crate::util::vectorize;
+use crate::util::{vectorize, vectorize_btree};
 use crate::{
     IrClientId, IrMembership, IrMembershipSize, IrOpId, IrRecord, IrReplicaUpcalls,
     OccPrepareResult, OccSharedTransaction, OccStore, OccTransactionId, TapirTransport,
 };
 use futures::future::join_all;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::task::Context;
 use std::time::Duration;
 use std::{collections::HashMap, future::Future, hash::Hash};
@@ -60,6 +61,17 @@ pub struct Replica<K, V> {
     finalized_min_prepare_time: u64,
     /// Highest timestamp at which all transactions are guaranteed committed or aborted.
     validated_timestamp: u64,
+    /// Changes committed DURING each view, keyed by base_view (the view number
+    /// during which changes accumulated). IR provides base_view directly from the
+    /// RecordPayload::Delta or leader_record at each view change.
+    #[serde(
+        with = "vectorize_btree",
+        bound(
+            serialize = "K: Serialize, V: Serialize",
+            deserialize = "K: Deserialize<'de>, V: Deserialize<'de>"
+        )
+    )]
+    record_delta_during_view: BTreeMap<u64, LeaderRecordDelta<K, V>>,
     /// If set, reject operations for keys outside this range.
     /// Not persisted: re-applied from view.app_config via apply_config after each view change.
     #[serde(skip_serializing, skip_deserializing, default = "none", bound(deserialize = ""))]
@@ -77,6 +89,7 @@ impl<K: Key, V: Value> Replica<K, V> {
             min_prepare_time: 0,
             finalized_min_prepare_time: 0,
             validated_timestamp: 0,
+            record_delta_during_view: BTreeMap::new(),
             key_range: None,
             read_only: false,
         }
@@ -335,30 +348,26 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
                     }
                 UR::ScanValidated(self.inner.scan_validated(&start_key, &end_key, snapshot_ts))
             }
-            UO::ScanChanges {
-                start_ts,
-                end_ts_inclusive,
-            } => {
-                let effective_end = Timestamp {
-                    time: end_ts_inclusive.min(self.validated_timestamp),
-                    client_id: IrClientId(u64::MAX),
-                };
-                let start = Timestamp {
-                    time: start_ts,
-                    client_id: IrClientId(0),
-                };
-                let raw = self.inner.scan_committed_since(start, effective_end);
-                let changes = raw
-                    .into_iter()
-                    .map(|(key, value, ts)| Change {
-                        key,
-                        value,
-                        timestamp: ts,
-                    })
+            UO::ScanChanges { from_view } => {
+                // effective_end_view = the highest base_view for which this
+                // replica has a delta. A delta keyed by base_view=N contains
+                // changes that accumulated DURING view N. Caller advances
+                // cursor with `from_view = effective_end_view + 1`.
+                let effective_end_view = self
+                    .record_delta_during_view
+                    .keys()
+                    .next_back()
+                    .copied()
+                    .unwrap_or(0);
+                let deltas = self
+                    .record_delta_during_view
+                    .range(from_view..)
+                    .map(|(_, delta)| delta.clone())
                     .collect();
                 UR::ScanChanges {
-                    changes,
-                    effective_end: effective_end.time,
+                    deltas,
+                    effective_end_view,
+                    pending_prepares: self.inner.prepared.len(),
                 }
             }
         }
@@ -732,6 +741,43 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
             self.read_only = cfg.read_only;
         } else if let Ok(range) = serde_json::from_slice::<KeyRange<K>>(config) {
             self.key_range = Some(range);
+        }
+    }
+
+    fn on_install_leader_record_delta(
+        &mut self,
+        base_view: u64,
+        new_view: u64,
+        delta: &IrRecord<Self>,
+    ) {
+        let shard = self.inner.shard();
+        let mut changes = Vec::new();
+
+        for (_op_id, entry) in &delta.inconsistent {
+            if let IO::Commit {
+                transaction_id,
+                transaction,
+                commit,
+            } = &entry.op
+            {
+                changes.extend(transaction.shard_write_set(shard).map(|(key, value)| Change {
+                    transaction_id: *transaction_id,
+                    key: key.clone(),
+                    value: value.clone(),
+                    timestamp: *commit,
+                }));
+            }
+        }
+
+        if !changes.is_empty() {
+            self.record_delta_during_view.insert(
+                base_view,
+                LeaderRecordDelta {
+                    from_view: base_view,
+                    to_view: new_view,
+                    changes,
+                },
+            );
         }
     }
 }

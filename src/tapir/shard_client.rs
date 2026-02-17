@@ -1,8 +1,9 @@
-use super::{Change, Key, Replica, ShardNumber, Timestamp, Value, CO, CR, IO, IR, UO, UR};
+use super::{Key, LeaderRecordDelta, Replica, ShardNumber, Timestamp, Value, CO, CR, IO, IR, UO, UR};
 use crate::{
     transport::Transport, IrClient, IrClientId, IrMembership, IrRecord, IrSharedView,
     OccPrepareResult, OccSharedTransaction, OccTransaction, OccTransactionId,
 };
+use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::Arc;
 
@@ -303,24 +304,36 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
         }
     }
 
-    /// Request committed changes in a timestamp range for CDC-based resharding.
-    pub fn scan_changes(
-        &self,
-        start_ts: u64,
-        end_ts_inclusive: u64,
-    ) -> impl Future<Output = (Vec<Change<K, V>>, u64)> + Send + use<'_, K, V, T> {
-        let future = self
+    /// Request committed changes by view number for CDC-based resharding.
+    /// Queries f+1 replicas and merges their leader record deltas.
+    pub async fn scan_changes(&self, from_view: u64) -> ScanChangesResult<K, V> {
+        let responses = self
             .inner
-            .invoke_unlogged(UO::ScanChanges { start_ts, end_ts_inclusive });
+            .invoke_unlogged_quorum(UO::ScanChanges { from_view })
+            .await;
 
-        async move {
-            match future.await {
-                UR::ScanChanges { changes, effective_end } => (changes, effective_end),
-                _ => {
-                    debug_assert!(false);
-                    (Vec::new(), 0)
-                }
+        let mut delta_lists = Vec::new();
+        let mut effective_end_view = 0u64;
+        let mut pending_prepares = 0usize;
+
+        for r in responses {
+            if let UR::ScanChanges {
+                deltas,
+                effective_end_view: eev,
+                pending_prepares: pp,
+            } = r
+            {
+                delta_lists.push((deltas, eev));
+                effective_end_view = effective_end_view.max(eev);
+                pending_prepares = pending_prepares.max(pp);
             }
+        }
+
+        let deltas = merge_responses(delta_lists);
+        ScanChangesResult {
+            deltas,
+            effective_end_view,
+            pending_prepares,
         }
     }
 
@@ -412,4 +425,64 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
             }
         }
     }
+}
+
+pub struct ScanChangesResult<K, V> {
+    pub deltas: Vec<LeaderRecordDelta<K, V>>,
+    pub effective_end_view: u64,
+    pub pending_prepares: usize,
+}
+
+/// Merge leader record deltas from multiple replica responses.
+/// Picks the most granular (smallest span) delta at each view position,
+/// consuming via VecDeque pop_front (moves, no clones).
+fn merge_responses<K, V>(
+    response_lists: Vec<(Vec<LeaderRecordDelta<K, V>>, u64)>,
+) -> Vec<LeaderRecordDelta<K, V>> {
+    let mut cursors: Vec<(VecDeque<LeaderRecordDelta<K, V>>, u64)> = response_lists
+        .into_iter()
+        .map(|(v, eev)| (v.into_iter().collect(), eev))
+        .collect();
+
+    let mut result = Vec::new();
+    let mut pos = 0u64;
+
+    loop {
+        let min_view = cursors
+            .iter()
+            .filter_map(|(q, _)| q.front().map(|d| d.from_view))
+            .filter(|&v| v >= pos)
+            .min();
+        let Some(view) = min_view else { break };
+
+        let mut best_idx = None;
+        let mut best_span = u64::MAX;
+
+        for (i, (q, eev)) in cursors.iter().enumerate() {
+            if q.front().map_or(false, |d| d.from_view == view) {
+                let inferred_to = q.get(1).map(|d| d.from_view).unwrap_or(*eev + 1);
+                let span = inferred_to.saturating_sub(view);
+                if span < best_span {
+                    best_span = span;
+                    best_idx = Some(i);
+                }
+            }
+        }
+
+        let idx = best_idx.unwrap();
+        let delta = cursors[idx].0.pop_front().unwrap();
+        pos = delta.to_view;
+
+        for (i, (q, _)) in cursors.iter_mut().enumerate() {
+            if i != idx {
+                while q.front().map_or(false, |d| d.from_view < pos) {
+                    q.pop_front();
+                }
+            }
+        }
+
+        result.push(delta);
+    }
+
+    result
 }

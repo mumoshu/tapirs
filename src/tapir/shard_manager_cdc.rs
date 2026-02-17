@@ -6,6 +6,7 @@ use crate::tapir::{Replica, Sharded};
 use crate::transport::Transport;
 use crate::{IrClientId, IrMembership, OccTransaction, OccTransactionId};
 use std::collections::HashMap;
+use std::time::Duration;
 use tracing::info;
 
 impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDirectory<T::Address>> ShardManager<K, V, T, D> {
@@ -30,28 +31,28 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         self.register_shard(new_shard, new_membership, new_range.clone());
 
         // Phase 1: Bulk copy via scan_changes.
-        let (changes, mut last_end) = self.shards[&source]
-            .client
-            .scan_changes(0, u64::MAX)
-            .await;
+        let r = self.shards[&source].client.scan_changes(0).await;
+        let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
         let filtered = filter_changes(&changes, &split_key);
         info!("split: bulk copied {} changes to new shard", filtered.len());
         ship_changes(&self.shards[&new_shard].client, new_shard, &filtered).await;
+        let mut last_view = r.effective_end_view;
 
         // Phase 2: Catch-up tailing.
         loop {
-            let (changes, new_end) = self.shards[&source]
+            let r = self.shards[&source]
                 .client
-                .scan_changes(last_end.saturating_add(1), u64::MAX)
+                .scan_changes(last_view + 1)
                 .await;
+            let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
             let filtered = filter_changes(&changes, &split_key);
             if !filtered.is_empty() {
                 ship_changes(&self.shards[&new_shard].client, new_shard, &filtered).await;
             }
-            if new_end == last_end {
+            if r.effective_end_view == last_view {
                 break;
             }
-            last_end = new_end;
+            last_view = r.effective_end_view;
         }
 
         // Phase 3a: Freeze source — reject all Prepare with Fail.
@@ -63,24 +64,43 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         self.shards[&source].client.reconfigure(freeze);
         info!("split: source frozen, draining...");
 
-        // Phase 3b: Drain — poll until no more changes arrive.
+        // Phase 3b: Drain — wait for ALL prepared transactions to resolve + final seal.
+        //
+        // After freeze: no new CO::Prepare accepted (read_only=true).
+        // Existing prepares resolve via tick() -> recover_coordination().
+        // IO::Commit for each resolution is captured in the current view.
+        // Need one more view change after all prepares resolve to seal final commits.
         let narrowed_range = KeyRange {
             start: source_range.start.clone(),
             end: Some(split_key.clone()),
         };
         loop {
-            let (changes, new_end) = self.shards[&source]
+            T::sleep(Duration::from_secs(1)).await;
+            let r = self.shards[&source]
                 .client
-                .scan_changes(last_end.saturating_add(1), u64::MAX)
+                .scan_changes(last_view + 1)
                 .await;
+            let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
             let filtered = filter_changes(&changes, &split_key);
             if !filtered.is_empty() {
                 ship_changes(&self.shards[&new_shard].client, new_shard, &filtered).await;
             }
-            if new_end == last_end {
+            last_view = last_view.max(r.effective_end_view);
+
+            if r.pending_prepares == 0 && changes.is_empty() && r.effective_end_view == last_view {
                 break;
             }
-            last_end = new_end;
+        }
+        // One final poll after all prepares resolved to capture sealed commits.
+        T::sleep(Duration::from_secs(3)).await;
+        let r = self.shards[&source]
+            .client
+            .scan_changes(last_view + 1)
+            .await;
+        let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
+        let filtered = filter_changes(&changes, &split_key);
+        if !filtered.is_empty() {
+            ship_changes(&self.shards[&new_shard].client, new_shard, &filtered).await;
         }
 
         // Phase 3c: Unfreeze source and narrow its key range.
