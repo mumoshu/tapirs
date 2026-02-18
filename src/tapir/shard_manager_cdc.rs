@@ -610,7 +610,10 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
             .clone();
 
         // Register the new shard with the same key range as the source.
-        self.register_shard(new_shard, new_membership, source_range);
+        // Use deferred registration (no directory rebuild) because both source
+        // and new shard have the same key range — rebuilding would panic on
+        // the overlap check.  deregister_shard(source) at the end rebuilds.
+        self.register_shard_deferred(new_shard, new_membership, source_range);
 
         let mut cursor = CdcCursor::new();
 

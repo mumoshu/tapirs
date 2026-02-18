@@ -50,6 +50,22 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>, D: AddressDirectory<T::Addre
         membership: IrMembership<T::Address>,
         key_range: KeyRange<K>,
     ) {
+        self.register_shard_deferred(shard, membership, key_range);
+        self.rebuild_directory();
+    }
+
+    /// Like `register_shard` but skips the directory rebuild.
+    ///
+    /// Use when the caller will trigger a rebuild later (e.g., compact
+    /// registers the replacement shard before deregistering the source —
+    /// both have the same key range temporarily, so rebuilding would
+    /// panic on the overlap check).
+    pub(crate) fn register_shard_deferred(
+        &mut self,
+        shard: ShardNumber,
+        membership: IrMembership<T::Address>,
+        key_range: KeyRange<K>,
+    ) {
         self.address_directory.put(shard, membership.clone());
         let client = ShardClient::new(
             self.rng.fork(),
@@ -63,7 +79,6 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>, D: AddressDirectory<T::Addre
             key_range,
             client,
         });
-        self.rebuild_directory();
     }
 
     pub fn deregister_shard(&mut self, shard: ShardNumber) {
