@@ -369,6 +369,314 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         // Merge complete.
         Ok(())
     }
+
+    /// Compact a shard: create a fresh replacement shard, migrate all committed
+    /// data, resolve all pending transactions, then decommission the original.
+    ///
+    /// # Motivation
+    ///
+    /// The IR record stores every operation ever proposed (Prepare,
+    /// Commit, Abort, RaiseMinPrepareTime) and grows as O(total_ops). Naive
+    /// truncation of Finalized entries is unsafe because new replicas joining
+    /// via `add_replica()` → `fetch_leader_record()` → `bootstrap_record()` →
+    /// view change reconstruct their full TAPIR state by replaying the record
+    /// through `sync()`. Truncating old entries means new replicas would miss
+    /// old prepared entries and MVCC writes.
+    ///
+    /// Compaction sidesteps truncation entirely: a fresh shard starts with an
+    /// empty IR record and empty `record_delta_during_view`, and receives only
+    /// committed data via CDC, achieving the same memory reclamation without
+    /// modifying the IR layer. Both the IR record and CDC delta accumulation
+    /// are reset.
+    ///
+    /// # Algorithm (adapts merge's 3-phase approach)
+    ///
+    /// **Setup**: Register `new_shard` with the same key range as `source` and
+    /// fresh replicas (`new_membership`). The new shard starts with an empty
+    /// IR record, empty prepared set, and empty transaction_log.
+    ///
+    /// **Phase 1 — Bulk Copy**: `scan_changes(0)` on source shard → ship ALL
+    /// changes to the new shard as IO::Commit operations (no key filtering —
+    /// same key range). Same approach as existing `split()` and `merge()`.
+    ///
+    /// **Phase 2 — Catch-up Tailing**: Loop `scan_changes(last_view + 1)` on
+    /// the source shard. Ship new changes to the new shard. Stop when
+    /// `effective_end_view` stabilizes.
+    ///
+    /// **Phase 3a — Freeze Source**: `reconfigure(ShardConfig { read_only: true })`.
+    /// New `CO::Prepare` returns Fail. This is the critical safety mechanism
+    /// for cross-shard transactions: freezing ensures no NEW prepares are
+    /// accepted on the source shard, while existing prepared transactions
+    /// continue to be resolvable. Without freezing, a cross-shard transaction
+    /// that successfully prepared on all participant shards (and therefore MUST
+    /// be committed per TAPIR's guarantee) could have its Prepare on this
+    /// shard lost if the source were decommissioned before the coordinator
+    /// sent IO::Commit.
+    ///
+    /// **Phase 3b — Drain Prepared on Source**: Wait for `pending_prepares == 0`.
+    /// This ensures ALL cross-shard transactions that this shard participates
+    /// in are fully resolved (committed or aborted) before decommissioning:
+    ///
+    /// - **Transactions prepared on all shards** (must commit): The primary
+    ///   coordinator (client) or backup coordinator (`recover_coordination()`
+    ///   triggered by replica tick) sends IO::Commit. The commit is captured
+    ///   by CDC and shipped to the new shard.
+    /// - **Transactions prepared on some but not all shards** (must abort):
+    ///   The coordinator eventually sends IO::Abort after detecting that not
+    ///   all shards prepared successfully. The abort removes the prepared
+    ///   entry; no data is shipped (aborted transactions produce no MVCC writes).
+    /// - **In-flight prepares at freeze time**: The `read_only` flag causes
+    ///   new Prepare to return Fail, but existing prepared entries in the OCC
+    ///   store remain. `recover_coordination()` fires via replica tick for
+    ///   any stale prepared entries, resolving them via IO::Commit or IO::Abort.
+    ///
+    /// Continue shipping remaining changes during drain. Final 3-second sleep +
+    /// one more poll to capture sealed commits from the last view change.
+    ///
+    /// **Phase 3c — Swap + Cleanup**:
+    /// 1. Update new shard's `key_range` in `self.shards` (already set at registration)
+    /// 2. `deregister_shard(source)` — removes from shards, address_directory,
+    ///    rebuilds directory to route all traffic to the new shard
+    ///
+    /// # Key design decisions
+    ///
+    /// - **Same key range**: Unlike split (narrows source, creates new range)
+    ///   or merge (expands surviving range), compact keeps the key range
+    ///   identical. The new shard is a drop-in replacement.
+    /// - **Source shard is frozen, NOT unfrozen**: It's being decommissioned.
+    ///   The freeze is permanent, same as the absorbed shard in merge.
+    /// - **New shard is NOT frozen during migration**: It can accept IO::Commit
+    ///   for shipped data while simultaneously handling reads (if clients are
+    ///   routed to it, which only happens after directory swap). Safe because
+    ///   all shipped IO::Commits write data that was already committed on the
+    ///   source — no conflict with the empty new shard's OCC state.
+    /// - **No key filtering**: All changes from the source are shipped, same
+    ///   as merge. The key range is identical so all data belongs.
+    /// - **Cross-shard transaction safety**: The freeze + drain sequence
+    ///   guarantees that every prepared transaction is resolved before the
+    ///   source shard is decommissioned. A transaction prepared on all shards
+    ///   MUST be committed (TAPIR guarantee); the drain waits for the
+    ///   coordinator to send IO::Commit, which CDC captures and ships to the
+    ///   new shard. No transaction is lost or stuck.
+    ///
+    /// # Downtime analysis
+    ///
+    /// `read_only` is ONLY checked in `exec_consensus` for `CO::Prepare`. All
+    /// unlogged and inconsistent operations (`UO::Get`, `UO::Scan`,
+    /// `IO::QuorumRead`, `IO::QuorumScan`, `IO::Commit`, `IO::Abort`) do NOT
+    /// check `read_only`.
+    ///
+    /// | Phase | RW txns (source range) | RO txns (source range) |
+    /// |-------|------------------------|------------------------|
+    /// | Phase 1-2 (bulk copy + tailing) | Normal | Normal |
+    /// | Phase 3a-3b (freeze + drain) | DOWN — Prepare returns Fail | Normal — reads work |
+    /// | Phase 3c deregister source | DOWN — connection errors | DOWN — connection errors |
+    /// | After directory refresh | Normal (routed to new shard) | Normal (routed to new shard) |
+    ///
+    /// # CDC cursor and `pending_prepares` semantics
+    ///
+    /// Same as merge — see `merge()` doc comment for details on cursor
+    /// advancement, `pending_prepares` scope, and "last mile" commit semantics.
+    ///
+    /// # Structures reclaimed
+    ///
+    /// Compaction resets **all** unbounded per-shard in-memory structures by
+    /// replacing the source shard with a fresh one:
+    ///
+    /// | Structure | Source shard (bloated) | New shard (after compact) |
+    /// |-----------|----------------------|--------------------------|
+    /// | IR record (`BTreeMap<OpId, Entry>`) | O(total_ops) | Empty (only current-view entries) |
+    /// | `record_delta_during_view` | Accumulated deltas from all views | Empty |
+    /// | `transaction_log` (`BTreeMap<TxnId, (Timestamp, bool)>`) | O(total_committed + aborted txns) | Empty |
+    /// | `prepared` set | Pending prepares | Empty (all drained) |
+    /// | `range_reads` (`Vec<(K, K, TS)>`) | O(total_scan_ops) | Empty |
+    /// | MVCC data store | All committed key versions | All committed data (shipped via CDC) |
+    ///
+    /// # `range_reads` safety
+    ///
+    /// `range_reads: Vec<(K, K, TS)>` in the OCC store tracks range-level
+    /// read timestamps from read-only `QuorumScan` operations. Each entry
+    /// `(start, end, read_ts)` blocks new Prepares that write keys in
+    /// `[start, end]` at `commit_ts < read_ts`. This prevents **phantom
+    /// writes** — a new write appearing in a range that was previously
+    /// scanned — which would violate serializability of the scan.
+    ///
+    /// `range_reads` is used **only** during `occ_check()` for `CO::Prepare`
+    /// conflict detection. It is NOT used by `transaction_log`, `commit_get`,
+    /// CDC, resharding, or any read path.
+    ///
+    /// `range_reads` grows with every `QuorumScan` operation and is **never
+    /// cleaned** — no `retain`, `clear`, or `drain` exists. Over time, this
+    /// Vec grows as O(total_scan_operations), unbounded.
+    ///
+    /// **Why starting with empty `range_reads` is safe:**
+    ///
+    /// The new shard receives committed data via `IO::Commit` shipping (same
+    /// as split and merge). `IO::Commit` writes key-value-timestamp entries
+    /// to the MVCC store; it does NOT replay `IO::QuorumScan` entries, so
+    /// `range_reads` are not reconstructed. This is the same property that
+    /// split and merge already have: the new/surviving shard does not inherit
+    /// `range_reads` from the source/absorbed shard.
+    ///
+    /// After compaction, a Prepare with `commit_ts` below a past scan's
+    /// `snapshot_ts` would not be blocked by the (absent) `range_read`.
+    /// This is safe because:
+    ///
+    /// 1. **TAPIR clients pick `commit_ts` close to their wall-clock time.**
+    ///    After compaction (which takes non-trivial time for phases 1-3b),
+    ///    any new Prepare arrives with a `commit_ts` well above historical
+    ///    scan timestamps.
+    /// 2. **`min_prepare_time` provides the primary defense.** As the backup
+    ///    coordinator resolves transactions, it calls
+    ///    `raise_min_prepare_time(commit.time + 1)`, which advances
+    ///    `min_prepare_time` on the source shard. While the new shard's
+    ///    `min_prepare_time` starts at 0, it advances as new transactions
+    ///    commit on it. Prepares with very old timestamps are rejected as
+    ///    `TooLate` by the advancing `min_prepare_time`.
+    /// 3. **Same property as split/merge.** Existing resharding operations
+    ///    already ship data via `IO::Commit` without replaying
+    ///    `IO::QuorumScan`. If `range_reads` loss were a correctness issue,
+    ///    it would affect split and merge equally — but both are considered
+    ///    correct.
+    ///
+    /// # `transaction_log` safety
+    ///
+    /// `transaction_log` records whether each transaction was committed or
+    /// aborted. It is used **only** for deduplication in `tapir::Replica`:
+    ///
+    /// - **During Prepare**: If the transaction was already committed, return
+    ///   Ok/Retry. If already aborted, return Fail. This prevents a stale
+    ///   Prepare from re-entering the `prepared` set for a resolved transaction.
+    /// - **During CheckPrepare**: Same deduplication for backup coordinator
+    ///   recovery.
+    /// - **During IO::Commit/IO::Abort**: `debug_assert`s for duplicate
+    ///   detection (debug builds only).
+    ///
+    /// `transaction_log` is **NOT** used for OCC conflict detection. Conflict
+    /// detection uses `prepared_reads`, `prepared_writes`, `range_reads`, and
+    /// MVCC store reads (`get_last_read`, `get_last_read_at`,
+    /// `has_writes_in_range`) — all in `occ::Store`, which does not reference
+    /// `transaction_log` at all.
+    ///
+    /// **Why starting with an empty `transaction_log` is safe:**
+    ///
+    /// After compaction, the source shard is frozen, all pending prepares are
+    /// drained (committed or aborted by the coordinator system), and the
+    /// source is decommissioned. The new shard starts with an empty
+    /// `transaction_log`. Without deduplication entries, stale messages for
+    /// resolved transactions may cause redundant work, but never produce
+    /// incorrect results:
+    ///
+    /// - **Stale IO::Commit** (for a transaction already committed on the
+    ///   source and shipped via CDC): Re-applies MVCC writes. `put(key,
+    ///   value, timestamp)` is idempotent — inserting the same
+    ///   (key, value, timestamp) into the BTreeMap overwrites with identical
+    ///   data. The `transaction_log` entry is re-inserted; harmless.
+    /// - **Stale IO::Abort** (for a transaction already resolved on the
+    ///   source): Finds nothing in the `prepared` set (new shard has an empty
+    ///   prepared set) → `remove_prepared` is a no-op. Harmless.
+    /// - **Stale Prepare** (for a transaction already committed on the
+    ///   source): The new shard accepts the Prepare (no dedup entry to reject
+    ///   it). The coordinator eventually sends IO::Commit, which commits it.
+    ///   The MVCC writes are idempotent with the CDC-shipped data — same key,
+    ///   same value, same timestamp. Net effect: redundant prepare/commit
+    ///   cycle, correct final state.
+    /// - **Stale Prepare** (for a transaction already aborted on the source):
+    ///   The new shard accepts the Prepare. The coordinator sends IO::Abort,
+    ///   which removes it from `prepared`. No data written to MVCC (aborted
+    ///   transactions produce no MVCC writes). Harmless.
+    ///
+    /// In all cases, the coordinator system's IO::Commit or IO::Abort always
+    /// arrives to finalize the transaction. The new shard may do redundant
+    /// work without `transaction_log` dedup, but the final state is always
+    /// correct.
+    ///
+    /// # Result
+    ///
+    /// The new shard has all committed data, a clean IR record (only
+    /// current-view entries), empty `prepared` set (all transactions resolved
+    /// during drain), and empty `transaction_log`. The bloated source shard
+    /// with its unbounded IR record, delta accumulation, and transaction log
+    /// is removed entirely.
+    pub async fn compact(
+        &mut self,
+        source: ShardNumber,
+        new_shard: ShardNumber,
+        new_membership: IrMembership<T::Address>,
+    ) -> Result<(), ReshardError> {
+        let source_range = self.shards.get(&source)
+            .ok_or(ReshardError::ShardNotRegistered(source))?
+            .key_range
+            .clone();
+
+        // Register the new shard with the same key range as the source.
+        self.register_shard(new_shard, new_membership, source_range);
+
+        let mut cursor = CdcCursor::new();
+
+        // Phase 1: Bulk copy — ship all changes from source to new shard.
+        let r = self.shards[&source].client.scan_changes(0).await;
+        let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
+        ship_changes(&self.shards[&new_shard].client, new_shard, &changes, &mut self.rng).await;
+        cursor.advance(r.effective_end_view);
+
+        // Phase 2: Catch-up tailing.
+        loop {
+            let r = self.shards[&source]
+                .client
+                .scan_changes(cursor.next_from())
+                .await;
+            let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
+            if !changes.is_empty() {
+                ship_changes(&self.shards[&new_shard].client, new_shard, &changes, &mut self.rng).await;
+            }
+            if changes.is_empty() && cursor.stabilized(r.effective_end_view) {
+                break;
+            }
+            cursor.advance(r.effective_end_view);
+        }
+
+        // Phase 3a: Freeze source — reject all Prepare with Fail.
+        let freeze = serde_json::to_vec(&ShardConfig::<K> {
+            key_range: None,
+            read_only: true,
+        })
+        .expect("serialize freeze config");
+        self.shards[&source].client.reconfigure(freeze);
+
+        // Phase 3b: Drain — wait for pending_prepares == 0 + final seal.
+        loop {
+            T::sleep(Duration::from_secs(1)).await;
+            let r = self.shards[&source]
+                .client
+                .scan_changes(cursor.next_from())
+                .await;
+            let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
+            if !changes.is_empty() {
+                ship_changes(&self.shards[&new_shard].client, new_shard, &changes, &mut self.rng).await;
+            }
+            cursor.advance(r.effective_end_view);
+
+            if r.pending_prepares == 0 && changes.is_empty() && cursor.stabilized(r.effective_end_view) {
+                break;
+            }
+        }
+        // One final poll after all prepares resolved to capture sealed commits.
+        T::sleep(Duration::from_secs(3)).await;
+        let r = self.shards[&source]
+            .client
+            .scan_changes(cursor.next_from())
+            .await;
+        let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
+        if !changes.is_empty() {
+            ship_changes(&self.shards[&new_shard].client, new_shard, &changes, &mut self.rng).await;
+        }
+
+        // Phase 3c: Decommission the source shard.
+        self.deregister_shard(source);
+        // Compact complete.
+        Ok(())
+    }
 }
 
 /// Filter changes to those with key >= split_key.
