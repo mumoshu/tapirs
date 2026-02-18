@@ -128,8 +128,6 @@ struct SyncInner<U: Upcalls, T: Transport<U>> {
     latest_normal_view: SharedView<T::Address>,
     /// Leader's record from the *start* of the current view, used for catching up other replicas.
     leader_record: Option<LeaderRecord<U::IO, U::CO, U::CR, T::Address>>,
-    /// Op IDs inserted or modified since the last completed view change.
-    delta_op_ids: HashSet<OpId>,
     changed_view_recently: bool,
     upcalls: U,
     record: Arc<Record<U>>,
@@ -187,7 +185,6 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                     upcalls,
                     record: Arc::new(Record::<U>::default()),
                     leader_record: None,
-                    delta_op_ids: HashSet::new(),
                     outstanding_do_view_changes: HashMap::new(),
                     peer_liveness: HashMap::new(),
                 }),
@@ -331,15 +328,10 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                     view: sync.view.clone(),
                     from_client: false,
                     addendum: (address == sync.view.leader()).then(|| {
-                        let payload = if let Some(lr) = sync.leader_record.as_ref() {
-                            RecordPayload::Delta {
-                                base_view: lr.view.number,
-                                entries: sync.record.filter_by_op_ids(&sync.delta_op_ids),
-                            }
-                        } else {
-                            RecordPayload::Full((*sync.record).clone())
-                        };
-                        ViewChangeAddendum { payload, latest_normal_view: sync.latest_normal_view.clone() }
+                        ViewChangeAddendum {
+                            payload: RecordPayload::Full((*sync.record).clone()),
+                            latest_normal_view: sync.latest_normal_view.clone(),
+                        }
                     }),
                 }),
             )
@@ -383,7 +375,6 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                                 op,
                                 state: RecordEntryState::Tentative,
                             }).state;
-                            sync.delta_op_ids.insert(op_id);
                             state
                         }
                         Entry::Occupied(occupied) => {
@@ -421,7 +412,6 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                                 op,
                                 state: RecordEntryState::Tentative,
                             });
-                            sync.delta_op_ids.insert(op_id);
                             (entry.result.clone(), entry.state)
                         }
                     };
@@ -437,7 +427,6 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                 if sync.status.is_normal() && let Some(entry) = Arc::make_mut(&mut sync.record).inconsistent.get_mut(&op_id) && entry.state.is_tentative() {
                     entry.state = RecordEntryState::Finalized(sync.view.number);
                     let result = sync.upcalls.exec_inconsistent(&entry.op);
-                    sync.delta_op_ids.insert(op_id);
 
                     if let Some(result) = result {
                         return Some(Message::<U, T>::FinalizeInconsistentReply(FinalizeInconsistentReply {
@@ -457,7 +446,6 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                             entry.state = RecordEntryState::Finalized(sync.view.number);
                             entry.result = result;
                             sync.upcalls.finalize_consensus(&entry.op, &entry.result);
-                            sync.delta_op_ids.insert(op_id);
                         } else if cfg!(debug_assertions) && entry.result != result {
                             // For diagnostic purposes.
                             warn!("tried to finalize consensus with {result:?} when {:?} was already finalized", entry.result);
@@ -507,14 +495,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                             view: sync.view.clone(),
                             from_client: false,
                             addendum: Some(ViewChangeAddendum {
-                                payload: if let Some(lr) = sync.leader_record.as_ref() {
-                                    RecordPayload::Delta {
-                                        base_view: lr.view.number,
-                                        entries: sync.record.filter_by_op_ids(&sync.delta_op_ids),
-                                    }
-                                } else {
-                                    RecordPayload::Full((*sync.record).clone())
-                                },
+                                payload: RecordPayload::Full((*sync.record).clone()),
                                 latest_normal_view: sync.latest_normal_view.clone(),
                             }),
                         };
@@ -746,7 +727,6 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                                 record: Arc::clone(&merged_record),
                                 view: sync.view.clone(),
                             });
-                            sync.delta_op_ids.clear();
 
                             let full_payload = RecordPayload::Full((*merged_record).clone());
 
@@ -852,7 +832,6 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                     sync.upcalls.sync(&sync.record, &new_record);
                     let new_record = Arc::new(new_record);
                     sync.record = Arc::clone(&new_record);
-                    sync.delta_op_ids.clear();
                     sync.status = Status::Normal;
                     sync.view = view.clone();
                     sync.latest_normal_view = view.clone();
