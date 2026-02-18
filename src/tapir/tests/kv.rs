@@ -577,6 +577,7 @@ fn build_sharded_kv_faulty(
     Vec<Vec<Arc<IrReplica<TapirReplica<K, V>, FaultyTransport>>>>,
     Vec<Arc<TapirClient<K, V, FaultyTransport>>>,
     Vec<FaultyTransport>,
+    ChannelRegistry<TapirReplica<K, V>>,
 ) {
     let num_shards = replica_counts.len();
 
@@ -608,7 +609,7 @@ fn build_sharded_kv_faulty(
     let (clients, client_transports) =
         build_clients_faulty(rng, num_clients, &registry, config, seed.wrapping_add(5000));
 
-    (shards, clients, client_transports)
+    (shards, clients, client_transports, registry)
 }
 
 /// Build non-overlapping key ranges covering `[0, num_keys)` across shards.
@@ -665,7 +666,7 @@ async fn fuzz_tapir_transactions() {
         .map(|_| [3, 5, 7][rng.gen_range(0..3usize)])
         .collect();
     let num_clients = 3;
-    let num_keys: i64 = 5;
+    let num_keys: i64 = 10;
     let iterations_per_client = 20;
 
     eprintln!("fuzz_tapir_transactions: num_shards={num_shards} replica_counts={replica_counts:?} seed={seed}");
@@ -680,7 +681,7 @@ async fn fuzz_tapir_transactions() {
     );
     disc_dir.add_own_shard(ShardNumber(0));
 
-    let (shards, clients, client_transports) = build_sharded_kv_faulty(
+    let (shards, clients, client_transports, registry) = build_sharded_kv_faulty(
         &mut lib_rng,
         true,
         &replica_counts,
@@ -710,6 +711,48 @@ async fn fuzz_tapir_transactions() {
 
     // Generate per-client seeds up front (rng is not Send).
     let client_seeds: Vec<u64> = (0..num_clients).map(|_| rng.r#gen()).collect();
+
+    // Pre-compute resharding resources.
+    // Compute initial shard memberships from address offsets.
+    let mut address_offset = 0usize;
+    let initial_memberships: Vec<IrMembership<usize>> = replica_counts.iter().map(|&count| {
+        let m = IrMembership::new((address_offset..address_offset + count).collect());
+        address_offset += count;
+        m
+    }).collect();
+    // Account for client addresses.
+    address_offset += num_clients;
+
+    // Pre-build 2 potential new shard replica groups (for up to 2 splits).
+    let new_shard_replica_counts: Vec<usize> = (0..2)
+        .map(|_| [3, 5, 7][rng.gen_range(0..3usize)])
+        .collect();
+    let shard_entries = build_shard_entries(num_shards, num_keys);
+    let mut new_shard_replicas = Vec::new();
+    let mut new_shard_memberships = Vec::new();
+    for (i, &count) in new_shard_replica_counts.iter().enumerate() {
+        let new_shard_num = ShardNumber(num_shards + i as u32);
+        let new_seed = seed.wrapping_add(20000 + i as u64 * 100);
+        let replicas = build_shard_faulty(
+            &mut lib_rng,
+            new_shard_num,
+            true,
+            count,
+            &registry,
+            &config,
+            new_seed,
+        );
+        let membership = IrMembership::new(
+            (address_offset..address_offset + count).collect(),
+        );
+        address_offset += count;
+        new_shard_memberships.push(membership);
+        new_shard_replicas.push(replicas);
+    }
+
+    let manager_rng = lib_rng.fork();
+    let manager_seed: u64 = rng.r#gen();
+    let reshard_seed: u64 = rng.r#gen();
 
     // Spawn fault injection task.
     //
@@ -925,12 +968,75 @@ async fn fuzz_tapir_transactions() {
         })
         .collect();
 
+    // Spawn resharding task (admin client workload).
+    let reshard_router = Arc::clone(&router);
+    let reshard_address_directory = Arc::clone(&address_directory);
+    let reshard_config = config.clone();
+    let reshard_shard_entries = shard_entries.clone();
+    let reshard_handle = tokio::spawn(async move {
+        use crate::tapir::shard_manager::ShardManager;
+
+        FaultyTransport::sleep(Duration::from_millis(100)).await;
+
+        // Create ShardManager with its own FaultyChannelTransport.
+        let manager_channel = registry.channel(move |_, _| None);
+        let manager_transport = FaultyChannelTransport::new(
+            manager_channel, reshard_config, manager_seed,
+        );
+        let mut manager = ShardManager::new(
+            manager_rng, manager_transport, reshard_address_directory,
+        );
+        for (i, entry) in reshard_shard_entries.iter().enumerate() {
+            manager.register_shard(
+                entry.shard, initial_memberships[i].clone(), entry.range.clone(),
+            );
+        }
+
+        let mut reshard_rng = StdRng::seed_from_u64(reshard_seed);
+        let mut next_shard_idx = 0usize;
+
+        // Random resharding loop — no guards, attempt anything.
+        // No explicit view change forcing needed: split/merge handle CDC
+        // internally (freeze triggers view change → produces delta → drain
+        // picks it up). The fault injection task provides additional random
+        // view changes.
+        for round in 0..2 {
+            let mut shard_keys: Vec<_> = manager.shards.keys().cloned().collect();
+            shard_keys.sort();
+
+            if reshard_rng.gen_bool(0.5) {
+                // Attempt split: random shard, midpoint key.
+                let source = shard_keys[reshard_rng.gen_range(0..shard_keys.len())];
+                let range = &manager.shards[&source].key_range;
+                let start = range.start.unwrap_or(0);
+                let end = range.end.unwrap_or(num_keys);
+                if end - start >= 2 && next_shard_idx < new_shard_memberships.len() {
+                    let split_key = start + (end - start) / 2;
+                    let new_shard_number = ShardNumber(num_shards + next_shard_idx as u32);
+                    let membership = new_shard_memberships[next_shard_idx].clone();
+                    match manager.split(source, split_key, new_shard_number, membership).await {
+                        Ok(()) => {
+                            next_shard_idx += 1;
+                            reshard_router.directory().write().unwrap().update(
+                                manager.directory.entries().iter().cloned().collect(),
+                            );
+                            eprintln!("fuzz[{round}]: split ok (seed={seed})");
+                        }
+                        Err(e) => eprintln!("fuzz[{round}]: split rejected: {e:?} (seed={seed})"),
+                    }
+                }
+            }
+            // (merge added in commit 4)
+        }
+    });
+
     // Wait for all workloads with overall timeout.
-    let all_done = timeout(Duration::from_secs(60), async {
+    let all_done = timeout(Duration::from_secs(300), async {
         let _ = fault_handle.await;
         for handle in handles {
             handle.await.unwrap();
         }
+        reshard_handle.await.unwrap();
     })
     .await;
 
@@ -984,26 +1090,23 @@ async fn fuzz_tapir_transactions() {
         "checker vs inline committed_counts mismatch (seed={seed})"
     );
 
+    // Counter verification uses read-only transactions (quorum reads) rather
+    // than RW transactions (single-replica unlogged reads). After resharding,
+    // CDC ships data to new shards via invoke_inconsistent (f+1 delivery).
+    // A single-replica read might hit one of the f replicas that didn't
+    // receive the shipped data. Quorum reads query f+1 replicas and pick the
+    // highest timestamp — by quorum intersection, at least one has the data.
+    // This also models production behavior where directory propagation is
+    // eventually consistent: quorum reads are robust to stale routing.
     let verify_client = RoutingClient::new(Arc::clone(&clients[0]), Arc::clone(&router));
     for (key, expected) in &inline_counts {
-        let txn = verify_client.begin();
+        let txn = verify_client.begin_read_only();
         let actual = txn.get(*key).await.unwrap_or(0);
-
-        match timeout(Duration::from_secs(10), txn.commit()).await {
-            Ok(Some(_)) => {
-                assert_eq!(
-                    actual, *expected,
-                    "counter invariant violated for key={key}: \
-                     actual={actual} expected={expected} (seed={seed})"
-                );
-            }
-            _ => {
-                eprintln!(
-                    "warning: verification read for key={key} \
-                     did not commit (seed={seed})"
-                );
-            }
-        }
+        assert_eq!(
+            actual, *expected,
+            "counter invariant violated for key={key}: \
+             actual={actual} expected={expected} (seed={seed})"
+        );
     }
 
     eprintln!(
@@ -1011,6 +1114,9 @@ async fn fuzz_tapir_transactions() {
          replica_counts={replica_counts:?} \
          {committed}/{attempted} committed, invariants passed"
     );
+
+    // Keep pre-built shard replicas alive until end of test.
+    drop(new_shard_replicas);
 }
 
 #[tokio::test(start_paused = true)]
@@ -1722,12 +1828,13 @@ async fn cdc_view_based_scan_changes() {
             delta.from_view
         );
     }
-    // effective_end_view is the max base_view key; for the first view change
-    // base_view=0, so effective_end_view=0 is valid.
+    // effective_end_view is Some(max base_view key); for the first view change
+    // base_view=0, so effective_end_view=Some(0).
     let first_delta = &r.deltas[0];
     assert_eq!(first_delta.from_view, 0, "first delta should be from view 0");
+    assert!(r.effective_end_view.is_some(), "should have Some effective_end_view after view change");
 
-    let last_view = r.effective_end_view;
+    let last_view = r.effective_end_view.unwrap();
 
     // Commit a third transaction.
     Transport::sleep(Duration::from_millis(1)).await;
@@ -1757,7 +1864,7 @@ async fn cdc_view_based_scan_changes() {
         "should not contain key=1 in incremental scan"
     );
     assert!(
-        r2.effective_end_view > last_view,
+        r2.effective_end_view.unwrap() > last_view,
         "effective_end_view should advance"
     );
 

@@ -7,12 +7,59 @@ use crate::transport::Transport;
 use crate::{IrClientId, IrMembership, OccTransaction, OccTransactionId};
 use std::collections::BTreeMap;
 use std::time::Duration;
-use tracing::info;
 
 #[derive(Debug)]
 pub enum ReshardError {
     ShardNotRegistered(ShardNumber),
     RangesNotAdjacent(ShardNumber, ShardNumber),
+}
+
+/// CDC scan cursor that tracks the highest consumed `effective_end_view`.
+///
+/// `effective_end_view` from `ScanChangesResult` is `Option<u64>`:
+/// - `None` → no CDC deltas exist (no view changes have happened yet).
+/// - `Some(N)` → deltas up through base_view=N are available.
+///
+/// The cursor mirrors this with its own `Option<u64>`:
+/// - `None` → no deltas consumed yet → `next_from()` returns 0.
+/// - `Some(N)` → consumed through base_view=N → `next_from()` returns N+1.
+///
+/// **Stabilization**: The cursor is "stabilized" when `last_view` matches
+/// `effective_end_view` — meaning we've consumed everything the source has.
+/// The loop breaks when stabilized AND no new changes arrived.
+struct CdcCursor {
+    last_view: Option<u64>,
+}
+
+impl CdcCursor {
+    fn new() -> Self {
+        Self { last_view: None }
+    }
+
+    /// The `from_view` argument for the next `scan_changes` call.
+    fn next_from(&self) -> u64 {
+        match self.last_view {
+            Some(v) => v + 1,
+            None => 0,
+        }
+    }
+
+    /// Advance the cursor from a scan result's `effective_end_view`.
+    /// Only advances when the source reported deltas exist (`Some`).
+    fn advance(&mut self, effective_end_view: Option<u64>) {
+        if let Some(eev) = effective_end_view {
+            self.last_view = Some(match self.last_view {
+                Some(prev) => prev.max(eev),
+                None => eev,
+            });
+        }
+    }
+
+    /// True when we've consumed everything the source has.
+    /// Both `None` (no history) and `Some(N) == Some(N)` count as stable.
+    fn stabilized(&self, effective_end_view: Option<u64>) -> bool {
+        self.last_view == effective_end_view
+    }
 }
 
 impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDirectory<T::Address>> ShardManager<K, V, T, D> {
@@ -46,29 +93,30 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         }
         self.register_shard(new_shard, new_membership, new_range.clone());
 
+        let mut cursor = CdcCursor::new();
+
         // Phase 1: Bulk copy via scan_changes.
         let r = self.shards[&source].client.scan_changes(0).await;
         let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
         let filtered = filter_changes(&changes, &split_key);
-        info!("split: bulk copied {} changes to new shard", filtered.len());
         ship_changes(&self.shards[&new_shard].client, new_shard, &filtered, &mut self.rng).await;
-        let mut last_view = r.effective_end_view;
+        cursor.advance(r.effective_end_view);
 
         // Phase 2: Catch-up tailing.
         loop {
             let r = self.shards[&source]
                 .client
-                .scan_changes(last_view + 1)
+                .scan_changes(cursor.next_from())
                 .await;
             let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
             let filtered = filter_changes(&changes, &split_key);
             if !filtered.is_empty() {
                 ship_changes(&self.shards[&new_shard].client, new_shard, &filtered, &mut self.rng).await;
             }
-            if r.effective_end_view == last_view {
+            if changes.is_empty() && cursor.stabilized(r.effective_end_view) {
                 break;
             }
-            last_view = r.effective_end_view;
+            cursor.advance(r.effective_end_view);
         }
 
         // Phase 3a: Freeze source — reject all Prepare with Fail.
@@ -78,7 +126,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         })
         .expect("serialize freeze config");
         self.shards[&source].client.reconfigure(freeze);
-        info!("split: source frozen, draining...");
+        // Source frozen — drain pending prepares.
 
         // Phase 3b: Drain — wait for ALL prepared transactions to resolve + final seal.
         //
@@ -94,16 +142,16 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
             T::sleep(Duration::from_secs(1)).await;
             let r = self.shards[&source]
                 .client
-                .scan_changes(last_view + 1)
+                .scan_changes(cursor.next_from())
                 .await;
             let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
             let filtered = filter_changes(&changes, &split_key);
             if !filtered.is_empty() {
                 ship_changes(&self.shards[&new_shard].client, new_shard, &filtered, &mut self.rng).await;
             }
-            last_view = last_view.max(r.effective_end_view);
+            cursor.advance(r.effective_end_view);
 
-            if r.pending_prepares == 0 && changes.is_empty() && r.effective_end_view == last_view {
+            if r.pending_prepares == 0 && changes.is_empty() && cursor.stabilized(r.effective_end_view) {
                 break;
             }
         }
@@ -111,7 +159,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         T::sleep(Duration::from_secs(3)).await;
         let r = self.shards[&source]
             .client
-            .scan_changes(last_view + 1)
+            .scan_changes(cursor.next_from())
             .await;
         let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
         let filtered = filter_changes(&changes, &split_key);
@@ -138,7 +186,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
 
         // Rebuild directory from all registered shards (not just source + new).
         self.rebuild_directory();
-        info!("split: complete");
+        // Split complete.
         Ok(())
     }
     /// Merge two adjacent shards: `absorbed` is removed, its data shipped to `surviving`.
@@ -151,9 +199,9 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
     /// **Phase 1 — Bulk Copy**: `scan_changes(0)` on the absorbed shard, ship ALL
     /// changes to the surviving shard (no key filtering — all data moves).
     ///
-    /// **Phase 2 — Catch-up Tailing**: Loop `scan_changes(last_view + 1)` on the
-    /// absorbed shard. Ship new changes to the surviving shard. Stop when
-    /// `effective_end_view` stabilizes.
+    /// **Phase 2 — Catch-up Tailing**: Loop `scan_changes(cursor.next_from())` on the
+    /// absorbed shard. Ship new changes to the surviving shard. Stop when the cursor
+    /// stabilizes.
     ///
     /// **Phase 3a — Freeze Absorbed**: `reconfigure(ShardConfig { read_only: true })`.
     /// New Prepare returns Fail. Existing prepared transactions resolve via
@@ -203,12 +251,12 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
     ///
     /// # CDC cursor and `pending_prepares` semantics
     ///
-    /// **Cursor advancement**: `effective_end_view` is the highest `base_view` key
-    /// in the replica's `record_delta_during_view: BTreeMap<u64, LeaderRecordDelta>`.
-    /// This is a monotonic cursor. The drain loop advances it via
-    /// `last_view = last_view.max(r.effective_end_view)`. If multiple view changes
-    /// happen between scans, a single `scan_changes(last_view + 1)` returns deltas
-    /// for all of them.
+    /// **Cursor advancement**: Uses `CdcCursor` which tracks `Option<u64>` to
+    /// distinguish "no deltas seen" (None) from "latest delta at base_view=0"
+    /// (Some(0)). When no deltas have been seen, `next_from()` returns 0; after
+    /// seeing deltas at base_view=N, returns N+1. This prevents the drain from
+    /// skipping a delta at base_view=0 when no view changes occurred before the
+    /// freeze.
     ///
     /// **`pending_prepares` scope**: `self.inner.prepared.len()` — count of ALL
     /// entries in the OCC store's prepared HashMap. View-agnostic. Entries added on
@@ -238,27 +286,29 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         }
         let merged_range = surviving_range.union(&absorbed_range);
 
+        let mut cursor = CdcCursor::new();
+
         // Phase 1: Bulk copy — ship all changes from absorbed to surviving.
         let r = self.shards[&absorbed].client.scan_changes(0).await;
         let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
-        info!("merge: bulk copied {} changes to surviving shard", changes.len());
+        // Bulk copy complete — ship all changes to surviving shard.
         ship_changes(&self.shards[&surviving].client, surviving, &changes, &mut self.rng).await;
-        let mut last_view = r.effective_end_view;
+        cursor.advance(r.effective_end_view);
 
         // Phase 2: Catch-up tailing.
         loop {
             let r = self.shards[&absorbed]
                 .client
-                .scan_changes(last_view + 1)
+                .scan_changes(cursor.next_from())
                 .await;
             let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
             if !changes.is_empty() {
                 ship_changes(&self.shards[&surviving].client, surviving, &changes, &mut self.rng).await;
             }
-            if r.effective_end_view == last_view {
+            if changes.is_empty() && cursor.stabilized(r.effective_end_view) {
                 break;
             }
-            last_view = r.effective_end_view;
+            cursor.advance(r.effective_end_view);
         }
 
         // Phase 3a: Freeze absorbed — reject all Prepare with Fail.
@@ -268,22 +318,22 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         })
         .expect("serialize freeze config");
         self.shards[&absorbed].client.reconfigure(freeze);
-        info!("merge: absorbed shard frozen, draining...");
+        // Absorbed shard frozen — drain pending prepares.
 
         // Phase 3b: Drain — wait for pending_prepares == 0 + final seal.
         loop {
             T::sleep(Duration::from_secs(1)).await;
             let r = self.shards[&absorbed]
                 .client
-                .scan_changes(last_view + 1)
+                .scan_changes(cursor.next_from())
                 .await;
             let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
             if !changes.is_empty() {
                 ship_changes(&self.shards[&surviving].client, surviving, &changes, &mut self.rng).await;
             }
-            last_view = last_view.max(r.effective_end_view);
+            cursor.advance(r.effective_end_view);
 
-            if r.pending_prepares == 0 && changes.is_empty() && r.effective_end_view == last_view {
+            if r.pending_prepares == 0 && changes.is_empty() && cursor.stabilized(r.effective_end_view) {
                 break;
             }
         }
@@ -291,7 +341,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         T::sleep(Duration::from_secs(3)).await;
         let r = self.shards[&absorbed]
             .client
-            .scan_changes(last_view + 1)
+            .scan_changes(cursor.next_from())
             .await;
         let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
         if !changes.is_empty() {
@@ -316,7 +366,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
 
         // Remove absorbed shard and rebuild directory.
         self.deregister_shard(absorbed);
-        info!("merge: complete");
+        // Merge complete.
         Ok(())
     }
 }

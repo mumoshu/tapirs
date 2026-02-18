@@ -58,11 +58,20 @@ pub enum UR<K, V> {
             deserialize = "K: Deserialize<'de>, V: Deserialize<'de>"
         ))]
         deltas: Vec<LeaderRecordDelta<K, V>>,
-        /// The highest base_view for which this replica has a delta.
+        /// The highest base_view for which this replica has a delta, or
+        /// `None` if no deltas exist (no view changes have happened yet).
+        ///
         /// A delta keyed by base_view=N contains changes that accumulated
         /// DURING view N (committed before the transition to view N+1).
-        /// Caller advances cursor with `from_view = effective_end_view + 1`.
-        effective_end_view: u64,
+        ///
+        /// - `None` → no deltas to read; the replica has no CDC history.
+        /// - `Some(N)` → deltas up through base_view=N have been returned.
+        ///   Caller advances cursor with `from_view = N + 1`.
+        ///
+        /// This is `Option` rather than defaulting to 0 because base_view=0
+        /// is a valid delta position (changes committed during view 0).
+        /// Using `0` for "no deltas" would be ambiguous.
+        effective_end_view: Option<u64>,
         /// Number of unresolved prepared transactions at this replica.
         /// Used by resharding drain to wait until all prepares resolve.
         pending_prepares: usize,

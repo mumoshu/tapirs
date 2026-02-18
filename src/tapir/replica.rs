@@ -351,15 +351,23 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
             }
             UO::ScanChanges { from_view } => {
                 // effective_end_view = the highest base_view for which this
-                // replica has a delta. A delta keyed by base_view=N contains
-                // changes that accumulated DURING view N. Caller advances
-                // cursor with `from_view = effective_end_view + 1`.
+                // replica has a delta, or None if no deltas exist.
+                //
+                // A delta keyed by base_view=N contains changes that
+                // accumulated DURING view N. Caller advances cursor with
+                // `from_view = effective_end_view.unwrap() + 1`.
+                //
+                // None vs Some(0) distinction is critical: None means "no
+                // view changes have happened, no CDC history exists", while
+                // Some(0) means "changes committed during view 0 are
+                // available". Without Option, both map to 0 and the caller
+                // cannot tell whether to scan from 0 (no history) or from
+                // 1 (view 0 already consumed).
                 let effective_end_view = self
                     .record_delta_during_view
                     .keys()
                     .next_back()
-                    .copied()
-                    .unwrap_or(0);
+                    .copied();
                 let deltas = self
                     .record_delta_during_view
                     .range(from_view..)

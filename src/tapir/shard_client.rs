@@ -326,7 +326,7 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
         // them. By quorum intersection, at least one replica in any f+1
         // response set has the delta for each view transition.
         let mut delta_lists = Vec::new();
-        let mut effective_end_view = 0u64;
+        let mut effective_end_view: Option<u64> = None;
         let mut pending_prepares = usize::MAX;
 
         for r in responses {
@@ -337,7 +337,16 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
             } = r
             {
                 delta_lists.push((deltas, eev));
-                effective_end_view = effective_end_view.max(eev);
+                // Merge: take the max across replicas. If any replica has
+                // Some(v), the merged result is Some(max of all v values).
+                // None means "no deltas" — only stays None if ALL replicas
+                // report None.
+                effective_end_view = match (effective_end_view, eev) {
+                    (Some(a), Some(b)) => Some(a.max(b)),
+                    (Some(a), None) => Some(a),
+                    (None, Some(b)) => Some(b),
+                    (None, None) => None,
+                };
                 pending_prepares = pending_prepares.min(pp);
             }
         }
@@ -448,7 +457,13 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
 
 pub struct ScanChangesResult<K, V> {
     pub deltas: Vec<LeaderRecordDelta<K, V>>,
-    pub effective_end_view: u64,
+    /// The highest base_view for which any replica returned a delta, or
+    /// `None` if no replicas have any deltas (no view changes yet).
+    ///
+    /// - `None` → no CDC history exists; nothing to consume.
+    /// - `Some(N)` → deltas up through base_view=N are available.
+    ///   Advance cursor with `from_view = N + 1`.
+    pub effective_end_view: Option<u64>,
     pub pending_prepares: usize,
 }
 
@@ -456,11 +471,11 @@ pub struct ScanChangesResult<K, V> {
 /// Picks the most granular (smallest span) delta at each view position,
 /// consuming via VecDeque pop_front (moves, no clones).
 fn merge_responses<K, V>(
-    response_lists: Vec<(Vec<LeaderRecordDelta<K, V>>, u64)>,
+    response_lists: Vec<(Vec<LeaderRecordDelta<K, V>>, Option<u64>)>,
 ) -> Vec<LeaderRecordDelta<K, V>> {
     let mut cursors: Vec<(VecDeque<LeaderRecordDelta<K, V>>, u64)> = response_lists
         .into_iter()
-        .map(|(v, eev)| (v.into_iter().collect(), eev))
+        .map(|(v, eev)| (v.into_iter().collect(), eev.unwrap_or(0)))
         .collect();
 
     let mut result = Vec::new();
