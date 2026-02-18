@@ -11,7 +11,7 @@ impl Debug for Number {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
 pub struct Sharded<K> {
     pub shard: Number,
     pub key: K,

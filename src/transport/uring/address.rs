@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 
 /// Network address for the io_uring transport (a TCP socket address).
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize,
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
 )]
 pub struct UringAddress(pub SocketAddr);
 

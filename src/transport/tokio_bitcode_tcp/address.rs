@@ -3,7 +3,7 @@ use std::fmt;
 use std::net::SocketAddr;
 
 /// Network address for the Tokio bitcode TCP transport.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct TcpAddress(pub SocketAddr);
 
 impl fmt::Display for TcpAddress {

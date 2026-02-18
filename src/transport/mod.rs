@@ -26,7 +26,7 @@ pub mod tokio_bitcode_tcp;
 pub mod uring;
 
 pub trait Transport<U: IrReplicaUpcalls>: Clone + Send + Sync + 'static {
-    type Address: Copy + Eq + Hash + Debug + Display + Send + Sync + Serialize + DeserializeOwned + 'static;
+    type Address: Copy + Ord + Eq + Hash + Debug + Display + Send + Sync + Serialize + DeserializeOwned + 'static;
     type Sleep: Future<Output = ()> + Send;
 
     /// Get own address.
