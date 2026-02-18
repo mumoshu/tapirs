@@ -1082,16 +1082,34 @@ async fn fuzz_tapir_transactions() {
     // Wait for all workloads with overall timeout.
     let all_done = timeout(Duration::from_secs(300), async {
         let _ = fault_handle.await;
+        let mut workload_panic = None;
         for handle in handles {
-            handle.await.unwrap();
+            if let Err(e) = handle.await {
+                if workload_panic.is_none() {
+                    workload_panic = Some(e);
+                }
+            }
         }
-        reshard_handle.await.unwrap();
+        if let Err(e) = reshard_handle.await {
+            if workload_panic.is_none() {
+                workload_panic = Some(e);
+            }
+        }
+        workload_panic
     })
     .await;
 
-    if all_done.is_err() {
-        event_log.record(FuzzEvent::WorkloadTimedOut);
-        eprintln!("fuzz_tapir_transactions: workload timed out (seed={seed})");
+    match &all_done {
+        Err(_) => {
+            event_log.record(FuzzEvent::WorkloadTimedOut);
+            event_log.dump(seed);
+            panic!("fuzz_tapir_transactions: workload timed out (seed={seed})");
+        }
+        Ok(Some(join_err)) => {
+            event_log.dump(seed);
+            panic!("fuzz_tapir_transactions: workload panicked (seed={seed}): {join_err}");
+        }
+        Ok(None) => {}
     }
 
     let attempted = total_attempted.load(Ordering::Relaxed);
