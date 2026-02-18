@@ -1,7 +1,7 @@
 use super::{Change, Key, KeyRange, LeaderRecordDelta, ShardNumber, Timestamp, Value, CO, CR, IO, IR, UO, UR};
 use crate::ir::ReplyUnlogged;
 use crate::tapir::ShardClient;
-use crate::util::{vectorize, vectorize_btree};
+use crate::util::vectorize_btree;
 use crate::{
     IrClientId, IrMembership, IrMembershipSize, IrOpId, IrRecord, IrReplicaUpcalls,
     OccPrepareResult, OccSharedTransaction, OccStore, OccTransactionId, TapirTransport,
@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::task::Context;
 use std::time::Duration;
-use std::{collections::HashMap, future::Future, hash::Hash};
+use std::{future::Future, hash::Hash};
 use tracing::{trace, warn};
 
 fn none<T>() -> Option<T> {
@@ -40,13 +40,13 @@ pub struct Replica<K, V> {
     /// Stores the commit timestamp, read/write sets, and commit status (true if committed) for
     /// all known committed and aborted transactions.
     #[serde(
-        with = "vectorize",
+        with = "vectorize_btree",
         bound(
             serialize = "K: Serialize, V: Serialize",
-            deserialize = "K: Deserialize<'de> + Hash + Eq, V: Deserialize<'de>"
+            deserialize = "K: Deserialize<'de> + Ord, V: Deserialize<'de>"
         )
     )]
-    transaction_log: HashMap<OccTransactionId, (Timestamp, bool)>,
+    transaction_log: BTreeMap<OccTransactionId, (Timestamp, bool)>,
     /// Extension to TAPIR: Garbage collection watermark time.
     /// - All transactions before this are committed/aborted.
     /// - Must not prepare transactions before this.
@@ -84,7 +84,7 @@ impl<K: Key, V: Value> Replica<K, V> {
     pub fn new(shard: ShardNumber, linearizable: bool) -> Self {
         Self {
             inner: OccStore::new(shard, linearizable),
-            transaction_log: HashMap::new(),
+            transaction_log: BTreeMap::new(),
             gc_watermark: 0,
             min_prepare_time: 0,
             finalized_min_prepare_time: 0,
@@ -784,6 +784,7 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
 }
 
 impl<K: Key, V: Value> Replica<K, V> {
+    #[allow(clippy::disallowed_methods)] // .values().max() is order-independent
     fn recompute_validated_timestamp(&mut self) {
         // GC orphaned prepares below gc_watermark — these can never be
         // resolved (CheckPrepare returns TooOld) and would block

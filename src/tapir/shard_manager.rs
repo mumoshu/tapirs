@@ -76,6 +76,7 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>, D: AddressDirectory<T::Addre
         self.shards.get(&shard).map(|s| &s.client)
     }
 
+    #[allow(clippy::disallowed_methods)] // values() order is irrelevant — ShardDirectory sorts internally
     pub(crate) fn rebuild_directory(&mut self) {
         let entries = self
             .shards

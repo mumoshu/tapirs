@@ -518,6 +518,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                                 latest_normal_view: sync.latest_normal_view.clone(),
                             }),
                         };
+                        #[allow(clippy::disallowed_methods)] // .filter().count() is order-independent
                         let matching = sync
                             .outstanding_do_view_changes
                             .iter()
@@ -553,10 +554,9 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                                     })
                                     .collect::<Vec<_>>();
 
-                                trace!(
-                                    "have {} latest records ({:?})",
-                                    latest_records.len(),
-                                    sync
+                                if tracing::enabled!(tracing::Level::TRACE) {
+                                    #[allow(clippy::disallowed_methods)] // trace logging only; order irrelevant
+                                    let dvc_debug: Vec<_> = sync
                                         .outstanding_do_view_changes
                                         .iter()
                                         .map(|(a, dvt)| (*a, dvt.view.number, dvt.addendum.as_ref().unwrap().latest_normal_view.number))
@@ -565,8 +565,13 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                                                 (self.inner.transport.address(), sync.view.number, sync.latest_normal_view.number)
                                             )
                                         )
-                                        .collect::<Vec<_>>()
-                                );
+                                        .collect();
+                                    trace!(
+                                        "have {} latest records ({:?})",
+                                        latest_records.len(),
+                                        dvc_debug
+                                    );
+                                }
 
                                 #[allow(non_snake_case)]
                                 let mut R = Record::<U>::default();

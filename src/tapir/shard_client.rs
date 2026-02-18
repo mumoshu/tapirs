@@ -404,6 +404,7 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
         let future =
             self.inner
                 .invoke_consensus(CO::RaiseMinPrepareTime { time }, |results, size| {
+                    #[allow(clippy::disallowed_methods)] // .iter().filter_map().max() is order-independent
                     let times = results.iter().filter_map(|(r, c)| {
                         if let CR::RaiseMinPrepareTime { time } = r {
                             Some((*time, *c))

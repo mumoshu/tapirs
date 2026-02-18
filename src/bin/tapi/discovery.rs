@@ -101,6 +101,7 @@ fn handle_request(state: &DiscoveryState, method: &str, path: &str, body: &str) 
     // GET /v1/cluster
     if method == "GET" && path == "/v1/cluster" {
         let shards = state.shards.read().unwrap();
+        #[allow(clippy::disallowed_methods)] // values() order irrelevant — sorted immediately after
         let mut entries: Vec<ShardMembership> = shards.values().cloned().collect();
         entries.sort_by_key(|s| s.id);
         let topology = ClusterTopology { shards: entries };

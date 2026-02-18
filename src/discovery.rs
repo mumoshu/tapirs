@@ -85,6 +85,7 @@ impl InMemoryDiscovery {
     }
 
     /// Direct read for test assertions.
+    #[allow(clippy::disallowed_methods)] // values() iteration order is irrelevant — sorted immediately after
     pub fn topology(&self) -> ClusterTopology {
         let shards = self.state.read().unwrap();
         let mut entries: Vec<ShardMembership> = shards.values().cloned().collect();
@@ -202,6 +203,7 @@ impl<A: Clone + Send + Sync + 'static> ShardDirectory<A> for InMemoryShardDirect
         self.shards.write().unwrap().remove(&shard);
     }
 
+    #[allow(clippy::disallowed_methods)] // output order is unspecified; callers must not depend on it
     fn all(&self) -> Vec<(ShardNumber, IrMembership<A>)> {
         self.shards
             .read()

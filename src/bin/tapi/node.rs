@@ -369,6 +369,7 @@ impl Node {
         }
     }
 
+    #[allow(clippy::disallowed_methods)] // output order unspecified; used for display only
     pub fn shard_list(&self) -> Vec<(ShardNumber, SocketAddr)> {
         self.replicas
             .lock()

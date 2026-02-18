@@ -1,0 +1,15 @@
+disallowed-methods = [
+    { path = "std::collections::HashMap::iter", reason = "HashMap iteration order is non-deterministic. Use BTreeMap if you need to iterate." },
+    { path = "std::collections::HashMap::iter_mut", reason = "HashMap iteration order is non-deterministic. Use BTreeMap if you need to iterate." },
+    { path = "std::collections::HashMap::keys", reason = "HashMap iteration order is non-deterministic. Use BTreeMap if you need to iterate." },
+    { path = "std::collections::HashMap::values", reason = "HashMap iteration order is non-deterministic. Use BTreeMap if you need to iterate." },
+    { path = "std::collections::HashMap::values_mut", reason = "HashMap iteration order is non-deterministic. Use BTreeMap if you need to iterate." },
+    { path = "std::collections::HashMap::into_keys", reason = "HashMap iteration order is non-deterministic. Use BTreeMap if you need to iterate." },
+    { path = "std::collections::HashMap::into_values", reason = "HashMap iteration order is non-deterministic. Use BTreeMap if you need to iterate." },
+    { path = "std::collections::HashMap::drain", reason = "HashMap drain order is non-deterministic. Use BTreeMap if you need ordered drain." },
+    { path = "std::collections::HashSet::iter", reason = "HashSet iteration order is non-deterministic. Use BTreeSet if you need to iterate." },
+    { path = "std::collections::HashSet::drain", reason = "HashSet drain order is non-deterministic. Use BTreeSet if you need ordered drain." },
+    # Note: HashMap::into_iter and HashSet::into_iter are IntoIterator trait methods,
+    # not inherent methods, so clippy disallowed_methods cannot catch them.
+    # Code review remains necessary for `for (k,v) in &map` patterns.
+]

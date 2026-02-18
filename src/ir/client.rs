@@ -225,6 +225,7 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
     /// read-only scan validation and CDC scan_changes where we need f+1
     /// view-consistent responses to merge.
     pub fn invoke_unlogged_quorum(&self, op: U::UO) -> impl Future<Output = Vec<U::UR>> + Send + use<U, T> {
+        #[allow(clippy::disallowed_methods)] // .values().any() is order-independent
         fn has_quorum_same_view<UR, A: Ord>(
             results: &BTreeMap<A, ReplyUnlogged<UR, A>>,
             f_plus_one: usize,
