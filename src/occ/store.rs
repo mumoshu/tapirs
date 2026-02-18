@@ -1,12 +1,12 @@
 use super::{SharedTransaction, Timestamp, Transaction, TransactionId};
 use crate::{
+    mvcc::backend::MvccBackend,
     tapir::{Key, ShardNumber, Value},
     util::vectorize_btree,
     MvccStore,
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    borrow::Borrow,
     collections::{btree_map, BTreeMap},
     fmt::Debug,
     ops::{Bound, Deref, DerefMut},
@@ -165,45 +165,26 @@ impl<K: Key, V: Value, TS> Store<K, V, TS> {
     }
 }
 
-impl<K: Key + Clone, V: Value + Clone, TS: Timestamp> Store<K, V, TS> {
-    pub fn scan_committed_since(&self, start_ts: TS, end_ts: TS) -> Vec<(K, Option<V>, TS)> {
-        self.inner.scan_committed_since(start_ts, end_ts)
-    }
-}
-
-impl<K: Key, V: Value, TS: Timestamp> Store<K, V, TS> {
-    pub fn get<Q: ?Sized + Ord>(&self, key: &Q) -> (Option<&V>, TS)
-    where
-        K: Borrow<Q>,
-    {
-        self.inner.get(key)
+impl<K: Key, V: Value, TS: Timestamp + Send> Store<K, V, TS> {
+    pub fn get(&self, key: &K) -> (Option<V>, TS) {
+        MvccBackend::get(&self.inner, key).unwrap()
     }
 
-    pub fn get_at<Q: ?Sized + Ord>(&self, key: &Q, timestamp: TS) -> (Option<&V>, TS)
-    where
-        K: Borrow<Q>,
-    {
-        self.inner.get_at(key, timestamp)
+    pub fn get_at(&self, key: &K, timestamp: TS) -> (Option<V>, TS) {
+        MvccBackend::get_at(&self.inner, key, timestamp).unwrap()
     }
 
-    pub fn scan(&self, start: &K, end: &K, timestamp: TS) -> Vec<(K, Option<V>, TS)>
-    where
-        K: Clone,
-        V: Clone,
-    {
-        self.inner.scan(start, end, timestamp)
+    pub fn scan(&self, start: &K, end: &K, timestamp: TS) -> Vec<(K, Option<V>, TS)> {
+        MvccBackend::scan(&self.inner, start, end, timestamp).unwrap()
     }
 
     /// Check if the version at `snapshot_ts` is "validated": has `read_ts >= snapshot_ts`.
     /// Returns `Some((value, write_ts))` if validated, `None` otherwise.
-    pub fn get_validated(&self, key: &K, snapshot_ts: TS) -> Option<(Option<V>, TS)>
-    where
-        V: Clone,
-    {
-        let read_ts = self.inner.get_last_read_at(key, snapshot_ts)?;
+    pub fn get_validated(&self, key: &K, snapshot_ts: TS) -> Option<(Option<V>, TS)> {
+        let read_ts = MvccBackend::get_last_read_at(&self.inner, key, snapshot_ts).unwrap()?;
         if read_ts >= snapshot_ts {
-            let (value, write_ts) = self.inner.get_at(key, snapshot_ts);
-            Some((value.cloned(), write_ts))
+            let (value, write_ts) = MvccBackend::get_at(&self.inner, key, snapshot_ts).unwrap();
+            Some((value, write_ts))
         } else {
             None
         }
@@ -211,32 +192,23 @@ impl<K: Key, V: Value, TS: Timestamp> Store<K, V, TS> {
 
     /// Get value at `snapshot_ts` and update the read timestamp to block future
     /// writes from overwriting the version.
-    pub fn quorum_read(&mut self, key: K, snapshot_ts: TS) -> (Option<V>, TS)
-    where
-        K: Clone,
-        V: Clone,
-    {
-        let (value, write_ts) = self.inner.get_at(&key, snapshot_ts);
-        let value = value.cloned();
-        self.inner.commit_get(key, snapshot_ts, snapshot_ts);
+    pub fn quorum_read(&mut self, key: K, snapshot_ts: TS) -> (Option<V>, TS) {
+        let (value, write_ts) = MvccBackend::get_at(&self.inner, &key, snapshot_ts).unwrap();
+        MvccBackend::commit_get(&mut self.inner, key, snapshot_ts, snapshot_ts).unwrap();
         (value, write_ts)
     }
 
     /// Read-only scan fast path: check if a covering range_read exists.
     /// Returns `Some(results)` if the range is covered (read_ts >= snapshot_ts),
     /// `None` otherwise (fall back to QuorumScan).
-    pub fn scan_validated(&self, start: &K, end: &K, snapshot_ts: TS) -> Option<Vec<(K, Option<V>, TS)>>
-    where
-        K: Clone,
-        V: Clone,
-    {
+    pub fn scan_validated(&self, start: &K, end: &K, snapshot_ts: TS) -> Option<Vec<(K, Option<V>, TS)>> {
         let covered = self.range_reads.iter().any(|(rs, re, rts)| {
             rs <= start && re >= end && *rts >= snapshot_ts
         });
         if !covered {
             return None;
         }
-        Some(self.inner.scan(start, end, snapshot_ts))
+        Some(MvccBackend::scan(&self.inner, start, end, snapshot_ts).unwrap())
     }
 
     /// Record a range-level read timestamp protecting `[start, end]` from
@@ -246,12 +218,8 @@ impl<K: Key, V: Value, TS: Timestamp> Store<K, V, TS> {
     }
 
     /// Read-only scan slow path: scan the MVCC store and record range protection.
-    pub fn quorum_scan(&mut self, start: K, end: K, snapshot_ts: TS) -> Vec<(K, Option<V>, TS)>
-    where
-        K: Clone,
-        V: Clone,
-    {
-        let results = self.inner.scan(&start, &end, snapshot_ts);
+    pub fn quorum_scan(&mut self, start: K, end: K, snapshot_ts: TS) -> Vec<(K, Option<V>, TS)> {
+        let results = MvccBackend::scan(&self.inner, &start, &end, snapshot_ts).unwrap();
         self.commit_scan(start, end, snapshot_ts);
         results
     }
@@ -312,7 +280,7 @@ impl<K: Key, V: Value, TS: Timestamp> Store<K, V, TS> {
             }
 
             // If we don't have this key then no conflicts for read.
-            let (beginning, end) = self.inner.get_range(key, read);
+            let (beginning, end) = MvccBackend::get_range(&self.inner, key, read).unwrap();
 
             if beginning == read {
                 if let Some(end) = end && (self.linearizable || commit > end) {
@@ -348,7 +316,7 @@ impl<K: Key, V: Value, TS: Timestamp> Store<K, V, TS> {
         // Check for conflicts with the write set.
         for (key, _) in transaction.shard_write_set(self.shard) {
             {
-                let (_, timestamp) = self.inner.get(key);
+                let (_, timestamp) = MvccBackend::get(&self.inner, key).unwrap();
                 // If the last commited write is after the write...
                 if self.linearizable && timestamp > commit {
                     // ...then the write isn't linearizable.
@@ -360,10 +328,10 @@ impl<K: Key, V: Value, TS: Timestamp> Store<K, V, TS> {
                 // if last committed read is after the write...
                 let last_read = if self.linearizable {
                     // Cannot write an old version.
-                    self.inner.get_last_read(key)
+                    MvccBackend::get_last_read(&self.inner, key).unwrap()
                 } else {
                     // Might be able to write an old version.
-                    self.inner.get_last_read_at(key, commit)
+                    MvccBackend::get_last_read_at(&self.inner, key, commit).unwrap()
                 };
 
                 if let Some(last_read) = last_read && last_read > commit {
@@ -395,12 +363,13 @@ impl<K: Key, V: Value, TS: Timestamp> Store<K, V, TS> {
         // Check for conflicts with the scan set (phantom prevention).
         for entry in transaction.shard_scan_set(self.shard) {
             // Check if any committed writes appeared in the scanned range after the scan.
-            if self.inner.has_writes_in_range(
+            if MvccBackend::has_writes_in_range(
+                &self.inner,
                 &entry.start_key,
                 &entry.end_key,
                 entry.timestamp,
                 commit,
-            ) {
+            ).unwrap() {
                 return PrepareResult::Fail;
             }
             // Check if any prepared writes exist in the scanned range.
@@ -423,11 +392,11 @@ impl<K: Key, V: Value, TS: Timestamp> Store<K, V, TS> {
 
     pub fn commit(&mut self, id: TransactionId, transaction: &Transaction<K, V, TS>, commit: TS) {
         for (key, read) in transaction.shard_read_set(self.shard) {
-            self.inner.commit_get(key.clone(), read, commit);
+            MvccBackend::commit_get(&mut self.inner, key.clone(), read, commit).unwrap();
         }
 
         for (key, value) in transaction.shard_write_set(self.shard) {
-            self.inner.put(key.clone(), value.clone(), commit);
+            MvccBackend::put(&mut self.inner, key.clone(), value.clone(), commit).unwrap();
         }
 
         // Note: Transaction may not be in the prepared list of this particular replica, and that's okay.
@@ -435,7 +404,7 @@ impl<K: Key, V: Value, TS: Timestamp> Store<K, V, TS> {
     }
 
     pub fn put(&mut self, key: K, value: Option<V>, timestamp: TS) {
-        self.inner.put(key, value, timestamp);
+        MvccBackend::put(&mut self.inner, key, value, timestamp).unwrap();
     }
 
     pub fn add_prepared(
@@ -797,8 +766,8 @@ mod tests {
         let id = txn_id(1, 1);
         store.commit(id, &txn, ts(5, 1));
 
-        let (val, version) = store.get("x");
-        assert_eq!(val, Some(&"hello".to_string()));
+        let (val, version) = store.get(&"x".to_string());
+        assert_eq!(val, Some("hello".to_string()));
         assert_eq!(version, ts(5, 1));
     }
 
@@ -827,8 +796,8 @@ mod tests {
         let id = txn_id(1, 1);
         store.commit(id, &txn, ts(5, 1));
 
-        let (val, _) = store.get("x");
-        assert_eq!(val, Some(&"v1".to_string()));
+        let (val, _) = store.get(&"x".to_string());
+        assert_eq!(val, Some("v1".to_string()));
     }
 
     // ── Linearizable vs eventual mode ──

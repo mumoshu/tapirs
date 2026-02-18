@@ -242,7 +242,7 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
                 } else {
                     self.inner.get(&key)
                 };
-                UR::Get(v.cloned(), ts)
+                UR::Get(v, ts)
             }
             UO::Scan {
                 start_key,
