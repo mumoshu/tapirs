@@ -1,5 +1,5 @@
 test:
-	clear && cargo test --release -- # --nocapture
+	clear && cargo clippy -- -D clippy::disallowed_methods && cargo test --release -- # --nocapture
 
 lock_server_stress_test:
 	clear && cargo test --release -- lock_server_loop --nocapture --include-ignored
