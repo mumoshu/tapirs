@@ -47,20 +47,10 @@ pub struct Replica<K, V> {
         )
     )]
     transaction_log: BTreeMap<OccTransactionId, (Timestamp, bool)>,
-    /// Extension to TAPIR: Garbage collection watermark time.
-    /// - All transactions before this are committed/aborted.
-    /// - Must not prepare transactions before this.
-    /// - May (at any time) garbage collect MVCC versions
-    ///   that are invalid at and after this.
-    /// - May (at any time) garbage collect keys with
-    ///   a tombstone valid at and after this.
-    gc_watermark: u64,
     /// Minimum acceptable prepare time (tentative).
     min_prepare_time: u64,
     /// Minimum acceptable prepare time (finalized).
     finalized_min_prepare_time: u64,
-    /// Highest timestamp at which all transactions are guaranteed committed or aborted.
-    validated_timestamp: u64,
     /// Changes committed DURING each view, keyed by base_view (the view number
     /// during which changes accumulated). IR provides base_view directly from the
     /// RecordPayload::Delta or leader_record at each view change.
@@ -85,10 +75,8 @@ impl<K: Key, V: Value> Replica<K, V> {
         Self {
             inner: OccStore::new(shard, linearizable),
             transaction_log: BTreeMap::new(),
-            gc_watermark: 0,
             min_prepare_time: 0,
             finalized_min_prepare_time: 0,
-            validated_timestamp: 0,
             record_delta_during_view: BTreeMap::new(),
             key_range: None,
             read_only: false,
@@ -289,11 +277,7 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
                 transaction_id,
                 commit,
             } => {
-                UR::CheckPrepare(if commit.time < self.gc_watermark {
-                    // In theory, could check the other conditions first, but
-                    // that might hide bugs.
-                    OccPrepareResult::TooOld
-                } else if let Some((ts, c)) = self.transaction_log.get(&transaction_id) {
+                UR::CheckPrepare(if let Some((ts, c)) = self.transaction_log.get(&transaction_id) {
                     if *c && *ts == commit {
                         // Already committed at this timestamp.
                         OccPrepareResult::Ok
@@ -494,11 +478,7 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
                 if self.read_only {
                     return CR::Prepare(OccPrepareResult::Fail);
                 }
-                CR::Prepare(if commit.time < self.gc_watermark {
-                // In theory, could check the other conditions first, but
-                // that might hide bugs.
-                OccPrepareResult::TooOld
-            } else if let Some((ts, c)) = self.transaction_log.get(transaction_id) {
+                CR::Prepare(if let Some((ts, c)) = self.transaction_log.get(transaction_id) {
                 if *c {
                     if ts == commit {
                         // Already committed at this timestamp.
@@ -658,7 +638,7 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
 
             self.exec_inconsistent(&entry.op);
         }
-        self.recompute_validated_timestamp();
+        self.gc_stale_state();
     }
 
     fn merge(
@@ -792,44 +772,9 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
 }
 
 impl<K: Key, V: Value> Replica<K, V> {
-    #[allow(clippy::disallowed_methods)] // .values().max() is order-independent
-    fn recompute_validated_timestamp(&mut self) {
-        // GC orphaned prepares below gc_watermark — these can never be
-        // resolved (CheckPrepare returns TooOld) and would block
-        // validated_timestamp / CDC progress indefinitely.
-        if self.gc_watermark > 0 {
-            let orphans: Vec<_> = self
-                .inner
-                .prepared
-                .iter()
-                .filter(|(_, (ts, _, _))| ts.time < self.gc_watermark)
-                .map(|(id, _)| *id)
-                .collect();
-            for id in orphans {
-                self.inner.remove_prepared(id);
-            }
-        }
-
-        let max_committed = self
-            .transaction_log
-            .values()
-            .filter(|(_, committed)| *committed)
-            .map(|(ts, _)| ts.time)
-            .max()
-            .unwrap_or(0);
-
-        let earliest_pending_prepare = self
-            .inner
-            .prepared
-            .values()
-            .map(|(ts, _, _)| ts.time)
-            .min();
-
-        self.validated_timestamp = if let Some(earliest) = earliest_pending_prepare {
-            max_committed.min(earliest.saturating_sub(1))
-        } else {
-            max_committed
-        };
+    fn gc_stale_state(&mut self) {
+        // Placeholder for future GC logic (e.g. range_reads cleanup,
+        // transaction_log trimming) using finalized_min_prepare_time.
     }
 
     pub fn tick<T: TapirTransport<K, V>>(
@@ -987,7 +932,7 @@ mod tests {
     }
 
     #[test]
-    fn orphaned_prepares_below_gc_watermark_are_cleaned() {
+    fn gc_stale_state_does_not_remove_prepared_entries() {
         let mut replica = Replica::<i64, i64>::new(ShardNumber(0), false);
         let txn_id = make_txn_id(1, 1);
         let ts = make_ts(5, 1);
@@ -1005,14 +950,12 @@ mod tests {
         );
         assert!(replica.inner.prepared.contains_key(&txn_id));
 
-        // Advance gc_watermark past the prepare timestamp.
-        replica.gc_watermark = 10;
-
-        // recompute_validated_timestamp should GC the orphaned prepare.
-        replica.recompute_validated_timestamp();
+        // gc_stale_state must NOT remove prepared entries — they are resolved
+        // exclusively by the coordinator system (IO::Commit / IO::Abort).
+        replica.gc_stale_state();
         assert!(
-            !replica.inner.prepared.contains_key(&txn_id),
-            "orphaned prepare below gc_watermark should be removed"
+            replica.inner.prepared.contains_key(&txn_id),
+            "prepared entries must not be removed by gc_stale_state"
         );
     }
 }
