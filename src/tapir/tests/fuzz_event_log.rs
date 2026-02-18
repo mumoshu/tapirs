@@ -82,6 +82,17 @@ pub enum FuzzEvent {
         round: usize,
         error: String,
     },
+    ReshardCompactAttempt {
+        round: usize,
+        source_shard: u32,
+    },
+    ReshardCompactOk {
+        round: usize,
+    },
+    ReshardCompactErr {
+        round: usize,
+        error: String,
+    },
 
     // Invariant checking
     InvariantCheckStart,
@@ -123,6 +134,12 @@ impl fmt::Display for FuzzEvent {
                 write!(f, "RESHARD[{round}] merge-ok"),
             FuzzEvent::ReshardMergeErr { round, error } =>
                 write!(f, "RESHARD[{round}] merge-err: {error}"),
+            FuzzEvent::ReshardCompactAttempt { round, source_shard } =>
+                write!(f, "RESHARD[{round}] compact-attempt shard={source_shard}"),
+            FuzzEvent::ReshardCompactOk { round } =>
+                write!(f, "RESHARD[{round}] compact-ok"),
+            FuzzEvent::ReshardCompactErr { round, error } =>
+                write!(f, "RESHARD[{round}] compact-err: {error}"),
             FuzzEvent::InvariantCheckStart =>
                 write!(f, "INVARIANT check-start"),
             FuzzEvent::InvariantCheckPassed =>

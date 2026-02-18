@@ -747,8 +747,8 @@ async fn fuzz_tapir_transactions() {
     // Account for client addresses.
     address_offset += num_clients;
 
-    // Pre-build 2 potential new shard replica groups (for up to 2 splits).
-    let new_shard_replica_counts: Vec<usize> = (0..2)
+    // Pre-build 4 potential new shard replica groups (for splits and compacts).
+    let new_shard_replica_counts: Vec<usize> = (0..4)
         .map(|_| [3, 5, 7][rng.gen_range(0..3usize)])
         .collect();
     let shard_entries = build_shard_entries(num_shards, num_keys);
@@ -777,6 +777,8 @@ async fn fuzz_tapir_transactions() {
     let manager_rng = lib_rng.fork();
     let manager_seed: u64 = rng.r#gen();
     let reshard_seed: u64 = rng.r#gen();
+    let final_shards: Arc<Mutex<Option<Vec<ShardNumber>>>> =
+        Arc::new(Mutex::new(None));
 
     // Spawn fault injection task.
     //
@@ -1012,6 +1014,7 @@ async fn fuzz_tapir_transactions() {
     let reshard_config = config.clone();
     let reshard_shard_entries = shard_entries.clone();
     let reshard_event_log = event_log.clone();
+    let reshard_final_shards = Arc::clone(&final_shards);
     let reshard_handle = tokio::spawn(async move {
         use crate::tapir::shard_manager::ShardManager;
 
@@ -1035,15 +1038,16 @@ async fn fuzz_tapir_transactions() {
         let mut next_shard_idx = 0usize;
 
         // Random resharding loop — no guards, attempt anything.
-        // No explicit view change forcing needed: split/merge handle CDC
-        // internally (freeze triggers view change → produces delta → drain
+        // No explicit view change forcing needed: split/merge/compact handle
+        // CDC internally (freeze triggers view change → produces delta → drain
         // picks it up). The fault injection task provides additional random
         // view changes.
         for round in 0..2 {
             let mut shard_keys: Vec<_> = manager.shards.keys().cloned().collect();
             shard_keys.sort();
 
-            if reshard_rng.gen_bool(0.5) {
+            let op: u8 = reshard_rng.gen_range(0..3);
+            if op == 0 {
                 // Attempt split: random shard, midpoint key.
                 let source = shard_keys[reshard_rng.gen_range(0..shard_keys.len())];
                 let range = &manager.shards[&source].key_range;
@@ -1069,7 +1073,7 @@ async fn fuzz_tapir_transactions() {
                         }),
                     }
                 }
-            } else if shard_keys.len() >= 2 {
+            } else if op == 1 && shard_keys.len() >= 2 {
                 // Attempt merge: pick any two registered shards.
                 // May be same shard or non-adjacent — ShardManager rejects.
                 let absorbed = shard_keys[reshard_rng.gen_range(0..shard_keys.len())];
@@ -1089,8 +1093,31 @@ async fn fuzz_tapir_transactions() {
                         round, error: format!("{e:?}"),
                     }),
                 }
+            } else if op == 2 && next_shard_idx < new_shard_memberships.len() {
+                // Attempt compact: replace source shard with clean replica group.
+                let source = shard_keys[reshard_rng.gen_range(0..shard_keys.len())];
+                let new_shard_number = ShardNumber(num_shards + next_shard_idx as u32);
+                let membership = new_shard_memberships[next_shard_idx].clone();
+                reshard_event_log.record(FuzzEvent::ReshardCompactAttempt {
+                    round, source_shard: source.0,
+                });
+                match manager.compact(source, new_shard_number, membership).await {
+                    Ok(()) => {
+                        next_shard_idx += 1;
+                        reshard_router.directory().write().unwrap().update(
+                            manager.directory.entries().iter().cloned().collect(),
+                        );
+                        reshard_event_log.record(FuzzEvent::ReshardCompactOk { round });
+                    }
+                    Err(e) => reshard_event_log.record(FuzzEvent::ReshardCompactErr {
+                        round, error: format!("{e:?}"),
+                    }),
+                }
             }
         }
+
+        *reshard_final_shards.lock().unwrap() =
+            Some(manager.shards.keys().cloned().collect());
     });
 
     // Wait for all workloads with overall timeout.
@@ -1140,12 +1167,26 @@ async fn fuzz_tapir_transactions() {
     // Let replicas drain pending operations after all view changes settle.
     FaultyTransport::sleep(Duration::from_secs(5)).await;
 
-    // Verify address directory is populated with all shards.
-    for s in 0..num_shards {
-        let shard = ShardNumber(s);
-        if address_directory.get(shard).is_none() {
-            event_log.dump(seed);
-            panic!("address directory should contain shard {s} (seed={seed})");
+    // Verify address directory is populated with all active shards.
+    // Compact deregisters the source shard, so check the final set rather
+    // than the original 0..num_shards.
+    let active_shards = final_shards.lock().unwrap();
+    if let Some(ref shard_list) = *active_shards {
+        for &shard in shard_list {
+            if address_directory.get(shard).is_none() {
+                event_log.dump(seed);
+                panic!(
+                    "address directory should contain shard {shard:?} (seed={seed})"
+                );
+            }
+        }
+    } else {
+        for s in 0..num_shards {
+            let shard = ShardNumber(s);
+            if address_directory.get(shard).is_none() {
+                event_log.dump(seed);
+                panic!("address directory should contain shard {s} (seed={seed})");
+            }
         }
     }
 
