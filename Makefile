@@ -13,6 +13,12 @@ coordinator_failure_stress_test_7:
 bench:
 	clear && cargo test throughput_3_ser --release -- --nocapture
 
+fuzz:
+	./scripts/fuzz-multi-seed.sh
+
+fuzz100:
+	FUZZ_ITERATIONS=100 FUZZ_PARALLEL=4 ./scripts/fuzz-multi-seed.sh
+
 maelstrom:
 	cargo build --release --features maelstrom --bin maelstrom
 	maelstrom test -w lin-kv --bin target/release/maelstrom --latency 0 --rate 10 --time-limit 90 --concurrency 20 --nemesis partition --nemesis-interval 20
