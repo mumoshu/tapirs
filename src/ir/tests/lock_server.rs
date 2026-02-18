@@ -10,7 +10,7 @@ fn test_rng(seed: u64) -> crate::Rng {
 }
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::Arc,
     time::Duration,
 };
@@ -143,10 +143,10 @@ async fn lock_server(num_replicas: usize) {
 
         fn merge(
             &mut self,
-            d: HashMap<IrOpId, (Self::CO, Self::CR)>,
+            d: BTreeMap<IrOpId, (Self::CO, Self::CR)>,
             u: Vec<(IrOpId, Self::CO, Self::CR)>,
-        ) -> HashMap<IrOpId, Self::CR> {
-            let mut results = HashMap::<IrOpId, Self::CR>::new();
+        ) -> BTreeMap<IrOpId, Self::CR> {
+            let mut results = BTreeMap::<IrOpId, Self::CR>::new();
 
             for (op_id, (request, reply)) in &d {
                 let successful = matches!(reply, LockResult::Ok);

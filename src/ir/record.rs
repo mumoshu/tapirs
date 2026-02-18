@@ -1,7 +1,7 @@
 use super::{OpId, ReplicaUpcalls, ViewNumber};
-use crate::util::vectorize;
+use crate::util::vectorize_btree;
 use serde::{Deserialize, Serialize};
-use std::{collections::{HashMap, HashSet}, fmt::Debug};
+use std::{collections::{BTreeMap, HashSet}, fmt::Debug};
 
 /// The state of a record entry according to a replica.
 #[derive(Copy, Clone, PartialEq, Serialize, Deserialize)]
@@ -76,19 +76,23 @@ pub type Record<U> =
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RecordImpl<IO, CO, CR> {
+    // BTreeMap for deterministic view change merge iteration. HashMap's RandomState
+    // seeds from OS entropy, making iteration order vary per process. O(log n)
+    // overhead is negligible for protocol operation counts. Wire format is unchanged
+    // (vectorize_btree serializes as Vec<(K,V)> identical to vectorize).
     #[serde(
-        with = "vectorize",
+        with = "vectorize_btree",
         bound(serialize = "IO: Serialize", deserialize = "IO: Deserialize<'de>")
     )]
-    pub inconsistent: HashMap<OpId, InconsistentEntry<IO>>,
+    pub inconsistent: BTreeMap<OpId, InconsistentEntry<IO>>,
     #[serde(
-        with = "vectorize",
+        with = "vectorize_btree",
         bound(
             serialize = "CO: Serialize, CR: Serialize",
             deserialize = "CO: Deserialize<'de>, CR: Deserialize<'de>"
         )
     )]
-    pub consensus: HashMap<OpId, ConsensusEntry<CO, CR>>,
+    pub consensus: BTreeMap<OpId, ConsensusEntry<CO, CR>>,
 }
 
 impl<IO, CO, CR> Default for RecordImpl<IO, CO, CR> {

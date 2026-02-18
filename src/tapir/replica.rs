@@ -107,7 +107,7 @@ impl<K: Key, V: Value> Replica<K, V> {
         warn!("trying to recover {transaction_id:?}");
 
         async move {
-            let mut participants = HashMap::new();
+            let mut participants = BTreeMap::new();
             let client_id = IrClientId::new(&mut rng);
             for shard in transaction.participants() {
                 let membership = transport.shard_addresses(shard).await;
@@ -655,10 +655,10 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
 
     fn merge(
         &mut self,
-        d: HashMap<IrOpId, (Self::CO, Self::CR)>,
+        d: BTreeMap<IrOpId, (Self::CO, Self::CR)>,
         u: Vec<(IrOpId, Self::CO, Self::CR)>,
-    ) -> HashMap<IrOpId, Self::CR> {
-        let mut ret: HashMap<IrOpId, Self::CR> = HashMap::new();
+    ) -> BTreeMap<IrOpId, Self::CR> {
+        let mut ret: BTreeMap<IrOpId, Self::CR> = BTreeMap::new();
 
         // Remove inconsistencies caused by out-of-order execution at the leader.
         self.min_prepare_time = self.finalized_min_prepare_time;

@@ -9,7 +9,7 @@ use super::{
 use crate::{Transport, TransportMessage};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
-    collections::{hash_map::Entry, HashMap, HashSet},
+    collections::{btree_map::Entry, hash_map, BTreeMap, BTreeSet, HashMap, HashSet},
     fmt::Debug,
     hash::Hash,
     sync::{Arc, Mutex},
@@ -65,9 +65,9 @@ pub trait Upcalls: Sized + Send + Serialize + DeserializeOwned + 'static {
     fn sync(&mut self, local: &Record<Self>, leader: &Record<Self>);
     fn merge(
         &mut self,
-        d: HashMap<OpId, (Self::CO, Self::CR)>,
+        d: BTreeMap<OpId, (Self::CO, Self::CR)>,
         u: Vec<(OpId, Self::CO, Self::CR)>,
-    ) -> HashMap<OpId, Self::CR>;
+    ) -> BTreeMap<OpId, Self::CR>;
 
     /// Called after a view change completes with the current `app_config`.
     /// Default: no-op (static setups ignore config).
@@ -319,7 +319,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
             .membership
             .iter()
             .chain(sync.latest_normal_view.membership.iter())
-            .collect::<HashSet<_>>();
+            .collect::<BTreeSet<_>>();
 
         for address in destinations {
             if address == transport.address() {
@@ -491,10 +491,10 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                         debug_assert!(!msg.from_client);
                         let msg_view_number = msg.view.number;
                         match sync.outstanding_do_view_changes.entry(address) {
-                            Entry::Vacant(vacant) => {
+                            hash_map::Entry::Vacant(vacant) => {
                                 vacant.insert(msg);
                             }
-                            Entry::Occupied(mut occupied) => {
+                            hash_map::Entry::Occupied(mut occupied) => {
                                 if msg.view.number < occupied.get().view.number {
                                     return None;
                                 }
@@ -571,7 +571,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                                 #[allow(non_snake_case)]
                                 let mut R = Record::<U>::default();
                                 let mut entries_by_opid =
-                                    HashMap::<OpId, Vec<RecordConsensusEntry<U::CO, U::CR>>>::new();
+                                    BTreeMap::<OpId, Vec<RecordConsensusEntry<U::CO, U::CR>>>::new();
                                 let mut finalized = HashSet::new();
                                 for r in latest_records {
                                     for (op_id, entry) in r.inconsistent.clone() {
@@ -622,7 +622,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
 
                                 // build d and u
                                 let mut d =
-                                    HashMap::<OpId, (U::CO, U::CR)>::new();
+                                    BTreeMap::<OpId, (U::CO, U::CR)>::new();
                                 let mut u =
                                     Vec::<(OpId, U::CO, U::CR)>::new();
 
@@ -694,7 +694,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                                 .membership
                                 .iter()
                                 .chain(sync.latest_normal_view.membership.iter())
-                                .collect::<HashSet<_>>();
+                                .collect::<BTreeSet<_>>();
 
                             sync.latest_normal_view.make_mut().number = msg_view_number;
                             sync.latest_normal_view.make_mut().membership = sync.view.membership.clone();
