@@ -41,13 +41,31 @@ fi
 echo "Build successful."
 echo ""
 
-# --- Filter function: strips cargo test harness lines ---
-# These lines contain wall-clock timing or boilerplate that varies between runs
-# even when the test itself is deterministic.
-HARNESS_PATTERN='^(running [0-9]+ tests?|test .+ \.\.\. (ok|FAILED)|test result: .+|failures:|---- .+ ----)$'
+# --- Filter function: strips lines that may vary between runs ---
+# Categories:
+#   1. Cargo test harness lines (running N tests, test result, etc.)
+#   2. Cargo build output that leaks through (Compiling, Finished with timing, etc.)
+FILTER_PATTERNS=(
+    # Test harness
+    '^running [0-9]+ tests?'
+    '^test .+ \.\.\. (ok|FAILED)'
+    '^test result: '
+    '^failures:'
+    '^---- .+ ----'
+    # Cargo build output (timing varies between runs)
+    '^\s*Compiling '
+    '^\s*Finished '
+    '^\s*Downloading '
+    '^\s*Downloaded '
+    '^\s*Fresh '
+    '^\s*Dirty '
+    'target\(s\) in [0-9]'
+)
+
+FILTER_REGEX=$(IFS='|'; echo "${FILTER_PATTERNS[*]}")
 
 filter_log() {
-    grep -vE "${HARNESS_PATTERN}" "$1" || true
+    grep -vE "${FILTER_REGEX}" "$1" || true
 }
 
 # --- Run loop ---
@@ -191,10 +209,11 @@ Common sources of indeterminism in Tokio (current_thread + start_paused=true):
 GUIDANCE
 
 echo "Debug steps:"
-echo "  1. Re-run with RUST_LOG=debug:"
-echo "       FUZZ_SEED=${SEED} RUST_LOG=debug cargo test --lib ${TEST_NAME} -- --nocapture"
+echo "  1. Re-run with FUZZ_VERBOSE=1 for structured event timeline:"
+echo "       TAPI_TEST_SEED=${SEED} FUZZ_VERBOSE=1 cargo test --lib ${TEST_NAME} -- --nocapture"
 echo ""
-echo "  2. Add eprintln! at suspected divergence points to narrow where output first differs."
+echo "  2. Re-run with RUST_LOG=debug for protocol-level tracing:"
+echo "       TAPI_TEST_SEED=${SEED} RUST_LOG=debug cargo test --lib ${TEST_NAME} -- --nocapture"
 echo ""
 echo "  3. Reduce iterations_per_client or num_clients for a minimal reproduction."
 echo ""
