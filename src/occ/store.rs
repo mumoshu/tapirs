@@ -1,9 +1,9 @@
 use super::{SharedTransaction, Timestamp, Transaction, TransactionId};
 use crate::{
     mvcc::backend::MvccBackend,
+    mvcc::MemoryStore,
     tapir::{Key, ShardNumber, Value},
     util::vectorize_btree,
-    MvccStore,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -14,20 +14,26 @@ use std::{
 use tracing::trace;
 
 #[derive(Serialize, Deserialize)]
-pub struct Store<K, V, TS> {
+pub struct Store<K, V, TS, M = MemoryStore<K, V, TS>> {
     shard: ShardNumber,
     linearizable: bool,
     #[serde(bound(
-        serialize = "K: Serialize + Ord, V: Serialize, TS: Serialize",
-        deserialize = "K: Deserialize<'de> + Ord, V: Deserialize<'de>, TS: Deserialize<'de> + Ord"
+        serialize = "M: Serialize",
+        deserialize = "M: Deserialize<'de>"
     ))]
-    inner: MvccStore<K, V, TS>,
+    inner: M,
     // BTreeMap for deterministic iteration during view change merge. Entries are
     // transient (cleared on commit/abort), so O(log n) vs O(1) is negligible for
     // the bounded number of concurrent transactions.
     /// Transactions which may commit in the future (and whether the prepare was
     /// finalized in the IR sense).
-    #[serde(with = "vectorize_btree")]
+    #[serde(
+        with = "vectorize_btree",
+        bound(
+            serialize = "V: Serialize, TS: Serialize",
+            deserialize = "V: Deserialize<'de>, TS: Deserialize<'de> + Ord"
+        )
+    )]
     pub prepared: BTreeMap<TransactionId, (TS, SharedTransaction<K, V, TS>, bool)>,
     // Cache.
     #[serde(
@@ -147,12 +153,15 @@ impl<TS: Timestamp> PrepareResult<TS> {
     }
 }
 
-impl<K: Key, V: Value, TS> Store<K, V, TS> {
+impl<K: Key, V: Value, TS, M> Store<K, V, TS, M> {
     pub fn shard(&self) -> ShardNumber {
         self.shard
     }
 
-    pub fn new(shard: ShardNumber, linearizable: bool) -> Self {
+    pub fn new(shard: ShardNumber, linearizable: bool) -> Self
+    where
+        M: Default,
+    {
         Self {
             shard,
             linearizable,
@@ -163,9 +172,21 @@ impl<K: Key, V: Value, TS> Store<K, V, TS> {
             range_reads: Vec::new(),
         }
     }
+
+    pub fn new_with_backend(shard: ShardNumber, linearizable: bool, backend: M) -> Self {
+        Self {
+            shard,
+            linearizable,
+            inner: backend,
+            prepared: Default::default(),
+            prepared_reads: Default::default(),
+            prepared_writes: Default::default(),
+            range_reads: Vec::new(),
+        }
+    }
 }
 
-impl<K: Key, V: Value, TS: Timestamp + Send> Store<K, V, TS> {
+impl<K: Key, V: Value, TS: Timestamp + Send, M: MvccBackend<K, V, TS>> Store<K, V, TS, M> {
     pub fn get(&self, key: &K) -> (Option<V>, TS) {
         MvccBackend::get(&self.inner, key).unwrap()
     }

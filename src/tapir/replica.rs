@@ -4,10 +4,11 @@ use crate::tapir::ShardClient;
 use crate::util::vectorize_btree;
 use crate::{
     IrClientId, IrMembership, IrMembershipSize, IrOpId, IrRecord, IrReplicaUpcalls,
+    MvccBackend, MvccMemoryStore,
     OccPrepareResult, OccSharedTransaction, OccStore, OccTransactionId, TapirTransport,
 };
 use futures::future::join_all;
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::task::Context;
 use std::time::Duration;
@@ -31,12 +32,12 @@ pub(crate) struct ShardConfig<K> {
 /// view change to syncronize each participant shard's prepare result and then
 /// let one or more of many possible backup coordinators take them at face-value.
 #[derive(Serialize, Deserialize)]
-pub struct Replica<K, V> {
+pub struct Replica<K, V, M = MvccMemoryStore<K, V, Timestamp>> {
     #[serde(bound(
-        serialize = "K: Serialize + Ord + Hash, V: Serialize",
-        deserialize = "K: Deserialize<'de> + Ord + Hash + Eq, V: Deserialize<'de>"
+        serialize = "K: Serialize + Ord + Hash, V: Serialize, M: Serialize",
+        deserialize = "K: Deserialize<'de> + Ord + Hash + Eq, V: Deserialize<'de>, M: Deserialize<'de>"
     ))]
-    inner: OccStore<K, V, Timestamp>,
+    inner: OccStore<K, V, Timestamp, M>,
     /// Stores the commit timestamp, read/write sets, and commit status (true if committed) for
     /// all known committed and aborted transactions.
     #[serde(
@@ -70,8 +71,11 @@ pub struct Replica<K, V> {
     read_only: bool,
 }
 
-impl<K: Key, V: Value> Replica<K, V> {
-    pub fn new(shard: ShardNumber, linearizable: bool) -> Self {
+impl<K: Key, V: Value, M> Replica<K, V, M> {
+    pub fn new(shard: ShardNumber, linearizable: bool) -> Self
+    where
+        M: Default,
+    {
         Self {
             inner: OccStore::new(shard, linearizable),
             transaction_log: BTreeMap::new(),
@@ -222,7 +226,10 @@ impl<K: Key, V: Value> Replica<K, V> {
     }
 }
 
-impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
+impl<K: Key, V: Value, M> IrReplicaUpcalls for Replica<K, V, M>
+where
+    M: MvccBackend<K, V, Timestamp> + Serialize + DeserializeOwned + 'static,
+{
     type UO = UO<K>;
     type UR = UR<K, V>;
     type IO = IO<K, V>;
@@ -771,7 +778,7 @@ impl<K: Key, V: Value> IrReplicaUpcalls for Replica<K, V> {
     }
 }
 
-impl<K: Key, V: Value> Replica<K, V> {
+impl<K: Key, V: Value, M: 'static> Replica<K, V, M> {
     fn gc_stale_state(&mut self) {
         // Placeholder for future GC logic (e.g. range_reads cleanup,
         // transaction_log trimming) using finalized_min_prepare_time.
