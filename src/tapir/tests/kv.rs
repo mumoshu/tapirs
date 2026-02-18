@@ -1025,8 +1025,22 @@ async fn fuzz_tapir_transactions() {
                         Err(e) => eprintln!("fuzz[{round}]: split rejected: {e:?} (seed={seed})"),
                     }
                 }
+            } else if shard_keys.len() >= 2 {
+                // Attempt merge: pick any two registered shards.
+                // May be same shard or non-adjacent — ShardManager rejects.
+                let absorbed = shard_keys[reshard_rng.gen_range(0..shard_keys.len())];
+                let surviving = shard_keys[reshard_rng.gen_range(0..shard_keys.len())];
+
+                match manager.merge(absorbed, surviving).await {
+                    Ok(()) => {
+                        reshard_router.directory().write().unwrap().update(
+                            manager.directory.entries().iter().cloned().collect(),
+                        );
+                        eprintln!("fuzz[{round}]: merge ok (seed={seed})");
+                    }
+                    Err(e) => eprintln!("fuzz[{round}]: merge rejected: {e:?} (seed={seed})"),
+                }
             }
-            // (merge added in commit 4)
         }
     });
 
