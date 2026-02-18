@@ -88,7 +88,7 @@ async fn bootstrap_cluster(
             // Retry with a new port on bind failure (TOCTOU race).
             let addr = loop {
                 let candidate = alloc_addr();
-                match nodes[node_idx].create_replica(shard, candidate).await {
+                match nodes[node_idx].create_replica(shard, candidate, "memory").await {
                     Ok(()) => break candidate,
                     Err(e) if e.contains("already in use") => continue,
                     Err(e) => panic!("create_replica failed: {e}"),
@@ -398,7 +398,7 @@ async fn test_rolling_membership_replacement() {
 
         let new_addr = loop {
             let candidate = alloc_addr();
-            match new_node.create_replica(shard, candidate).await {
+            match new_node.create_replica(shard, candidate, "memory").await {
                 Ok(()) => break candidate,
                 Err(e) if e.contains("already in use") => continue,
                 Err(e) => panic!("create_replica failed in round {i}: {e}"),

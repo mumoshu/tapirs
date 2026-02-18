@@ -340,12 +340,19 @@ pub async fn run(action: AdminAction) {
             admin_listen_addr,
             shard,
             listen_addr,
-        } => (
-            admin_listen_addr,
-            format!(
-                r#"{{"command":"add_replica","shard":{shard},"listen_addr":"{listen_addr}"}}"#
-            ),
-        ),
+            storage,
+        } => {
+            let storage_str = match storage {
+                crate::StorageBackend::Memory => "memory",
+                crate::StorageBackend::Disk => "disk",
+            };
+            (
+                admin_listen_addr,
+                format!(
+                    r#"{{"command":"add_replica","shard":{shard},"listen_addr":"{listen_addr}","storage":"{storage_str}"}}"#
+                ),
+            )
+        }
         AdminAction::RemoveReplica {
             admin_listen_addr,
             shard,

@@ -10,8 +10,16 @@ mod shard_manager_server;
 #[cfg(test)]
 mod integration_test;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use config::{ClientConfig, NodeConfig};
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum StorageBackend {
+    /// In-memory MVCC store (default). Fast, bounded by RAM.
+    Memory,
+    /// Disk-backed MVCC store (WiscKey LSM+VLog). Not yet available.
+    Disk,
+}
 
 #[derive(Parser)]
 #[command(name = "tapi", about = "TAPIR distributed transactional KV store")]
@@ -95,6 +103,10 @@ enum AdminAction {
         shard: u32,
         #[arg(long)]
         listen_addr: String,
+        /// MVCC storage backend. "memory" (default) keeps all data in RAM.
+        /// "disk" uses a WiscKey LSM+VLog store (not yet available).
+        #[arg(long, value_enum, default_value = "memory")]
+        storage: StorageBackend,
     },
     /// Remove a replica for a shard.
     RemoveReplica {

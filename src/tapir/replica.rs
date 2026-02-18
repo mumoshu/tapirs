@@ -87,6 +87,18 @@ impl<K: Key, V: Value, M> Replica<K, V, M> {
         }
     }
 
+    pub fn new_with_backend(shard: ShardNumber, linearizable: bool, backend: M) -> Self {
+        Self {
+            inner: OccStore::new_with_backend(shard, linearizable, backend),
+            transaction_log: BTreeMap::new(),
+            min_prepare_time: 0,
+            finalized_min_prepare_time: 0,
+            record_delta_during_view: BTreeMap::new(),
+            key_range: None,
+            read_only: false,
+        }
+    }
+
     fn recover_coordination<T: TapirTransport<K, V>>(
         transaction_id: OccTransactionId,
         transaction: OccSharedTransaction<K, V, Timestamp>,

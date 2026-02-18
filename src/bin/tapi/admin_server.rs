@@ -13,6 +13,8 @@ struct AdminRequest {
     #[serde(default)]
     listen_addr: Option<String>,
     #[serde(default)]
+    storage: Option<String>,
+    #[serde(default)]
     backup: Option<crate::node::ShardBackup>,
     #[serde(default)]
     new_membership: Option<Vec<String>>,
@@ -121,7 +123,8 @@ async fn handle_request(node: &Node, line: &str) -> AdminResponse {
                     };
                 }
             };
-            match node.create_replica(ShardNumber(shard_id), listen_addr).await {
+            let storage_str = req.storage.as_deref().unwrap_or("memory");
+            match node.create_replica(ShardNumber(shard_id), listen_addr, storage_str).await {
                 Ok(()) => AdminResponse {
                     ok: true,
                     message: Some(format!("replica for shard {shard_id} created")),
