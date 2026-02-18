@@ -764,9 +764,8 @@ mod tests {
             });
         eprintln!("seed={}", seed);
 
-        // Run once — the underlying Channel uses thread_rng() so true
-        // end-to-end determinism isn't possible, but the FaultyChannelTransport's
-        // own decisions (drops, duplicates, reordering) are seeded and deterministic.
+        // All protocol randomness goes through seeded crate::Rng (since b4d9630),
+        // so with start_paused=true and BTreeMap iteration, this is fully deterministic.
         run_fuzz_iteration(seed).await;
     }
 
