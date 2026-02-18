@@ -136,7 +136,7 @@ impl<K: Key, V: Value> Replica<K, V> {
             }
 
             fn decide<K, V, A>(
-                results: &HashMap<A, ReplyUnlogged<UR<K, V>, A>>,
+                results: &BTreeMap<A, ReplyUnlogged<UR<K, V>, A>>,
                 membership: IrMembershipSize,
             ) -> Option<OccPrepareResult<Timestamp>> {
                 let highest_view = results.values().map(|r| r.view.number).max()?;
@@ -183,7 +183,7 @@ impl<K: Key, V: Value> Replica<K, V> {
 
                     let results = future
                         .until(
-                            |results: &HashMap<T::Address, ReplyUnlogged<UR<K, V>, T::Address>>,
+                            |results: &BTreeMap<T::Address, ReplyUnlogged<UR<K, V>, T::Address>>,
                              cx: &mut Context<'_>| {
                                 decide(results, membership).is_some()
                                     || timeout.as_mut().poll(cx).is_ready()

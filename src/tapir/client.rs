@@ -5,7 +5,7 @@ use crate::{
 };
 use futures::future::join_all;
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     future::Future,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -263,7 +263,7 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Transaction<K, V, T> {
 
                 let results = future
                     .until(
-                        |results: &HashMap<ShardNumber, OccPrepareResult<Timestamp>>,
+                        |results: &BTreeMap<ShardNumber, OccPrepareResult<Timestamp>>,
                          _cx: &mut Context<'_>| {
                             results.values().any(|v| {
                                 v.is_fail()

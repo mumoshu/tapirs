@@ -13,10 +13,9 @@ use crate::{
 use futures::{stream::FuturesUnordered, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fmt::Debug,
     future::Future,
-    hash::Hash,
     marker::PhantomData,
     sync::{Arc, Mutex},
     task::Context,
@@ -226,8 +225,8 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
     /// read-only scan validation and CDC scan_changes where we need f+1
     /// view-consistent responses to merge.
     pub fn invoke_unlogged_quorum(&self, op: U::UO) -> impl Future<Output = Vec<U::UR>> + Send + use<U, T> {
-        fn has_quorum_same_view<UR, A: Eq + Hash>(
-            results: &HashMap<A, ReplyUnlogged<UR, A>>,
+        fn has_quorum_same_view<UR, A: Ord>(
+            results: &BTreeMap<A, ReplyUnlogged<UR, A>>,
             f_plus_one: usize,
         ) -> bool {
             let mut counts = HashMap::<ViewNumber, usize>::new();
@@ -237,8 +236,8 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
             counts.values().any(|&c| c >= f_plus_one)
         }
 
-        fn find_majority_view<UR, A: Eq + Hash>(
-            results: &HashMap<A, ReplyUnlogged<UR, A>>,
+        fn find_majority_view<UR, A: Ord>(
+            results: &BTreeMap<A, ReplyUnlogged<UR, A>>,
             f_plus_one: usize,
         ) -> Option<ViewNumber> {
             let mut counts = HashMap::<ViewNumber, usize>::new();
@@ -276,7 +275,7 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
 
             let results = future
                 .until(
-                    move |results: &HashMap<T::Address, ReplyUnlogged<U::UR, T::Address>>,
+                    move |results: &BTreeMap<T::Address, ReplyUnlogged<U::UR, T::Address>>,
                           cx: &mut Context<'_>| {
                         has_quorum_same_view(results, f_plus_one)
                             || hard_timeout.as_mut().poll(cx).is_ready()
@@ -317,13 +316,13 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
             }
         };
 
-        fn has_ancient<A>(results: &HashMap<A, ReplyInconsistent<A>>) -> bool {
+        fn has_ancient<A>(results: &BTreeMap<A, ReplyInconsistent<A>>) -> bool {
             results.values().any(|v| v.state.is_none())
         }
 
         fn has_quorum<A>(
             membership: MembershipSize,
-            results: &HashMap<A, ReplyInconsistent<A>>,
+            results: &BTreeMap<A, ReplyInconsistent<A>>,
             check_views: bool,
         ) -> bool {
             if check_views {
@@ -371,7 +370,7 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
 
                 let results = future
                     .until(
-                        move |results: &HashMap<T::Address, ReplyInconsistent<T::Address>>,
+                        move |results: &BTreeMap<T::Address, ReplyInconsistent<T::Address>>,
                               cx: &mut Context<'_>| {
                             has_ancient(results)
                                 || has_quorum(
@@ -424,13 +423,13 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
             }
         };
 
-        fn has_ancient<A>(results: &HashMap<A, ReplyInconsistent<A>>) -> bool {
+        fn has_ancient<A>(results: &BTreeMap<A, ReplyInconsistent<A>>) -> bool {
             results.values().any(|v| v.state.is_none())
         }
 
         fn has_quorum<A>(
             membership: MembershipSize,
-            results: &HashMap<A, ReplyInconsistent<A>>,
+            results: &BTreeMap<A, ReplyInconsistent<A>>,
             check_views: bool,
         ) -> bool {
             if check_views {
@@ -477,7 +476,7 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
 
                 let results = future
                     .until(
-                        move |results: &HashMap<T::Address, ReplyInconsistent<T::Address>>,
+                        move |results: &BTreeMap<T::Address, ReplyInconsistent<T::Address>>,
                               cx: &mut Context<'_>| {
                             has_ancient(results)
                                 || has_quorum(
@@ -524,7 +523,7 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
 
                 let finalize_results = finalize_future
                     .until(
-                        move |results: &HashMap<T::Address, FinalizeInconsistentReply<U::IR, T::Address>>,
+                        move |results: &BTreeMap<T::Address, FinalizeInconsistentReply<U::IR, T::Address>>,
                               cx: &mut Context<'_>| {
                             results.len() >= finalize_membership_size.f_plus_one()
                                 || finalize_timeout.as_mut().poll(cx).is_ready()
@@ -553,11 +552,11 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
         op: U::CO,
         decide: D,
     ) -> impl Future<Output = U::CR> + Send + use<U, T, D> {
-        fn has_ancient<R, A>(replies: &HashMap<A, ReplyConsensus<R, A>>) -> bool {
+        fn has_ancient<R, A>(replies: &BTreeMap<A, ReplyConsensus<R, A>>) -> bool {
             replies.values().any(|v| v.result_state.is_none())
         }
 
-        fn get_finalized<R, A>(replies: &HashMap<A, ReplyConsensus<R, A>>) -> Option<&R> {
+        fn get_finalized<R, A>(replies: &BTreeMap<A, ReplyConsensus<R, A>>) -> Option<&R> {
             replies
                 .values()
                 .find(|r| r.result_state.as_ref().unwrap().1.is_finalized())
@@ -566,7 +565,7 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
 
         fn get_quorum<R: PartialEq + Debug, A>(
             membership: MembershipSize,
-            replies: &HashMap<A, ReplyConsensus<R, A>>,
+            replies: &BTreeMap<A, ReplyConsensus<R, A>>,
             matching_results: bool,
         ) -> Option<(&View<A>, &R)> {
             let required = if matching_results {
@@ -623,7 +622,7 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
 
                 let results = future
                     .until(
-                        move |results: &HashMap<T::Address, ReplyConsensus<U::CR, T::Address>>,
+                        move |results: &BTreeMap<T::Address, ReplyConsensus<U::CR, T::Address>>,
                               cx: &mut Context<'_>| {
                             has_ancient(results)
                                 || get_finalized(results).is_some()
@@ -638,7 +637,7 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
                     )
                     .await;
 
-                fn get_quorum_view<A>(results: &HashMap<A, Confirm<A>>) -> Option<&View<A>> {
+                fn get_quorum_view<A>(results: &BTreeMap<A, Confirm<A>>) -> Option<&View<A>> {
                     for result in results.values() {
                         let matching = results
                             .values()
@@ -723,7 +722,7 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
                     let mut hard_timeout = std::pin::pin!(T::sleep(Duration::from_millis(500)));
                     let results = future
                         .until(
-                            |results: &HashMap<T::Address, Confirm<T::Address>>,
+                            |results: &BTreeMap<T::Address, Confirm<T::Address>>,
                              cx: &mut Context<'_>| {
                                 get_quorum_view(results).is_some()
                                     || (soft_timeout.as_mut().poll(cx).is_ready()

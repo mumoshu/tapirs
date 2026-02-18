@@ -1,9 +1,8 @@
 use futures::{stream::FuturesUnordered, Stream};
 use pin_project_lite::pin_project;
 use std::{
-    collections::HashMap,
+    collections::BTreeMap,
     future::Future,
-    hash::Hash,
     mem,
     pin::Pin,
     task::{ready, Context, Poll},
@@ -15,7 +14,12 @@ pin_project! {
     pub struct Join<K, F: Future> {
         #[pin]
         active: FuturesUnordered<KeyedFuture<K, F>>,
-        output: HashMap<K, F::Output>,
+        // BTreeMap instead of HashMap for deterministic iteration order. HashMap's
+        // RandomState seeds from OS entropy, making iteration order vary across
+        // process runs even with seeded protocol RNG. BTreeMap's O(log n) overhead
+        // vs HashMap's O(1) is negligible — this collection holds at most 2f+1
+        // entries (typically 3-7 replicas).
+        output: BTreeMap<K, F::Output>,
     }
 }
 
@@ -25,23 +29,23 @@ pin_project! {
     pub struct JoinUntil<K, F: Future, U: Until<K, F::Output>> {
         #[pin]
         active: FuturesUnordered<KeyedFuture<K, F>>,
-        output: HashMap<K, F::Output>,
+        output: BTreeMap<K, F::Output>,
         until: U
     }
 }
 
 pub trait Until<K, O> {
-    fn until(&mut self, results: &HashMap<K, O>, cx: &mut Context<'_>) -> bool;
+    fn until(&mut self, results: &BTreeMap<K, O>, cx: &mut Context<'_>) -> bool;
 }
 
 impl<K, O> Until<K, O> for usize {
-    fn until(&mut self, results: &HashMap<K, O>, _cx: &mut Context<'_>) -> bool {
+    fn until(&mut self, results: &BTreeMap<K, O>, _cx: &mut Context<'_>) -> bool {
         results.len() >= *self
     }
 }
 
-impl<K, O, F: FnMut(&HashMap<K, O>, &mut Context<'_>) -> bool> Until<K, O> for F {
-    fn until(&mut self, results: &HashMap<K, O>, cx: &mut Context<'_>) -> bool {
+impl<K, O, F: FnMut(&BTreeMap<K, O>, &mut Context<'_>) -> bool> Until<K, O> for F {
+    fn until(&mut self, results: &BTreeMap<K, O>, cx: &mut Context<'_>) -> bool {
         self(results, cx)
     }
 }
@@ -77,12 +81,12 @@ where
     }
 
     Join {
-        output: HashMap::with_capacity(active.len()),
+        output: BTreeMap::new(),
         active,
     }
 }
 
-impl<K: Eq + Hash, F> Join<K, F>
+impl<K: Ord, F> Join<K, F>
 where
     F: Future,
 {
@@ -95,11 +99,11 @@ where
     }
 }
 
-impl<K: Eq + Hash, F, U: Until<K, F::Output>> Future for JoinUntil<K, F, U>
+impl<K: Ord, F, U: Until<K, F::Output>> Future for JoinUntil<K, F, U>
 where
     F: Future,
 {
-    type Output = HashMap<K, F::Output>;
+    type Output = BTreeMap<K, F::Output>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut this = self.project();
