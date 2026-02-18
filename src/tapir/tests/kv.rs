@@ -1,3 +1,4 @@
+use super::fuzz_event_log::{FuzzEvent, FuzzEventLog};
 use super::invariant_checker::{InvariantChecker, TxnOutcome, TxnRecord};
 use crate::{
     discovery::{
@@ -649,6 +650,8 @@ async fn fuzz_tapir_transactions() {
     let mut rng = StdRng::seed_from_u64(seed);
     let mut lib_rng = test_rng(seed);
 
+    let event_log = FuzzEventLog::new();
+
     let config = NetworkFaultConfig {
         drop_rate: 0.05,
         duplicate_rate: 0.02,
@@ -669,6 +672,13 @@ async fn fuzz_tapir_transactions() {
     let num_keys: i64 = 10;
     let iterations_per_client = 20;
 
+    event_log.record(FuzzEvent::Config {
+        seed,
+        num_shards,
+        replica_counts: replica_counts.clone(),
+        num_clients,
+        num_keys,
+    });
     eprintln!("fuzz_tapir_transactions: num_shards={num_shards} replica_counts={replica_counts:?} seed={seed}");
 
     // Create shared address directory and discovery for sync testing.
@@ -777,6 +787,7 @@ async fn fuzz_tapir_transactions() {
     let fault_shards = shards.clone();
     let fault_clients = clients.clone();
     let fault_client_transports = client_transports.clone();
+    let fault_event_log = event_log.clone();
     let fault_handle = tokio::spawn(async move {
         let mut rng = StdRng::seed_from_u64(fault_seed);
         let num_fault_rounds = rng.gen_range(2..=4u32);
@@ -791,19 +802,17 @@ async fn fuzz_tapir_transactions() {
                 // --- Replica-initiated view change ---
                 let shard_idx = rng.gen_range(0..fault_shards.len());
                 let replica_idx = rng.gen_range(0..fault_shards[shard_idx].len());
-                eprintln!(
-                    "fault[{round}]: replica-initiated view change on \
-                     shard={shard_idx} replica={replica_idx} (seed={fault_seed})"
-                );
+                fault_event_log.record(FuzzEvent::FaultReplicaViewChange {
+                    round, shard: shard_idx, replica: replica_idx,
+                });
                 fault_shards[shard_idx][replica_idx].force_view_change();
             } else if event < 65 {
                 // --- Client-initiated view change ---
                 let client_idx = rng.gen_range(0..fault_clients.len());
                 let shard_idx = rng.gen_range(0..fault_shards.len());
-                eprintln!(
-                    "fault[{round}]: client-initiated view change from \
-                     client={client_idx} shard={shard_idx} (seed={fault_seed})"
-                );
+                fault_event_log.record(FuzzEvent::FaultClientViewChange {
+                    round, client: client_idx, shard: shard_idx,
+                });
                 fault_clients[client_idx]
                     .force_view_change(ShardNumber(shard_idx as u32));
             } else {
@@ -813,10 +822,9 @@ async fn fuzz_tapir_transactions() {
                 let shard_idx = rng.gen_range(0..fault_shards.len());
                 let replica_idx = rng.gen_range(0..fault_shards[shard_idx].len());
                 let target_addr = fault_shards[shard_idx][replica_idx].address();
-                eprintln!(
-                    "fault[{round}]: partitioning replica addr={target_addr} \
-                     shard={shard_idx} replica={replica_idx} (seed={fault_seed})"
-                );
+                fault_event_log.record(FuzzEvent::FaultPartition {
+                    round, shard: shard_idx, replica: replica_idx, address: target_addr,
+                });
 
                 for shard in &fault_shards {
                     for replica in shard {
@@ -834,10 +842,9 @@ async fn fuzz_tapir_transactions() {
                 FaultyTransport::sleep(Duration::from_millis(hold_ms)).await;
 
                 // Heal partition.
-                eprintln!(
-                    "fault[{round}]: healing replica addr={target_addr} \
-                     after {hold_ms}ms (seed={fault_seed})"
-                );
+                fault_event_log.record(FuzzEvent::FaultHeal {
+                    round, address: target_addr, hold_ms,
+                });
                 for shard in &fault_shards {
                     for replica in shard {
                         replica.transport().heal_node(target_addr);
@@ -867,6 +874,7 @@ async fn fuzz_tapir_transactions() {
             let collector = Arc::clone(&collector);
             let next_txn_index = Arc::clone(&next_txn_index);
             let client_seed = client_seeds[client_idx];
+            let txn_event_log = event_log.clone();
 
             tokio::spawn(async move {
                 let mut rng = StdRng::seed_from_u64(client_seed);
@@ -917,9 +925,19 @@ async fn fuzz_tapir_transactions() {
                         }
                     }
 
+                    let txn_type_str = if txn_type < 80 { "rmw" } else { "read_only" };
+                    let event_keys: Vec<i64> = reads.iter().map(|(k, _)| *k).collect();
+                    txn_event_log.record(FuzzEvent::TxnBegin {
+                        txn_index, client_id: client_idx,
+                        txn_type: txn_type_str, keys: event_keys,
+                    });
+
                     match timeout(Duration::from_secs(10), txn.commit()).await {
                         Ok(Some(ts)) => {
                             let wall_end = tokio::time::Instant::now();
+                            txn_event_log.record(FuzzEvent::TxnCommitted {
+                                txn_index, client_id: client_idx, commit_ts: ts.time,
+                            });
                             let mut counts = committed_counts.lock().unwrap();
                             for &k in &write_targets {
                                 *counts.entry(k).or_default() += 1;
@@ -937,6 +955,9 @@ async fn fuzz_tapir_transactions() {
                         }
                         Ok(None) => {
                             let wall_end = tokio::time::Instant::now();
+                            txn_event_log.record(FuzzEvent::TxnAborted {
+                                txn_index, client_id: client_idx,
+                            });
                             collector.lock().unwrap().push(TxnRecord {
                                 index: txn_index,
                                 client_id: client_idx,
@@ -949,6 +970,9 @@ async fn fuzz_tapir_transactions() {
                         }
                         Err(_) => {
                             let wall_end = tokio::time::Instant::now();
+                            txn_event_log.record(FuzzEvent::TxnTimedOut {
+                                txn_index, client_id: client_idx,
+                            });
                             collector.lock().unwrap().push(TxnRecord {
                                 index: txn_index,
                                 client_id: client_idx,
@@ -973,6 +997,7 @@ async fn fuzz_tapir_transactions() {
     let reshard_address_directory = Arc::clone(&address_directory);
     let reshard_config = config.clone();
     let reshard_shard_entries = shard_entries.clone();
+    let reshard_event_log = event_log.clone();
     let reshard_handle = tokio::spawn(async move {
         use crate::tapir::shard_manager::ShardManager;
 
@@ -1014,15 +1039,20 @@ async fn fuzz_tapir_transactions() {
                     let split_key = start + (end - start) / 2;
                     let new_shard_number = ShardNumber(num_shards + next_shard_idx as u32);
                     let membership = new_shard_memberships[next_shard_idx].clone();
+                    reshard_event_log.record(FuzzEvent::ReshardSplitAttempt {
+                        round, source_shard: source.0, split_key,
+                    });
                     match manager.split(source, split_key, new_shard_number, membership).await {
                         Ok(()) => {
                             next_shard_idx += 1;
                             reshard_router.directory().write().unwrap().update(
                                 manager.directory.entries().iter().cloned().collect(),
                             );
-                            eprintln!("fuzz[{round}]: split ok (seed={seed})");
+                            reshard_event_log.record(FuzzEvent::ReshardSplitOk { round });
                         }
-                        Err(e) => eprintln!("fuzz[{round}]: split rejected: {e:?} (seed={seed})"),
+                        Err(e) => reshard_event_log.record(FuzzEvent::ReshardSplitErr {
+                            round, error: format!("{e:?}"),
+                        }),
                     }
                 }
             } else if shard_keys.len() >= 2 {
@@ -1031,14 +1061,19 @@ async fn fuzz_tapir_transactions() {
                 let absorbed = shard_keys[reshard_rng.gen_range(0..shard_keys.len())];
                 let surviving = shard_keys[reshard_rng.gen_range(0..shard_keys.len())];
 
+                reshard_event_log.record(FuzzEvent::ReshardMergeAttempt {
+                    round, absorbed: absorbed.0, surviving: surviving.0,
+                });
                 match manager.merge(absorbed, surviving).await {
                     Ok(()) => {
                         reshard_router.directory().write().unwrap().update(
                             manager.directory.entries().iter().cloned().collect(),
                         );
-                        eprintln!("fuzz[{round}]: merge ok (seed={seed})");
+                        reshard_event_log.record(FuzzEvent::ReshardMergeOk { round });
                     }
-                    Err(e) => eprintln!("fuzz[{round}]: merge rejected: {e:?} (seed={seed})"),
+                    Err(e) => reshard_event_log.record(FuzzEvent::ReshardMergeErr {
+                        round, error: format!("{e:?}"),
+                    }),
                 }
             }
         }
@@ -1055,6 +1090,7 @@ async fn fuzz_tapir_transactions() {
     .await;
 
     if all_done.is_err() {
+        event_log.record(FuzzEvent::WorkloadTimedOut);
         eprintln!("fuzz_tapir_transactions: workload timed out (seed={seed})");
     }
 
@@ -1064,7 +1100,10 @@ async fn fuzz_tapir_transactions() {
         "fuzz_tapir_transactions: attempted={attempted} committed={committed} \
          shards={num_shards} seed={seed}"
     );
-    assert!(committed > 0, "no transactions committed (seed={seed})");
+    if committed == 0 {
+        event_log.dump(seed);
+        panic!("no transactions committed (seed={seed})");
+    }
 
     // Let replicas drain pending operations after all view changes settle.
     FaultyTransport::sleep(Duration::from_secs(5)).await;
@@ -1072,37 +1111,49 @@ async fn fuzz_tapir_transactions() {
     // Verify address directory is populated with all shards.
     for s in 0..num_shards {
         let shard = ShardNumber(s);
-        assert!(
-            address_directory.get(shard).is_some(),
-            "address directory should contain shard {s} (seed={seed})"
-        );
+        if address_directory.get(shard).is_none() {
+            event_log.dump(seed);
+            panic!("address directory should contain shard {s} (seed={seed})");
+        }
     }
 
     // Verify discovery received shard 0 via background sync push.
     tokio::task::yield_now().await;
     let disc_shard_0 = discovery.get_shard(0);
-    assert!(
-        disc_shard_0.is_some(),
-        "discovery should contain shard 0 after sync (seed={seed})"
-    );
+    if disc_shard_0.is_none() {
+        event_log.dump(seed);
+        panic!("discovery should contain shard 0 after sync (seed={seed})");
+    }
 
     // Keep DiscoveryShardDirectory alive until after assertions.
     drop(disc_dir);
 
     // Run invariant checker: serializability, strict serializability,
     // cross-shard atomicity (via dependency graph + real-time ordering).
+    event_log.record(FuzzEvent::InvariantCheckStart);
     let records = collector.lock().unwrap().clone();
     let checker = InvariantChecker::new(records, seed);
-    checker.check_all();
+    let check_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        checker.check_all();
+    }));
+    if let Err(e) = check_result {
+        event_log.dump(seed);
+        std::panic::resume_unwind(e);
+    }
+    event_log.record(FuzzEvent::InvariantCheckPassed);
 
     // Counter invariant: for each key, final value == committed increments.
     // Cross-validate checker's expected_counts against inline committed_counts.
     let checker_counts = checker.expected_counts();
     let inline_counts = committed_counts.lock().unwrap().clone();
-    assert_eq!(
-        checker_counts, inline_counts,
-        "checker vs inline committed_counts mismatch (seed={seed})"
-    );
+    if checker_counts != inline_counts {
+        event_log.dump(seed);
+        panic!(
+            "checker vs inline committed_counts mismatch (seed={seed})\n\
+             checker: {checker_counts:?}\n\
+             inline:  {inline_counts:?}"
+        );
+    }
 
     // Counter verification uses read-only transactions (quorum reads) rather
     // than RW transactions (single-replica unlogged reads). After resharding,
@@ -1113,21 +1164,32 @@ async fn fuzz_tapir_transactions() {
     // This also models production behavior where directory propagation is
     // eventually consistent: quorum reads are robust to stale routing.
     let verify_client = RoutingClient::new(Arc::clone(&clients[0]), Arc::clone(&router));
+    let mut counter_mismatches: Vec<String> = Vec::new();
     for (key, expected) in &inline_counts {
         let txn = verify_client.begin_read_only();
         let actual = txn.get(*key).await.unwrap_or(0);
-        assert_eq!(
-            actual, *expected,
-            "counter invariant violated for key={key}: \
-             actual={actual} expected={expected} (seed={seed})"
+        if actual != *expected {
+            counter_mismatches.push(format!(
+                "key={key}: actual={actual} expected={expected}"
+            ));
+        }
+    }
+    if !counter_mismatches.is_empty() {
+        event_log.dump(seed);
+        panic!(
+            "counter invariant violated (seed={seed}):\n  {}",
+            counter_mismatches.join("\n  ")
         );
     }
+    event_log.record(FuzzEvent::CounterVerifyPassed);
 
     eprintln!(
         "fuzz_tapir_transactions: seed={seed} shards={num_shards} \
          replica_counts={replica_counts:?} \
          {committed}/{attempted} committed, invariants passed"
     );
+
+    event_log.dump_if(seed, false);
 
     // Keep pre-built shard replicas alive until end of test.
     drop(new_shard_replicas);
