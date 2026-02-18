@@ -318,27 +318,15 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
             .invoke_unlogged_quorum(UO::ScanChanges { from_view })
             .await;
 
-        // Fast path: pick the first response with pp=0 (authoritative by
-        // quorum intersection). Use its data directly.
-        for r in &responses {
-            if let UR::ScanChanges {
-                deltas,
-                effective_end_view,
-                pending_prepares: 0,
-            } = r
-            {
-                return ScanChangesResult {
-                    deltas: deltas.clone(),
-                    effective_end_view: *effective_end_view,
-                    pending_prepares: 0,
-                };
-            }
-        }
-
-        // Slow path: no replica has pp=0 yet. Merge all responses.
+        // Always merge responses from multiple replicas. Not all replicas
+        // have CDC deltas for every view transition (replicas that received
+        // Full payloads during view change skip delta recording), so merging
+        // ensures we combine fine-grained deltas from whichever replica has
+        // them. By quorum intersection, at least one replica in any f+1
+        // response set has the delta for each view transition.
         let mut delta_lists = Vec::new();
         let mut effective_end_view = 0u64;
-        let mut pending_prepares = 0usize;
+        let mut pending_prepares = usize::MAX;
 
         for r in responses {
             if let UR::ScanChanges {
@@ -349,8 +337,13 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
             {
                 delta_lists.push((deltas, eev));
                 effective_end_view = effective_end_view.max(eev);
-                pending_prepares = pending_prepares.max(pp);
+                pending_prepares = pending_prepares.min(pp);
             }
+        }
+
+        // If no ScanChanges responses at all, reset pending_prepares to 0.
+        if pending_prepares == usize::MAX {
+            pending_prepares = 0;
         }
 
         let deltas = merge_responses(delta_lists);
