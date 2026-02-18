@@ -11,7 +11,6 @@ use crate::{
     Transport,
 };
 use futures::{stream::FuturesUnordered, StreamExt};
-use rand::{thread_rng, Rng};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -29,15 +28,9 @@ use futures::future::Either;
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
 pub struct Id(pub u64);
 
-impl Default for Id {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Id {
-    pub fn new() -> Self {
-        Self(thread_rng().r#gen())
+    pub fn new(rng: &mut crate::Rng) -> Self {
+        Self(rng.random_u64())
     }
 }
 
@@ -72,6 +65,7 @@ struct Inner<U: ReplicaUpcalls, T: Transport<U>> {
 struct SyncInner<U: ReplicaUpcalls, T: Transport<U>> {
     operation_counter: u64,
     view: SharedView<T::Address>,
+    rng: crate::Rng,
 }
 
 impl<U: ReplicaUpcalls, T: Transport<U>> SyncInner<U, T> {
@@ -80,12 +74,17 @@ impl<U: ReplicaUpcalls, T: Transport<U>> SyncInner<U, T> {
         self.operation_counter += 1;
         ret
     }
+
+    fn random_index(&mut self, count: usize) -> usize {
+        self.rng.random_index(count)
+    }
 }
 
 impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
-    pub fn new(membership: Membership<T::Address>, transport: T) -> Self {
+    pub fn new(mut rng: crate::Rng, membership: Membership<T::Address>, transport: T) -> Self {
+        let id = Id::new(&mut rng);
         Self {
-            id: Id::new(),
+            id,
             inner: Arc::new(Inner {
                 transport,
                 sync: Mutex::new(SyncInner {
@@ -95,6 +94,7 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
                         number: ViewNumber(0),
                         app_config: None,
                     }),
+                    rng,
                 }),
             }),
             _spooky: PhantomData,
@@ -149,9 +149,9 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
     pub fn invoke_unlogged(&self, op: U::UO) -> impl Future<Output = U::UR> {
         let inner = Arc::clone(&self.inner);
         let (index, count) = {
-            let sync = inner.sync.lock().unwrap();
+            let mut sync = inner.sync.lock().unwrap();
             let count = sync.view.membership.len();
-            (thread_rng().gen_range(0..count), count)
+            (sync.random_index(count), count)
         };
 
         async move {
@@ -792,9 +792,10 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
         let inner = Arc::clone(&self.inner);
         async move {
             let address = {
-                let sync = inner.sync.lock().unwrap();
+                let mut sync = inner.sync.lock().unwrap();
                 let count = sync.view.membership.len();
-                sync.view.membership.get(thread_rng().gen_range(0..count)).unwrap()
+                let idx = sync.random_index(count);
+                sync.view.membership.get(idx).unwrap()
             };
             let reply = inner
                 .transport

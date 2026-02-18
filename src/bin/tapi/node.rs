@@ -1,5 +1,6 @@
 use crate::config::{NodeConfig, ReplicaConfig};
 use crate::discovery::HttpDiscoveryClient;
+use rand::{thread_rng, Rng as _};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -10,6 +11,10 @@ use tapirs::{
     IrClient, IrMembership, IrRecord, IrReplica, IrSharedView, IrView, IrViewNumber,
     ShardNumber, TapirReplica, TcpAddress, TcpTransport,
 };
+
+fn production_rng() -> tapirs::Rng {
+    tapirs::Rng::from_seed(thread_rng().r#gen())
+}
 
 type TapirIrReplica = IrReplica<TapirReplica<String, String>, TcpTransport<TapirReplica<String, String>>>;
 
@@ -130,6 +135,7 @@ impl Node {
             });
             let upcalls = TapirReplica::new(shard, false);
             IrReplica::with_view_change_interval(
+                production_rng(),
                 membership,
                 upcalls,
                 transport_for_replica.clone(),
@@ -385,6 +391,7 @@ impl Node {
             (handle.replica.transport().clone(), handle.listen_addr)
         };
         let client = IrClient::new(
+            production_rng(),
             IrMembership::new(vec![TcpAddress(addr)]),
             transport,
         );
@@ -439,6 +446,7 @@ impl Node {
             handle.replica.transport().clone()
         };
         let client = IrClient::new(
+            production_rng(),
             IrMembership::new(vec![TcpAddress(listen_addr)]),
             transport,
         );

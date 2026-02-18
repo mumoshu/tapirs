@@ -23,6 +23,10 @@ use std::{
 };
 use tokio::time::timeout;
 
+fn test_rng(seed: u64) -> crate::Rng {
+    crate::Rng::from_seed(seed)
+}
+
 fn init_tracing() {
     let _ = tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
@@ -37,6 +41,7 @@ type Transport = ChannelTransport<TapirReplica<K, V>>;
 type FaultyTransport = FaultyChannelTransport<TapirReplica<K, V>>;
 
 fn build_shard(
+    rng: &mut crate::Rng,
     shard: ShardNumber,
     linearizable: bool,
     num_replicas: usize,
@@ -50,6 +55,7 @@ fn build_shard(
     );
 
     fn create_replica(
+        rng: &mut crate::Rng,
         registry: &ChannelRegistry<TapirReplica<K, V>>,
         shard: ShardNumber,
         membership: &IrMembership<usize>,
@@ -65,6 +71,7 @@ fn build_shard(
                 channel.set_shard(shard);
                 let upcalls = TapirReplica::new(shard, linearizable);
                 IrReplica::new(
+                    rng.fork(),
                     membership.clone(),
                     upcalls,
                     channel,
@@ -74,10 +81,9 @@ fn build_shard(
         )
     }
 
-    let replicas =
-        std::iter::repeat_with(|| create_replica(&registry, shard, &membership, linearizable))
-            .take(num_replicas)
-            .collect::<Vec<_>>();
+    let replicas = (0..num_replicas)
+        .map(|_| create_replica(rng, &registry, shard, &membership, linearizable))
+        .collect::<Vec<_>>();
 
     registry.put_shard_addresses(shard, membership.clone());
 
@@ -85,18 +91,20 @@ fn build_shard(
 }
 
 fn build_clients(
+    rng: &mut crate::Rng,
     num_clients: usize,
     registry: &ChannelRegistry<TapirReplica<K, V>>,
 ) -> Vec<Arc<TapirClient<K, V, ChannelTransport<TapirReplica<K, V>>>>> {
     fn create_client(
+        rng: &mut crate::Rng,
         registry: &ChannelRegistry<TapirReplica<K, V>>,
     ) -> Arc<TapirClient<K, V, ChannelTransport<TapirReplica<K, V>>>> {
         let channel = registry.channel(move |_, _| unreachable!());
-        Arc::new(TapirClient::new(channel))
+        Arc::new(TapirClient::new(rng.fork(), channel))
     }
 
-    let clients = std::iter::repeat_with(|| create_client(&registry))
-        .take(num_clients)
+    let clients = (0..num_clients)
+        .map(|_| create_client(rng, &registry))
         .collect::<Vec<_>>();
 
     clients
@@ -130,10 +138,12 @@ fn build_sharded_kv(
     println!("---------------------------");
 
     let registry = ChannelRegistry::default();
+    let mut rng = test_rng(42);
 
     let mut shards = Vec::new();
     for shard in 0..num_shards {
         let replicas = build_shard(
+            &mut rng,
             ShardNumber(shard as u32),
             linearizable,
             num_replicas,
@@ -142,7 +152,7 @@ fn build_sharded_kv(
         shards.push(replicas);
     }
 
-    let clients = build_clients(num_clients, &registry);
+    let clients = build_clients(&mut rng, num_clients, &registry);
 
     (shards, clients)
 }
@@ -495,6 +505,7 @@ async fn coordinator_recovery(num_replicas: usize) {
 // --- Faulty transport helpers ---
 
 fn build_shard_faulty(
+    rng: &mut crate::Rng,
     shard: ShardNumber,
     linearizable: bool,
     num_replicas: usize,
@@ -514,6 +525,7 @@ fn build_shard_faulty(
             let node_seed = seed.wrapping_add(initial_address as u64 + i as u64);
             let config = config.clone();
             let membership = membership.clone();
+            let replica_rng = rng.fork();
 
             Arc::new_cyclic(
                 |weak: &std::sync::Weak<IrReplica<TapirReplica<K, V>, FaultyTransport>>| {
@@ -523,7 +535,7 @@ fn build_shard_faulty(
                     let transport = FaultyChannelTransport::new(channel, config, node_seed);
                     transport.set_shard(shard);
                     let upcalls = TapirReplica::new(shard, linearizable);
-                    IrReplica::new(membership, upcalls, transport, Some(TapirReplica::tick))
+                    IrReplica::new(replica_rng, membership, upcalls, transport, Some(TapirReplica::tick))
                 },
             )
         })
@@ -535,6 +547,7 @@ fn build_shard_faulty(
 }
 
 fn build_clients_faulty(
+    rng: &mut crate::Rng,
     num_clients: usize,
     registry: &ChannelRegistry<TapirReplica<K, V>>,
     config: &NetworkFaultConfig,
@@ -547,12 +560,13 @@ fn build_clients_faulty(
         let channel = registry.channel(move |_, _| unreachable!());
         let transport = FaultyChannelTransport::new(channel, config.clone(), client_seed);
         transports.push(transport.clone());
-        clients.push(Arc::new(TapirClient::new(transport)));
+        clients.push(Arc::new(TapirClient::new(rng.fork(), transport)));
     }
     (clients, transports)
 }
 
 fn build_sharded_kv_faulty(
+    rng: &mut crate::Rng,
     linearizable: bool,
     num_shards: usize,
     num_replicas: usize,
@@ -579,6 +593,7 @@ fn build_sharded_kv_faulty(
     for shard in 0..num_shards {
         let shard_seed = seed.wrapping_add(shard as u64 * 100);
         let replicas = build_shard_faulty(
+            rng,
             ShardNumber(shard as u32),
             linearizable,
             num_replicas,
@@ -590,7 +605,7 @@ fn build_sharded_kv_faulty(
     }
 
     let (clients, client_transports) =
-        build_clients_faulty(num_clients, &registry, config, seed.wrapping_add(5000));
+        build_clients_faulty(rng, num_clients, &registry, config, seed.wrapping_add(5000));
 
     (shards, clients, client_transports)
 }
@@ -630,6 +645,7 @@ async fn fuzz_tapir_transactions() {
     eprintln!("fuzz_tapir_transactions seed={seed}");
 
     let mut rng = StdRng::seed_from_u64(seed);
+    let mut lib_rng = test_rng(seed);
 
     let config = NetworkFaultConfig {
         drop_rate: 0.05,
@@ -662,6 +678,7 @@ async fn fuzz_tapir_transactions() {
     disc_dir.add_own_shard(ShardNumber(0));
 
     let (shards, clients, client_transports) = build_sharded_kv_faulty(
+        &mut lib_rng,
         true,
         num_shards as usize,
         num_replicas,
@@ -999,12 +1016,13 @@ async fn test_add_replica_with_preload() {
 
     init_tracing();
 
+    let mut rng = test_rng(42);
     let shard = ShardNumber(0);
     let registry = ChannelRegistry::default();
 
     // Build 3-replica shard and 1 client.
-    let replicas = build_shard(shard, true, 3, &registry);
-    let clients = build_clients(1, &registry);
+    let replicas = build_shard(&mut rng, shard, true, 3, &registry);
+    let clients = build_clients(&mut rng, 1, &registry);
     let shard_dir = ShardDirectory::new(vec![ShardEntry {
         shard,
         range: KeyRange {
@@ -1038,6 +1056,7 @@ async fn test_add_replica_with_preload() {
             let upcalls = TapirReplica::new(shard, true);
             // Start with membership=[self] only — the real membership comes via AddMember.
             IrReplica::new(
+                rng.fork(),
                 IrMembership::new(vec![new_address]),
                 upcalls,
                 channel,
@@ -1051,7 +1070,7 @@ async fn test_add_replica_with_preload() {
     let original_membership =
         IrMembership::new((0..3).collect::<Vec<_>>());
     let address_directory = Arc::clone(registry.directory());
-    let mut manager = ShardManager::new(manager_channel, address_directory);
+    let mut manager = ShardManager::new(rng.fork(), manager_channel, address_directory);
     manager.register_shard(shard, original_membership, KeyRange {
         start: None,
         end: None,
@@ -1457,12 +1476,13 @@ async fn test_merge_two_shards() {
 
     init_tracing();
 
+    let mut rng = test_rng(42);
     let registry = ChannelRegistry::default();
 
     // Build 2 adjacent shards: shard 0 covers [None, 50), shard 1 covers [50, None).
-    let _replicas_0 = build_shard(ShardNumber(0), false, 3, &registry);
-    let _replicas_1 = build_shard(ShardNumber(1), false, 3, &registry);
-    let clients = build_clients(1, &registry);
+    let _replicas_0 = build_shard(&mut rng, ShardNumber(0), false, 3, &registry);
+    let _replicas_1 = build_shard(&mut rng, ShardNumber(1), false, 3, &registry);
+    let clients = build_clients(&mut rng, 1, &registry);
 
     // Commit data on each shard.
     let txn = clients[0].begin();
@@ -1483,7 +1503,7 @@ async fn test_merge_two_shards() {
     // Set up ShardManager.
     let manager_channel = registry.channel(move |_, _| None);
     let address_directory = Arc::clone(registry.directory());
-    let mut manager = ShardManager::new(manager_channel, address_directory);
+    let mut manager = ShardManager::new(rng.fork(), manager_channel, address_directory);
     manager.register_shard(
         ShardNumber(0),
         IrMembership::new(vec![0, 1, 2]),
@@ -1538,11 +1558,12 @@ async fn test_split_merge_two_shards() {
 
     init_tracing();
 
+    let mut rng = test_rng(42);
     let registry = ChannelRegistry::default();
 
     // Build 1 shard covering [None, None) with 3 replicas.
-    let _replicas_0 = build_shard(ShardNumber(0), false, 3, &registry);
-    let clients = build_clients(1, &registry);
+    let _replicas_0 = build_shard(&mut rng, ShardNumber(0), false, 3, &registry);
+    let clients = build_clients(&mut rng, 1, &registry);
 
     // Commit 4 keys.
     for (key, val) in [(10, 100), (30, 300), (60, 600), (80, 800)] {
@@ -1559,7 +1580,7 @@ async fn test_split_merge_two_shards() {
     // Set up ShardManager.
     let manager_channel = registry.channel(move |_, _| None);
     let address_directory = Arc::clone(registry.directory());
-    let mut manager = ShardManager::new(manager_channel, address_directory);
+    let mut manager = ShardManager::new(rng.fork(), manager_channel, address_directory);
     manager.register_shard(
         ShardNumber(0),
         IrMembership::new(vec![0, 1, 2]),
@@ -1567,7 +1588,7 @@ async fn test_split_merge_two_shards() {
     );
 
     // Split at key=50: shard 0 gets [None, 50), shard 1 gets [50, None).
-    let _replicas_1 = build_shard(ShardNumber(1), false, 3, &registry);
+    let _replicas_1 = build_shard(&mut rng, ShardNumber(1), false, 3, &registry);
     let new_membership = IrMembership::new(vec![4, 5, 6]);
     manager.split(ShardNumber(0), 50, ShardNumber(1), new_membership).await;
 
@@ -1637,12 +1658,13 @@ async fn cdc_view_based_scan_changes() {
 
     init_tracing();
 
+    let mut rng = test_rng(42);
     let shard = ShardNumber(0);
     let registry = ChannelRegistry::default();
 
     // Build 3-replica shard.
-    let replicas = build_shard(shard, false, 3, &registry);
-    let clients = build_clients(1, &registry);
+    let replicas = build_shard(&mut rng, shard, false, 3, &registry);
+    let clients = build_clients(&mut rng, 1, &registry);
 
     // Commit two transactions.
     let txn = clients[0].begin();
@@ -1665,7 +1687,7 @@ async fn cdc_view_based_scan_changes() {
     let membership = IrMembership::new(vec![0, 1, 2]);
     let channel = registry.channel(move |_, _| unreachable!());
     let shard_client: ShardClient<K, V, Transport> =
-        ShardClient::new(IrClientId::new(), shard, membership, channel);
+        ShardClient::new(rng.fork(), IrClientId::new(&mut rng), shard, membership, channel);
 
     // First scan: from_view=0 should return all committed changes.
     let r = shard_client.scan_changes(0).await;

@@ -4,7 +4,6 @@ use crate::{
     TapirTransport,
 };
 use futures::future::join_all;
-use rand::{thread_rng, Rng};
 use std::{
     collections::HashMap,
     future::Future,
@@ -27,6 +26,7 @@ pub struct Inner<K: Key, V: Value, T: TapirTransport<K, V>> {
     id: IrClientId,
     clients: HashMap<ShardNumber, ShardClient<K, V, T>>,
     transport: T,
+    rng: crate::Rng,
 }
 
 impl<K: Key, V: Value, T: TapirTransport<K, V>> Inner<K, V, T> {
@@ -52,7 +52,7 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Inner<K, V, T> {
             lock.clients
                 .entry(shard)
                 .or_insert_with(|| {
-                    ShardClient::new(lock.id, shard, membership, lock.transport.clone())
+                    ShardClient::new(lock.rng.fork(), lock.id, shard, membership, lock.transport.clone())
                 })
                 .clone()
         }
@@ -84,14 +84,17 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Client<K, V, T> {
         }
     }
 
-    pub fn new(transport: T) -> Self {
+    pub fn new(mut rng: crate::Rng, transport: T) -> Self {
+        let id = IrClientId::new(&mut rng);
+        let txn_number = rng.random_u64();
         Self {
             inner: Arc::new(Mutex::new(Inner {
-                id: IrClientId::new(),
+                id,
                 clients: Default::default(),
                 transport,
+                rng,
             })),
-            next_transaction_number: AtomicU64::new(thread_rng().r#gen()),
+            next_transaction_number: AtomicU64::new(txn_number),
         }
     }
 

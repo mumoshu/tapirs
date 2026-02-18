@@ -1,5 +1,6 @@
 use crate::discovery::HttpDiscoveryClient;
 use crate::node::Node;
+use rand::{thread_rng, Rng as _};
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 use tapirs::discovery::{DiscoveryClient as _, InMemoryShardDirectory};
@@ -162,7 +163,7 @@ async fn create_test_client(
     let entries = build_shard_entries(cluster.replica_addrs.len() as u32);
     let directory = Arc::new(RwLock::new(ShardDirectory::new(entries)));
     let router = Arc::new(DynamicRouter::new(directory));
-    let tapir_client = Arc::new(TapirClient::new(transport));
+    let tapir_client = Arc::new(TapirClient::new(tapirs::Rng::from_seed(thread_rng().r#gen()), transport));
     let rc = Arc::new(RoutingClient::new(tapir_client, router));
 
     // Must return discovery_dir to keep background sync alive.

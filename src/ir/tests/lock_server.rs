@@ -4,6 +4,10 @@ use crate::{
 };
 use rand::{seq::IteratorRandom, Rng, SeedableRng};
 use rand::rngs::StdRng;
+
+fn test_rng(seed: u64) -> crate::Rng {
+    crate::Rng::from_seed(seed)
+}
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
@@ -168,8 +172,10 @@ async fn lock_server(num_replicas: usize) {
 
     let registry = ChannelRegistry::default();
     let membership = IrMembership::new((0..num_replicas).collect::<Vec<_>>());
+    let mut lib_rng = test_rng(num_replicas as u64);
 
     fn create_replica(
+        rng: &mut crate::Rng,
         registry: &ChannelRegistry<Upcalls>,
         membership: &IrMembership<usize>,
     ) -> Arc<IrReplica<Upcalls, ChannelTransport<Upcalls>>> {
@@ -179,25 +185,26 @@ async fn lock_server(num_replicas: usize) {
                 let channel =
                     registry.channel(move |from, message| weak.upgrade()?.receive(from, message));
                 let upcalls = Upcalls { locked: None };
-                IrReplica::new(membership.clone(), upcalls, channel, None)
+                IrReplica::new(rng.fork(), membership.clone(), upcalls, channel, None)
             },
         )
     }
 
-    let mut replicas = std::iter::repeat_with(|| create_replica(&registry, &membership))
-        .take(num_replicas)
+    let mut replicas = (0..num_replicas)
+        .map(|_| create_replica(&mut lib_rng, &registry, &membership))
         .collect::<Vec<_>>();
 
     fn create_client(
+        rng: &mut crate::Rng,
         registry: &ChannelRegistry<Upcalls>,
         membership: &IrMembership<usize>,
     ) -> Arc<IrClient<Upcalls, ChannelTransport<Upcalls>>> {
         let channel = registry.channel(move |_, _| unreachable!());
-        Arc::new(IrClient::new(membership.clone(), channel))
+        Arc::new(IrClient::new(rng.fork(), membership.clone(), channel))
     }
 
-    let clients = std::iter::repeat_with(|| create_client(&registry, &membership))
-        .take(2)
+    let clients = (0..2)
+        .map(|_| create_client(&mut lib_rng, &registry, &membership))
         .collect::<Vec<_>>();
 
     let decide_lock = |results: HashMap<LockResult, usize>, membership: IrMembershipSize| {
@@ -210,11 +217,12 @@ async fn lock_server(num_replicas: usize) {
     };
 
     fn add_replica(
+        rng: &mut crate::Rng,
         replicas: &mut Vec<Arc<IrReplica<Upcalls, ChannelTransport<Upcalls>>>>,
         registry: &ChannelRegistry<Upcalls>,
         membership: &IrMembership<usize>,
     ) {
-        let new = create_replica(&registry, &membership);
+        let new = create_replica(rng, &registry, &membership);
         for d in &*replicas {
             new.transport().do_send(
                 d.address(),
@@ -257,7 +265,7 @@ async fn lock_server(num_replicas: usize) {
                 }
             }
             if rng.r#gen() {
-                add_replica(&mut replicas, &registry, &membership);
+                add_replica(&mut lib_rng, &mut replicas, &registry, &membership);
             }
         }
     }

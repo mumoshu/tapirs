@@ -234,12 +234,13 @@ impl Process<LinKv, Wrapper> for KvNode {
             transport.clone(),
             match id {
                 IdEnum::Replica(_) => KvNodeInner::Replica(Arc::new(IrReplica::new(
+                    tapirs::Rng::from_seed(thread_rng().r#gen()),
                     membership,
                     TapirReplica::new(tapirs::ShardNumber(0), true),
                     transport,
                     Some(TapirReplica::tick),
                 ))),
-                IdEnum::App(_) => KvNodeInner::App(Arc::new(TapirClient::new(transport))),
+                IdEnum::App(_) => KvNodeInner::App(Arc::new(TapirClient::new(tapirs::Rng::from_seed(thread_rng().r#gen()), transport))),
                 id => panic!("{id}"),
             },
         ));

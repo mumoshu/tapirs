@@ -106,9 +106,10 @@ impl<U: Upcalls, T: Transport<U>> Debug for Replica<U, T> {
 
 struct Inner<U: Upcalls, T: Transport<U>> {
     transport: T,
-    app_tick: Option<fn(&U, &T, &Membership<T::Address>)>,
+    app_tick: Option<fn(&U, &T, &Membership<T::Address>, &mut crate::Rng)>,
     view_info_key: String,
     view_change_interval: Duration,
+    rng: Mutex<crate::Rng>,
     // Single Mutex for all state — faithfully implements the TLA+ single-threaded
     // state machine model. A RwLock<Upcalls> + Mutex<ProtocolState> split was
     // considered to make RequestUnlogged (exec_unlogged(&self)) concurrently
@@ -147,19 +148,21 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
     const VIEW_CHANGE_INTERVAL: Duration = Duration::from_secs(2);
 
     pub fn new(
+        rng: crate::Rng,
         membership: Membership<T::Address>,
         upcalls: U,
         transport: T,
-        app_tick: Option<fn(&U, &T, &Membership<T::Address>)>,
+        app_tick: Option<fn(&U, &T, &Membership<T::Address>, &mut crate::Rng)>,
     ) -> Self {
-        Self::with_view_change_interval(membership, upcalls, transport, app_tick, None)
+        Self::with_view_change_interval(rng, membership, upcalls, transport, app_tick, None)
     }
 
     pub fn with_view_change_interval(
+        rng: crate::Rng,
         membership: Membership<T::Address>,
         upcalls: U,
         transport: T,
-        app_tick: Option<fn(&U, &T, &Membership<T::Address>)>,
+        app_tick: Option<fn(&U, &T, &Membership<T::Address>, &mut crate::Rng)>,
         view_change_interval: Option<Duration>,
     ) -> Self {
         let interval = view_change_interval.unwrap_or(Self::VIEW_CHANGE_INTERVAL);
@@ -175,6 +178,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                 app_tick,
                 view_info_key,
                 view_change_interval: interval,
+                rng: Mutex::new(rng),
                 sync: Mutex::new(SyncInner {
                     status: Status::Normal,
                     latest_normal_view: view.clone(),
@@ -299,7 +303,8 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                 let mut sync = inner.sync.lock().unwrap();
                 let sync = &mut *sync;
                 if let Some(tick) = inner.app_tick.as_ref() {
-                    tick(&sync.upcalls, &transport, &sync.view.membership);
+                    let mut rng = inner.rng.lock().unwrap();
+                    tick(&sync.upcalls, &transport, &sync.view.membership, &mut rng);
                 } else {
                     break;
                 }

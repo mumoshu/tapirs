@@ -4,9 +4,12 @@ pub mod discovery;
 mod ir;
 mod mvcc;
 mod occ;
+mod rng;
 mod tapir;
 mod transport;
 pub mod util;
+
+pub use rng::Rng;
 
 pub use ir::{
     Client as IrClient, ClientId as IrClientId, Membership as IrMembership,

@@ -24,19 +24,23 @@ pub struct ShardManager<K: Key, V: Value, T: Transport<Replica<K, V>>, D: Addres
     pub(crate) address_directory: D,
     pub(crate) transport: T,
     client_id: IrClientId,
+    pub(crate) rng: crate::Rng,
 }
 
 impl<K: Key, V: Value, T: Transport<Replica<K, V>>, D: AddressDirectory<T::Address>> ShardManager<K, V, T, D> {
     pub fn new(
+        mut rng: crate::Rng,
         transport: T,
         address_directory: D,
     ) -> Self {
+        let client_id = IrClientId::new(&mut rng);
         Self {
             shards: HashMap::new(),
             directory: ShardDirectory::new(vec![]),
             address_directory,
             transport: transport.clone(),
-            client_id: IrClientId::new(),
+            client_id,
+            rng,
         }
     }
 
@@ -48,6 +52,7 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>, D: AddressDirectory<T::Addre
     ) {
         self.address_directory.put(shard, membership.clone());
         let client = ShardClient::new(
+            self.rng.fork(),
             self.client_id,
             shard,
             membership,

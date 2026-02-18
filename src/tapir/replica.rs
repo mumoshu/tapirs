@@ -102,17 +102,18 @@ impl<K: Key, V: Value> Replica<K, V> {
         // TODO: Optimize.
         _membership: IrMembership<T::Address>,
         transport: T,
+        mut rng: crate::Rng,
     ) -> impl Future<Output = ()> {
         warn!("trying to recover {transaction_id:?}");
 
         async move {
             let mut participants = HashMap::new();
-            let client_id = IrClientId::new();
+            let client_id = IrClientId::new(&mut rng);
             for shard in transaction.participants() {
                 let membership = transport.shard_addresses(shard).await;
                 participants.insert(
                     shard,
-                    ShardClient::new(client_id, shard, membership, transport.clone()),
+                    ShardClient::new(rng.fork(), client_id, shard, membership, transport.clone()),
                 );
             }
 
@@ -826,6 +827,7 @@ impl<K: Key, V: Value> Replica<K, V> {
         &self,
         transport: &T,
         membership: &IrMembership<T::Address>,
+        rng: &mut crate::Rng,
     ) {
         if !self.inner.prepared.is_empty() {
             trace!(
@@ -847,6 +849,7 @@ impl<K: Key, V: Value> Replica<K, V> {
                 *commit,
                 membership.clone(),
                 transport.clone(),
+                rng.fork(),
             );
             T::spawn(async move {
                 futures::pin_mut!(future);

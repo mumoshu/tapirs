@@ -1,4 +1,5 @@
 use crate::discovery::HttpDiscoveryClient;
+use rand::{thread_rng, Rng as _};
 use serde::Deserialize;
 use std::sync::Arc;
 use tapirs::discovery::{DiscoveryClient as _, InMemoryShardDirectory, ShardDirectory as _};
@@ -14,7 +15,7 @@ type TapirShardManager = ShardManager<
 >;
 
 struct ShardManagerState {
-    manager: TapirShardManager,
+    manager: tokio::sync::Mutex<TapirShardManager>,
     directory: Arc<InMemoryShardDirectory<TcpAddress>>,
     discovery_client: Arc<HttpDiscoveryClient>,
 }
@@ -34,9 +35,9 @@ impl ShardManagerState {
             persist_dir,
             Arc::clone(&directory),
         );
-        let manager = ShardManager::new(transport, Arc::clone(&directory));
+        let manager = ShardManager::new(tapirs::Rng::from_seed(thread_rng().r#gen()), transport, Arc::clone(&directory));
         Self {
-            manager,
+            manager: tokio::sync::Mutex::new(manager),
             directory,
             discovery_client: Arc::new(HttpDiscoveryClient::new(discovery_url)),
         }
@@ -100,7 +101,7 @@ async fn handle_request(
                 .directory
                 .put(shard, IrMembership::new(addrs));
 
-            match state.manager.join(shard, new_addr).await {
+            match state.manager.lock().await.join(shard, new_addr).await {
                 Ok(()) => (200, r#"{"ok":true}"#.to_string()),
                 Err(e) => {
                     (
@@ -111,7 +112,7 @@ async fn handle_request(
             }
         } else {
             // First replica — bootstrap via BootstrapRecord → StartView.
-            state.manager.bootstrap(shard, new_addr);
+            state.manager.lock().await.bootstrap(shard, new_addr);
             (200, r#"{"ok":true}"#.to_string())
         }
     } else if method == "POST" && path == "/v1/leave" {
@@ -176,7 +177,7 @@ async fn handle_request(
             .directory
             .put(shard, IrMembership::new(addrs));
 
-        match state.manager.leave(shard, addr) {
+        match state.manager.lock().await.leave(shard, addr) {
             Ok(()) => (200, r#"{"ok":true}"#.to_string()),
             Err(e) => (500, format!(r#"{{"error":"leave failed: {e}"}}"#)),
         }

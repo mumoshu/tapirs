@@ -45,7 +45,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
         let filtered = filter_changes(&changes, &split_key);
         info!("split: bulk copied {} changes to new shard", filtered.len());
-        ship_changes(&self.shards[&new_shard].client, new_shard, &filtered).await;
+        ship_changes(&self.shards[&new_shard].client, new_shard, &filtered, &mut self.rng).await;
         let mut last_view = r.effective_end_view;
 
         // Phase 2: Catch-up tailing.
@@ -57,7 +57,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
             let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
             let filtered = filter_changes(&changes, &split_key);
             if !filtered.is_empty() {
-                ship_changes(&self.shards[&new_shard].client, new_shard, &filtered).await;
+                ship_changes(&self.shards[&new_shard].client, new_shard, &filtered, &mut self.rng).await;
             }
             if r.effective_end_view == last_view {
                 break;
@@ -93,7 +93,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
             let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
             let filtered = filter_changes(&changes, &split_key);
             if !filtered.is_empty() {
-                ship_changes(&self.shards[&new_shard].client, new_shard, &filtered).await;
+                ship_changes(&self.shards[&new_shard].client, new_shard, &filtered, &mut self.rng).await;
             }
             last_view = last_view.max(r.effective_end_view);
 
@@ -110,7 +110,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
         let filtered = filter_changes(&changes, &split_key);
         if !filtered.is_empty() {
-            ship_changes(&self.shards[&new_shard].client, new_shard, &filtered).await;
+            ship_changes(&self.shards[&new_shard].client, new_shard, &filtered, &mut self.rng).await;
         }
 
         // Phase 3c: Unfreeze source and narrow its key range.
@@ -236,7 +236,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         let r = self.shards[&absorbed].client.scan_changes(0).await;
         let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
         info!("merge: bulk copied {} changes to surviving shard", changes.len());
-        ship_changes(&self.shards[&surviving].client, surviving, &changes).await;
+        ship_changes(&self.shards[&surviving].client, surviving, &changes, &mut self.rng).await;
         let mut last_view = r.effective_end_view;
 
         // Phase 2: Catch-up tailing.
@@ -247,7 +247,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
                 .await;
             let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
             if !changes.is_empty() {
-                ship_changes(&self.shards[&surviving].client, surviving, &changes).await;
+                ship_changes(&self.shards[&surviving].client, surviving, &changes, &mut self.rng).await;
             }
             if r.effective_end_view == last_view {
                 break;
@@ -273,7 +273,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
                 .await;
             let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
             if !changes.is_empty() {
-                ship_changes(&self.shards[&surviving].client, surviving, &changes).await;
+                ship_changes(&self.shards[&surviving].client, surviving, &changes, &mut self.rng).await;
             }
             last_view = last_view.max(r.effective_end_view);
 
@@ -289,7 +289,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
             .await;
         let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
         if !changes.is_empty() {
-            ship_changes(&self.shards[&surviving].client, surviving, &changes).await;
+            ship_changes(&self.shards[&surviving].client, surviving, &changes, &mut self.rng).await;
         }
 
         // Phase 3c: Expand surviving shard's key range.
@@ -331,10 +331,11 @@ async fn ship_changes<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, 
     client: &super::ShardClient<K, V, T>,
     shard: ShardNumber,
     changes: &[Change<K, V>],
+    rng: &mut crate::Rng,
 ) {
     for change in changes {
         let id = OccTransactionId {
-            client_id: IrClientId::new(),
+            client_id: IrClientId::new(rng),
             number: 0,
         };
         let key = Sharded { shard, key: change.key.clone() };

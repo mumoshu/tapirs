@@ -10,7 +10,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
     /// Add a new replica to an existing shard by pre-loading it with the
     /// shard's leader_record before triggering a membership change.
     pub async fn add_replica(
-        &self,
+        &mut self,
         shard: ShardNumber,
         new_address: T::Address,
         new_membership: IrMembership<T::Address>,
@@ -27,7 +27,8 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         // 2. Bootstrap R4 via a standalone client.
         //    Client sends BootstrapRecord → R4 converts to self-directed StartView.
         let standalone = ShardClient::<K, V, T>::new(
-            IrClientId::new(),
+            self.rng.fork(),
+            IrClientId::new(&mut self.rng),
             shard,
             new_membership,
             self.transport.clone(),
@@ -35,6 +36,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         standalone.bootstrap_record((*record).clone(), view);
 
         // 3. Trigger AddMember → view change N → N+3.
+        let managed = self.shards.get(&shard).expect("shard not registered");
         managed.client.add_member(new_address);
     }
 
@@ -43,9 +45,10 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
     /// Sends BootstrapRecord with an empty record at view 1. The replica
     /// converts it to a self-directed StartView, which sets leader_record
     /// and transitions to Normal status. Unconditional — no discovery lookup.
-    pub fn bootstrap(&self, shard: ShardNumber, address: T::Address) {
+    pub fn bootstrap(&mut self, shard: ShardNumber, address: T::Address) {
         let client = ShardClient::<K, V, T>::new(
-            IrClientId::new(),
+            self.rng.fork(),
+            IrClientId::new(&mut self.rng),
             shard,
             IrMembership::new(vec![address]),
             self.transport.clone(),
@@ -65,7 +68,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
     /// Retries fetch_leader_record up to 5 times with 1s backoff for transient
     /// cases where a recent bootstrap hasn't fully propagated.
     pub async fn join(
-        &self,
+        &mut self,
         shard: ShardNumber,
         new_address: T::Address,
     ) -> Result<(), String> {
@@ -75,7 +78,8 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
             .ok_or_else(|| format!("shard {shard:?} not found in address directory"))?;
 
         let existing_client = ShardClient::<K, V, T>::new(
-            IrClientId::new(),
+            self.rng.fork(),
+            IrClientId::new(&mut self.rng),
             shard,
             membership,
             self.transport.clone(),
@@ -89,7 +93,8 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
             match existing_client.fetch_leader_record().await {
                 Some((view, record)) => {
                     let new_client = ShardClient::<K, V, T>::new(
-                        IrClientId::new(),
+                        self.rng.fork(),
+                        IrClientId::new(&mut self.rng),
                         shard,
                         IrMembership::new(vec![new_address]),
                         self.transport.clone(),
@@ -116,7 +121,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
     /// broadcasts RemoveMember to trigger a view change that removes the
     /// address from the group. Symmetric with `join` which sends AddMember.
     pub fn leave(
-        &self,
+        &mut self,
         shard: ShardNumber,
         address: T::Address,
     ) -> Result<(), String> {
@@ -126,7 +131,8 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
             .ok_or_else(|| format!("shard {shard:?} not found in address directory"))?;
 
         let client = ShardClient::<K, V, T>::new(
-            IrClientId::new(),
+            self.rng.fork(),
+            IrClientId::new(&mut self.rng),
             shard,
             membership,
             self.transport.clone(),

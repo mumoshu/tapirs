@@ -1,5 +1,6 @@
 use crate::config::{ClientConfig, ShardConfig};
 use crate::discovery::HttpDiscoveryClient;
+use rand::{thread_rng, Rng as _};
 use std::sync::Arc;
 use tapirs::discovery::{
     DiscoveryClient as _, DiscoveryShardDirectory, InMemoryShardDirectory,
@@ -86,7 +87,7 @@ pub async fn run(cfg: ClientConfig, input_source: crate::repl::InputSource) -> i
 
     let directory = Arc::new(RwLock::new(ShardDirectory::new(entries)));
     let router = Arc::new(DynamicRouter::new(directory));
-    let tapir_client = Arc::new(TapirClient::new(transport));
+    let tapir_client = Arc::new(TapirClient::new(tapirs::Rng::from_seed(thread_rng().r#gen()), transport));
 
     crate::repl::run(tapir_client, router, input_source).await
 }

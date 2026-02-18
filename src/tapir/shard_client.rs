@@ -23,12 +23,13 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> Clone for ShardClient<K, V, 
 
 impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
     pub fn new(
+        rng: crate::Rng,
         id: IrClientId,
         shard: ShardNumber,
         membership: IrMembership<T::Address>,
         transport: T,
     ) -> Self {
-        let mut inner = IrClient::new(membership, transport);
+        let mut inner = IrClient::new(rng, membership, transport);
 
         // Id of all shard clients must match for the timestamps to match during recovery.
         inner.set_id(id);
