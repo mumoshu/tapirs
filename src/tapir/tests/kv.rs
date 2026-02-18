@@ -638,6 +638,20 @@ fn build_shard_entries(num_shards: u32, num_keys: i64) -> Vec<ShardEntry<i64>> {
     entries
 }
 
+// Deterministic simulation fuzz test: concurrent transactions, fault
+// injection (view changes, partitions), and resharding (split/merge).
+//
+// Run once:
+//   TAPI_TEST_SEED=<seed> cargo test --lib fuzz_tapir_transactions -- --nocapture
+//
+// Run with structured event timeline (auto-dumps on failure):
+//   FUZZ_VERBOSE=1 TAPI_TEST_SEED=<seed> cargo test --lib fuzz_tapir_transactions -- --nocapture
+//
+// Run many seeds with summary report:
+//   ./scripts/fuzz-multi-seed.sh              (or: make fuzz)
+//
+// Detect indeterminism (same seed, many runs):
+//   ./scripts/detect-fuzz-indeterminism.sh
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn fuzz_tapir_transactions() {
     let seed: u64 = std::env::var("TAPI_TEST_SEED")
