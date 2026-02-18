@@ -1,13 +1,12 @@
 use crate::{
     tapir::{Key, ShardNumber, Sharded, Value},
-    util::vectorize,
+    util::vectorize_btree,
     IrClientId,
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{hash_map::Entry, HashMap, HashSet},
+    collections::{btree_map::Entry, BTreeMap, BTreeSet},
     fmt::Debug,
-    hash::Hash,
     sync::Arc,
 };
 
@@ -49,19 +48,23 @@ impl<K: Eq, TS: Eq> Eq for ScanEntry<K, TS> {}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Transaction<K, V, TS> {
+    // BTreeMap for deterministic OCC conflict detection order. HashMap iteration
+    // finds different "first conflict" per process run (Fail vs Abstain vs Retry),
+    // leading to different client retry behavior. O(log n) overhead is negligible
+    // for per-transaction sets (typically 1-10 keys).
     #[serde(
-        with = "vectorize",
+        with = "vectorize_btree",
         bound(serialize = "TS: Serialize", deserialize = "TS: Deserialize<'de>")
     )]
-    pub read_set: HashMap<Sharded<K>, TS>,
+    pub read_set: BTreeMap<Sharded<K>, TS>,
     #[serde(
-        with = "vectorize",
+        with = "vectorize_btree",
         bound(
             serialize = "K: Serialize, V: Serialize",
-            deserialize = "K: Deserialize<'de> + Eq + Hash, V: Deserialize<'de>"
+            deserialize = "K: Deserialize<'de> + Ord, V: Deserialize<'de>"
         )
     )]
-    pub write_set: HashMap<Sharded<K>, Option<V>>,
+    pub write_set: BTreeMap<Sharded<K>, Option<V>>,
     #[serde(bound(
         serialize = "K: Serialize, TS: Serialize",
         deserialize = "K: Deserialize<'de>, TS: Deserialize<'de>"
@@ -69,7 +72,7 @@ pub struct Transaction<K, V, TS> {
     pub scan_set: Vec<ScanEntry<K, TS>>,
 }
 
-impl<K: Eq + Hash, V: PartialEq, TS: PartialEq> PartialEq for Transaction<K, V, TS> {
+impl<K: Ord, V: PartialEq, TS: PartialEq> PartialEq for Transaction<K, V, TS> {
     fn eq(&self, other: &Self) -> bool {
         self.read_set == other.read_set
             && self.write_set == other.write_set
@@ -77,10 +80,10 @@ impl<K: Eq + Hash, V: PartialEq, TS: PartialEq> PartialEq for Transaction<K, V, 
     }
 }
 
-impl<K: Eq + Hash, V: Eq, TS: Eq> Eq for Transaction<K, V, TS> {}
+impl<K: Ord, V: Eq, TS: Eq> Eq for Transaction<K, V, TS> {}
 
 impl<K, V, TS: Copy> Transaction<K, V, TS> {
-    pub fn participants(&self) -> HashSet<ShardNumber> {
+    pub fn participants(&self) -> BTreeSet<ShardNumber> {
         self.read_set.keys().map(|k| k.shard)
             .chain(self.write_set.keys().map(|k| k.shard))
             .chain(self.scan_set.iter().map(|e| e.shard))

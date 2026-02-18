@@ -1,15 +1,14 @@
 use super::{SharedTransaction, Timestamp, Transaction, TransactionId};
 use crate::{
     tapir::{Key, ShardNumber, Value},
-    util::{vectorize, vectorize_btree},
+    util::vectorize_btree,
     MvccStore,
 };
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Borrow,
-    collections::{btree_map, hash_map, BTreeMap, HashMap},
+    collections::{btree_map, BTreeMap},
     fmt::Debug,
-    hash::Hash,
     ops::{Bound, Deref, DerefMut},
 };
 use tracing::trace;
@@ -23,19 +22,22 @@ pub struct Store<K, V, TS> {
         deserialize = "K: Deserialize<'de> + Ord, V: Deserialize<'de>, TS: Deserialize<'de> + Ord"
     ))]
     inner: MvccStore<K, V, TS>,
+    // BTreeMap for deterministic iteration during view change merge. Entries are
+    // transient (cleared on commit/abort), so O(log n) vs O(1) is negligible for
+    // the bounded number of concurrent transactions.
     /// Transactions which may commit in the future (and whether the prepare was
     /// finalized in the IR sense).
-    #[serde(with = "vectorize")]
-    pub prepared: HashMap<TransactionId, (TS, SharedTransaction<K, V, TS>, bool)>,
+    #[serde(with = "vectorize_btree")]
+    pub prepared: BTreeMap<TransactionId, (TS, SharedTransaction<K, V, TS>, bool)>,
     // Cache.
     #[serde(
-        with = "vectorize",
+        with = "vectorize_btree",
         bound(
-            serialize = "K: Serialize + Hash + Eq, TS: Serialize",
-            deserialize = "K: Deserialize<'de> + Hash + Eq, TS: Deserialize<'de> + Ord"
+            serialize = "K: Serialize + Ord, TS: Serialize",
+            deserialize = "K: Deserialize<'de> + Ord, TS: Deserialize<'de> + Ord"
         )
     )]
-    prepared_reads: HashMap<K, TimestampSet<TS>>,
+    prepared_reads: BTreeMap<K, TimestampSet<TS>>,
     // Cache. BTreeMap for efficient range queries during scan-set validation.
     #[serde(
         with = "vectorize_btree",
@@ -261,7 +263,7 @@ impl<K: Key, V: Value, TS: Timestamp> Store<K, V, TS> {
         commit: TS,
         dry_run: bool,
     ) -> PrepareResult<TS> {
-        if let hash_map::Entry::Occupied(occupied) = self.prepared.entry(id) {
+        if let btree_map::Entry::Occupied(occupied) = self.prepared.entry(id) {
             if occupied.get().0 == commit {
                 // Already prepared at this timestamp.
                 return PrepareResult::Ok;
@@ -445,11 +447,11 @@ impl<K: Key, V: Value, TS: Timestamp> Store<K, V, TS> {
     ) {
         trace!("preparing {id:?} at {commit:?} (fin = {finalized})");
         match self.prepared.entry(id) {
-            hash_map::Entry::Vacant(vacant) => {
+            btree_map::Entry::Vacant(vacant) => {
                 vacant.insert((commit, transaction.clone(), finalized));
                 self.add_prepared_inner(&transaction, commit);
             }
-            hash_map::Entry::Occupied(mut occupied) => {
+            btree_map::Entry::Occupied(mut occupied) => {
                 if occupied.get().0 == commit {
                     debug_assert_eq!(*occupied.get().1, *transaction);
                     occupied.get_mut().2 = finalized;
@@ -490,7 +492,7 @@ impl<K: Key, V: Value, TS: Timestamp> Store<K, V, TS> {
 
     fn remove_prepared_inner(&mut self, transaction: &Transaction<K, V, TS>, commit: TS) {
         for (key, _) in transaction.shard_read_set(self.shard) {
-            if let hash_map::Entry::Occupied(mut occupied) = self.prepared_reads.entry(key.clone()) {
+            if let btree_map::Entry::Occupied(mut occupied) = self.prepared_reads.entry(key.clone()) {
                 occupied.get_mut().remove(&commit);
                 if occupied.get().is_empty() {
                     occupied.remove();

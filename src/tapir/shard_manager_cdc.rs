@@ -5,7 +5,7 @@ use crate::tapir::shard_manager::ShardManager;
 use crate::tapir::{Replica, Sharded};
 use crate::transport::Transport;
 use crate::{IrClientId, IrMembership, OccTransaction, OccTransactionId};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::time::Duration;
 use tracing::info;
 
@@ -339,10 +339,10 @@ async fn ship_changes<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, 
             number: 0,
         };
         let key = Sharded { shard, key: change.key.clone() };
-        let mut write_set = HashMap::new();
+        let mut write_set = BTreeMap::new();
         write_set.insert(key, change.value.clone());
         let txn = OccTransaction {
-            read_set: HashMap::new(),
+            read_set: BTreeMap::new(),
             write_set,
             scan_set: Vec::new(),
         };

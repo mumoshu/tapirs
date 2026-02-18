@@ -130,7 +130,7 @@ pub enum IO<K, V> {
     Commit {
         transaction_id: OccTransactionId,
         /// Same as successfully prepared transaction.
-        #[serde(bound(deserialize = "K: Eq + Deserialize<'de> + Hash, V: Deserialize<'de>"))]
+        #[serde(bound(deserialize = "K: Ord + Deserialize<'de>, V: Deserialize<'de>"))]
         transaction: OccSharedTransaction<K, V, Timestamp>,
         /// Same as successfully prepared commit timestamp.
         commit: Timestamp,
@@ -166,7 +166,7 @@ pub enum IO<K, V> {
     },
 }
 
-impl<K: Eq + Hash, V: PartialEq> PartialEq for IO<K, V> {
+impl<K: Ord, V: PartialEq> PartialEq for IO<K, V> {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (
@@ -223,7 +223,7 @@ impl<K: Eq + Hash, V: PartialEq> PartialEq for IO<K, V> {
     }
 }
 
-impl<K: Eq + Hash, V: Eq> Eq for IO<K, V> {}
+impl<K: Ord, V: Eq> Eq for IO<K, V> {}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CO<K, V> {
@@ -231,7 +231,7 @@ pub enum CO<K, V> {
         /// Id of transaction to prepare.
         transaction_id: OccTransactionId,
         /// Transaction to prepare.
-        #[serde(bound(deserialize = "K: Eq + Deserialize<'de> + Hash, V: Deserialize<'de>"))]
+        #[serde(bound(deserialize = "K: Ord + Deserialize<'de>, V: Deserialize<'de>"))]
         transaction: OccSharedTransaction<K, V, Timestamp>,
         /// Proposed commit timestamp.
         commit: Timestamp,
@@ -241,7 +241,7 @@ pub enum CO<K, V> {
     },
 }
 
-impl<K: Eq + Hash, V: PartialEq> PartialEq for CO<K, V> {
+impl<K: Ord, V: PartialEq> PartialEq for CO<K, V> {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (
@@ -269,7 +269,7 @@ impl<K: Eq + Hash, V: PartialEq> PartialEq for CO<K, V> {
     }
 }
 
-impl<K: Eq + Hash, V: Eq> Eq for CO<K, V> {}
+impl<K: Ord, V: Eq> Eq for CO<K, V> {}
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum CR {

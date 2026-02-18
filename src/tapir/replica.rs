@@ -883,8 +883,8 @@ mod tests {
 
     fn empty_txn() -> OccSharedTransaction<i64, i64, Timestamp> {
         Arc::new(crate::OccTransaction {
-            read_set: HashMap::new(),
-            write_set: HashMap::new(),
+            read_set: BTreeMap::new(),
+            write_set: BTreeMap::new(),
             scan_set: Vec::new(),
         })
     }
