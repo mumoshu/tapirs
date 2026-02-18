@@ -9,6 +9,12 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 use tracing::info;
 
+#[derive(Debug)]
+pub enum ReshardError {
+    ShardNotRegistered(ShardNumber),
+    RangesNotAdjacent(ShardNumber, ShardNumber),
+}
+
 impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDirectory<T::Address>> ShardManager<K, V, T, D> {
     /// Split a shard at `split_key`: keys < split_key stay on `source`,
     /// keys >= split_key move to `new_shard`.
@@ -18,9 +24,9 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         split_key: K,
         new_shard: ShardNumber,
         new_membership: IrMembership<T::Address>,
-    ) {
+    ) -> Result<(), ReshardError> {
         let source_range = self.shards.get(&source)
-            .expect("source shard not registered")
+            .ok_or(ReshardError::ShardNotRegistered(source))?
             .key_range
             .clone();
 
@@ -133,6 +139,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         // Rebuild directory from all registered shards (not just source + new).
         self.rebuild_directory();
         info!("split: complete");
+        Ok(())
     }
     /// Merge two adjacent shards: `absorbed` is removed, its data shipped to `surviving`.
     ///
@@ -217,19 +224,18 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         &mut self,
         absorbed: ShardNumber,
         surviving: ShardNumber,
-    ) {
+    ) -> Result<(), ReshardError> {
         let absorbed_range = self.shards.get(&absorbed)
-            .expect("absorbed shard not registered")
+            .ok_or(ReshardError::ShardNotRegistered(absorbed))?
             .key_range
             .clone();
         let surviving_range = self.shards.get(&surviving)
-            .expect("surviving shard not registered")
+            .ok_or(ReshardError::ShardNotRegistered(surviving))?
             .key_range
             .clone();
-        assert!(
-            absorbed_range.adjacent(&surviving_range),
-            "shard ranges must be adjacent to merge"
-        );
+        if !absorbed_range.adjacent(&surviving_range) {
+            return Err(ReshardError::RangesNotAdjacent(absorbed, surviving));
+        }
         let merged_range = surviving_range.union(&absorbed_range);
 
         // Phase 1: Bulk copy — ship all changes from absorbed to surviving.
@@ -311,6 +317,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         // Remove absorbed shard and rebuild directory.
         self.deregister_shard(absorbed);
         info!("merge: complete");
+        Ok(())
     }
 }
 

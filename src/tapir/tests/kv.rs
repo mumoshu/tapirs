@@ -1519,7 +1519,7 @@ async fn test_merge_two_shards() {
     );
 
     // Merge: shard 1 absorbed into shard 0.
-    manager.merge(ShardNumber(1), ShardNumber(0)).await;
+    manager.merge(ShardNumber(1), ShardNumber(0)).await.unwrap();
 
     // Verify: read key=10 (originally on shard 0) — still accessible.
     let txn = clients[0].begin();
@@ -1593,7 +1593,7 @@ async fn test_split_merge_two_shards() {
     // Split at key=50: shard 0 gets [None, 50), shard 1 gets [50, None).
     let _replicas_1 = build_shard(&mut rng, ShardNumber(1), false, 3, &registry);
     let new_membership = IrMembership::new(vec![4, 5, 6]);
-    manager.split(ShardNumber(0), 50, ShardNumber(1), new_membership).await;
+    manager.split(ShardNumber(0), 50, ShardNumber(1), new_membership).await.unwrap();
 
     // Verify split: read all 4 keys from correct shards.
     Transport::sleep(Duration::from_millis(1)).await;
@@ -1624,7 +1624,7 @@ async fn test_split_merge_two_shards() {
     tokio::time::sleep(Duration::from_secs(5)).await;
 
     // Merge: shard 1 absorbed back into shard 0.
-    manager.merge(ShardNumber(1), ShardNumber(0)).await;
+    manager.merge(ShardNumber(1), ShardNumber(0)).await.unwrap();
 
     // Verify merge: read all 6 keys from shard 0.
     Transport::sleep(Duration::from_millis(1)).await;
