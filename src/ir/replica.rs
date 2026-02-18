@@ -1,5 +1,5 @@
 use super::{
-    message::{BootstrapRecord, FinalizeInconsistentReply, LeaderRecord, LeaderRecordReply, RecordPayload, Reconfigure, ViewChangeAddendum},
+    message::{BootstrapRecord, FinalizeInconsistentReply, LeaderRecord, LeaderRecordReply, RecordPayload, Reconfigure, StatusBroadcast, ViewChangeAddendum},
     shared_view::SharedView, AddMember, Confirm, DoViewChange,
     FinalizeConsensus, FinalizeInconsistent, Membership, Message, OpId, ProposeConsensus,
     ProposeInconsistent, Record, RecordConsensusEntry, RecordEntryState, RecordInconsistentEntry,
@@ -134,6 +134,10 @@ struct SyncInner<U: Upcalls, T: Transport<U>> {
     outstanding_do_view_changes: HashMap<T::Address, DoViewChange<U::IO, U::CO, U::CR, T::Address>>,
     /// Last time received message from each peer replica.
     peer_liveness: HashMap<T::Address, Instant>,
+    /// Op IDs inserted or modified since the last completed view change.
+    delta_op_ids: HashSet<OpId>,
+    /// Latest normal-view number confirmed by each peer via periodic status broadcasts.
+    peer_normal_views: HashMap<T::Address, ViewNumber>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -187,6 +191,8 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                     leader_record: None,
                     outstanding_do_view_changes: HashMap::new(),
                     peer_liveness: HashMap::new(),
+                    delta_op_ids: HashSet::new(),
+                    peer_normal_views: HashMap::new(),
                 }),
             }),
         };
@@ -254,6 +260,22 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
 
                 sync.peer_liveness
                     .retain(|a, _| sync.view.membership.contains(*a));
+
+                sync.peer_normal_views
+                    .retain(|a, _| sync.view.membership.contains(*a));
+
+                if sync.status.is_normal() {
+                    for address in sync.view.membership.iter() {
+                        if address != inner.transport.address() {
+                            inner.transport.do_send(
+                                address,
+                                Message::<U, T>::StatusBroadcast(StatusBroadcast {
+                                    latest_normal_view: sync.latest_normal_view.number,
+                                }),
+                            );
+                        }
+                    }
+                }
 
                 if sync.changed_view_recently {
                     trace!("{:?} skipping view change", inner.transport.address());
@@ -328,8 +350,25 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                     view: sync.view.clone(),
                     from_client: false,
                     addendum: (address == sync.view.leader()).then(|| {
+                        let can_delta = sync.leader_record.is_some()
+                            && sync.latest_normal_view.number.0 + 1 == sync.view.number.0
+                            && sync.latest_normal_view.membership.iter()
+                                .filter(|a| *a != transport.address())
+                                .all(|a| {
+                                    sync.peer_normal_views.get(&a)
+                                        .is_some_and(|v| *v >= sync.latest_normal_view.number)
+                                });
+                        let payload = if can_delta {
+                            let lr = sync.leader_record.as_ref().unwrap();
+                            RecordPayload::Delta {
+                                base_view: lr.view.number,
+                                entries: sync.record.filter_by_op_ids(&sync.delta_op_ids),
+                            }
+                        } else {
+                            RecordPayload::Full((*sync.record).clone())
+                        };
                         ViewChangeAddendum {
-                            payload: RecordPayload::Full((*sync.record).clone()),
+                            payload,
                             latest_normal_view: sync.latest_normal_view.clone(),
                         }
                     }),
@@ -375,6 +414,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                                 op,
                                 state: RecordEntryState::Tentative,
                             }).state;
+                            sync.delta_op_ids.insert(op_id);
                             state
                         }
                         Entry::Occupied(occupied) => {
@@ -412,6 +452,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                                 op,
                                 state: RecordEntryState::Tentative,
                             });
+                            sync.delta_op_ids.insert(op_id);
                             (entry.result.clone(), entry.state)
                         }
                     };
@@ -426,6 +467,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
             Message::<U, T>::FinalizeInconsistent(FinalizeInconsistent { op_id }) => {
                 if sync.status.is_normal() && let Some(entry) = Arc::make_mut(&mut sync.record).inconsistent.get_mut(&op_id) && entry.state.is_tentative() {
                     entry.state = RecordEntryState::Finalized(sync.view.number);
+                    sync.delta_op_ids.insert(op_id);
                     let result = sync.upcalls.exec_inconsistent(&entry.op);
 
                     if let Some(result) = result {
@@ -446,6 +488,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                             entry.state = RecordEntryState::Finalized(sync.view.number);
                             entry.result = result;
                             sync.upcalls.finalize_consensus(&entry.op, &entry.result);
+                            sync.delta_op_ids.insert(op_id);
                         } else if cfg!(debug_assertions) && entry.result != result {
                             // For diagnostic purposes.
                             warn!("tried to finalize consensus with {result:?} when {:?} was already finalized", entry.result);
@@ -495,7 +538,14 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                             view: sync.view.clone(),
                             from_client: false,
                             addendum: Some(ViewChangeAddendum {
-                                payload: RecordPayload::Full((*sync.record).clone()),
+                                payload: if let Some(lr) = sync.leader_record.as_ref() {
+                                    RecordPayload::Delta {
+                                        base_view: lr.view.number,
+                                        entries: sync.record.filter_by_op_ids(&sync.delta_op_ids),
+                                    }
+                                } else {
+                                    RecordPayload::Full((*sync.record).clone())
+                                },
                                 latest_normal_view: sync.latest_normal_view.clone(),
                             }),
                         };
@@ -530,8 +580,25 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                                     })
                                     .map(|(_, r)| {
                                         let addendum = r.addendum.as_ref().unwrap();
-                                        let base = sync.leader_record.as_ref().map(|lr| &*lr.record);
-                                        addendum.payload.clone().resolve(base)
+                                        match &addendum.payload {
+                                            RecordPayload::Delta { base_view, .. } => {
+                                                let base_ok = sync.leader_record.as_ref()
+                                                    .map(|lr| lr.view.number == *base_view)
+                                                    .unwrap_or(false);
+                                                assert!(
+                                                    base_ok,
+                                                    "Delta addendum base_view={base_view:?} does not match \
+                                                     coordinator leader_record={:?}; gossip confirmed all \
+                                                     members but coordinator lacks base",
+                                                    sync.leader_record.as_ref().map(|lr| lr.view.number),
+                                                );
+                                                let base = sync.leader_record.as_ref().map(|lr| &*lr.record);
+                                                addendum.payload.clone().resolve(base)
+                                            }
+                                            RecordPayload::Full(_) => {
+                                                addendum.payload.clone().resolve(None)
+                                            }
+                                        }
                                     })
                                     .collect::<Vec<_>>();
 
@@ -688,23 +755,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
 
                             let base_view = sync.leader_record.as_ref().map(|lr| lr.view.number);
                             let delta_entries = sync.leader_record.as_ref().map(|lr| {
-                                let base = &*lr.record;
-                                let mut delta_ids = HashSet::new();
-                                for id in sync.record.inconsistent.keys() {
-                                    if !base.inconsistent.contains_key(id)
-                                        || base.inconsistent.get(id) != sync.record.inconsistent.get(id)
-                                    {
-                                        delta_ids.insert(*id);
-                                    }
-                                }
-                                for id in sync.record.consensus.keys() {
-                                    if !base.consensus.contains_key(id)
-                                        || base.consensus.get(id) != sync.record.consensus.get(id)
-                                    {
-                                        delta_ids.insert(*id);
-                                    }
-                                }
-                                sync.record.filter_by_op_ids(&delta_ids)
+                                sync.record.delta_from(&*lr.record)
                             });
 
                             // CDC: notify upcalls of the delta record for this view transition.
@@ -727,6 +778,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                                 record: Arc::clone(&merged_record),
                                 view: sync.view.clone(),
                             });
+                            sync.delta_op_ids.clear();
 
                             let full_payload = RecordPayload::Full((*merged_record).clone());
 
@@ -840,6 +892,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                     }
                     sync.changed_view_recently = true;
                     sync.leader_record = Some(LeaderRecord { record: new_record, view });
+                    sync.delta_op_ids.clear();
                     self.persist_view_info(&*sync);
                     self.inner.transport.on_membership_changed(&sync.view.membership);
                 }
@@ -913,6 +966,12 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                         view,
                     }),
                 );
+            }
+            Message::<U, T>::StatusBroadcast(StatusBroadcast { latest_normal_view }) => {
+                let entry = sync.peer_normal_views.entry(address).or_insert(ViewNumber(0));
+                if latest_normal_view > *entry {
+                    *entry = latest_normal_view;
+                }
             }
             Message::<U, T>::FinalizeInconsistentReply(_) => {
                 // Handled by the client via transport.send() future resolution.

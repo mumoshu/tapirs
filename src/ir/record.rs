@@ -122,3 +122,21 @@ impl<IO: Clone, CO: Clone, CR: Clone> RecordImpl<IO, CO, CR> {
         }
     }
 }
+
+impl<IO: Clone + PartialEq, CO: Clone + PartialEq, CR: Clone + PartialEq> RecordImpl<IO, CO, CR> {
+    /// Returns a record containing only entries in `self` that differ from `base`.
+    pub fn delta_from(&self, base: &Self) -> Self {
+        let mut delta_ids = HashSet::new();
+        for id in self.inconsistent.keys() {
+            if base.inconsistent.get(id) != self.inconsistent.get(id) {
+                delta_ids.insert(*id);
+            }
+        }
+        for id in self.consensus.keys() {
+            if base.consensus.get(id) != self.consensus.get(id) {
+                delta_ids.insert(*id);
+            }
+        }
+        self.filter_by_op_ids(&delta_ids)
+    }
+}

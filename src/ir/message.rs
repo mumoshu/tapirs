@@ -35,6 +35,7 @@ pub enum MessageImpl<UO, UR, IO, IR, CO, CR, A> {
     FetchLeaderRecord(FetchLeaderRecord),
     LeaderRecordReply(LeaderRecordReply<IO, CO, CR, A>),
     BootstrapRecord(BootstrapRecord<IO, CO, CR, A>),
+    StatusBroadcast(StatusBroadcast),
 }
 
 impl<UO: Debug, UR: Debug, IO: Debug, IR: Debug, CO: Debug, CR: Debug, A: Debug> Debug
@@ -60,6 +61,7 @@ impl<UO: Debug, UR: Debug, IO: Debug, IR: Debug, CO: Debug, CR: Debug, A: Debug>
             Self::FetchLeaderRecord(r) => Debug::fmt(r, f),
             Self::LeaderRecordReply(r) => Debug::fmt(r, f),
             Self::BootstrapRecord(r) => Debug::fmt(r, f),
+            Self::StatusBroadcast(r) => Debug::fmt(r, f),
         }
     }
 }
@@ -248,4 +250,9 @@ pub struct LeaderRecordReply<IO, CO, CR, A> {
 pub struct BootstrapRecord<IO, CO, CR, A> {
     pub record: RecordImpl<IO, CO, CR>,
     pub view: SharedView<A>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StatusBroadcast {
+    pub latest_normal_view: ViewNumber,
 }

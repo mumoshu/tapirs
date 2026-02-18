@@ -387,6 +387,7 @@ impl<U: IrReplicaUpcalls> FaultyChannelTransport<U> {
             FetchLeaderRecord(m) => FetchLeaderRecord(m),
             LeaderRecordReply(m) => LeaderRecordReply(m),
             BootstrapRecord(m) => BootstrapRecord(m),
+            StatusBroadcast(m) => StatusBroadcast(m),
         }
     }
 
@@ -411,6 +412,7 @@ impl<U: IrReplicaUpcalls> FaultyChannelTransport<U> {
             FetchLeaderRecord(m) => FetchLeaderRecord(m),
             LeaderRecordReply(m) => LeaderRecordReply(m),
             BootstrapRecord(m) => BootstrapRecord(m),
+            StatusBroadcast(m) => StatusBroadcast(m),
         }
     }
 }
