@@ -568,8 +568,7 @@ fn build_clients_faulty(
 fn build_sharded_kv_faulty(
     rng: &mut crate::Rng,
     linearizable: bool,
-    num_shards: usize,
-    num_replicas: usize,
+    replica_counts: &[usize],
     num_clients: usize,
     config: &NetworkFaultConfig,
     seed: u64,
@@ -579,11 +578,13 @@ fn build_sharded_kv_faulty(
     Vec<Arc<TapirClient<K, V, FaultyTransport>>>,
     Vec<FaultyTransport>,
 ) {
+    let num_shards = replica_counts.len();
+
     init_tracing();
 
     eprintln!("---------------------------");
     eprintln!(
-        " linearizable={linearizable} num_shards={num_shards} num_replicas={num_replicas} seed={seed}"
+        " linearizable={linearizable} num_shards={num_shards} replica_counts={replica_counts:?} seed={seed}"
     );
     eprintln!("---------------------------");
 
@@ -596,7 +597,7 @@ fn build_sharded_kv_faulty(
             rng,
             ShardNumber(shard as u32),
             linearizable,
-            num_replicas,
+            replica_counts[shard],
             &registry,
             config,
             shard_seed,
@@ -660,12 +661,14 @@ async fn fuzz_tapir_transactions() {
     };
 
     let num_shards = rng.gen_range(1..=3u32);
-    let num_replicas = 3;
+    let replica_counts: Vec<usize> = (0..num_shards)
+        .map(|_| [3, 5, 7][rng.gen_range(0..3usize)])
+        .collect();
     let num_clients = 3;
     let num_keys: i64 = 5;
     let iterations_per_client = 20;
 
-    eprintln!("fuzz_tapir_transactions: num_shards={num_shards} seed={seed}");
+    eprintln!("fuzz_tapir_transactions: num_shards={num_shards} replica_counts={replica_counts:?} seed={seed}");
 
     // Create shared address directory and discovery for sync testing.
     let address_directory = Arc::new(InMemoryShardDirectory::new());
@@ -680,8 +683,7 @@ async fn fuzz_tapir_transactions() {
     let (shards, clients, client_transports) = build_sharded_kv_faulty(
         &mut lib_rng,
         true,
-        num_shards as usize,
-        num_replicas,
+        &replica_counts,
         num_clients,
         &config,
         seed,
@@ -1006,6 +1008,7 @@ async fn fuzz_tapir_transactions() {
 
     eprintln!(
         "fuzz_tapir_transactions: seed={seed} shards={num_shards} \
+         replica_counts={replica_counts:?} \
          {committed}/{attempted} committed, invariants passed"
     );
 }
