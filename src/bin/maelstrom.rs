@@ -60,7 +60,7 @@ struct Inner {
     net: ProcNet<LinKv, Wrapper>,
 }
 
-#[derive(Copy, Clone, Serialize, Deserialize, Debug, Eq, PartialEq, Hash)]
+#[derive(Copy, Clone, Serialize, Deserialize, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 enum IdEnum {
     Replica(usize),
     App(usize),
