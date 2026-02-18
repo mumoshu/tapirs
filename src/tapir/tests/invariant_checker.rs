@@ -12,7 +12,7 @@
 #![allow(dead_code)]
 
 use crate::TapirTimestamp;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TxnOutcome {
@@ -83,8 +83,8 @@ impl InvariantChecker {
 
     /// Return expected committed increment counts per key, so the fuzz test
     /// can compare against actual reads.
-    pub fn expected_counts(&self) -> HashMap<i64, i64> {
-        let mut counts: HashMap<i64, i64> = HashMap::new();
+    pub fn expected_counts(&self) -> BTreeMap<i64, i64> {
+        let mut counts: BTreeMap<i64, i64> = BTreeMap::new();
         for rec in &self.records {
             if !matches!(rec.outcome, TxnOutcome::Committed(_)) {
                 continue;

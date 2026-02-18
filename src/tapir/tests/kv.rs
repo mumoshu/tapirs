@@ -14,7 +14,7 @@ use crate::{
 use futures::future::join_all;
 use rand::{rngs::StdRng, thread_rng, Rng, SeedableRng};
 use std::{
-    collections::HashMap,
+    collections::BTreeMap,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex, RwLock,
@@ -699,8 +699,8 @@ async fn fuzz_tapir_transactions() {
         .collect();
 
     // Track committed increments per key.
-    let committed_counts: Arc<Mutex<HashMap<i64, i64>>> =
-        Arc::new(Mutex::new(HashMap::new()));
+    let committed_counts: Arc<Mutex<BTreeMap<i64, i64>>> =
+        Arc::new(Mutex::new(BTreeMap::new()));
     let total_committed = Arc::new(AtomicU64::new(0));
     let total_attempted = Arc::new(AtomicU64::new(0));
     let collector: Arc<Mutex<Vec<TxnRecord>>> = Arc::new(Mutex::new(Vec::new()));
