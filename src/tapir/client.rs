@@ -1,4 +1,4 @@
-use super::{Key, ShardClient, ShardNumber, Sharded, Timestamp, Value};
+use super::{Key, ShardClient, ShardNumber, Sharded, Timestamp, TransactionError, Value};
 use crate::{
     util::join, IrClientId, OccPrepareResult, OccScanEntry, OccTransaction, OccTransactionId,
     TapirTransport,
@@ -115,7 +115,7 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Client<K, V, T> {
 }
 
 impl<K: Key, V: Value, T: TapirTransport<K, V>> Transaction<K, V, T> {
-    pub fn get(&self, key: impl Into<Sharded<K>>) -> impl Future<Output = Option<V>> {
+    pub fn get(&self, key: impl Into<Sharded<K>>) -> impl Future<Output = Result<Option<V>, TransactionError>> {
         let key = key.into();
         let client = Arc::clone(&self.client);
         let inner = Arc::clone(&self.inner);
@@ -128,32 +128,32 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Transaction<K, V, T> {
 
                 // Read own writes.
                 if let Some(write) = lock.inner.write_set.get(&key) {
-                    return write.as_ref().cloned();
+                    return Ok(write.as_ref().cloned());
                 }
 
                 // Consistent reads.
                 if let Some(read) = lock.read_cache.get(&key) {
-                    return read.as_ref().cloned();
+                    return Ok(read.as_ref().cloned());
                 }
             }
 
-            let (value, timestamp) = client.get(key.key.clone(), None).await;
+            let (value, timestamp) = client.get(key.key.clone(), None).await?;
 
             let mut lock = inner.lock().unwrap();
 
             // Read own writes.
             if let Some(write) = lock.inner.write_set.get(&key) {
-                return write.as_ref().cloned();
+                return Ok(write.as_ref().cloned());
             }
 
             // Consistent reads.
             if let Some(read) = lock.read_cache.get(&key) {
-                return read.as_ref().cloned();
+                return Ok(read.as_ref().cloned());
             }
 
             lock.read_cache.insert(key.clone(), value.clone());
             lock.inner.add_read(key, timestamp);
-            value
+            Ok(value)
         }
     }
 
@@ -171,7 +171,7 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Transaction<K, V, T> {
         &self,
         start: Sharded<K>,
         end: Sharded<K>,
-    ) -> impl Future<Output = Vec<(K, V)>> {
+    ) -> impl Future<Output = Result<Vec<(K, V)>, TransactionError>> {
         assert_eq!(
             start.shard, end.shard,
             "scan start and end must target the same shard"
@@ -183,7 +183,7 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Transaction<K, V, T> {
         async move {
             let sc = Inner::shard_client(&client, shard).await;
 
-            let (results, ts) = sc.scan(start.key.clone(), end.key.clone(), None).await;
+            let (results, ts) = sc.scan(start.key.clone(), end.key.clone(), None).await?;
 
             // Record the scan entry for phantom prevention.
             {
@@ -216,10 +216,10 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Transaction<K, V, T> {
             }
 
             // Filter out tombstones (None values) and collect.
-            merged
+            Ok(merged
                 .into_iter()
                 .filter_map(|(k, v)| v.map(|v| (k, v)))
-                .collect()
+                .collect())
         }
     }
 
@@ -492,7 +492,7 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> ReadOnlyTransaction<K, V, T> {
         &self,
         start: Sharded<K>,
         end: Sharded<K>,
-    ) -> impl Future<Output = Vec<(K, V)>> {
+    ) -> impl Future<Output = Result<Vec<(K, V)>, TransactionError>> {
         assert_eq!(
             start.shard, end.shard,
             "scan start and end must target the same shard"
@@ -514,7 +514,7 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> ReadOnlyTransaction<K, V, T> {
                 // Slow path: quorum scan via IR inconsistent op.
                 shard_client
                     .quorum_scan(start.key.clone(), end.key.clone(), snapshot_ts)
-                    .await
+                    .await?
             };
 
             // Populate read cache (don't overwrite earlier reads).
@@ -530,14 +530,14 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> ReadOnlyTransaction<K, V, T> {
             }
 
             // Filter tombstones and return.
-            scan_results
+            Ok(scan_results
                 .into_iter()
                 .filter_map(|(k, v, _ts)| v.map(|v| (k, v)))
-                .collect()
+                .collect())
         }
     }
 
-    pub fn get(&self, key: impl Into<Sharded<K>>) -> impl Future<Output = Option<V>> {
+    pub fn get(&self, key: impl Into<Sharded<K>>) -> impl Future<Output = Result<Option<V>, TransactionError>> {
         let key = key.into();
         let client = Arc::clone(&self.client);
         let read_cache = Arc::clone(&self.read_cache);
@@ -548,7 +548,7 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> ReadOnlyTransaction<K, V, T> {
             {
                 let cache = read_cache.lock().unwrap();
                 if let Some(value) = cache.get(&key) {
-                    return value.clone();
+                    return Ok(value.clone());
                 }
             }
 
@@ -560,16 +560,16 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> ReadOnlyTransaction<K, V, T> {
             {
                 let mut cache = read_cache.lock().unwrap();
                 cache.entry(key).or_insert(value.clone());
-                return value;
+                return Ok(value);
             }
 
             // Slow path: quorum read via IR inconsistent op.
             let (value, _write_ts) =
-                shard_client.quorum_read(key.key.clone(), snapshot_ts).await;
+                shard_client.quorum_read(key.key.clone(), snapshot_ts).await?;
 
             let mut cache = read_cache.lock().unwrap();
             cache.entry(key).or_insert(value.clone());
-            value
+            Ok(value)
         }
     }
 }

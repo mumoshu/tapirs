@@ -190,7 +190,7 @@ async fn rwr(linearizable: bool, num_replicas: usize) {
     let (_replicas, clients) = build_kv(linearizable, num_replicas, 2);
 
     let txn = clients[0].begin();
-    assert_eq!(txn.get(0).await, None);
+    assert_eq!(txn.get(0).await.unwrap(), None);
     txn.put(1, Some(2));
     let first = txn.commit().await.unwrap();
 
@@ -198,7 +198,7 @@ async fn rwr(linearizable: bool, num_replicas: usize) {
 
     if linearizable {
         let txn = clients[1].begin();
-        let result = txn.get(1).await;
+        let result = txn.get(1).await.unwrap();
         if result.is_none() {
             // We read stale data so shouldn't be able to commit.
             assert_eq!(txn.commit().await, None, "prev = {first:?}");
@@ -208,7 +208,7 @@ async fn rwr(linearizable: bool, num_replicas: usize) {
         }
     } else {
         let txn = clients[1].begin();
-        let result = txn.get(1).await;
+        let result = txn.get(1).await.unwrap();
         if let Some(commit) = txn.commit().await {
             if result.is_none() {
                 assert!(commit < first, "{commit:?} {first:?}");
@@ -230,7 +230,8 @@ async fn sharded() {
             shard: ShardNumber(0),
             key: 0
         })
-        .await,
+        .await
+        .unwrap(),
         None
     );
     assert_eq!(
@@ -238,7 +239,8 @@ async fn sharded() {
             shard: ShardNumber(1),
             key: 0
         })
-        .await,
+        .await
+        .unwrap(),
         None
     );
     txn.put(
@@ -277,7 +279,7 @@ async fn increment_sequential(num_replicas: usize) {
     for _ in 0..10 {
         println!("^^^^^^^^^^^^^^^^^^^ BEGINNING TXN");
         let txn = clients[0].begin();
-        let old = txn.get(0).await.unwrap_or_default();
+        let old = txn.get(0).await.unwrap().unwrap_or_default();
         txn.put(0, Some(old + 1));
         if txn.commit().await.is_some() {
             assert_eq!(committed, old);
@@ -315,7 +317,7 @@ async fn increment_parallel(num_replicas: usize) {
 
     let add = || async {
         let txn = clients[0].begin();
-        let old = txn.get(0).await.unwrap_or_default();
+        let old = txn.get(0).await.unwrap().unwrap_or_default();
         txn.put(0, Some(old + 1));
         txn.commit().await.is_some()
     };
@@ -329,7 +331,7 @@ async fn increment_parallel(num_replicas: usize) {
     Transport::sleep(Duration::from_secs(3)).await;
 
     let txn = clients[1].begin();
-    let result = txn.get(0).await.unwrap_or_default();
+    let result = txn.get(0).await.unwrap().unwrap_or_default();
     eprintln!("INCREMENT TEST result={result} committed={committed}");
     println!("{} {}", txn.commit().await.is_some(), result == committed);
 }
@@ -369,7 +371,7 @@ async fn throughput(linearizable: bool, num_replicas: usize, num_clients: usize)
                     loop {
                         let i = thread_rng().gen_range(0..num_clients as i64 * 10); // thread_rng().gen::<i64>();
                         let txn = client.begin();
-                        let old = txn.get(i).await.unwrap_or_default();
+                        let old = txn.get(i).await.unwrap().unwrap_or_default();
                         txn.put(i, Some(old + 1));
                         let c = txn.commit().await.is_some() as u64;
                         attempted.fetch_add(1, Ordering::Relaxed);
@@ -458,7 +460,7 @@ async fn coordinator_recovery(num_replicas: usize) {
 
     'outer: for n in (0..50).step_by(2).chain((50..500).step_by(10)) {
         let conflicting = clients[2].begin();
-        conflicting.get(n).await;
+        conflicting.get(n).await.unwrap();
         tokio::spawn(conflicting.only_prepare());
 
         //let conflicting = clients[2].begin();
@@ -481,7 +483,7 @@ async fn coordinator_recovery(num_replicas: usize) {
 
         for i in 0..128 {
             let txn = clients[1].begin();
-            let read = txn.get(n).await;
+            let read = txn.get(n).await.unwrap();
             println!("{n} try {i} read {read:?}");
 
             if let Ok(Some(ts)) = timeout(Duration::from_secs(5), txn.commit()).await {
@@ -941,7 +943,7 @@ async fn fuzz_tapir_transactions() {
                     let max_retries = 2u8;
                     let mut attempt = 0u8;
 
-                    loop {
+                    'retry: loop {
                         let txn_index = next_txn_index.fetch_add(1, Ordering::Relaxed) as usize;
                         total_attempted.fetch_add(1, Ordering::Relaxed);
                         let wall_start = tokio::time::Instant::now();
@@ -967,7 +969,10 @@ async fn fuzz_tapir_transactions() {
                         if is_rmw {
                             // RMW transaction (80%): read-modify-write with optional scan.
                             for &key in &keys {
-                                let raw = txn.get(key).await;
+                                let raw = match txn.get(key).await {
+                                    Ok(val) => val,
+                                    Err(_) => break 'retry, // OutOfRange during resharding
+                                };
                                 txn_event_log.record(FuzzEvent::TxnGet {
                                     txn_index, client_id: client_idx, key, value: raw, stale_note,
                                 });
@@ -981,7 +986,10 @@ async fn fuzz_tapir_transactions() {
                                 write_targets.push(key);
                             }
                             if let Some((lo, hi)) = scan_params {
-                                let results = txn.scan(lo, hi).await;
+                                let results = match txn.scan(lo, hi).await {
+                                    Ok(val) => val,
+                                    Err(_) => break 'retry, // OutOfRange during resharding
+                                };
                                 txn_event_log.record(FuzzEvent::TxnScan {
                                     txn_index, client_id: client_idx, lo, hi,
                                     count: results.len(), stale_note,
@@ -990,7 +998,10 @@ async fn fuzz_tapir_transactions() {
                         } else {
                             // Read-only transaction (20%).
                             for &key in &keys {
-                                let val = txn.get(key).await;
+                                let val = match txn.get(key).await {
+                                    Ok(val) => val,
+                                    Err(_) => break 'retry, // OutOfRange during resharding
+                                };
                                 txn_event_log.record(FuzzEvent::TxnGet {
                                     txn_index, client_id: client_idx, key, value: val, stale_note,
                                 });
@@ -1335,7 +1346,7 @@ async fn fuzz_tapir_transactions() {
     let mut counter_mismatches: Vec<String> = Vec::new();
     for (key, expected) in &inline_counts {
         let txn = verify_client.begin_read_only();
-        let actual = txn.get(*key).await.unwrap_or(0);
+        let actual = txn.get(*key).await.unwrap().unwrap_or(0);
         if actual != *expected {
             counter_mismatches.push(format!(
                 "key={key}: actual={actual} expected={expected}"
@@ -1439,7 +1450,7 @@ async fn test_add_replica_with_preload() {
     // Verify: read key=1 through the 4-replica group.
     // The 4th replica should have the committed data from the bootstrap.
     let txn = routing_client.begin();
-    let val = txn.get(1_i64).await;
+    let val = txn.get(1_i64).await.unwrap();
     assert_eq!(val, Some(42), "key=1 should be readable after add_replica");
     assert!(txn.commit().await.is_some(), "read-only txn should commit");
 
@@ -1460,7 +1471,7 @@ async fn test_add_replica_with_preload() {
 
     // Verify: read back the new write (any replica should have it after merge).
     let txn = routing_client.begin();
-    let val = txn.get(2_i64).await;
+    let val = txn.get(2_i64).await.unwrap();
     assert_eq!(val, Some(99), "key=2 should be readable after view change merge");
     assert!(txn.commit().await.is_some());
 
@@ -1504,7 +1515,8 @@ async fn read_only_basic() {
             shard: ShardNumber(0),
             key: 42,
         })
-        .await;
+        .await
+        .unwrap();
     assert_eq!(val, Some(100));
 
     // Non-existent key returns None.
@@ -1513,7 +1525,8 @@ async fn read_only_basic() {
             shard: ShardNumber(0),
             key: 999,
         })
-        .await;
+        .await
+        .unwrap();
     assert_eq!(val, None);
 
     drop(_replicas);
@@ -1559,13 +1572,15 @@ async fn read_only_consistent_snapshot() {
             shard: ShardNumber(0),
             key: 1,
         })
-        .await;
+        .await
+        .unwrap();
     let v2 = ro
         .get(Sharded {
             shard: ShardNumber(0),
             key: 2,
         })
-        .await;
+        .await
+        .unwrap();
     assert_eq!(v1, Some(10));
     assert_eq!(v2, Some(20));
 
@@ -1575,7 +1590,8 @@ async fn read_only_consistent_snapshot() {
             shard: ShardNumber(0),
             key: 1,
         })
-        .await;
+        .await
+        .unwrap();
     assert_eq!(v1_again, Some(10));
 
     drop(_replicas);
@@ -1628,19 +1644,22 @@ async fn read_only_multi_key_sharded() {
             shard: ShardNumber(0),
             key: 1,
         })
-        .await;
+        .await
+        .unwrap();
     let v2 = ro
         .get(Sharded {
             shard: ShardNumber(1),
             key: 2,
         })
-        .await;
+        .await
+        .unwrap();
     let v3 = ro
         .get(Sharded {
             shard: ShardNumber(2),
             key: 3,
         })
-        .await;
+        .await
+        .unwrap();
     assert_eq!(v1, Some(100));
     assert_eq!(v2, Some(200));
     assert_eq!(v3, Some(300));
@@ -1680,7 +1699,8 @@ async fn read_only_scan_basic() {
             Sharded { shard: ShardNumber(0), key: 10 },
             Sharded { shard: ShardNumber(0), key: 30 },
         )
-        .await;
+        .await
+        .unwrap();
     assert_eq!(results, vec![(10, 100), (20, 200), (30, 300)]);
 
     drop(_replicas);
@@ -1707,12 +1727,14 @@ async fn read_only_scan_consistent_with_get() {
             Sharded { shard: ShardNumber(0), key: 40 },
             Sharded { shard: ShardNumber(0), key: 50 },
         )
-        .await;
+        .await
+        .unwrap();
     assert_eq!(scan_results, vec![(42, 999)]);
 
     let val = ro
         .get(Sharded { shard: ShardNumber(0), key: 42 })
-        .await;
+        .await
+        .unwrap();
     assert_eq!(val, Some(999));
 
     drop(_replicas);
@@ -1739,7 +1761,8 @@ async fn read_only_scan_empty_range() {
             Sharded { shard: ShardNumber(0), key: 0 },
             Sharded { shard: ShardNumber(0), key: 50 },
         )
-        .await;
+        .await
+        .unwrap();
     assert!(results.is_empty());
 
     drop(_replicas);
@@ -1778,7 +1801,7 @@ async fn read_only_scan_multi_shard() {
     let routing_client = RoutingClient::new(Arc::clone(&clients[1]), Arc::clone(&router));
 
     let ro = routing_client.begin_read_only();
-    let results = ro.scan(10, 120).await;
+    let results = ro.scan(10, 120).await.unwrap();
     // Should contain keys from both shards.
     assert_eq!(
         results,
@@ -1806,7 +1829,8 @@ async fn read_only_scan_blocks_phantom_write() {
             Sharded { shard: ShardNumber(0), key: 0 },
             Sharded { shard: ShardNumber(0), key: 50 },
         )
-        .await;
+        .await
+        .unwrap();
     assert_eq!(results, vec![(10, 100)]);
 
     // Now try to write a NEW key=25 (phantom) via read-write transaction.
@@ -1873,14 +1897,14 @@ async fn test_merge_two_shards() {
 
     // Verify: read key=10 (originally on shard 0) — still accessible.
     let txn = clients[0].begin();
-    let val = txn.get(Sharded { shard: ShardNumber(0), key: 10 }).await;
+    let val = txn.get(Sharded { shard: ShardNumber(0), key: 10 }).await.unwrap();
     assert_eq!(val, Some(100), "key=10 should still be readable after merge");
     assert!(txn.commit().await.is_some());
 
     // Verify: read key=60 (originally on shard 1, shipped to shard 0).
     Transport::sleep(Duration::from_millis(1)).await;
     let txn = clients[0].begin();
-    let val = txn.get(Sharded { shard: ShardNumber(0), key: 60 }).await;
+    let val = txn.get(Sharded { shard: ShardNumber(0), key: 60 }).await.unwrap();
     assert_eq!(val, Some(600), "key=60 should be readable on surviving shard after merge");
     assert!(txn.commit().await.is_some());
 
@@ -1952,7 +1976,7 @@ async fn test_split_merge_two_shards() {
         (1, 60, 600), (1, 80, 800),
     ] {
         let txn = clients[0].begin();
-        let val = txn.get(Sharded { shard: ShardNumber(shard), key }).await;
+        let val = txn.get(Sharded { shard: ShardNumber(shard), key }).await.unwrap();
         assert_eq!(val, Some(expected), "after split: shard={shard} key={key}");
         assert!(txn.commit().await.is_some());
         Transport::sleep(Duration::from_millis(1)).await;
@@ -1983,7 +2007,7 @@ async fn test_split_merge_two_shards() {
         (60, 600), (70, 700), (80, 800),
     ] {
         let txn = clients[0].begin();
-        let val = txn.get(Sharded { shard: ShardNumber(0), key }).await;
+        let val = txn.get(Sharded { shard: ShardNumber(0), key }).await.unwrap();
         assert_eq!(val, Some(expected), "after merge: key={key}");
         assert!(txn.commit().await.is_some());
         Transport::sleep(Duration::from_millis(1)).await;
@@ -2243,7 +2267,7 @@ async fn test_compact_new_shard_rejects_old_prepare_after_quorum_read_on_old_sha
         membership_0,
         registry.channel(move |_, _| unreachable!()),
     );
-    let (value, _write_ts) = shard_client_0.quorum_read(20, read_ts).await;
+    let (value, _write_ts) = shard_client_0.quorum_read(20, read_ts).await.unwrap();
     assert_eq!(value, Some(200), "quorum_read should return committed value");
 
     // Force view change so CDC deltas are captured.

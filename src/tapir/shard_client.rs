@@ -1,4 +1,4 @@
-use super::{Key, LeaderRecordDelta, Replica, ShardNumber, Timestamp, Value, CO, CR, IO, IR, UO, UR};
+use super::{Key, LeaderRecordDelta, Replica, ShardNumber, Timestamp, TransactionError, Value, CO, CR, IO, IR, UO, UR};
 use super::message::MinPrepareBaselineResult;
 use crate::{
     transport::Transport, IrClient, IrClientId, IrMembership, IrRecord, IrSharedView,
@@ -42,23 +42,18 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
         &self,
         key: K,
         timestamp: Option<Timestamp>,
-    ) -> impl Future<Output = (Option<V>, Timestamp)> {
+    ) -> impl Future<Output = Result<(Option<V>, Timestamp), TransactionError>> {
         let future = self.inner.invoke_unlogged(UO::Get { key, timestamp });
 
         async move {
             let reply = future.await;
 
             match reply {
-                UR::Get(value, timestamp) => (value, timestamp),
-                UR::OutOfRange => {
-                    // Key is outside this shard's current range (shard was
-                    // re-ranged during resharding). Return None with epoch
-                    // timestamp — the transaction will abort at commit.
-                    (None, Default::default())
-                }
+                UR::Get(value, timestamp) => Ok((value, timestamp)),
+                UR::OutOfRange => Err(TransactionError::OutOfRange),
                 other => {
                     debug_assert!(false, "unexpected UR variant for get: {other:?}");
-                    (None, Default::default())
+                    Ok((None, Default::default()))
                 }
             }
         }
@@ -69,23 +64,18 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
         start_key: K,
         end_key: K,
         timestamp: Option<Timestamp>,
-    ) -> impl Future<Output = (Vec<(K, Option<V>)>, Timestamp)> + use<'_, K, V, T> {
+    ) -> impl Future<Output = Result<(Vec<(K, Option<V>)>, Timestamp), TransactionError>> + use<'_, K, V, T> {
         let future = self
             .inner
             .invoke_unlogged(UO::Scan { start_key, end_key, timestamp });
 
         async move {
             match future.await {
-                UR::Scan(results, ts) => (results, ts),
-                UR::OutOfRange => {
-                    // Keys are outside this shard's current range (shard was
-                    // re-ranged during resharding). Return empty results —
-                    // the transaction will abort at commit.
-                    (Vec::new(), Default::default())
-                }
+                UR::Scan(results, ts) => Ok((results, ts)),
+                UR::OutOfRange => Err(TransactionError::OutOfRange),
                 other => {
                     debug_assert!(false, "unexpected UR variant for scan: {other:?}");
-                    (Vec::new(), Default::default())
+                    Ok((Vec::new(), Default::default()))
                 }
             }
         }
@@ -206,20 +196,34 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
         &self,
         key: K,
         timestamp: Timestamp,
-    ) -> impl Future<Output = (Option<V>, Timestamp)> + Send + use<K, V, T> {
+    ) -> impl Future<Output = Result<(Option<V>, Timestamp), TransactionError>> + Send + use<K, V, T> {
         let future = self
             .inner
             .invoke_inconsistent_with_result(IO::QuorumRead { key, timestamp });
         async move {
             let results = future.await;
-            results
-                .into_iter()
-                .filter_map(|ir| match ir {
-                    IR::QuorumRead(value, ts) => Some((value, ts)),
-                    _ => None,
-                })
-                .max_by_key(|(_, ts)| *ts)
-                .unwrap_or((None, Timestamp::default()))
+            let mut best: Option<(Option<V>, Timestamp)> = None;
+            let mut all_out_of_range = true;
+
+            for ir in results {
+                match ir {
+                    IR::QuorumRead(value, ts) => {
+                        all_out_of_range = false;
+                        if best.as_ref().map_or(true, |(_, best_ts)| ts > *best_ts) {
+                            best = Some((value, ts));
+                        }
+                    }
+                    IR::OutOfRange => {}
+                    _ => {
+                        all_out_of_range = false;
+                    }
+                }
+            }
+
+            if all_out_of_range {
+                return Err(TransactionError::OutOfRange);
+            }
+            Ok(best.unwrap_or((None, Timestamp::default())))
         }
     }
 
@@ -283,7 +287,7 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
         start_key: K,
         end_key: K,
         snapshot_ts: Timestamp,
-    ) -> impl Future<Output = Vec<(K, Option<V>, Timestamp)>> + Send + use<K, V, T> {
+    ) -> impl Future<Output = Result<Vec<(K, Option<V>, Timestamp)>, TransactionError>> + Send + use<K, V, T> {
         let future = self
             .inner
             .invoke_inconsistent_with_result(IO::QuorumScan {
@@ -294,25 +298,38 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
         async move {
             let results = future.await;
             let mut merged = std::collections::BTreeMap::<K, (Option<V>, Timestamp)>::new();
+            let mut all_out_of_range = true;
+
             for ir in results {
-                if let IR::QuorumScan(entries) = ir {
-                    for (key, value, write_ts) in entries {
-                        merged
-                            .entry(key)
-                            .and_modify(|(v, ts)| {
-                                if write_ts > *ts {
-                                    *v = value.clone();
-                                    *ts = write_ts;
-                                }
-                            })
-                            .or_insert((value, write_ts));
+                match ir {
+                    IR::QuorumScan(entries) => {
+                        all_out_of_range = false;
+                        for (key, value, write_ts) in entries {
+                            merged
+                                .entry(key)
+                                .and_modify(|(v, ts)| {
+                                    if write_ts > *ts {
+                                        *v = value.clone();
+                                        *ts = write_ts;
+                                    }
+                                })
+                                .or_insert((value, write_ts));
+                        }
+                    }
+                    IR::OutOfRange => {}
+                    _ => {
+                        all_out_of_range = false;
                     }
                 }
             }
-            merged
+
+            if all_out_of_range {
+                return Err(TransactionError::OutOfRange);
+            }
+            Ok(merged
                 .into_iter()
                 .map(|(k, (v, ts))| (k, v, ts))
-                .collect()
+                .collect())
         }
     }
 

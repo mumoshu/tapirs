@@ -1,4 +1,4 @@
-use super::{client::{ReadOnlyTransaction, Transaction}, Client, Key, Sharded, Timestamp, Value};
+use super::{client::{ReadOnlyTransaction, Transaction}, Client, Key, Sharded, Timestamp, TransactionError, Value};
 use crate::tapir::shard_router::ShardRouter;
 use crate::TapirTransport;
 use std::collections::BTreeMap;
@@ -58,7 +58,7 @@ pub struct RoutingTransaction<K: Key, V: Value, T: TapirTransport<K, V>, R: Shar
 }
 
 impl<K: Key, V: Value, T: TapirTransport<K, V>, R: ShardRouter<K>> RoutingTransaction<K, V, T, R> {
-    pub fn get(&self, key: K) -> impl Future<Output = Option<V>> {
+    pub fn get(&self, key: K) -> impl Future<Output = Result<Option<V>, TransactionError>> {
         let shard = self.router.route(&key);
         self.inner.get(Sharded { shard, key })
     }
@@ -68,7 +68,7 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>, R: ShardRouter<K>> RoutingTransa
         self.inner.put(Sharded { shard, key }, value);
     }
 
-    pub fn scan(&self, start: K, end: K) -> impl Future<Output = Vec<(K, V)>> {
+    pub fn scan(&self, start: K, end: K) -> impl Future<Output = Result<Vec<(K, V)>, TransactionError>> {
         let shards = self.router.shards_for_range(&start, &end);
 
         // Eagerly create per-shard scan futures (each is 'static).
@@ -85,11 +85,11 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>, R: ShardRouter<K>> RoutingTransa
         async move {
             let mut merged = BTreeMap::<K, V>::new();
             for scan_fut in shard_scans {
-                for (k, v) in scan_fut.await {
+                for (k, v) in scan_fut.await? {
                     merged.insert(k, v);
                 }
             }
-            merged.into_iter().collect()
+            Ok(merged.into_iter().collect())
         }
     }
 
@@ -107,12 +107,12 @@ pub struct RoutingReadOnlyTransaction<K: Key, V: Value, T: TapirTransport<K, V>,
 impl<K: Key, V: Value, T: TapirTransport<K, V>, R: ShardRouter<K>>
     RoutingReadOnlyTransaction<K, V, T, R>
 {
-    pub fn get(&self, key: K) -> impl Future<Output = Option<V>> {
+    pub fn get(&self, key: K) -> impl Future<Output = Result<Option<V>, TransactionError>> {
         let shard = self.router.route(&key);
         self.inner.get(Sharded { shard, key })
     }
 
-    pub fn scan(&self, start: K, end: K) -> impl Future<Output = Vec<(K, V)>> {
+    pub fn scan(&self, start: K, end: K) -> impl Future<Output = Result<Vec<(K, V)>, TransactionError>> {
         let shards = self.router.shards_for_range(&start, &end);
 
         let shard_scans: Vec<_> = shards
@@ -128,11 +128,11 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>, R: ShardRouter<K>>
         async move {
             let mut merged = BTreeMap::<K, V>::new();
             for scan_fut in shard_scans {
-                for (k, v) in scan_fut.await {
+                for (k, v) in scan_fut.await? {
                     merged.insert(k, v);
                 }
             }
-            merged.into_iter().collect()
+            Ok(merged.into_iter().collect())
         }
     }
 }

@@ -223,7 +223,7 @@ async fn rw_get(
 ) -> Option<V> {
     for attempt in 0..10 {
         let txn = client.begin();
-        let val = txn.get(key.to_string()).await;
+        let val = txn.get(key.to_string()).await.unwrap();
         txn.put(dest_key.to_string(), val.clone());
         if txn.commit().await.is_some() {
             return val;

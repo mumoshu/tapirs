@@ -29,3 +29,12 @@ pub use routing_client::{RoutingClient, RoutingReadOnlyTransaction, RoutingTrans
 pub use shard::{Number as ShardNumber, Sharded};
 pub use shard_client::ShardClient;
 pub use timestamp::Timestamp;
+
+/// Errors that can occur during transaction operations.
+#[derive(Debug, Clone)]
+pub enum TransactionError {
+    /// The key is outside the shard's current range. This indicates
+    /// the routing directory is stale — the shard was re-ranged during
+    /// resharding. The caller should refresh routing and retry.
+    OutOfRange,
+}

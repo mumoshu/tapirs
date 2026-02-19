@@ -350,7 +350,6 @@ pub async fn run(listen_addr: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tapirs::discovery::RemoteShardDirectory as _;
 
     fn state() -> DiscoveryState {
         DiscoveryState {

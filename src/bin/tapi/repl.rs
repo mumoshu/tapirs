@@ -162,8 +162,9 @@ pub async fn run(
                     }
                 };
                 match result {
-                    Some(val) => println!("{key} = \"{val}\""),
-                    None => println!("{key} = (not found)"),
+                    Ok(Some(val)) => println!("{key} = \"{val}\""),
+                    Ok(None) => println!("{key} = (not found)"),
+                    Err(e) => println!("{key} = (error: {e:?})"),
                 }
             }
             "put" => {
@@ -217,6 +218,13 @@ pub async fn run(
                     Some(ActiveTxn::ReadOnly(txn)) => txn.scan(start, end).await,
                     None => {
                         println!("Error: no active transaction. Use 'begin' to start one.");
+                        continue;
+                    }
+                };
+                let results = match results {
+                    Ok(r) => r,
+                    Err(e) => {
+                        println!("Error: {e:?}");
                         continue;
                     }
                 };

@@ -28,7 +28,7 @@ pub use occ::{
 pub use tapir::{
     Client as TapirClient, KeyRange, ReadOnlyTransaction, Replica as TapirReplica,
     RoutingClient, RoutingReadOnlyTransaction, RoutingTransaction,
-    Sharded, ShardNumber, Timestamp as TapirTimestamp,
+    Sharded, ShardNumber, Timestamp as TapirTimestamp, TransactionError,
 };
 pub use tapir::dynamic_router::{DynamicRouter, ShardDirectory, ShardEntry};
 pub use tapir::shard_manager::ShardManager;

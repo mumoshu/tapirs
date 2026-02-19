@@ -309,6 +309,7 @@ impl Process<LinKv, Wrapper> for KvNode {
                                             let old = txn
                                                 .get(key.clone())
                                                 .await
+                                                .unwrap()
                                                 .map(|s| serde_json::from_str(&s).unwrap());
                                             let swap = old == Some(from);
                                             if swap {
@@ -387,7 +388,7 @@ impl Process<LinKv, Wrapper> for KvNode {
                                         }
                                         LinKv::Read { msg_id, key } => {
                                             let key = serde_json::to_string(&key).unwrap();
-                                            let old = txn.get(key.clone()).await.map(|s| {
+                                            let old = txn.get(key.clone()).await.unwrap().map(|s| {
                                                 serde_json::from_str::<serde_json::Value>(&s)
                                                     .unwrap()
                                             });
