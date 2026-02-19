@@ -11,7 +11,7 @@ services:
     build:
       context: ..
       dockerfile: .tapiadm/Dockerfile
-    command: ["discovery", "--listen_addr", "0.0.0.0:8080"]
+    command: ["discovery", "--listen-addr", "0.0.0.0:8080"]
     ports:
       - "8080:8080"
     networks:
@@ -20,7 +20,7 @@ services:
 
   shard-manager:
     image: tapiadm-tapi
-    command: ["shard-manager", "--listen_addr", "0.0.0.0:9001", "--discovery_url", "http://172.28.0.2:8080"]
+    command: ["shard-manager", "--listen-addr", "0.0.0.0:9001", "--discovery-url", "http://172.28.0.2:8080"]
     ports:
       - "9001:9001"
     depends_on:
@@ -31,7 +31,7 @@ services:
 
   node1:
     image: tapiadm-tapi
-    command: ["node", "--admin_listen_addr", "0.0.0.0:9000", "--persist_dir", "/data", "--discovery_url", "http://172.28.0.2:8080", "--shard_manager_url", "http://172.28.0.3:9001"]
+    command: ["node", "--admin-listen-addr", "0.0.0.0:9000", "--persist-dir", "/data", "--discovery-url", "http://172.28.0.2:8080", "--shard-manager-url", "http://172.28.0.3:9001"]
     ports:
       - "9011:9000"
     volumes:
@@ -45,7 +45,7 @@ services:
 
   node2:
     image: tapiadm-tapi
-    command: ["node", "--admin_listen_addr", "0.0.0.0:9000", "--persist_dir", "/data", "--discovery_url", "http://172.28.0.2:8080", "--shard_manager_url", "http://172.28.0.3:9001"]
+    command: ["node", "--admin-listen-addr", "0.0.0.0:9000", "--persist-dir", "/data", "--discovery-url", "http://172.28.0.2:8080", "--shard-manager-url", "http://172.28.0.3:9001"]
     ports:
       - "9012:9000"
     volumes:
@@ -59,7 +59,7 @@ services:
 
   node3:
     image: tapiadm-tapi
-    command: ["node", "--admin_listen_addr", "0.0.0.0:9000", "--persist_dir", "/data", "--discovery_url", "http://172.28.0.2:8080", "--shard_manager_url", "http://172.28.0.3:9001"]
+    command: ["node", "--admin-listen-addr", "0.0.0.0:9000", "--persist-dir", "/data", "--discovery-url", "http://172.28.0.2:8080", "--shard-manager-url", "http://172.28.0.3:9001"]
     ports:
       - "9013:9000"
     volumes:

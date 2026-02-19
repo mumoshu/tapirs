@@ -106,14 +106,51 @@ fn docker_output(args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Check if a Docker container is still running. Returns Err with logs if it exited.
+fn check_container_running(container: &str) -> Result<(), String> {
+    let state = docker_output(&[
+        "inspect",
+        "--format",
+        "{{.State.Status}}",
+        container,
+    ])
+    .unwrap_or_else(|_| "unknown".to_string());
+    if state != "running" {
+        // Grab last 10 lines of logs for diagnosis.
+        let logs = docker_output(&["logs", "--tail", "10", container]).unwrap_or_default();
+        return Err(format!(
+            "container {container} is {state} (expected running). Logs:\n{logs}"
+        ));
+    }
+    Ok(())
+}
+
 fn wait_for_tcp(addr: &str, timeout_secs: u64) -> Result<(), String> {
+    wait_for_service(addr, timeout_secs, None)
+}
+
+/// Wait for a TCP port to become reachable, periodically checking that
+/// the container is still running. Bails fast if the container exits.
+fn wait_for_service(
+    addr: &str,
+    timeout_secs: u64,
+    container: Option<&str>,
+) -> Result<(), String> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    let mut check_counter = 0u32;
     loop {
         if std::net::TcpStream::connect(addr).is_ok() {
             return Ok(());
         }
         if std::time::Instant::now() >= deadline {
             return Err(format!("timeout waiting for {addr}"));
+        }
+        // Check container health every 2 iterations (every ~1s).
+        check_counter += 1;
+        if let Some(cname) = container {
+            if check_counter % 2 == 0 {
+                check_container_running(cname)?;
+            }
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
@@ -182,32 +219,46 @@ pub fn up() -> Result<(), String> {
     write_dynamic_nodes(&[]);
 
     // 3. Build image.
-    println!("Building Docker image...");
+    println!("[1/7] Building Docker image (this may take a few minutes on first run)...");
     docker_compose(&["build"])?;
+    println!("[1/7] Docker image built.");
 
     // 4. Start discovery.
-    println!("Starting discovery service...");
+    println!("[2/7] Starting discovery service...");
     docker_compose(&["up", "-d", "discovery"])?;
-    wait_for_tcp(&format!("127.0.0.1:{DISCOVERY_PORT}"), 30)?;
-    println!("  Discovery ready at 127.0.0.1:{DISCOVERY_PORT}");
+    println!("  Waiting for discovery to become ready...");
+    wait_for_service(
+        &format!("127.0.0.1:{DISCOVERY_PORT}"),
+        30,
+        Some("tapiadm-discovery-1"),
+    )?;
+    println!("[2/7] Discovery ready at 127.0.0.1:{DISCOVERY_PORT}");
 
     // 5. Start shard-manager.
-    println!("Starting shard-manager...");
+    println!("[3/7] Starting shard-manager...");
     docker_compose(&["up", "-d", "shard-manager"])?;
-    wait_for_tcp(&format!("127.0.0.1:{SHARD_MGR_PORT}"), 30)?;
-    println!("  Shard-manager ready at 127.0.0.1:{SHARD_MGR_PORT}");
+    println!("  Waiting for shard-manager to become ready...");
+    wait_for_service(
+        &format!("127.0.0.1:{SHARD_MGR_PORT}"),
+        30,
+        Some("tapiadm-shard-manager-1"),
+    )?;
+    println!("[3/7] Shard-manager ready at 127.0.0.1:{SHARD_MGR_PORT}");
 
     // 6. Start nodes.
-    println!("Starting nodes...");
+    println!("[4/7] Starting nodes...");
     docker_compose(&["up", "-d", "node1", "node2", "node3"])?;
     for (i, _ip) in NODE_IPS.iter().enumerate() {
         let port = HOST_ADMIN_BASE + i as u16;
-        wait_for_tcp(&format!("127.0.0.1:{port}"), 30)?;
-        println!("  {} ready at 127.0.0.1:{port}", NODE_NAMES[i]);
+        let container = format!("tapiadm-{}-1", NODE_NAMES[i]);
+        println!("  Waiting for {} at 127.0.0.1:{port}...", NODE_NAMES[i]);
+        wait_for_service(&format!("127.0.0.1:{port}"), 30, Some(&container))?;
+        println!("  {} ready.", NODE_NAMES[i]);
     }
+    println!("[4/7] All nodes ready.");
 
     // 7. Bootstrap replicas.
-    println!("Bootstrapping replicas...");
+    println!("[5/7] Bootstrapping replicas ({NUM_SHARDS} shards x {} replicas)...", NODE_IPS.len());
     for shard in 0..NUM_SHARDS {
         let mut replicas: Vec<String> = Vec::new();
         for (i, ip) in NODE_IPS.iter().enumerate() {
@@ -256,8 +307,10 @@ pub fn up() -> Result<(), String> {
         }
     }
 
+    println!("[5/7] Replicas bootstrapped.");
+
     // 8. Register shard layout with shard-manager.
-    println!("Registering shard layout with shard-manager...");
+    println!("[6/7] Registering shard layout with shard-manager...");
     let split_key = compute_split_key(NUM_SHARDS);
     for shard in 0..NUM_SHARDS {
         let (start, end) = shard_key_range(shard, NUM_SHARDS, &split_key);
@@ -274,7 +327,10 @@ pub fn up() -> Result<(), String> {
         println!("  Shard {shard}: key range [{}, {})", start.as_deref().unwrap_or(""), end.as_deref().unwrap_or(""));
     }
 
+    println!("[6/7] Shard layout registered.");
+
     // 9. Generate client.toml.
+    println!("[7/7] Generating client configuration...");
     let mut client_toml = String::new();
     client_toml.push_str(&format!(
         "discovery_url = \"http://{DISCOVERY_IP}:{DISCOVERY_PORT}\"\n\n"
@@ -402,13 +458,13 @@ pub fn add_node(name: Option<String>) -> Result<(), String> {
         &format!("{name}-data:/data"),
         image,
         "node",
-        "--admin_listen_addr",
+        "--admin-listen-addr",
         "0.0.0.0:9000",
-        "--persist_dir",
+        "--persist-dir",
         "/data",
-        "--discovery_url",
+        "--discovery-url",
         &format!("http://{DISCOVERY_IP}:{DISCOVERY_PORT}"),
-        "--shard_manager_url",
+        "--shard-manager-url",
         &format!("http://{SHARD_MGR_IP}:{SHARD_MGR_PORT}"),
     ])?;
 
@@ -421,7 +477,8 @@ pub fn add_node(name: Option<String>) -> Result<(), String> {
     ])?;
 
     // Wait for admin port.
-    wait_for_tcp(&format!("127.0.0.1:{port}"), 30)?;
+    println!("  Waiting for admin port at 127.0.0.1:{port}...");
+    wait_for_service(&format!("127.0.0.1:{port}"), 30, Some(&name))?;
 
     // Save to nodes.json.
     nodes.push(DynamicNode {
@@ -437,9 +494,9 @@ pub fn add_node(name: Option<String>) -> Result<(), String> {
     println!("  Admin port:    127.0.0.1:{port} (host) / {ip}:9000 (internal)");
     println!();
     println!("To add a replica for shard 0 on port 6000:");
-    println!("  tapi admin add-replica --admin_listen_addr 127.0.0.1:{port} --shard 0 --listen_addr {ip}:6000");
+    println!("  tapi admin add-replica --admin-listen-addr 127.0.0.1:{port} --shard 0 --listen-addr {ip}:6000");
     println!("To remove a replica:");
-    println!("  tapi admin remove-replica --admin_listen_addr 127.0.0.1:{port} --shard 0");
+    println!("  tapi admin remove-replica --admin-listen-addr 127.0.0.1:{port} --shard 0");
 
     Ok(())
 }
