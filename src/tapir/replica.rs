@@ -375,10 +375,10 @@ where
                     return UR::MinPrepareBaseline(MinPrepareBaselineResult::NotDecommissioning);
                 }
                 let (max_rr, max_rc) = self.inner.min_prepare_baseline();
-                return UR::MinPrepareBaseline(MinPrepareBaselineResult::Ok {
+                UR::MinPrepareBaseline(MinPrepareBaselineResult::Ok {
                     max_range_read_time: max_rr.map(|ts| ts.time).unwrap_or(0),
                     max_read_commit_time: max_rc.map(|ts| ts.time).unwrap_or(0),
-                });
+                })
             }
             UO::ScanChanges { from_view } => {
                 // effective_end_view = the highest base_view for which this

@@ -63,6 +63,55 @@ impl CdcCursor {
 }
 
 impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDirectory<T::Address>> ShardManager<K, V, T, D> {
+    /// Freeze the source shard, query its read-protection watermarks, and
+    /// raise min_prepare_time on the target to subsume all historical
+    /// range_reads and last_read_commit_ts entries from the source.
+    ///
+    /// Must be called after drain completes (no in-flight Prepares) and
+    /// before decommissioning the source.
+    ///
+    /// min_prepare_time subsumes both read-protection mechanisms:
+    ///
+    /// 1. range_reads: entries (start, end, scan_ts) reject writes where
+    ///    key in [start, end] AND commit_ts < scan_ts -> Retry.
+    ///    Since every entry has scan_ts.time <= max_range_read_time,
+    ///    min_prepare_time > max_range_read_time subsumes all of them.
+    ///
+    /// 2. Per-key last_read_commit_ts: rejects writes where last_read >
+    ///    commit_ts -> Retry. commit_get() sets last_read = max(prev,
+    ///    commit) where commit <= max_read_commit_time.
+    ///    min_prepare_time > max_read_commit_time subsumes all per-key checks.
+    ///
+    /// It is strictly stronger — it also rejects old-timestamp writes to
+    /// keys that were never read, but that is a harmless over-rejection.
+    /// Clients that get TooLate simply retry with a fresh timestamp.
+    async fn transfer_read_protection(&self, source: ShardNumber, target: ShardNumber) {
+        // Freeze ALL operations on source — blocks IO::QuorumScan and
+        // IO::QuorumRead to freeze range_reads and last_read_commit_ts.
+        let decommission = serde_json::to_vec(&ShardConfig::<K> {
+            key_range: None,
+            phase: ShardPhase::Decommissioning,
+        })
+        .expect("serialize decommission config");
+        self.shards[&source].client.reconfigure(decommission);
+
+        // Wait for in-flight reads to complete after freeze propagates.
+        T::sleep(Duration::from_secs(3)).await;
+
+        // Query min_prepare_baseline from source (f+1 replicas).
+        let (max_range_read_time, max_read_commit_time) =
+            self.shards[&source].client.min_prepare_baseline().await;
+
+        // Raise min_prepare_time on target shard.
+        let barrier = max_range_read_time.max(max_read_commit_time) + 1;
+        if barrier > 1 {
+            self.shards[&target]
+                .client
+                .raise_min_prepare_time(barrier)
+                .await;
+        }
+    }
+
     /// Split a shard at `split_key`: keys < split_key stay on `source`,
     /// keys >= split_key move to `new_shard`.
     pub async fn split(
@@ -166,6 +215,22 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         if !filtered.is_empty() {
             ship_changes(&self.shards[&new_shard].client, new_shard, &filtered, &mut self.rng).await;
         }
+
+        // Transfer read protection from the source to the new shard.
+        //
+        // Write safety: writes within the source's key range that would
+        // invalidate a historical range_reads or last_read_commit_ts entry
+        // are rejected by min_prepare_time on the new shard. The barrier
+        // subsumes all source read-protection entries — any Prepare with
+        // commit_ts.time below the barrier gets TooLate regardless of key.
+        //
+        // Read safety: read-only transactions with old snapshot timestamps
+        // see the same MVCC data on the new shard as they would on the
+        // source — ship_changes() preserves all version timestamps via
+        // put(key, value, commit_ts). get_at(key, snapshot_ts) and
+        // scan(start, end, snapshot_ts) only depend on version write-
+        // timestamps (BTreeMap keys), which are identical.
+        self.transfer_read_protection(source, new_shard).await;
 
         // Phase 3c: Unfreeze source and narrow its key range.
         let unfreeze = serde_json::to_vec(&ShardConfig {
@@ -347,6 +412,21 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         if !changes.is_empty() {
             ship_changes(&self.shards[&surviving].client, surviving, &changes, &mut self.rng).await;
         }
+
+        // Transfer read protection from the merging shard to the survivor.
+        //
+        // Write safety: the surviving shard keeps its own range_reads and
+        // last_read_commit_ts intact (ship_changes uses empty read_set,
+        // so commit_get is never called for shipped data). Only the source
+        // shard's read protections are lost — raise_min_prepare_time
+        // covers them. raise_min_prepare_time uses max(existing, new), so
+        // the surviving shard's existing min_prepare_time is never lowered.
+        //
+        // Read safety: the surviving shard's MVCC store now contains all
+        // versions from both shards with correct timestamps. Read-only
+        // transactions see the same data regardless of which shard
+        // originally held the key — version timestamps are preserved.
+        self.transfer_read_protection(absorbed, surviving).await;
 
         // Phase 3c: Expand surviving shard's key range.
         let expand = serde_json::to_vec(&ShardConfig {
@@ -674,6 +754,22 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         if !changes.is_empty() {
             ship_changes(&self.shards[&new_shard].client, new_shard, &changes, &mut self.rng).await;
         }
+
+        // Transfer read protection from the old shard to the compacted one.
+        //
+        // Write safety: the new shard starts with min_prepare_time = 0 and
+        // empty range_reads/last_read_commit_ts. Without this call, a
+        // Prepare with commit_ts below a historical QuorumScan's scan_ts
+        // or QuorumRead's snapshot_ts would be accepted, violating
+        // linearizability. The barrier subsumes all source read-protection
+        // entries — any old-timestamp Prepare gets TooLate.
+        //
+        // Read safety: compaction ships all committed data with original
+        // timestamps. The new shard's MVCC state is semantically identical
+        // to the old shard's, minus the in-memory bloat (range_reads,
+        // prepared state, transaction_log). Read-only transactions at any
+        // snapshot timestamp see the same version data.
+        self.transfer_read_protection(source, new_shard).await;
 
         // Phase 3c: Decommission the source shard.
         self.deregister_shard(source);
