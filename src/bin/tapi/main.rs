@@ -39,6 +39,8 @@ enum Command {
         #[arg(long)]
         persist_dir: Option<String>,
         #[arg(long)]
+        discovery_url: Option<String>,
+        #[arg(long)]
         shard_manager_url: Option<String>,
     },
     /// Admin operations on a running node.
@@ -54,6 +56,10 @@ enum Command {
         /// Path to client configuration file (TOML).
         #[arg(long)]
         config: Option<String>,
+
+        /// Discovery service URL (overrides config file).
+        #[arg(long)]
+        discovery_url: Option<String>,
 
         /// Execute commands inline (semicolons separate commands).
         /// Can be specified multiple times.
@@ -164,6 +170,7 @@ async fn main() {
             config: config_path,
             admin_listen_addr,
             persist_dir,
+            discovery_url,
             shard_manager_url,
         } => {
             let mut cfg = config_path
@@ -176,6 +183,9 @@ async fn main() {
             if let Some(dir) = persist_dir {
                 cfg.persist_dir = Some(dir);
             }
+            if let Some(url) = discovery_url {
+                cfg.discovery_url = Some(url);
+            }
             if let Some(url) = shard_manager_url {
                 cfg.shard_manager_url = Some(url);
             }
@@ -186,13 +196,17 @@ async fn main() {
         }
         Command::Client {
             config: config_path,
+            discovery_url,
             execute,
             script,
         } => {
-            let cfg = config_path
+            let mut cfg = config_path
                 .as_deref()
                 .map(ClientConfig::from_file)
                 .unwrap_or_default();
+            if let Some(url) = discovery_url {
+                cfg.discovery_url = Some(url);
+            }
 
             let input_source = if !execute.is_empty() {
                 repl::InputSource::Commands(execute)
