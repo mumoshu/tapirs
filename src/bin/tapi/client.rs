@@ -24,6 +24,8 @@ pub async fn run(cfg: ClientConfig, input_source: crate::repl::InputSource) -> i
                 .map(|(shard, membership)| ShardConfig {
                     id: shard.0,
                     replicas: tapirs::discovery::membership_to_strings(&membership),
+                    key_range_start: None,
+                    key_range_end: None,
                 })
                 .collect()
         } else {
@@ -59,7 +61,7 @@ pub async fn run(cfg: ClientConfig, input_source: crate::repl::InputSource) -> i
         TcpTransport::with_directory(address, persist_dir, Arc::clone(&address_directory));
 
     // Build shard directory entries and populate transport's shard addresses.
-    let mut entries = Vec::new();
+    // Populate membership first, then build key range entries.
     for shard_cfg in &shards {
         let shard = ShardNumber(shard_cfg.id);
         let addrs: Vec<TcpAddress> = shard_cfg
@@ -74,19 +76,69 @@ pub async fn run(cfg: ClientConfig, input_source: crate::repl::InputSource) -> i
             .collect();
         let membership = IrMembership::new(addrs);
         transport.set_shard_addresses(shard, membership);
-
-        entries.push(ShardEntry {
-            shard,
-            range: KeyRange {
-                start: None,
-                end: None,
-            },
-        });
     }
+
+    // Build key range entries. If any shard has explicit key_range fields, use
+    // them. Otherwise auto-partition the key space (a-z) evenly across shards.
+    let has_explicit_ranges = shards
+        .iter()
+        .any(|s| s.key_range_start.is_some() || s.key_range_end.is_some());
+
+    let entries: Vec<ShardEntry<String>> = if has_explicit_ranges || shards.len() <= 1 {
+        shards
+            .iter()
+            .map(|s| ShardEntry {
+                shard: ShardNumber(s.id),
+                range: KeyRange {
+                    start: s.key_range_start.clone(),
+                    end: s.key_range_end.clone(),
+                },
+            })
+            .collect()
+    } else {
+        build_shard_entries(shards.len() as u32)
+    };
 
     let directory = Arc::new(RwLock::new(ShardDirectory::new(entries)));
     let router = Arc::new(DynamicRouter::new(directory));
     let tapir_client = Arc::new(TapirClient::new(tapirs::Rng::from_seed(thread_rng().r#gen()), transport));
 
     crate::repl::run(tapir_client, router, input_source).await
+}
+
+/// Partition key space (a-z) evenly across N shards with sequential IDs 0..N.
+fn build_shard_entries(n: u32) -> Vec<ShardEntry<String>> {
+    if n == 0 {
+        return vec![];
+    }
+    if n == 1 {
+        return vec![ShardEntry {
+            shard: ShardNumber(0),
+            range: KeyRange {
+                start: None,
+                end: None,
+            },
+        }];
+    }
+
+    let chars: Vec<char> = ('a'..='z').collect();
+    let per = chars.len() / n as usize;
+    let mut entries = Vec::new();
+    for i in 0..n {
+        let start = if i == 0 {
+            None
+        } else {
+            Some(chars[i as usize * per].to_string())
+        };
+        let end = if i == n - 1 {
+            None
+        } else {
+            Some(chars[(i as usize + 1) * per].to_string())
+        };
+        entries.push(ShardEntry {
+            shard: ShardNumber(i),
+            range: KeyRange { start, end },
+        });
+    }
+    entries
 }

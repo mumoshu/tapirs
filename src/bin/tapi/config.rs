@@ -33,6 +33,10 @@ pub struct ClientConfig {
 pub struct ShardConfig {
     pub id: u32,
     pub replicas: Vec<String>,
+    #[serde(default)]
+    pub key_range_start: Option<String>,
+    #[serde(default)]
+    pub key_range_end: Option<String>,
 }
 
 impl NodeConfig {
