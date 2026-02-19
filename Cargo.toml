@@ -13,6 +13,9 @@ required-features = ["maelstrom"]
 [[bin]]
 name = "tapi"
 
+[[bin]]
+name = "tapictl"
+
 [features]
 default = ["maelstrom"]
 maelstrom = ["async-maelstrom", "async-trait"]
