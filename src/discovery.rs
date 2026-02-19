@@ -64,6 +64,22 @@ pub trait DiscoveryClient: Send + Sync + 'static {
     fn get_topology(
         &self,
     ) -> impl std::future::Future<Output = Result<ClusterTopology, DiscoveryError>> + Send + '_;
+
+    /// Atomically deregister `old_id` and register `new_id` with the given replicas.
+    ///
+    /// Default: non-atomic deregister + register. Implementations should override
+    /// for true atomicity.
+    fn replace_shard(
+        &self,
+        old_id: u32,
+        new_id: u32,
+        replicas: Vec<String>,
+    ) -> impl std::future::Future<Output = Result<(), DiscoveryError>> + Send + '_ {
+        async move {
+            let _ = self.deregister_shard(old_id).await;
+            self.register_shard(new_id, replicas).await
+        }
+    }
 }
 
 // ---- InMemoryDiscovery ----
@@ -113,6 +129,18 @@ impl DiscoveryClient for InMemoryDiscovery {
     async fn get_topology(&self) -> Result<ClusterTopology, DiscoveryError> {
         Ok(self.topology())
     }
+
+    async fn replace_shard(
+        &self,
+        old_id: u32,
+        new_id: u32,
+        replicas: Vec<String>,
+    ) -> Result<(), DiscoveryError> {
+        let mut state = self.state.write().unwrap();
+        state.remove(&old_id);
+        state.insert(new_id, ShardMembership { id: new_id, replicas });
+        Ok(())
+    }
 }
 
 // ---- ShardDirectory trait ----
@@ -149,6 +177,15 @@ pub trait ShardDirectory<A: Clone + Send + Sync + 'static>: Send + Sync + 'stati
     fn put(&self, shard: ShardNumber, membership: IrMembership<A>);
     fn remove(&self, shard: ShardNumber);
     fn all(&self) -> Vec<(ShardNumber, IrMembership<A>)>;
+
+    /// Atomically replace one shard with another.
+    ///
+    /// Default: non-atomic `remove` + `put`. Implementations should override
+    /// for true atomicity (e.g., single write lock).
+    fn replace(&self, old: ShardNumber, new: ShardNumber, membership: IrMembership<A>) {
+        self.remove(old);
+        self.put(new, membership);
+    }
 }
 
 impl<A: Clone + Send + Sync + 'static, T: ShardDirectory<A>> ShardDirectory<A> for Arc<T> {
@@ -163,6 +200,9 @@ impl<A: Clone + Send + Sync + 'static, T: ShardDirectory<A>> ShardDirectory<A> f
     }
     fn all(&self) -> Vec<(ShardNumber, IrMembership<A>)> {
         (**self).all()
+    }
+    fn replace(&self, old: ShardNumber, new: ShardNumber, membership: IrMembership<A>) {
+        (**self).replace(old, new, membership)
     }
 }
 
@@ -212,6 +252,12 @@ impl<A: Clone + Send + Sync + 'static> ShardDirectory<A> for InMemoryShardDirect
             .map(|(k, v)| (*k, v.clone()))
             .collect()
     }
+
+    fn replace(&self, old: ShardNumber, new: ShardNumber, membership: IrMembership<A>) {
+        let mut shards = self.shards.write().unwrap();
+        shards.remove(&old);
+        shards.insert(new, membership);
+    }
 }
 
 // ---- DiscoveryShardDirectory ----
@@ -232,6 +278,7 @@ pub struct DiscoveryShardDirectory<A, C> {
     local: Arc<InMemoryShardDirectory<A>>,
     discovery: Arc<C>,
     own_shards: RwLock<Vec<ShardNumber>>,
+    pending_replacements: RwLock<Vec<(ShardNumber, ShardNumber)>>,
 }
 
 impl<A, C> DiscoveryShardDirectory<A, C>
@@ -260,6 +307,7 @@ where
             local,
             discovery,
             own_shards: RwLock::new(Vec::new()),
+            pending_replacements: RwLock::new(Vec::new()),
         });
 
         let weak = Arc::downgrade(&dir);
@@ -270,26 +318,53 @@ where
                     break;
                 };
 
-                // PULL: fetch topology, update local for all shards.
+                // Clone the own_shards list once (used by PULL filter and PUSH).
+                let own_shards: Vec<ShardNumber> = dir.own_shards.read().unwrap().clone();
+
+                // PULL: fetch topology, update local for non-own shards only.
+                // Own shards are authoritative locally — don't overwrite with
+                // potentially stale remote state.
                 if let Ok(topology) = dir.discovery.get_topology().await {
                     for shard in topology.shards {
-                        if let Ok(membership) = strings_to_membership::<A>(&shard.replicas) {
-                            dir.local.put(ShardNumber(shard.id), membership);
+                        let sn = ShardNumber(shard.id);
+                        if !own_shards.contains(&sn) {
+                            if let Ok(membership) = strings_to_membership::<A>(&shard.replicas) {
+                                dir.local.put(sn, membership);
+                            }
                         }
                     }
                 }
 
                 // PUSH: re-register own shards' current membership
                 // (retries on next cycle if failed).
-                // Clone the list and drop the RwLockReadGuard before awaiting.
-                let own_shards: Vec<ShardNumber> = dir.own_shards.read().unwrap().clone();
-                for shard in own_shards {
-                    if let Some(membership) = dir.local.get(shard) {
+                for shard in &own_shards {
+                    if let Some(membership) = dir.local.get(*shard) {
                         let _ = dir
                             .discovery
                             .register_shard(shard.0, membership_to_strings(&membership))
                             .await;
                     }
+                }
+
+                // REPLACE: drain pending replacements and push to discovery
+                // atomically. Re-queue on failure for next cycle.
+                let replacements: Vec<(ShardNumber, ShardNumber)> =
+                    std::mem::take(&mut *dir.pending_replacements.write().unwrap());
+                let mut failed = Vec::new();
+                for (old, new) in replacements {
+                    if let Some(membership) = dir.local.get(new) {
+                        if dir
+                            .discovery
+                            .replace_shard(old.0, new.0, membership_to_strings(&membership))
+                            .await
+                            .is_err()
+                        {
+                            failed.push((old, new));
+                        }
+                    }
+                }
+                if !failed.is_empty() {
+                    dir.pending_replacements.write().unwrap().extend(failed);
                 }
             }
         });
@@ -331,6 +406,21 @@ where
 
     fn all(&self) -> Vec<(ShardNumber, IrMembership<A>)> {
         self.local.all()
+    }
+
+    fn replace(&self, old: ShardNumber, new: ShardNumber, membership: IrMembership<A>) {
+        // Atomic local swap.
+        self.local.replace(old, new, membership);
+        // Update own_shards tracking: remove old, add new.
+        {
+            let mut shards = self.own_shards.write().unwrap();
+            shards.retain(|s| *s != old);
+            if !shards.contains(&new) {
+                shards.push(new);
+            }
+        }
+        // Queue for background sync to push atomically to discovery.
+        self.pending_replacements.write().unwrap().push((old, new));
     }
 }
 
@@ -413,6 +503,23 @@ mod tests {
         assert!(got.contains(4));
     }
 
+    #[test]
+    fn in_memory_directory_replace() {
+        let dir = InMemoryShardDirectory::<usize>::new();
+        dir.put(ShardNumber(1), IrMembership::new(vec![10, 20, 30]));
+        dir.put(ShardNumber(2), IrMembership::new(vec![40, 50, 60]));
+
+        // Replace shard 1 with shard 3.
+        dir.replace(ShardNumber(1), ShardNumber(3), IrMembership::new(vec![70, 80]));
+
+        // Old shard gone, new shard present, unrelated shard untouched.
+        assert!(dir.get(ShardNumber(1)).is_none());
+        let got = dir.get(ShardNumber(3)).unwrap();
+        assert_eq!(got.len(), 2);
+        assert!(got.contains(70));
+        assert!(dir.get(ShardNumber(2)).is_some());
+    }
+
     // ---- InMemoryDiscovery tests ----
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
@@ -451,6 +558,26 @@ mod tests {
         assert_eq!(topo.shards.len(), 2);
         assert_eq!(topo.shards[0].id, 1);
         assert_eq!(topo.shards[1].id, 3);
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn in_memory_discovery_replace_shard() {
+        let disc = InMemoryDiscovery::new();
+        disc.register_shard(1, vec!["a".into(), "b".into()])
+            .await
+            .unwrap();
+        disc.register_shard(2, vec!["c".into()]).await.unwrap();
+
+        // Replace shard 1 with shard 3.
+        disc.replace_shard(1, 3, vec!["d".into(), "e".into()])
+            .await
+            .unwrap();
+
+        // Old shard gone, new shard present, unrelated shard untouched.
+        assert!(disc.get_shard(1).is_none());
+        let shard3 = disc.get_shard(3).unwrap();
+        assert_eq!(shard3.replicas, vec!["d", "e"]);
+        assert!(disc.get_shard(2).is_some());
     }
 
     // ---- Address conversion tests ----
@@ -577,5 +704,64 @@ mod tests {
         assert_eq!(pulled.len(), 2);
         assert!(pulled.contains(40));
         assert!(pulled.contains(50));
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn discovery_directory_replace_and_sync() {
+        let disc = Arc::new(InMemoryDiscovery::new());
+        let local = Arc::new(InMemoryShardDirectory::new());
+        let dir =
+            DiscoveryShardDirectory::<usize, _>::new(local, Arc::clone(&disc), Duration::from_millis(100));
+
+        // Set up shard 1 as an own shard and let it sync.
+        dir.put(ShardNumber(1), IrMembership::new(vec![10, 20, 30]));
+        dir.add_own_shard(ShardNumber(1));
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        tokio::task::yield_now().await;
+        assert!(disc.get_shard(1).is_some());
+
+        // Replace shard 1 with shard 2 via the trait method.
+        dir.replace(
+            ShardNumber(1),
+            ShardNumber(2),
+            IrMembership::new(vec![40, 50]),
+        );
+
+        // Local state updated atomically.
+        assert!(dir.get(ShardNumber(1)).is_none());
+        let got = dir.get(ShardNumber(2)).unwrap();
+        assert_eq!(got.len(), 2);
+
+        // Wait for background sync to drain pending replacement.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        tokio::task::yield_now().await;
+
+        // Discovery now has shard 2, not shard 1.
+        assert!(disc.get_shard(1).is_none());
+        let pushed = disc.get_shard(2).unwrap();
+        assert_eq!(pushed.replicas, vec!["40", "50"]);
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn discovery_directory_pull_skips_own_shards() {
+        let disc = Arc::new(InMemoryDiscovery::new());
+        let local = Arc::new(InMemoryShardDirectory::new());
+        let dir =
+            DiscoveryShardDirectory::<usize, _>::new(local, Arc::clone(&disc), Duration::from_millis(100));
+
+        // Register shard 1 locally with fresh membership.
+        dir.put(ShardNumber(1), IrMembership::new(vec![10, 20]));
+        dir.add_own_shard(ShardNumber(1));
+
+        // Simulate stale remote state for the same shard.
+        disc.register_shard(1, vec!["99".into()]).await.unwrap();
+
+        // After sync, own shard should NOT be overwritten by remote.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        tokio::task::yield_now().await;
+
+        let got = dir.get(ShardNumber(1)).unwrap();
+        assert_eq!(got.len(), 2); // Still the local value, not the remote "99".
     }
 }

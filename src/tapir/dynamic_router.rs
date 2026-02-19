@@ -72,6 +72,26 @@ impl<K: Ord + Clone + Debug> ShardDirectory<K> {
         self.entries = entries;
         self.generation += 1;
     }
+
+    /// Replace one shard number with another in-place.
+    ///
+    /// Used by compact where the key range is identical — no overlap
+    /// validation needed since only the shard number changes.
+    /// Panics if `old` is not found.
+    pub fn replace(&mut self, old: ShardNumber, new: ShardNumber) {
+        let entry = self.entries.iter_mut().find(|e| e.shard == old);
+        match entry {
+            Some(e) => {
+                e.shard = new;
+                self.generation += 1;
+            }
+            None => panic!(
+                "replace: shard {:?} not found in directory ({} entries)",
+                old,
+                self.entries.len(),
+            ),
+        }
+    }
 }
 
 /// Refreshable shard router backed by a shared directory.
@@ -102,5 +122,47 @@ impl<K: Ord + Clone + Debug + Send + Sync + 'static> ShardRouter<K> for DynamicR
         // In a real deployment, this would trigger an async directory refresh
         // from the transport layer. For now, the ShardManager updates the
         // directory directly and clients retry.
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tapir::KeyRange;
+
+    #[test]
+    fn replace_swaps_shard_number() {
+        let mut dir = ShardDirectory::new(vec![
+            ShardEntry {
+                shard: ShardNumber(0),
+                range: KeyRange { start: None, end: Some(50) },
+            },
+            ShardEntry {
+                shard: ShardNumber(1),
+                range: KeyRange { start: Some(50), end: None },
+            },
+        ]);
+
+        assert_eq!(dir.route(&25), ShardNumber(0));
+        assert_eq!(dir.generation, 0);
+
+        dir.replace(ShardNumber(0), ShardNumber(2));
+
+        // Same key now routes to the new shard number.
+        assert_eq!(dir.route(&25), ShardNumber(2));
+        // Other shard untouched.
+        assert_eq!(dir.route(&75), ShardNumber(1));
+        // Generation bumped.
+        assert_eq!(dir.generation, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "replace: shard")]
+    fn replace_panics_on_missing_shard() {
+        let mut dir = ShardDirectory::new(vec![ShardEntry {
+            shard: ShardNumber(0),
+            range: KeyRange::<i32> { start: None, end: None },
+        }]);
+        dir.replace(ShardNumber(99), ShardNumber(1));
     }
 }

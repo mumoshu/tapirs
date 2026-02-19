@@ -86,6 +86,31 @@ impl DiscoveryClient for HttpDiscoveryClient {
         serde_json::from_str(&body)
             .map_err(|e| DiscoveryError::InvalidResponse(format!("{e}\nbody: {body}")))
     }
+
+    async fn replace_shard(
+        &self,
+        old_id: u32,
+        new_id: u32,
+        replicas: Vec<String>,
+    ) -> Result<(), DiscoveryError> {
+        let body = serde_json::to_string(&serde_json::json!({
+            "old_id": old_id,
+            "new_id": new_id,
+            "replicas": replicas,
+        }))
+        .map_err(|e| DiscoveryError::InvalidResponse(e.to_string()))?;
+        let addr_str = self.addr.to_string();
+        let request = format!(
+            "POST /v1/shards/replace HTTP/1.1\r\nHost: {addr_str}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len(),
+        );
+        let (resp, _) = self.http_request(&request).await?;
+        if resp.contains("200 OK") {
+            Ok(())
+        } else {
+            Err(DiscoveryError::InvalidResponse(resp))
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -98,6 +123,33 @@ struct DiscoveryState {
 }
 
 fn handle_request(state: &DiscoveryState, method: &str, path: &str, body: &str) -> (u16, String) {
+    // POST /v1/shards/replace — atomic swap of old shard for new shard.
+    if method == "POST" && path == "/v1/shards/replace" {
+        #[derive(Deserialize)]
+        struct ReplaceShardRequest {
+            old_id: u32,
+            new_id: u32,
+            replicas: Vec<String>,
+        }
+        let req: ReplaceShardRequest = match serde_json::from_str(body) {
+            Ok(r) => r,
+            Err(e) => {
+                return (400, format!(r#"{{"error":"invalid JSON: {e}"}}"#));
+            }
+        };
+        let mut shards = state.shards.write().unwrap();
+        shards.remove(&req.old_id);
+        shards.insert(
+            req.new_id,
+            ShardMembership {
+                id: req.new_id,
+                replicas: req.replicas,
+            },
+        );
+        tracing::info!(old = req.old_id, new = req.new_id, "shard replaced");
+        return (200, r#"{"ok":true}"#.to_string());
+    }
+
     // GET /v1/cluster
     if method == "GET" && path == "/v1/cluster" {
         let shards = state.shards.read().unwrap();
@@ -370,6 +422,48 @@ mod tests {
         assert_eq!(code, 404);
     }
 
+    #[test]
+    fn replace_shard_atomic() {
+        let s = state();
+        // Register shard 1 and an unrelated shard 5.
+        handle_request(
+            &s,
+            "POST",
+            "/v1/shards/1",
+            r#"{"replicas":["127.0.0.1:5001","127.0.0.1:5002"]}"#,
+        );
+        handle_request(
+            &s,
+            "POST",
+            "/v1/shards/5",
+            r#"{"replicas":["127.0.0.1:9001"]}"#,
+        );
+
+        // Replace shard 1 with shard 3.
+        let (code, _) = handle_request(
+            &s,
+            "POST",
+            "/v1/shards/replace",
+            r#"{"old_id":1,"new_id":3,"replicas":["127.0.0.1:7001","127.0.0.1:7002"]}"#,
+        );
+        assert_eq!(code, 200);
+
+        // Old shard gone.
+        let (code, _) = handle_request(&s, "GET", "/v1/shards/1", "");
+        assert_eq!(code, 404);
+
+        // New shard present with correct replicas.
+        let (code, body) = handle_request(&s, "GET", "/v1/shards/3", "");
+        assert_eq!(code, 200);
+        let m: ShardMembership = serde_json::from_str(&body).unwrap();
+        assert_eq!(m.id, 3);
+        assert_eq!(m.replicas, vec!["127.0.0.1:7001", "127.0.0.1:7002"]);
+
+        // Unrelated shard untouched.
+        let (code, _) = handle_request(&s, "GET", "/v1/shards/5", "");
+        assert_eq!(code, 200);
+    }
+
     /// Start a discovery server on an ephemeral port and return the address.
     async fn start_test_server() -> std::net::SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -424,6 +518,33 @@ mod tests {
 
         let result = client.deregister_shard(99).await;
         assert!(matches!(result, Err(DiscoveryError::NotFound)));
+    }
+
+    #[tokio::test]
+    async fn http_client_replace_shard() {
+        let addr = start_test_server().await;
+        let client = HttpDiscoveryClient::new(&addr.to_string());
+
+        // Register shard 1.
+        client
+            .register_shard(1, vec!["127.0.0.1:5001".into(), "127.0.0.1:5002".into()])
+            .await
+            .unwrap();
+
+        // Replace shard 1 with shard 3.
+        client
+            .replace_shard(1, 3, vec!["127.0.0.1:7001".into(), "127.0.0.1:7002".into()])
+            .await
+            .unwrap();
+
+        // Topology should have shard 3, not shard 1.
+        let topo = client.get_topology().await.unwrap();
+        assert_eq!(topo.shards.len(), 1);
+        assert_eq!(topo.shards[0].id, 3);
+        assert_eq!(
+            topo.shards[0].replicas,
+            vec!["127.0.0.1:7001", "127.0.0.1:7002"]
+        );
     }
 
     #[tokio::test]

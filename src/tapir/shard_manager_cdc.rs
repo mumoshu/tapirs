@@ -689,11 +689,11 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
             .key_range
             .clone();
 
-        // Register the new shard with the same key range as the source.
-        // Use deferred registration (no directory rebuild) because both source
-        // and new shard have the same key range — rebuilding would panic on
-        // the overlap check.  deregister_shard(source) at the end rebuilds.
-        self.register_shard_deferred(new_shard, new_membership, source_range);
+        // Create a shard client for the new shard without touching the address
+        // directory. The new shard is invisible to cross-shard discovery during
+        // the entire migration. The atomic swap at the end makes it visible.
+        let new_membership_for_swap = new_membership.clone();
+        self.create_shard_client(new_shard, new_membership, source_range);
 
         let mut cursor = CdcCursor::new();
 
@@ -771,8 +771,9 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         // snapshot timestamp see the same version data.
         self.transfer_read_protection(source, new_shard).await;
 
-        // Phase 3c: Decommission the source shard.
-        self.deregister_shard(source);
+        // Phase 3c: Atomic swap — source disappears, new shard appears in all
+        // directories simultaneously. No rebuild_directory needed.
+        self.replace_shard(source, new_shard, new_membership_for_swap);
         // Compact complete.
         Ok(())
     }

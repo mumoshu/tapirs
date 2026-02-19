@@ -50,22 +50,6 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>, D: AddressDirectory<T::Addre
         membership: IrMembership<T::Address>,
         key_range: KeyRange<K>,
     ) {
-        self.register_shard_deferred(shard, membership, key_range);
-        self.rebuild_directory();
-    }
-
-    /// Like `register_shard` but skips the directory rebuild.
-    ///
-    /// Use when the caller will trigger a rebuild later (e.g., compact
-    /// registers the replacement shard before deregistering the source —
-    /// both have the same key range temporarily, so rebuilding would
-    /// panic on the overlap check).
-    pub(crate) fn register_shard_deferred(
-        &mut self,
-        shard: ShardNumber,
-        membership: IrMembership<T::Address>,
-        key_range: KeyRange<K>,
-    ) {
         self.address_directory.put(shard, membership.clone());
         let client = ShardClient::new(
             self.rng.fork(),
@@ -79,6 +63,49 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>, D: AddressDirectory<T::Addre
             key_range,
             client,
         });
+        self.rebuild_directory();
+    }
+
+    /// Create a shard client and insert into `self.shards` without touching
+    /// the address directory or rebuilding the key-range directory.
+    ///
+    /// Used by compact to set up the new shard's client during migration
+    /// without making it visible to cross-shard discovery.
+    pub(crate) fn create_shard_client(
+        &mut self,
+        shard: ShardNumber,
+        membership: IrMembership<T::Address>,
+        key_range: KeyRange<K>,
+    ) {
+        let client = ShardClient::new(
+            self.rng.fork(),
+            self.client_id,
+            shard,
+            membership,
+            self.transport.clone(),
+        );
+        self.shards.insert(shard, ManagedShard {
+            shard,
+            key_range,
+            client,
+        });
+    }
+
+    /// Atomically replace one shard with another in all directories.
+    ///
+    /// Removes `old` from the local shard registry, performs an atomic swap
+    /// in the address directory (cross-shard discovery), and swaps the shard
+    /// number in-place in the key-range directory (no full rebuild needed
+    /// since key ranges are unchanged).
+    pub(crate) fn replace_shard(
+        &mut self,
+        old: ShardNumber,
+        new: ShardNumber,
+        membership: IrMembership<T::Address>,
+    ) {
+        self.shards.remove(&old);
+        self.address_directory.replace(old, new, membership);
+        self.directory.replace(old, new);
     }
 
     pub fn deregister_shard(&mut self, shard: ShardNumber) {
