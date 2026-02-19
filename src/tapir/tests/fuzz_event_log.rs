@@ -280,4 +280,47 @@ impl FuzzEventLog {
             self.dump(seed);
         }
     }
+
+    /// Return the time window (first, last) of transaction events.
+    pub fn txn_time_window(&self) -> Option<(std::time::Duration, std::time::Duration)> {
+        let entries = self.entries.lock().unwrap();
+        let mut first = None;
+        let mut last = None;
+        for entry in entries.iter() {
+            if matches!(entry.event,
+                FuzzEvent::TxnBegin { .. }
+                | FuzzEvent::TxnCommitted { .. }
+                | FuzzEvent::TxnAborted { .. }
+                | FuzzEvent::TxnTimedOut { .. }
+            ) {
+                if first.is_none() {
+                    first = Some(entry.elapsed);
+                }
+                last = Some(entry.elapsed);
+            }
+        }
+        first.zip(last)
+    }
+
+    /// Check if any resharding event falls within the given time window.
+    pub fn has_reshard_event_between(
+        &self,
+        first: std::time::Duration,
+        last: std::time::Duration,
+    ) -> bool {
+        let entries = self.entries.lock().unwrap();
+        entries.iter().any(|e| {
+            e.elapsed >= first
+                && e.elapsed <= last
+                && matches!(e.event,
+                    FuzzEvent::ReshardSplitAttempt { .. }
+                    | FuzzEvent::ReshardSplitOk { .. }
+                    | FuzzEvent::ReshardMergeAttempt { .. }
+                    | FuzzEvent::ReshardMergeOk { .. }
+                    | FuzzEvent::ReshardCompactAttempt { .. }
+                    | FuzzEvent::ReshardCompactOk { .. }
+                    | FuzzEvent::ReshardPhase { .. }
+                )
+        })
+    }
 }

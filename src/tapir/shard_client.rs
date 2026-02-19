@@ -48,14 +48,18 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
         async move {
             let reply = future.await;
 
-            if let UR::Get(value, timestamp) = reply {
-                (value, timestamp)
-            } else {
-                debug_assert!(false);
-
-                // Was valid at the beginning of time (the transaction will
-                // abort if that's too old).
-                (None, Default::default())
+            match reply {
+                UR::Get(value, timestamp) => (value, timestamp),
+                UR::OutOfRange => {
+                    // Key is outside this shard's current range (shard was
+                    // re-ranged during resharding). Return None with epoch
+                    // timestamp — the transaction will abort at commit.
+                    (None, Default::default())
+                }
+                other => {
+                    debug_assert!(false, "unexpected UR variant for get: {other:?}");
+                    (None, Default::default())
+                }
             }
         }
     }
@@ -73,8 +77,14 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
         async move {
             match future.await {
                 UR::Scan(results, ts) => (results, ts),
-                _ => {
-                    debug_assert!(false);
+                UR::OutOfRange => {
+                    // Keys are outside this shard's current range (shard was
+                    // re-ranged during resharding). Return empty results —
+                    // the transaction will abort at commit.
+                    (Vec::new(), Default::default())
+                }
+                other => {
+                    debug_assert!(false, "unexpected UR variant for scan: {other:?}");
                     (Vec::new(), Default::default())
                 }
             }

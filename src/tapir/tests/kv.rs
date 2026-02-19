@@ -17,7 +17,7 @@ use rand::{rngs::StdRng, thread_rng, Rng, SeedableRng};
 use std::{
     collections::BTreeMap,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, RwLock,
     },
     time::Duration,
@@ -684,7 +684,8 @@ async fn fuzz_tapir_transactions() {
         .collect();
     let num_clients = 3;
     let num_keys: i64 = 10;
-    let iterations_per_client = 20;
+    let min_iterations: u32 = 20;
+    let max_iterations: u32 = 100;
 
     event_log.record(FuzzEvent::Config {
         seed,
@@ -747,8 +748,8 @@ async fn fuzz_tapir_transactions() {
     // Account for client addresses.
     address_offset += num_clients;
 
-    // Pre-build 4 potential new shard replica groups (for splits and compacts).
-    let new_shard_replica_counts: Vec<usize> = (0..4)
+    // Pre-build 8 potential new shard replica groups (for splits and compacts).
+    let new_shard_replica_counts: Vec<usize> = (0..8)
         .map(|_| [3, 5, 7][rng.gen_range(0..3usize)])
         .collect();
     let shard_entries = build_shard_entries(num_shards, num_keys);
@@ -878,6 +879,9 @@ async fn fuzz_tapir_transactions() {
         }
     });
 
+    // Stop flag: resharding task sets this when all rounds are done.
+    let stop_flag = Arc::new(AtomicBool::new(false));
+
     // Spawn concurrent client workloads.
     let handles: Vec<_> = routing_clients
         .iter()
@@ -891,11 +895,15 @@ async fn fuzz_tapir_transactions() {
             let next_txn_index = Arc::clone(&next_txn_index);
             let client_seed = client_seeds[client_idx];
             let txn_event_log = event_log.clone();
+            let stop = Arc::clone(&stop_flag);
 
             tokio::spawn(async move {
                 let mut rng = StdRng::seed_from_u64(client_seed);
 
-                for _ in 0..iterations_per_client {
+                let mut iteration = 0u32;
+                loop {
+                    if iteration >= max_iterations { break; }
+                    if iteration >= min_iterations && stop.load(Ordering::Relaxed) { break; }
                     let txn_index = next_txn_index.fetch_add(1, Ordering::Relaxed) as usize;
                     total_attempted.fetch_add(1, Ordering::Relaxed);
 
@@ -1015,8 +1023,9 @@ async fn fuzz_tapir_transactions() {
                         }
                     }
 
-                    // Small inter-transaction delay.
-                    FaultyTransport::sleep(Duration::from_millis(rng.gen_range(1..=20))).await;
+                    // Inter-transaction delay — spread across resharding duration.
+                    FaultyTransport::sleep(Duration::from_millis(rng.gen_range(100..=2000))).await;
+                    iteration += 1;
                 }
             })
         })
@@ -1029,10 +1038,9 @@ async fn fuzz_tapir_transactions() {
     let reshard_shard_entries = shard_entries.clone();
     let reshard_event_log = event_log.clone();
     let reshard_final_shards = Arc::clone(&final_shards);
+    let reshard_stop = Arc::clone(&stop_flag);
     let reshard_handle = tokio::spawn(async move {
         use crate::tapir::shard_manager::ShardManager;
-
-        FaultyTransport::sleep(Duration::from_millis(100)).await;
 
         // Create ShardManager with its own FaultyChannelTransport.
         let manager_channel = registry.channel(move |_, _| None);
@@ -1050,13 +1058,14 @@ async fn fuzz_tapir_transactions() {
 
         let mut reshard_rng = StdRng::seed_from_u64(reshard_seed);
         let mut next_shard_idx = 0usize;
+        let num_reshard_rounds = reshard_rng.gen_range(3..=5usize);
 
         // Random resharding loop — no guards, attempt anything.
         // No explicit view change forcing needed: split/merge/compact handle
         // CDC internally (freeze triggers view change → produces delta → drain
         // picks it up). The fault injection task provides additional random
         // view changes.
-        for round in 0..2 {
+        for round in 0..num_reshard_rounds {
             let round_for_log = round;
             let log_for_cb = reshard_event_log.clone();
             manager.set_progress_callback(move |phase| {
@@ -1138,6 +1147,9 @@ async fn fuzz_tapir_transactions() {
             }
         }
 
+        // Signal clients to stop after resharding completes.
+        reshard_stop.store(true, Ordering::Relaxed);
+
         *reshard_final_shards.lock().unwrap() =
             Some(manager.shards.keys().cloned().collect());
     });
@@ -1184,6 +1196,14 @@ async fn fuzz_tapir_transactions() {
     if committed == 0 {
         event_log.dump(seed);
         panic!("no transactions committed (seed={seed})");
+    }
+
+    // Verify resharding and client transactions actually interleaved.
+    if let Some((txn_first, txn_last)) = event_log.txn_time_window() {
+        if !event_log.has_reshard_event_between(txn_first, txn_last) {
+            event_log.dump(seed);
+            panic!("resharding should overlap with client transactions (seed={seed})");
+        }
     }
 
     // Let replicas drain pending operations after all view changes settle.
