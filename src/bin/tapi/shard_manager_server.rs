@@ -2,8 +2,8 @@ use crate::discovery::HttpDiscoveryClient;
 use rand::{thread_rng, Rng as _};
 use serde::Deserialize;
 use std::sync::Arc;
-use tapirs::discovery::{DiscoveryClient as _, InMemoryShardDirectory, ShardDirectory as _};
-use tapirs::{IrMembership, ShardManager, ShardNumber, TapirReplica, TcpAddress, TcpTransport};
+use tapirs::discovery::{InMemoryShardDirectory, RemoteShardDirectory as _, ShardDirectory as _};
+use tapirs::{ShardManager, ShardNumber, TapirReplica, TcpAddress, TcpTransport};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 
@@ -74,32 +74,16 @@ async fn handle_request(
         // Query discovery for existing membership.
         let existing = state
             .discovery_client
-            .get_topology()
+            .all()
             .await
             .ok()
-            .and_then(|t| t.shards.into_iter().find(|s| s.id == req.shard))
-            .filter(|s| !s.replicas.is_empty());
+            .and_then(|entries| entries.into_iter().find(|(s, _)| *s == shard))
+            .map(|(_, m)| m)
+            .filter(|m| m.len() > 0);
 
-        if let Some(entry) = existing {
-            let addrs: Vec<TcpAddress> = match entry
-                .replicas
-                .iter()
-                .map(|a| a.parse().map(TcpAddress))
-                .collect::<Result<Vec<_>, _>>()
-            {
-                Ok(a) => a,
-                Err(e) => {
-                    return (
-                        500,
-                        format!(r#"{{"error":"bad replica addr from discovery: {e}"}}"#),
-                    );
-                }
-            };
-
+        if let Some(membership) = existing {
             // Populate address directory so manager.join() can discover membership.
-            state
-                .directory
-                .put(shard, IrMembership::new(addrs));
+            state.directory.put(shard, membership);
 
             match state.manager.lock().await.join(shard, new_addr).await {
                 Ok(()) => (200, r#"{"ok":true}"#.to_string()),
@@ -133,36 +117,22 @@ async fn handle_request(
         // Query discovery for existing membership.
         let existing = state
             .discovery_client
-            .get_topology()
+            .all()
             .await
             .ok()
-            .and_then(|t| t.shards.into_iter().find(|s| s.id == req.shard))
-            .filter(|s| !s.replicas.is_empty());
+            .and_then(|entries| entries.into_iter().find(|(s, _)| *s == shard))
+            .map(|(_, m)| m)
+            .filter(|m| m.len() > 0);
 
-        let Some(entry) = existing else {
+        let Some(membership) = existing else {
             return (
                 400,
                 format!(r#"{{"error":"shard {} not found in discovery"}}"#, req.shard),
             );
         };
 
-        let addrs: Vec<TcpAddress> = match entry
-            .replicas
-            .iter()
-            .map(|a| a.parse().map(TcpAddress))
-            .collect::<Result<Vec<_>, _>>()
-        {
-            Ok(a) => a,
-            Err(e) => {
-                return (
-                    500,
-                    format!(r#"{{"error":"bad replica addr from discovery: {e}"}}"#),
-                );
-            }
-        };
-
         // Verify the address is part of the shard.
-        if !addrs.contains(&addr) {
+        if !membership.contains(addr) {
             return (
                 400,
                 format!(
@@ -175,7 +145,7 @@ async fn handle_request(
         // Populate address directory so manager.leave() can discover membership.
         state
             .directory
-            .put(shard, IrMembership::new(addrs));
+            .put(shard, membership);
 
         match state.manager.lock().await.leave(shard, addr) {
             Ok(()) => (200, r#"{"ok":true}"#.to_string()),

@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tapirs::discovery::{DiscoveryShardDirectory, InMemoryShardDirectory};
+use tapirs::discovery::{CachingShardDirectory, InMemoryShardDirectory};
 use tapirs::{
     IrClient, IrMembership, IrRecord, IrReplica, IrSharedView, IrView, IrViewNumber,
     ShardNumber, TapirReplica, TcpAddress, TcpTransport,
@@ -46,9 +46,9 @@ pub struct Node {
     pub replicas: Mutex<HashMap<ShardNumber, ReplicaHandle>>,
     persist_dir: String,
     directory: Arc<InMemoryShardDirectory<TcpAddress>>,
-    // Holds the DiscoveryShardDirectory alive so its background sync task
+    // Holds the CachingShardDirectory alive so its background sync task
     // continues running. When None, no discovery sync is active.
-    _discovery_dir: Option<Arc<DiscoveryShardDirectory<TcpAddress, HttpDiscoveryClient>>>,
+    _discovery_dir: Option<Arc<CachingShardDirectory<TcpAddress, HttpDiscoveryClient>>>,
     shard_manager_url: Option<String>,
 }
 
@@ -66,7 +66,7 @@ impl Node {
     pub(crate) fn with_discovery(persist_dir: String, discovery_url: &str) -> Self {
         let directory = Arc::new(InMemoryShardDirectory::new());
         let client = Arc::new(HttpDiscoveryClient::new(discovery_url));
-        let discovery_dir = DiscoveryShardDirectory::new(
+        let discovery_dir = CachingShardDirectory::new(
             Arc::clone(&directory),
             client,
             std::time::Duration::from_secs(10),

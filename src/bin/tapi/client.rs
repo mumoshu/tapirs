@@ -3,7 +3,7 @@ use crate::discovery::HttpDiscoveryClient;
 use rand::{thread_rng, Rng as _};
 use std::sync::Arc;
 use tapirs::discovery::{
-    DiscoveryClient as _, DiscoveryShardDirectory, InMemoryShardDirectory,
+    CachingShardDirectory, InMemoryShardDirectory, RemoteShardDirectory as _,
 };
 use tapirs::{
     DynamicRouter, IrMembership, KeyRange, ShardDirectory, ShardEntry, ShardNumber,
@@ -15,16 +15,15 @@ pub async fn run(cfg: ClientConfig, input_source: crate::repl::InputSource) -> i
     let shards = if cfg.shards.is_empty() {
         if let Some(ref url) = cfg.discovery_url {
             let client = HttpDiscoveryClient::new(url);
-            let topology = client
-                .get_topology()
+            let entries = client
+                .all()
                 .await
                 .unwrap_or_else(|e| panic!("failed to fetch topology from discovery: {e}"));
-            topology
-                .shards
+            entries
                 .into_iter()
-                .map(|s| ShardConfig {
-                    id: s.id,
-                    replicas: s.replicas,
+                .map(|(shard, membership)| ShardConfig {
+                    id: shard.0,
+                    replicas: tapirs::discovery::membership_to_strings(&membership),
                 })
                 .collect()
         } else {
@@ -45,11 +44,11 @@ pub async fn run(cfg: ClientConfig, input_source: crate::repl::InputSource) -> i
 
     let address_directory = Arc::new(InMemoryShardDirectory::new());
 
-    // If discovery is configured, create DiscoveryShardDirectory for continuous
+    // If discovery is configured, create CachingShardDirectory for continuous
     // updates (learns about new shards and membership changes from other nodes).
     let _discovery_dir = cfg.discovery_url.as_ref().map(|url| {
         let client = Arc::new(HttpDiscoveryClient::new(url));
-        DiscoveryShardDirectory::<TcpAddress, _>::new(
+        CachingShardDirectory::<TcpAddress, _>::new(
             Arc::clone(&address_directory),
             client,
             std::time::Duration::from_secs(10),

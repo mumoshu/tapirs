@@ -2,7 +2,7 @@ use super::fuzz_event_log::{FuzzEvent, FuzzEventLog};
 use super::invariant_checker::{InvariantChecker, TxnOutcome, TxnRecord};
 use crate::{
     discovery::{
-        DiscoveryShardDirectory, InMemoryDiscovery, InMemoryShardDirectory,
+        CachingShardDirectory, InMemoryRemoteDirectory, InMemoryShardDirectory,
         ShardDirectory as _,
     },
     tapir::dynamic_router::{DynamicRouter, ShardDirectory, ShardEntry},
@@ -697,8 +697,8 @@ async fn fuzz_tapir_transactions() {
 
     // Create shared address directory and discovery for sync testing.
     let address_directory = Arc::new(InMemoryShardDirectory::new());
-    let discovery = Arc::new(InMemoryDiscovery::new());
-    let disc_dir = DiscoveryShardDirectory::<usize, _>::new(
+    let discovery = Arc::new(InMemoryRemoteDirectory::<usize>::new());
+    let disc_dir = CachingShardDirectory::new(
         Arc::clone(&address_directory),
         Arc::clone(&discovery),
         Duration::from_millis(500),
@@ -1192,13 +1192,13 @@ async fn fuzz_tapir_transactions() {
 
     // Verify discovery received shard 0 via background sync push.
     tokio::task::yield_now().await;
-    let disc_shard_0 = discovery.get_shard(0);
+    let disc_shard_0 = discovery.get(ShardNumber(0));
     if disc_shard_0.is_none() {
         event_log.dump(seed);
         panic!("discovery should contain shard 0 after sync (seed={seed})");
     }
 
-    // Keep DiscoveryShardDirectory alive until after assertions.
+    // Keep CachingShardDirectory alive until after assertions.
     drop(disc_dir);
 
     // Run invariant checker: serializability, strict serializability,

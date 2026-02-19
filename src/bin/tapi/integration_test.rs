@@ -3,7 +3,7 @@ use crate::node::Node;
 use rand::{thread_rng, Rng as _};
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
-use tapirs::discovery::{DiscoveryClient as _, InMemoryShardDirectory};
+use tapirs::discovery::{InMemoryShardDirectory, RemoteShardDirectory as _};
 use tapirs::{
     DynamicRouter, KeyRange, RoutingClient, ShardDirectory, ShardEntry, ShardNumber, TapirClient,
     TapirReplica, TcpAddress, TcpTransport,
@@ -98,8 +98,10 @@ async fn bootstrap_cluster(
             // Operator registers with discovery.
             shard_addrs.push(addr);
             let registered: Vec<String> = shard_addrs.iter().map(|a| a.to_string()).collect();
+            let membership = tapirs::discovery::strings_to_membership::<TcpAddress>(&registered)
+                .expect("parse membership");
             disc_client
-                .register_shard(shard_idx, registered)
+                .put(ShardNumber(shard_idx), membership)
                 .await
                 .unwrap();
 
@@ -124,25 +126,25 @@ async fn bootstrap_cluster(
 }
 
 /// Create client — same setup as tapi client (src/bin/tapi/client.rs).
-/// Uses DiscoveryShardDirectory for address resolution, NOT manual
+/// Uses CachingShardDirectory for address resolution, NOT manual
 /// transport.set_shard_addresses().
 async fn create_test_client(
     cluster: &TestCluster,
 ) -> (
     Arc<RoutingClient<K, V, TestTransport, DynamicRouter<K>>>,
     TempDir,
-    Arc<tapirs::discovery::DiscoveryShardDirectory<TcpAddress, HttpDiscoveryClient>>,
+    Arc<tapirs::discovery::CachingShardDirectory<TcpAddress, HttpDiscoveryClient>>,
 ) {
     let local_addr = alloc_addr();
     let td = TempDir::new().unwrap();
     let dir = Arc::new(InMemoryShardDirectory::new());
 
-    // Same as client.rs: DiscoveryShardDirectory auto-syncs shard->membership
+    // Same as client.rs: CachingShardDirectory auto-syncs shard->membership
     // from discovery, populating dir.
     let disc_client = Arc::new(HttpDiscoveryClient::new(
         &cluster.discovery_addr.to_string(),
     ));
-    let discovery_dir = tapirs::discovery::DiscoveryShardDirectory::<TcpAddress, _>::new(
+    let discovery_dir = tapirs::discovery::CachingShardDirectory::<TcpAddress, _>::new(
         Arc::clone(&dir),
         disc_client,
         std::time::Duration::from_millis(100), // fast sync for tests
@@ -407,8 +409,11 @@ async fn test_rolling_membership_replacement() {
 
         // Register new address in discovery.
         live_addrs.push(new_addr);
-        let registered: Vec<String> = live_addrs.iter().map(|a| a.to_string()).collect();
-        disc_client.register_shard(0, registered).await.unwrap();
+        let addrs: Vec<TcpAddress> = live_addrs.iter().map(|a| TcpAddress(*a)).collect();
+        disc_client
+            .put(ShardNumber(0), tapirs::IrMembership::new(addrs))
+            .await
+            .unwrap();
 
         // Wait for AddMember view change to settle.
         tokio::time::sleep(Duration::from_secs(10)).await;
@@ -448,8 +453,11 @@ async fn test_rolling_membership_replacement() {
 
         // Update discovery: remove old address.
         live_addrs.retain(|a| *a != original_addrs[i]);
-        let registered: Vec<String> = live_addrs.iter().map(|a| a.to_string()).collect();
-        disc_client.register_shard(0, registered).await.unwrap();
+        let addrs: Vec<TcpAddress> = live_addrs.iter().map(|a| TcpAddress(*a)).collect();
+        disc_client
+            .put(ShardNumber(0), tapirs::IrMembership::new(addrs))
+            .await
+            .unwrap();
 
         // Let discovery sync propagate to client.
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -618,8 +626,11 @@ async fn test_disaster_recovery_backup_restore() {
     }
 
     // 9. Register new addresses in discovery.
-    let registered: Vec<String> = new_addrs.iter().map(|a| a.to_string()).collect();
-    disc_client.register_shard(0, registered).await.unwrap();
+    let addrs: Vec<TcpAddress> = new_addrs.iter().map(|a| TcpAddress(*a)).collect();
+    disc_client
+        .put(ShardNumber(0), tapirs::IrMembership::new(addrs))
+        .await
+        .unwrap();
 
     // 10. Wait for StartView processing + discovery sync.
     tokio::time::sleep(Duration::from_secs(5)).await;
@@ -855,8 +866,9 @@ async fn test_cluster_backup_restore_via_admin() {
         }
 
         // Register restored shard with discovery.
+        let addrs: Vec<TcpAddress> = new_addrs.iter().map(|a| TcpAddress(*a)).collect();
         disc_client
-            .register_shard(shard_id, new_membership)
+            .put(ShardNumber(shard_id), tapirs::IrMembership::new(addrs))
             .await
             .unwrap();
     }

@@ -257,7 +257,7 @@ impl<U: IrReplicaUpcalls> Transport<U> for Channel<U> {
         // This MUST NOT block or fail — the IR/TAPIR view change protocol
         // (proved by TLA+) is the source of truth for intra-shard membership.
         // Discovery is eventually consistent: a background task on
-        // DiscoveryShardDirectory periodically pushes local state to the
+        // CachingShardDirectory periodically pushes local state to the
         // external discovery service and pulls remote state, with graceful
         // retry on failure. This write only updates the local HashMap.
         if let Some(shard) = *self.shard.read().unwrap() {
