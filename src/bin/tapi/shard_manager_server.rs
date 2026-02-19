@@ -2,8 +2,11 @@ use crate::discovery::HttpDiscoveryClient;
 use rand::{thread_rng, Rng as _};
 use serde::Deserialize;
 use std::sync::Arc;
-use tapirs::discovery::{InMemoryShardDirectory, RemoteShardDirectory as _, ShardDirectory as _};
-use tapirs::{ShardManager, ShardNumber, TapirReplica, TcpAddress, TcpTransport};
+use tapirs::discovery::{
+    InMemoryShardDirectory, RemoteShardDirectory as _, ShardDirectory as _,
+    strings_to_membership,
+};
+use tapirs::{IrMembership, KeyRange, ShardManager, ShardNumber, TapirReplica, TcpAddress, TcpTransport};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 
@@ -150,6 +153,155 @@ async fn handle_request(
         match state.manager.lock().await.leave(shard, addr) {
             Ok(()) => (200, r#"{"ok":true}"#.to_string()),
             Err(e) => (500, format!(r#"{{"error":"leave failed: {e}"}}"#)),
+        }
+    } else if method == "POST" && path == "/v1/register" {
+        #[derive(Deserialize)]
+        struct RegisterRequest {
+            shard: u32,
+            key_range_start: Option<String>,
+            key_range_end: Option<String>,
+        }
+        let req: RegisterRequest = match serde_json::from_str(body) {
+            Ok(r) => r,
+            Err(e) => {
+                return (400, format!(r#"{{"error":"invalid JSON: {e}"}}"#));
+            }
+        };
+        let shard = ShardNumber(req.shard);
+
+        // Query discovery for shard membership.
+        let existing = state
+            .discovery_client
+            .all()
+            .await
+            .ok()
+            .and_then(|entries| entries.into_iter().find(|(s, _)| *s == shard))
+            .map(|(_, m)| m)
+            .filter(|m| m.len() > 0);
+
+        let Some(membership) = existing else {
+            return (
+                400,
+                format!(r#"{{"error":"shard {} not found in discovery"}}"#, req.shard),
+            );
+        };
+
+        state.directory.put(shard, membership.clone());
+
+        let key_range = KeyRange {
+            start: req.key_range_start,
+            end: req.key_range_end,
+        };
+        state
+            .manager
+            .lock()
+            .await
+            .register_shard(shard, membership, key_range);
+        (200, r#"{"ok":true}"#.to_string())
+    } else if method == "POST" && path == "/v1/split" {
+        #[derive(Deserialize)]
+        struct SplitRequest {
+            source: u32,
+            split_key: String,
+            new_shard: u32,
+            new_replicas: Vec<String>,
+        }
+        let req: SplitRequest = match serde_json::from_str(body) {
+            Ok(r) => r,
+            Err(e) => {
+                return (400, format!(r#"{{"error":"invalid JSON: {e}"}}"#));
+            }
+        };
+
+        let new_membership: IrMembership<TcpAddress> =
+            match strings_to_membership(&req.new_replicas) {
+                Ok(m) => m,
+                Err(e) => {
+                    return (400, format!(r#"{{"error":"invalid new_replicas: {e}"}}"#));
+                }
+            };
+
+        state
+            .directory
+            .put(ShardNumber(req.new_shard), new_membership.clone());
+
+        match state
+            .manager
+            .lock()
+            .await
+            .split(
+                ShardNumber(req.source),
+                req.split_key,
+                ShardNumber(req.new_shard),
+                new_membership,
+            )
+            .await
+        {
+            Ok(()) => (200, r#"{"ok":true}"#.to_string()),
+            Err(e) => (500, format!(r#"{{"error":"split failed: {e:?}"}}"#)),
+        }
+    } else if method == "POST" && path == "/v1/merge" {
+        #[derive(Deserialize)]
+        struct MergeRequest {
+            absorbed: u32,
+            surviving: u32,
+        }
+        let req: MergeRequest = match serde_json::from_str(body) {
+            Ok(r) => r,
+            Err(e) => {
+                return (400, format!(r#"{{"error":"invalid JSON: {e}"}}"#));
+            }
+        };
+
+        match state
+            .manager
+            .lock()
+            .await
+            .merge(ShardNumber(req.absorbed), ShardNumber(req.surviving))
+            .await
+        {
+            Ok(()) => (200, r#"{"ok":true}"#.to_string()),
+            Err(e) => (500, format!(r#"{{"error":"merge failed: {e:?}"}}"#)),
+        }
+    } else if method == "POST" && path == "/v1/compact" {
+        #[derive(Deserialize)]
+        struct CompactRequest {
+            source: u32,
+            new_shard: u32,
+            new_replicas: Vec<String>,
+        }
+        let req: CompactRequest = match serde_json::from_str(body) {
+            Ok(r) => r,
+            Err(e) => {
+                return (400, format!(r#"{{"error":"invalid JSON: {e}"}}"#));
+            }
+        };
+
+        let new_membership: IrMembership<TcpAddress> =
+            match strings_to_membership(&req.new_replicas) {
+                Ok(m) => m,
+                Err(e) => {
+                    return (400, format!(r#"{{"error":"invalid new_replicas: {e}"}}"#));
+                }
+            };
+
+        state
+            .directory
+            .put(ShardNumber(req.new_shard), new_membership.clone());
+
+        match state
+            .manager
+            .lock()
+            .await
+            .compact(
+                ShardNumber(req.source),
+                ShardNumber(req.new_shard),
+                new_membership,
+            )
+            .await
+        {
+            Ok(()) => (200, r#"{"ok":true}"#.to_string()),
+            Err(e) => (500, format!(r#"{{"error":"compact failed: {e:?}"}}"#)),
         }
     } else {
         (404, r#"{"error":"not found"}"#.to_string())
