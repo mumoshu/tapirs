@@ -101,27 +101,57 @@ pub enum FuzzEvent {
     WorkloadTimedOut,
 }
 
+impl FuzzEvent {
+    /// Derive the actor from the event variant for log grouping.
+    fn actor(&self) -> String {
+        match self {
+            FuzzEvent::TxnBegin { client_id, .. }
+            | FuzzEvent::TxnCommitted { client_id, .. }
+            | FuzzEvent::TxnAborted { client_id, .. }
+            | FuzzEvent::TxnTimedOut { client_id, .. } => format!("CLIENT[{client_id}]"),
+            FuzzEvent::FaultReplicaViewChange { .. }
+            | FuzzEvent::FaultClientViewChange { .. }
+            | FuzzEvent::FaultPartition { .. }
+            | FuzzEvent::FaultHeal { .. } => "FAULT".to_string(),
+            FuzzEvent::ReshardSplitAttempt { .. }
+            | FuzzEvent::ReshardSplitOk { .. }
+            | FuzzEvent::ReshardSplitErr { .. }
+            | FuzzEvent::ReshardMergeAttempt { .. }
+            | FuzzEvent::ReshardMergeOk { .. }
+            | FuzzEvent::ReshardMergeErr { .. }
+            | FuzzEvent::ReshardCompactAttempt { .. }
+            | FuzzEvent::ReshardCompactOk { .. }
+            | FuzzEvent::ReshardCompactErr { .. } => "ADMIN".to_string(),
+            FuzzEvent::Config { .. }
+            | FuzzEvent::InvariantCheckStart
+            | FuzzEvent::InvariantCheckPassed
+            | FuzzEvent::CounterVerifyPassed
+            | FuzzEvent::WorkloadTimedOut => "SYSTEM".to_string(),
+        }
+    }
+}
+
 impl fmt::Display for FuzzEvent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             FuzzEvent::Config { seed, num_shards, replica_counts, num_clients, num_keys } =>
                 write!(f, "CONFIG seed={seed} shards={num_shards} replicas={replica_counts:?} clients={num_clients} keys={num_keys}"),
             FuzzEvent::FaultReplicaViewChange { round, shard, replica } =>
-                write!(f, "FAULT[{round}] replica-view-change shard={shard} replica={replica}"),
+                write!(f, "[{round}] replica-view-change shard={shard} replica={replica}"),
             FuzzEvent::FaultClientViewChange { round, client, shard } =>
-                write!(f, "FAULT[{round}] client-view-change client={client} shard={shard}"),
+                write!(f, "[{round}] client-view-change client={client} shard={shard}"),
             FuzzEvent::FaultPartition { round, shard, replica, address } =>
-                write!(f, "FAULT[{round}] partition shard={shard} replica={replica} addr={address}"),
+                write!(f, "[{round}] partition shard={shard} replica={replica} addr={address}"),
             FuzzEvent::FaultHeal { round, address, hold_ms } =>
-                write!(f, "FAULT[{round}] heal addr={address} after {hold_ms}ms"),
-            FuzzEvent::TxnBegin { txn_index, client_id, txn_type, keys } =>
-                write!(f, "TXN[{txn_index}] begin client={client_id} type={txn_type} keys={keys:?}"),
-            FuzzEvent::TxnCommitted { txn_index, client_id, commit_ts } =>
-                write!(f, "TXN[{txn_index}] committed client={client_id} ts={commit_ts}"),
-            FuzzEvent::TxnAborted { txn_index, client_id } =>
-                write!(f, "TXN[{txn_index}] aborted client={client_id}"),
-            FuzzEvent::TxnTimedOut { txn_index, client_id } =>
-                write!(f, "TXN[{txn_index}] timed-out client={client_id}"),
+                write!(f, "[{round}] heal addr={address} after {hold_ms}ms"),
+            FuzzEvent::TxnBegin { txn_index, txn_type, keys, .. } =>
+                write!(f, "TXN[{txn_index}] begin type={txn_type} keys={keys:?}"),
+            FuzzEvent::TxnCommitted { txn_index, commit_ts, .. } =>
+                write!(f, "TXN[{txn_index}] committed ts={commit_ts}"),
+            FuzzEvent::TxnAborted { txn_index, .. } =>
+                write!(f, "TXN[{txn_index}] aborted"),
+            FuzzEvent::TxnTimedOut { txn_index, .. } =>
+                write!(f, "TXN[{txn_index}] timed-out"),
             FuzzEvent::ReshardSplitAttempt { round, source_shard, split_key } =>
                 write!(f, "RESHARD[{round}] split-attempt shard={source_shard} key={split_key}"),
             FuzzEvent::ReshardSplitOk { round } =>
@@ -190,7 +220,8 @@ impl FuzzEventLog {
         eprintln!("=== FUZZ EVENT LOG (seed={seed}, {} events) ===", entries.len());
         for entry in entries.iter() {
             let ms = entry.elapsed.as_millis();
-            eprintln!("[{ms:>8}ms] {}", entry.event);
+            let actor = entry.event.actor();
+            eprintln!("[{ms:>8}ms] {actor:<10} {}", entry.event);
         }
         eprintln!("=== END FUZZ EVENT LOG ===");
     }
