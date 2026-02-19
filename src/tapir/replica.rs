@@ -1,4 +1,5 @@
 use super::{Change, Key, KeyRange, LeaderRecordDelta, ShardNumber, Timestamp, Value, CO, CR, IO, IR, UO, UR};
+use super::message::MinPrepareBaselineResult;
 use crate::ir::ReplyUnlogged;
 use crate::tapir::ShardClient;
 use crate::util::vectorize_btree;
@@ -19,13 +20,30 @@ fn none<T>() -> Option<T> {
     None
 }
 
+/// Shard phase controlling which operations are accepted.
+///
+/// - `ReadWrite`: normal operation, all operations accepted.
+/// - `ReadOnly`: blocks `CO::Prepare` (no new writes). Used during
+///   resharding drain to let existing prepared transactions resolve.
+/// - `Decommissioning`: blocks `CO::Prepare` AND `IO::QuorumRead`/
+///   `IO::QuorumScan` (which mutate OCC state via `commit_get`/
+///   `commit_scan`). Used to freeze read-protection state before
+///   querying `MinPrepareBaseline`.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum ShardPhase {
+    #[default]
+    ReadWrite,
+    ReadOnly,
+    Decommissioning,
+}
+
 /// Shard configuration applied via reconfigure→view change.
 #[derive(Serialize, Deserialize)]
 pub(crate) struct ShardConfig<K> {
     #[serde(default = "none")]
     pub key_range: Option<KeyRange<K>>,
     #[serde(default)]
-    pub read_only: bool,
+    pub phase: ShardPhase,
 }
 
 /// Diverge from TAPIR and don't maintain a no-vote list. Instead, wait for a
@@ -68,7 +86,7 @@ pub struct Replica<K, V, M = MvccMemoryStore<K, V, Timestamp>> {
     #[serde(skip_serializing, skip_deserializing, default = "none", bound(deserialize = ""))]
     key_range: Option<KeyRange<K>>,
     #[serde(skip_serializing, skip_deserializing, default, bound(deserialize = ""))]
-    read_only: bool,
+    phase: ShardPhase,
 }
 
 impl<K: Key, V: Value, M> Replica<K, V, M> {
@@ -83,7 +101,7 @@ impl<K: Key, V: Value, M> Replica<K, V, M> {
             finalized_min_prepare_time: 0,
             record_delta_during_view: BTreeMap::new(),
             key_range: None,
-            read_only: false,
+            phase: ShardPhase::default(),
         }
     }
 
@@ -95,7 +113,7 @@ impl<K: Key, V: Value, M> Replica<K, V, M> {
             finalized_min_prepare_time: 0,
             record_delta_during_view: BTreeMap::new(),
             key_range: None,
-            read_only: false,
+            phase: ShardPhase::default(),
         }
     }
 
@@ -352,6 +370,16 @@ where
                     }
                 UR::ScanValidated(self.inner.scan_validated(&start_key, &end_key, snapshot_ts))
             }
+            UO::MinPrepareBaseline => {
+                if self.phase != ShardPhase::Decommissioning {
+                    return UR::MinPrepareBaseline(MinPrepareBaselineResult::NotDecommissioning);
+                }
+                let (max_rr, max_rc) = self.inner.min_prepare_baseline();
+                return UR::MinPrepareBaseline(MinPrepareBaselineResult::Ok {
+                    max_range_read_time: max_rr.map(|ts| ts.time).unwrap_or(0),
+                    max_read_commit_time: max_rc.map(|ts| ts.time).unwrap_or(0),
+                });
+            }
             UO::ScanChanges { from_view } => {
                 // effective_end_view = the highest base_view for which this
                 // replica has a delta, or None if no deltas exist.
@@ -453,6 +481,15 @@ where
                 }
                 None
             }
+            IO::QuorumRead { .. } | IO::QuorumScan { .. }
+                if self.phase == ShardPhase::Decommissioning =>
+            {
+                // Shard is decommissioning — block IO reads that mutate OCC
+                // state (commit_get / commit_scan). Returning None causes the
+                // IR layer to not send a FinalizeInconsistentReply, so the
+                // client waits/retries until redirected after directory swap.
+                None
+            }
             IO::QuorumRead { key, timestamp } => {
                 if let Some(range) = &self.key_range
                     && !range.contains(key) {
@@ -494,7 +531,7 @@ where
                         return CR::Prepare(OccPrepareResult::OutOfRange);
                     }
                 }
-                if self.read_only {
+                if self.phase != ShardPhase::ReadWrite {
                     return CR::Prepare(OccPrepareResult::Fail);
                 }
                 CR::Prepare(if let Some((ts, c)) = self.transaction_log.get(transaction_id) {
@@ -746,7 +783,7 @@ where
             if let Some(range) = cfg.key_range {
                 self.key_range = Some(range);
             }
-            self.read_only = cfg.read_only;
+            self.phase = cfg.phase.clone();
         } else if let Ok(range) = serde_json::from_slice::<KeyRange<K>>(config) {
             self.key_range = Some(range);
         }

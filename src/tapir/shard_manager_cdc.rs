@@ -1,4 +1,4 @@
-use super::replica::ShardConfig;
+use super::replica::{ShardConfig, ShardPhase};
 use super::{Change, Key, KeyRange, ShardNumber, Value};
 use crate::discovery::ShardDirectory as AddressDirectory;
 use crate::tapir::shard_manager::ShardManager;
@@ -122,7 +122,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         // Phase 3a: Freeze source — reject all Prepare with Fail.
         let freeze = serde_json::to_vec(&ShardConfig::<K> {
             key_range: None,
-            read_only: true,
+            phase: ShardPhase::ReadOnly,
         })
         .expect("serialize freeze config");
         self.shards[&source].client.reconfigure(freeze);
@@ -130,7 +130,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
 
         // Phase 3b: Drain — wait for ALL prepared transactions to resolve + final seal.
         //
-        // After freeze: no new CO::Prepare accepted (read_only=true).
+        // After freeze: no new CO::Prepare accepted (phase=ReadOnly).
         // Existing prepares resolve via tick() -> recover_coordination().
         // IO::Commit for each resolution is captured in the current view.
         // Need one more view change after all prepares resolve to seal final commits.
@@ -170,7 +170,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         // Phase 3c: Unfreeze source and narrow its key range.
         let unfreeze = serde_json::to_vec(&ShardConfig {
             key_range: Some(narrowed_range.clone()),
-            read_only: false,
+            phase: ShardPhase::ReadWrite,
         })
         .expect("serialize unfreeze config");
         self.shards[&source].client.reconfigure(unfreeze);
@@ -203,7 +203,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
     /// absorbed shard. Ship new changes to the surviving shard. Stop when the cursor
     /// stabilizes.
     ///
-    /// **Phase 3a — Freeze Absorbed**: `reconfigure(ShardConfig { read_only: true })`.
+    /// **Phase 3a — Freeze Absorbed**: `reconfigure(ShardConfig { phase: ReadOnly })`.
     /// New Prepare returns Fail. Existing prepared transactions resolve via
     /// `recover_coordination()` tick.
     ///
@@ -236,10 +236,10 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
     ///
     /// # Downtime analysis
     ///
-    /// `read_only` is ONLY checked in `exec_consensus` for `CO::Prepare`. All
+    /// `ShardPhase::ReadOnly` is ONLY checked in `exec_consensus` for `CO::Prepare`. All
     /// unlogged and inconsistent operations (`UO::Get`, `UO::Scan`,
     /// `IO::QuorumRead`, `IO::QuorumScan`, `IO::Commit`, `IO::Abort`) do NOT
-    /// check `read_only`.
+    /// check `phase`.
     ///
     /// | Phase | RW txns (absorbed range) | RO txns (absorbed range) | All txns (surviving range) |
     /// |-------|--------------------------|--------------------------|----------------------------|
@@ -314,7 +314,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         // Phase 3a: Freeze absorbed — reject all Prepare with Fail.
         let freeze = serde_json::to_vec(&ShardConfig::<K> {
             key_range: None,
-            read_only: true,
+            phase: ShardPhase::ReadOnly,
         })
         .expect("serialize freeze config");
         self.shards[&absorbed].client.reconfigure(freeze);
@@ -351,7 +351,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         // Phase 3c: Expand surviving shard's key range.
         let expand = serde_json::to_vec(&ShardConfig {
             key_range: Some(merged_range.clone()),
-            read_only: false,
+            phase: ShardPhase::ReadWrite,
         })
         .expect("serialize expanded config");
         self.shards[&surviving].client.reconfigure(expand);
@@ -403,7 +403,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
     /// the source shard. Ship new changes to the new shard. Stop when
     /// `effective_end_view` stabilizes.
     ///
-    /// **Phase 3a — Freeze Source**: `reconfigure(ShardConfig { read_only: true })`.
+    /// **Phase 3a — Freeze Source**: `reconfigure(ShardConfig { phase: ReadOnly })`.
     /// New `CO::Prepare` returns Fail. This is the critical safety mechanism
     /// for cross-shard transactions: freezing ensures no NEW prepares are
     /// accepted on the source shard, while existing prepared transactions
@@ -425,7 +425,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
     ///   The coordinator eventually sends IO::Abort after detecting that not
     ///   all shards prepared successfully. The abort removes the prepared
     ///   entry; no data is shipped (aborted transactions produce no MVCC writes).
-    /// - **In-flight prepares at freeze time**: The `read_only` flag causes
+    /// - **In-flight prepares at freeze time**: The `ReadOnly` phase causes
     ///   new Prepare to return Fail, but existing prepared entries in the OCC
     ///   store remain. `recover_coordination()` fires via replica tick for
     ///   any stale prepared entries, resolving them via IO::Commit or IO::Abort.
@@ -461,10 +461,10 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
     ///
     /// # Downtime analysis
     ///
-    /// `read_only` is ONLY checked in `exec_consensus` for `CO::Prepare`. All
+    /// `ShardPhase::ReadOnly` is ONLY checked in `exec_consensus` for `CO::Prepare`. All
     /// unlogged and inconsistent operations (`UO::Get`, `UO::Scan`,
     /// `IO::QuorumRead`, `IO::QuorumScan`, `IO::Commit`, `IO::Abort`) do NOT
-    /// check `read_only`.
+    /// check `phase`.
     ///
     /// | Phase | RW txns (source range) | RO txns (source range) |
     /// |-------|------------------------|------------------------|
@@ -642,7 +642,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         // Phase 3a: Freeze source — reject all Prepare with Fail.
         let freeze = serde_json::to_vec(&ShardConfig::<K> {
             key_range: None,
-            read_only: true,
+            phase: ShardPhase::ReadOnly,
         })
         .expect("serialize freeze config");
         self.shards[&source].client.reconfigure(freeze);

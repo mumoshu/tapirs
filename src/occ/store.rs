@@ -61,6 +61,11 @@ pub struct Store<K, V, TS, M = MemoryStore<K, V, TS>> {
         deserialize = "K: Deserialize<'de> + Ord, TS: Deserialize<'de>"
     ))]
     range_reads: Vec<(K, K, TS)>,
+    /// Highest `commit` timestamp passed to `commit_get()` (from `quorum_read()`
+    /// and committed read-write transactions). Used by resharding to compute
+    /// the min_prepare_time baseline for new shards.
+    #[serde(skip, bound(deserialize = ""))]
+    max_read_commit_time: Option<TS>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -170,6 +175,7 @@ impl<K: Key, V: Value, TS, M> Store<K, V, TS, M> {
             prepared_reads: Default::default(),
             prepared_writes: Default::default(),
             range_reads: Vec::new(),
+            max_read_commit_time: None,
         }
     }
 
@@ -182,6 +188,7 @@ impl<K: Key, V: Value, TS, M> Store<K, V, TS, M> {
             prepared_reads: Default::default(),
             prepared_writes: Default::default(),
             range_reads: Vec::new(),
+            max_read_commit_time: None,
         }
     }
 }
@@ -216,6 +223,10 @@ impl<K: Key, V: Value, TS: Timestamp + Send, M: MvccBackend<K, V, TS>> Store<K, 
     pub fn quorum_read(&mut self, key: K, snapshot_ts: TS) -> (Option<V>, TS) {
         let (value, write_ts) = MvccBackend::get_at(&self.inner, &key, snapshot_ts).unwrap();
         MvccBackend::commit_get(&mut self.inner, key, snapshot_ts, snapshot_ts).unwrap();
+        self.max_read_commit_time = Some(match self.max_read_commit_time {
+            Some(prev) => prev.max(snapshot_ts),
+            None => snapshot_ts,
+        });
         (value, write_ts)
     }
 
@@ -243,6 +254,18 @@ impl<K: Key, V: Value, TS: Timestamp + Send, M: MvccBackend<K, V, TS>> Store<K, 
         let results = MvccBackend::scan(&self.inner, &start, &end, snapshot_ts).unwrap();
         self.commit_scan(start, end, snapshot_ts);
         results
+    }
+
+    /// Return the max timestamps from the two read-protection mechanisms.
+    ///
+    /// - `max_range_read_time`: highest `scan_ts.time()` across all `range_reads`.
+    /// - `max_read_commit_time`: highest `commit.time()` passed to `commit_get()`.
+    ///
+    /// Used by resharding to set `raise_min_prepare_time(max(both) + 1)` on
+    /// the new shard, subsuming all historical read protections from the source.
+    pub(crate) fn min_prepare_baseline(&self) -> (Option<TS>, Option<TS>) {
+        let max_rr = self.range_reads.iter().map(|(_, _, ts)| *ts).max();
+        (max_rr, self.max_read_commit_time)
     }
 
     pub fn prepare(
@@ -414,6 +437,10 @@ impl<K: Key, V: Value, TS: Timestamp + Send, M: MvccBackend<K, V, TS>> Store<K, 
     pub fn commit(&mut self, id: TransactionId, transaction: &Transaction<K, V, TS>, commit: TS) {
         for (key, read) in transaction.shard_read_set(self.shard) {
             MvccBackend::commit_get(&mut self.inner, key.clone(), read, commit).unwrap();
+            self.max_read_commit_time = Some(match self.max_read_commit_time {
+                Some(prev) => prev.max(commit),
+                None => commit,
+            });
         }
 
         for (key, value) in transaction.shard_write_set(self.shard) {
