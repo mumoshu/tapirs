@@ -145,6 +145,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         let mut cursor = CdcCursor::new();
 
         // Phase 1: Bulk copy via scan_changes.
+        self.report_progress("split:bulk-copy");
         let r = self.shards[&source].client.scan_changes(0).await;
         let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
         let filtered = filter_changes(&changes, &split_key);
@@ -152,6 +153,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         cursor.advance(r.effective_end_view);
 
         // Phase 2: Catch-up tailing.
+        self.report_progress("split:catch-up");
         loop {
             let r = self.shards[&source]
                 .client
@@ -169,6 +171,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         }
 
         // Phase 3a: Freeze source — reject all Prepare with Fail.
+        self.report_progress("split:freeze-source");
         let freeze = serde_json::to_vec(&ShardConfig::<K> {
             key_range: None,
             phase: ShardPhase::ReadOnly,
@@ -183,6 +186,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         // Existing prepares resolve via tick() -> recover_coordination().
         // IO::Commit for each resolution is captured in the current view.
         // Need one more view change after all prepares resolve to seal final commits.
+        self.report_progress("split:drain-prepared");
         let narrowed_range = KeyRange {
             start: source_range.start.clone(),
             end: Some(split_key.clone()),
@@ -230,9 +234,11 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         // put(key, value, commit_ts). get_at(key, snapshot_ts) and
         // scan(start, end, snapshot_ts) only depend on version write-
         // timestamps (BTreeMap keys), which are identical.
+        self.report_progress("split:transfer-read-protection");
         self.transfer_read_protection(source, new_shard).await;
 
         // Phase 3c: Unfreeze source and narrow its key range.
+        self.report_progress("split:switchover");
         let unfreeze = serde_json::to_vec(&ShardConfig {
             key_range: Some(narrowed_range.clone()),
             phase: ShardPhase::ReadWrite,
@@ -354,6 +360,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         let mut cursor = CdcCursor::new();
 
         // Phase 1: Bulk copy — ship all changes from absorbed to surviving.
+        self.report_progress("merge:bulk-copy");
         let r = self.shards[&absorbed].client.scan_changes(0).await;
         let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
         // Bulk copy complete — ship all changes to surviving shard.
@@ -361,6 +368,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         cursor.advance(r.effective_end_view);
 
         // Phase 2: Catch-up tailing.
+        self.report_progress("merge:catch-up");
         loop {
             let r = self.shards[&absorbed]
                 .client
@@ -377,6 +385,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         }
 
         // Phase 3a: Freeze absorbed — reject all Prepare with Fail.
+        self.report_progress("merge:freeze-absorbed");
         let freeze = serde_json::to_vec(&ShardConfig::<K> {
             key_range: None,
             phase: ShardPhase::ReadOnly,
@@ -386,6 +395,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         // Absorbed shard frozen — drain pending prepares.
 
         // Phase 3b: Drain — wait for pending_prepares == 0 + final seal.
+        self.report_progress("merge:drain-prepared");
         loop {
             T::sleep(Duration::from_secs(1)).await;
             let r = self.shards[&absorbed]
@@ -426,9 +436,11 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         // versions from both shards with correct timestamps. Read-only
         // transactions see the same data regardless of which shard
         // originally held the key — version timestamps are preserved.
+        self.report_progress("merge:transfer-read-protection");
         self.transfer_read_protection(absorbed, surviving).await;
 
         // Phase 3c: Expand surviving shard's key range.
+        self.report_progress("merge:switchover");
         let expand = serde_json::to_vec(&ShardConfig {
             key_range: Some(merged_range.clone()),
             phase: ShardPhase::ReadWrite,
@@ -698,12 +710,14 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         let mut cursor = CdcCursor::new();
 
         // Phase 1: Bulk copy — ship all changes from source to new shard.
+        self.report_progress("compact:bulk-copy");
         let r = self.shards[&source].client.scan_changes(0).await;
         let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
         ship_changes(&self.shards[&new_shard].client, new_shard, &changes, &mut self.rng).await;
         cursor.advance(r.effective_end_view);
 
         // Phase 2: Catch-up tailing.
+        self.report_progress("compact:catch-up");
         loop {
             let r = self.shards[&source]
                 .client
@@ -720,6 +734,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         }
 
         // Phase 3a: Freeze source — reject all Prepare with Fail.
+        self.report_progress("compact:freeze-source");
         let freeze = serde_json::to_vec(&ShardConfig::<K> {
             key_range: None,
             phase: ShardPhase::ReadOnly,
@@ -728,6 +743,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         self.shards[&source].client.reconfigure(freeze);
 
         // Phase 3b: Drain — wait for pending_prepares == 0 + final seal.
+        self.report_progress("compact:drain-prepared");
         loop {
             T::sleep(Duration::from_secs(1)).await;
             let r = self.shards[&source]
@@ -769,10 +785,12 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         // to the old shard's, minus the in-memory bloat (range_reads,
         // prepared state, transaction_log). Read-only transactions at any
         // snapshot timestamp see the same version data.
+        self.report_progress("compact:transfer-read-protection");
         self.transfer_read_protection(source, new_shard).await;
 
         // Phase 3c: Atomic swap — source disappears, new shard appears in all
         // directories simultaneously. No rebuild_directory needed.
+        self.report_progress("compact:decommission");
         self.replace_shard(source, new_shard, new_membership_for_swap);
         // Compact complete.
         Ok(())

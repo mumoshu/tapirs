@@ -1043,6 +1043,14 @@ async fn fuzz_tapir_transactions() {
         // picks it up). The fault injection task provides additional random
         // view changes.
         for round in 0..2 {
+            let round_for_log = round;
+            let log_for_cb = reshard_event_log.clone();
+            manager.set_progress_callback(move |phase| {
+                log_for_cb.record(FuzzEvent::ReshardPhase {
+                    round: round_for_log,
+                    phase: phase.to_string(),
+                });
+            });
             let mut shard_keys: Vec<_> = manager.shards.keys().cloned().collect();
             shard_keys.sort();
 

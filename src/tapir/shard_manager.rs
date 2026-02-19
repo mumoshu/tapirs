@@ -25,6 +25,7 @@ pub struct ShardManager<K: Key, V: Value, T: Transport<Replica<K, V>>, D: Addres
     pub(crate) transport: T,
     client_id: IrClientId,
     pub(crate) rng: crate::Rng,
+    pub(crate) on_progress: Option<Box<dyn Fn(&str) + Send + Sync>>,
 }
 
 impl<K: Key, V: Value, T: Transport<Replica<K, V>>, D: AddressDirectory<T::Address>> ShardManager<K, V, T, D> {
@@ -41,6 +42,17 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>, D: AddressDirectory<T::Addre
             transport: transport.clone(),
             client_id,
             rng,
+            on_progress: None,
+        }
+    }
+
+    pub(crate) fn set_progress_callback(&mut self, cb: impl Fn(&str) + Send + Sync + 'static) {
+        self.on_progress = Some(Box::new(cb));
+    }
+
+    pub(crate) fn report_progress(&self, msg: &str) {
+        if let Some(ref cb) = self.on_progress {
+            cb(msg);
         }
     }
 
