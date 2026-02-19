@@ -77,6 +77,16 @@ pub enum FuzzEvent {
         count: usize,
         stale_note: &'static str,
     },
+    TxnRetry {
+        txn_index: usize,
+        client_id: usize,
+        attempt: u8,
+        keys: Vec<i64>,
+    },
+    TxnDropped {
+        txn_index: usize,
+        client_id: usize,
+    },
 
     // Resharding
     ReshardSplitAttempt {
@@ -119,6 +129,11 @@ pub enum FuzzEvent {
         phase: String,
     },
 
+    // Diagnostics
+    MayHaveCommittedCount {
+        count: u64,
+    },
+
     // Invariant checking
     InvariantCheckStart,
     InvariantCheckPassed,
@@ -136,7 +151,9 @@ impl FuzzEvent {
             | FuzzEvent::TxnTimedOut { client_id, .. }
             | FuzzEvent::TxnGet { client_id, .. }
             | FuzzEvent::TxnPut { client_id, .. }
-            | FuzzEvent::TxnScan { client_id, .. } => format!("CLIENT[{client_id}]"),
+            | FuzzEvent::TxnScan { client_id, .. }
+            | FuzzEvent::TxnRetry { client_id, .. }
+            | FuzzEvent::TxnDropped { client_id, .. } => format!("CLIENT[{client_id}]"),
             FuzzEvent::FaultReplicaViewChange { .. }
             | FuzzEvent::FaultClientViewChange { .. }
             | FuzzEvent::FaultPartition { .. }
@@ -152,6 +169,7 @@ impl FuzzEvent {
             | FuzzEvent::ReshardCompactErr { .. }
             | FuzzEvent::ReshardPhase { .. } => "ADMIN".to_string(),
             FuzzEvent::Config { .. }
+            | FuzzEvent::MayHaveCommittedCount { .. }
             | FuzzEvent::InvariantCheckStart
             | FuzzEvent::InvariantCheckPassed
             | FuzzEvent::CounterVerifyPassed
@@ -198,6 +216,10 @@ impl fmt::Display for FuzzEvent {
                     write!(f, "TXN[{txn_index}] scan [{lo}, {hi}) => {count} keys {stale_note}")
                 }
             }
+            FuzzEvent::TxnRetry { txn_index, attempt, keys, .. } =>
+                write!(f, "TXN[{txn_index}] retry attempt={attempt} keys={keys:?}"),
+            FuzzEvent::TxnDropped { txn_index, .. } =>
+                write!(f, "TXN[{txn_index}] dropped (no commit)"),
             FuzzEvent::ReshardSplitAttempt { round, source_shard, split_key } =>
                 write!(f, "RESHARD[{round}] split-attempt shard={source_shard} key={split_key}"),
             FuzzEvent::ReshardSplitOk { round } =>
@@ -218,6 +240,8 @@ impl fmt::Display for FuzzEvent {
                 write!(f, "RESHARD[{round}] compact-err: {error}"),
             FuzzEvent::ReshardPhase { round, phase } =>
                 write!(f, "RESHARD[{round}] phase: {phase}"),
+            FuzzEvent::MayHaveCommittedCount { count } =>
+                write!(f, "may-have-committed count={count}"),
             FuzzEvent::InvariantCheckStart =>
                 write!(f, "INVARIANT check-start"),
             FuzzEvent::InvariantCheckPassed =>
