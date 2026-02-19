@@ -87,6 +87,15 @@ pub enum FuzzEvent {
         txn_index: usize,
         client_id: usize,
     },
+    TxnOutOfRange {
+        txn_index: usize,
+        client_id: usize,
+        key: i64,
+    },
+    TxnOutOfRangeRetry {
+        client_id: usize,
+        message: String,
+    },
 
     // Resharding
     ReshardSplitAttempt {
@@ -153,7 +162,9 @@ impl FuzzEvent {
             | FuzzEvent::TxnPut { client_id, .. }
             | FuzzEvent::TxnScan { client_id, .. }
             | FuzzEvent::TxnRetry { client_id, .. }
-            | FuzzEvent::TxnDropped { client_id, .. } => format!("CLIENT[{client_id}]"),
+            | FuzzEvent::TxnDropped { client_id, .. }
+            | FuzzEvent::TxnOutOfRange { client_id, .. }
+            | FuzzEvent::TxnOutOfRangeRetry { client_id, .. } => format!("CLIENT[{client_id}]"),
             FuzzEvent::FaultReplicaViewChange { .. }
             | FuzzEvent::FaultClientViewChange { .. }
             | FuzzEvent::FaultPartition { .. }
@@ -220,6 +231,10 @@ impl fmt::Display for FuzzEvent {
                 write!(f, "TXN[{txn_index}] retry attempt={attempt} keys={keys:?}"),
             FuzzEvent::TxnDropped { txn_index, .. } =>
                 write!(f, "TXN[{txn_index}] dropped (no commit)"),
+            FuzzEvent::TxnOutOfRange { txn_index, key, .. } =>
+                write!(f, "TXN[{txn_index}] out-of-range key={key}"),
+            FuzzEvent::TxnOutOfRangeRetry { message, .. } =>
+                write!(f, "out-of-range-retry: {message}"),
             FuzzEvent::ReshardSplitAttempt { round, source_shard, split_key } =>
                 write!(f, "RESHARD[{round}] split-attempt shard={source_shard} key={split_key}"),
             FuzzEvent::ReshardSplitOk { round } =>

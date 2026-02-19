@@ -725,7 +725,20 @@ async fn fuzz_tapir_transactions() {
     // Build RoutingClient instances for automatic key-to-shard routing.
     let routing_clients: Vec<_> = clients
         .iter()
-        .map(|c| Arc::new(RoutingClient::new(Arc::clone(c), Arc::clone(&router))))
+        .enumerate()
+        .map(|(i, c)| {
+            let log = event_log.clone();
+            let client_id = i;
+            Arc::new(
+                RoutingClient::new(Arc::clone(c), Arc::clone(&router))
+                    .with_retry_callback(move |msg| {
+                        log.record(FuzzEvent::TxnOutOfRangeRetry {
+                            client_id,
+                            message: msg.to_string(),
+                        });
+                    }),
+            )
+        })
         .collect();
 
     // Track committed increments per key.
@@ -971,7 +984,12 @@ async fn fuzz_tapir_transactions() {
                             for &key in &keys {
                                 let raw = match txn.get(key).await {
                                     Ok(val) => val,
-                                    Err(_) => break 'retry, // OutOfRange during resharding
+                                    Err(_) => {
+                                        txn_event_log.record(FuzzEvent::TxnOutOfRange {
+                                            txn_index, client_id: client_idx, key,
+                                        });
+                                        break 'retry;
+                                    }
                                 };
                                 txn_event_log.record(FuzzEvent::TxnGet {
                                     txn_index, client_id: client_idx, key, value: raw, stale_note,
@@ -988,7 +1006,12 @@ async fn fuzz_tapir_transactions() {
                             if let Some((lo, hi)) = scan_params {
                                 let results = match txn.scan(lo, hi).await {
                                     Ok(val) => val,
-                                    Err(_) => break 'retry, // OutOfRange during resharding
+                                    Err(_) => {
+                                        txn_event_log.record(FuzzEvent::TxnOutOfRange {
+                                            txn_index, client_id: client_idx, key: lo,
+                                        });
+                                        break 'retry;
+                                    }
                                 };
                                 txn_event_log.record(FuzzEvent::TxnScan {
                                     txn_index, client_id: client_idx, lo, hi,
@@ -1000,7 +1023,12 @@ async fn fuzz_tapir_transactions() {
                             for &key in &keys {
                                 let val = match txn.get(key).await {
                                     Ok(val) => val,
-                                    Err(_) => break 'retry, // OutOfRange during resharding
+                                    Err(_) => {
+                                        txn_event_log.record(FuzzEvent::TxnOutOfRange {
+                                            txn_index, client_id: client_idx, key,
+                                        });
+                                        break 'retry;
+                                    }
                                 };
                                 txn_event_log.record(FuzzEvent::TxnGet {
                                     txn_index, client_id: client_idx, key, value: val, stale_note,
