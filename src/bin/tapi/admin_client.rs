@@ -371,6 +371,13 @@ pub async fn run(action: AdminAction) {
             admin_listen_addr,
             format!(r#"{{"command":"view_change","shard":{shard}}}"#),
         ),
+        AdminAction::Leave {
+            admin_listen_addr,
+            shard,
+        } => (
+            admin_listen_addr,
+            format!(r#"{{"command":"leave","shard":{shard}}}"#),
+        ),
         AdminAction::Backup { .. } | AdminAction::Restore { .. } => unreachable!(),
     };
 

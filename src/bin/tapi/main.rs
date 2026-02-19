@@ -121,6 +121,13 @@ enum AdminAction {
         #[arg(long)]
         shard: u32,
     },
+    /// Leave a shard (protocol-level membership removal via shard-manager).
+    Leave {
+        #[arg(long, default_value = "127.0.0.1:9000")]
+        admin_listen_addr: String,
+        #[arg(long)]
+        shard: u32,
+    },
     /// Trigger a view change for a shard.
     ViewChange {
         #[arg(long, default_value = "127.0.0.1:9000")]

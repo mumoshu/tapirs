@@ -181,6 +181,30 @@ async fn handle_request(node: &Node, line: &str) -> AdminResponse {
                 backup: None,
             }
         }
+        "leave" => {
+            let Some(shard_id) = req.shard else {
+                return AdminResponse {
+                    ok: false,
+                    message: Some("missing 'shard' field".into()),
+                    shards: None,
+                    backup: None,
+                };
+            };
+            match node.leave_shard(ShardNumber(shard_id)).await {
+                Ok(()) => AdminResponse {
+                    ok: true,
+                    message: Some(format!("left shard {shard_id}")),
+                    shards: None,
+                    backup: None,
+                },
+                Err(e) => AdminResponse {
+                    ok: false,
+                    message: Some(format!("leave failed: {e}")),
+                    shards: None,
+                    backup: None,
+                },
+            }
+        }
         "backup_shard" => {
             let Some(shard_id) = req.shard else {
                 return AdminResponse {
