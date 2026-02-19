@@ -56,6 +56,27 @@ pub enum FuzzEvent {
         txn_index: usize,
         client_id: usize,
     },
+    TxnGet {
+        txn_index: usize,
+        client_id: usize,
+        key: i64,
+        value: Option<i64>,
+        stale_note: &'static str,
+    },
+    TxnPut {
+        txn_index: usize,
+        client_id: usize,
+        key: i64,
+        value: i64,
+    },
+    TxnScan {
+        txn_index: usize,
+        client_id: usize,
+        lo: i64,
+        hi: i64,
+        count: usize,
+        stale_note: &'static str,
+    },
 
     // Resharding
     ReshardSplitAttempt {
@@ -112,7 +133,10 @@ impl FuzzEvent {
             FuzzEvent::TxnBegin { client_id, .. }
             | FuzzEvent::TxnCommitted { client_id, .. }
             | FuzzEvent::TxnAborted { client_id, .. }
-            | FuzzEvent::TxnTimedOut { client_id, .. } => format!("CLIENT[{client_id}]"),
+            | FuzzEvent::TxnTimedOut { client_id, .. }
+            | FuzzEvent::TxnGet { client_id, .. }
+            | FuzzEvent::TxnPut { client_id, .. }
+            | FuzzEvent::TxnScan { client_id, .. } => format!("CLIENT[{client_id}]"),
             FuzzEvent::FaultReplicaViewChange { .. }
             | FuzzEvent::FaultClientViewChange { .. }
             | FuzzEvent::FaultPartition { .. }
@@ -157,6 +181,23 @@ impl fmt::Display for FuzzEvent {
                 write!(f, "TXN[{txn_index}] aborted"),
             FuzzEvent::TxnTimedOut { txn_index, .. } =>
                 write!(f, "TXN[{txn_index}] timed-out"),
+            FuzzEvent::TxnGet { txn_index, key, value, stale_note, .. } => {
+                let val_str = value.map_or("None".to_string(), |v| v.to_string());
+                if stale_note.is_empty() {
+                    write!(f, "TXN[{txn_index}] get key={key} => {val_str}")
+                } else {
+                    write!(f, "TXN[{txn_index}] get key={key} => {val_str} {stale_note}")
+                }
+            }
+            FuzzEvent::TxnPut { txn_index, key, value, .. } =>
+                write!(f, "TXN[{txn_index}] put key={key} val={value}"),
+            FuzzEvent::TxnScan { txn_index, lo, hi, count, stale_note, .. } => {
+                if stale_note.is_empty() {
+                    write!(f, "TXN[{txn_index}] scan [{lo}, {hi}) => {count} keys")
+                } else {
+                    write!(f, "TXN[{txn_index}] scan [{lo}, {hi}) => {count} keys {stale_note}")
+                }
+            }
             FuzzEvent::ReshardSplitAttempt { round, source_shard, split_key } =>
                 write!(f, "RESHARD[{round}] split-attempt shard={source_shard} key={split_key}"),
             FuzzEvent::ReshardSplitOk { round } =>

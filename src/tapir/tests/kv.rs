@@ -908,7 +908,16 @@ async fn fuzz_tapir_transactions() {
                     // Track which keys we wrote +1 to.
                     let mut write_targets: Vec<i64> = Vec::new();
 
-                    if txn_type < 80 {
+                    let is_rmw = txn_type < 80;
+                    let txn_type_str = if is_rmw { "rmw" } else { "read_only" };
+                    let stale_note = if is_rmw { "(may be stale, checked at commit)" } else { "" };
+
+                    txn_event_log.record(FuzzEvent::TxnBegin {
+                        txn_index, client_id: client_idx,
+                        txn_type: txn_type_str, keys: vec![],
+                    });
+
+                    if is_rmw {
                         // RMW transaction (80%): 1-3 distinct random keys with optional scan.
                         // Cross-shard happens naturally when keys map to different shards.
                         let n_keys = rng.gen_range(1..=3u8);
@@ -919,9 +928,15 @@ async fn fuzz_tapir_transactions() {
                                 continue; // skip duplicate key within same txn
                             }
                             let raw = txn.get(key).await;
+                            txn_event_log.record(FuzzEvent::TxnGet {
+                                txn_index, client_id: client_idx, key, value: raw, stale_note,
+                            });
                             reads.push((key, raw));
                             let old = raw.unwrap_or(0);
                             txn.put(key, Some(old + 1));
+                            txn_event_log.record(FuzzEvent::TxnPut {
+                                txn_index, client_id: client_idx, key, value: old + 1,
+                            });
                             writes.push((key, old + 1));
                             write_targets.push(key);
                         }
@@ -929,7 +944,10 @@ async fn fuzz_tapir_transactions() {
                         if rng.gen_range(0..2u8) == 0 {
                             let lo: i64 = rng.gen_range(0..num_keys);
                             let hi: i64 = rng.gen_range(lo..num_keys);
-                            let _results = txn.scan(lo, hi).await;
+                            let results = txn.scan(lo, hi).await;
+                            txn_event_log.record(FuzzEvent::TxnScan {
+                                txn_index, client_id: client_idx, lo, hi, count: results.len(), stale_note,
+                            });
                         }
                     } else {
                         // Read-only transaction (20%).
@@ -937,16 +955,12 @@ async fn fuzz_tapir_transactions() {
                         for _ in 0..n_reads {
                             let key: i64 = rng.gen_range(0..num_keys);
                             let val = txn.get(key).await;
+                            txn_event_log.record(FuzzEvent::TxnGet {
+                                txn_index, client_id: client_idx, key, value: val, stale_note,
+                            });
                             reads.push((key, val));
                         }
                     }
-
-                    let txn_type_str = if txn_type < 80 { "rmw" } else { "read_only" };
-                    let event_keys: Vec<i64> = reads.iter().map(|(k, _)| *k).collect();
-                    txn_event_log.record(FuzzEvent::TxnBegin {
-                        txn_index, client_id: client_idx,
-                        txn_type: txn_type_str, keys: event_keys,
-                    });
 
                     match timeout(Duration::from_secs(10), txn.commit()).await {
                         Ok(Some(ts)) => {
