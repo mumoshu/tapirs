@@ -1,0 +1,94 @@
+networks:
+  tapir-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+
+services:
+  discovery:
+    image: tapiadm-tapi
+    build:
+      context: ..
+      dockerfile: .tapiadm/Dockerfile
+    command: ["discovery", "--listen_addr", "0.0.0.0:8080"]
+    ports:
+      - "8080:8080"
+    networks:
+      tapir-net:
+        ipv4_address: 172.28.0.2
+
+  shard-manager:
+    image: tapiadm-tapi
+    command: ["shard-manager", "--listen_addr", "0.0.0.0:9001", "--discovery_url", "http://172.28.0.2:8080"]
+    ports:
+      - "9001:9001"
+    depends_on:
+      - discovery
+    networks:
+      tapir-net:
+        ipv4_address: 172.28.0.3
+
+  node1:
+    image: tapiadm-tapi
+    command: ["node", "--admin_listen_addr", "0.0.0.0:9000", "--persist_dir", "/data", "--discovery_url", "http://172.28.0.2:8080", "--shard_manager_url", "http://172.28.0.3:9001"]
+    ports:
+      - "9011:9000"
+    volumes:
+      - node1-data:/data
+    depends_on:
+      - discovery
+      - shard-manager
+    networks:
+      tapir-net:
+        ipv4_address: 172.28.0.11
+
+  node2:
+    image: tapiadm-tapi
+    command: ["node", "--admin_listen_addr", "0.0.0.0:9000", "--persist_dir", "/data", "--discovery_url", "http://172.28.0.2:8080", "--shard_manager_url", "http://172.28.0.3:9001"]
+    ports:
+      - "9012:9000"
+    volumes:
+      - node2-data:/data
+    depends_on:
+      - discovery
+      - shard-manager
+    networks:
+      tapir-net:
+        ipv4_address: 172.28.0.12
+
+  node3:
+    image: tapiadm-tapi
+    command: ["node", "--admin_listen_addr", "0.0.0.0:9000", "--persist_dir", "/data", "--discovery_url", "http://172.28.0.2:8080", "--shard_manager_url", "http://172.28.0.3:9001"]
+    ports:
+      - "9013:9000"
+    volumes:
+      - node3-data:/data
+    depends_on:
+      - discovery
+      - shard-manager
+    networks:
+      tapir-net:
+        ipv4_address: 172.28.0.13
+
+  client:
+    image: tapiadm-tapi
+    command: ["client", "--config", "/etc/tapi/client.toml"]
+    volumes:
+      - ./client.toml:/etc/tapi/client.toml:ro
+    stdin_open: true
+    tty: true
+    depends_on:
+      - node1
+      - node2
+      - node3
+    networks:
+      tapir-net:
+        ipv4_address: 172.28.0.20
+    profiles:
+      - tools
+
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:

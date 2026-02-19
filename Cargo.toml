@@ -16,6 +16,9 @@ name = "tapi"
 [[bin]]
 name = "tapictl"
 
+[[bin]]
+name = "tapiadm"
+
 [features]
 default = ["maelstrom"]
 maelstrom = ["async-maelstrom", "async-trait"]
