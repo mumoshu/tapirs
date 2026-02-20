@@ -1,4 +1,4 @@
-use crate::discovery::{RemoteShardDirectory, ShardDirectory as AddressDirectory};
+use crate::discovery::RemoteShardDirectory;
 use crate::ir::{Record, SharedView, View, ViewNumber};
 use crate::tapir::shard_manager::ShardManager;
 use crate::tapir::{Key, Replica, ShardClient, ShardNumber, Value};
@@ -6,7 +6,7 @@ use crate::transport::Transport;
 use crate::{IrClientId, IrMembership};
 use std::time::Duration;
 
-impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDirectory<T::Address>, RD: RemoteShardDirectory<T::Address>> ShardManager<K, V, T, D, RD> {
+impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteShardDirectory<T::Address>> ShardManager<K, V, T, RD> {
     /// Add a new replica to an existing shard by pre-loading it with the
     /// shard's leader_record before triggering a membership change.
     pub async fn add_replica(
@@ -75,9 +75,11 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         new_address: T::Address,
     ) -> Result<(), String> {
         let (membership, _view) = self
-            .address_directory
+            .remote
             .get(shard)
-            .ok_or_else(|| format!("shard {shard:?} not found in address directory"))?;
+            .await
+            .map_err(|e| format!("failed to get shard {shard:?}: {e:?}"))?
+            .ok_or_else(|| format!("shard {shard:?} not found in remote directory"))?;
 
         let existing_client = ShardClient::<K, V, T>::new(
             self.rng.fork(),
@@ -124,15 +126,17 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
     /// address from the group. Symmetric with `join` which sends AddMember.
     ///
     /// See [`ShardManager`] module docs § "Membership Change Authority".
-    pub fn leave(
+    pub async fn leave(
         &mut self,
         shard: ShardNumber,
         address: T::Address,
     ) -> Result<(), String> {
         let (membership, _view) = self
-            .address_directory
+            .remote
             .get(shard)
-            .ok_or_else(|| format!("shard {shard:?} not found in address directory"))?;
+            .await
+            .map_err(|e| format!("failed to get shard {shard:?}: {e:?}"))?
+            .ok_or_else(|| format!("shard {shard:?} not found in remote directory"))?;
 
         let client = ShardClient::<K, V, T>::new(
             self.rng.fork(),

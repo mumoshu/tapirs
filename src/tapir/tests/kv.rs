@@ -1233,13 +1233,13 @@ async fn fuzz_tapir_transactions() {
             manager_channel, reshard_config, manager_seed,
         );
         let mut manager = ShardManager::new(
-            manager_rng, manager_transport, Arc::clone(&manager_local),
+            manager_rng, manager_transport,
             Arc::clone(&reshard_cluster_remote),
         );
         for (i, entry) in reshard_shard_entries.iter().enumerate() {
             manager.register_shard(
                 entry.shard, initial_memberships[i].clone(), entry.range.clone(),
-            );
+            ).await;
         }
 
         let mut reshard_rng = StdRng::seed_from_u64(reshard_seed);
@@ -1281,7 +1281,7 @@ async fn fuzz_tapir_transactions() {
                         Ok(()) => {
                             next_shard_idx += 1;
                             reshard_router.directory().write().unwrap().update(
-                                manager.directory.entries().iter().cloned().collect(),
+                                manager.shard_entries(),
                             );
                             reshard_event_log.record(FuzzEvent::ReshardSplitOk { round });
                         }
@@ -1302,7 +1302,7 @@ async fn fuzz_tapir_transactions() {
                 match manager.merge(absorbed, surviving).await {
                     Ok(()) => {
                         reshard_router.directory().write().unwrap().update(
-                            manager.directory.entries().iter().cloned().collect(),
+                            manager.shard_entries(),
                         );
                         reshard_event_log.record(FuzzEvent::ReshardMergeOk { round });
                     }
@@ -1322,7 +1322,7 @@ async fn fuzz_tapir_transactions() {
                     Ok(()) => {
                         next_shard_idx += 1;
                         reshard_router.directory().write().unwrap().update(
-                            manager.directory.entries().iter().cloned().collect(),
+                            manager.shard_entries(),
                         );
                         reshard_event_log.record(FuzzEvent::ReshardCompactOk { round });
                     }
@@ -1552,11 +1552,11 @@ async fn test_add_replica_with_preload() {
     let manager_channel = registry.channel(move |_, _| None, Arc::clone(&dir));
     let original_membership =
         IrMembership::new((0..3).collect::<Vec<_>>());
-    let mut manager = ShardManager::new(rng.fork(), manager_channel, Arc::clone(&dir), Arc::new(InMemoryRemoteDirectory::new()));
+    let mut manager = ShardManager::new(rng.fork(), manager_channel, Arc::new(InMemoryRemoteDirectory::new()));
     manager.register_shard(shard, original_membership, KeyRange {
         start: None,
         end: None,
-    });
+    }).await;
 
     // add_replica: fetch leader_record → bootstrap R4 → AddMember.
     let new_membership = IrMembership::new(vec![new_address]);
@@ -1998,17 +1998,17 @@ async fn test_merge_two_shards() {
 
     // Set up ShardManager.
     let manager_channel = registry.channel(move |_, _| None, Arc::clone(&dir));
-    let mut manager = ShardManager::new(rng.fork(), manager_channel, Arc::clone(&dir), Arc::new(InMemoryRemoteDirectory::new()));
+    let mut manager = ShardManager::new(rng.fork(), manager_channel, Arc::new(InMemoryRemoteDirectory::new()));
     manager.register_shard(
         ShardNumber(0),
         IrMembership::new(vec![0, 1, 2]),
         KeyRange { start: None, end: Some(50) },
-    );
+    ).await;
     manager.register_shard(
         ShardNumber(1),
         IrMembership::new(vec![3, 4, 5]),
         KeyRange { start: Some(50), end: None },
-    );
+    ).await;
 
     // Merge: shard 1 absorbed into shard 0.
     manager.merge(ShardNumber(1), ShardNumber(0)).await.unwrap();
@@ -2075,12 +2075,12 @@ async fn test_split_merge_two_shards() {
 
     // Set up ShardManager.
     let manager_channel = registry.channel(move |_, _| None, Arc::clone(&dir));
-    let mut manager = ShardManager::new(rng.fork(), manager_channel, Arc::clone(&dir), Arc::new(InMemoryRemoteDirectory::new()));
+    let mut manager = ShardManager::new(rng.fork(), manager_channel, Arc::new(InMemoryRemoteDirectory::new()));
     manager.register_shard(
         ShardNumber(0),
         IrMembership::new(vec![0, 1, 2]),
         KeyRange { start: None, end: None },
-    );
+    ).await;
 
     // Split at key=50: shard 0 gets [None, 50), shard 1 gets [50, None).
     let _replicas_1 = build_shard(&mut rng, ShardNumber(1), false, 3, &registry, &dir);
@@ -2303,12 +2303,12 @@ async fn test_compact_new_shard_rejects_old_prepare_after_range_scan_on_old_shar
 
     // Set up ShardManager, register shard 0, compact to shard 1.
     let manager_channel = registry.channel(move |_, _| None, Arc::clone(&dir));
-    let mut manager = ShardManager::new(rng.fork(), manager_channel, Arc::clone(&dir), Arc::new(InMemoryRemoteDirectory::new()));
+    let mut manager = ShardManager::new(rng.fork(), manager_channel, Arc::new(InMemoryRemoteDirectory::new()));
     manager.register_shard(
         ShardNumber(0),
         IrMembership::new(vec![0, 1, 2]),
         KeyRange { start: None, end: None },
-    );
+    ).await;
 
     // Addresses assigned: shard 0 = [0,1,2], clients = [3], shard_client_0 = [4],
     // shard 1 = [5,6,7].
@@ -2399,12 +2399,12 @@ async fn test_compact_new_shard_rejects_old_prepare_after_quorum_read_on_old_sha
 
     // Set up ShardManager, register shard 0, compact to shard 1.
     let manager_channel = registry.channel(move |_, _| None, Arc::clone(&dir));
-    let mut manager = ShardManager::new(rng.fork(), manager_channel, Arc::clone(&dir), Arc::new(InMemoryRemoteDirectory::new()));
+    let mut manager = ShardManager::new(rng.fork(), manager_channel, Arc::new(InMemoryRemoteDirectory::new()));
     manager.register_shard(
         ShardNumber(0),
         IrMembership::new(vec![0, 1, 2]),
         KeyRange { start: None, end: None },
-    );
+    ).await;
 
     // Addresses assigned: shard 0 = [0,1,2], clients = [3], shard_client_0 = [4],
     // shard 1 = [5,6,7].

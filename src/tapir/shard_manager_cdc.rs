@@ -1,6 +1,6 @@
 use super::replica::{ShardConfig, ShardPhase};
 use super::{Change, Key, KeyRange, ShardNumber, Value};
-use crate::discovery::{RemoteShardDirectory, ShardDirectory as AddressDirectory};
+use crate::discovery::RemoteShardDirectory;
 use crate::tapir::shard_manager::ShardManager;
 use crate::tapir::{Replica, Sharded};
 use crate::transport::Transport;
@@ -62,7 +62,7 @@ impl CdcCursor {
     }
 }
 
-impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDirectory<T::Address>, RD: RemoteShardDirectory<T::Address>> ShardManager<K, V, T, D, RD> {
+impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteShardDirectory<T::Address>> ShardManager<K, V, T, RD> {
     /// Freeze the source shard, query its read-protection watermarks, and
     /// raise min_prepare_time on the target to subsume all historical
     /// range_reads and last_read_commit_ts entries from the source.
@@ -143,7 +143,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         if let Some(managed) = self.shards.get_mut(&source) {
             managed.key_range = narrowed_range.clone();
         }
-        self.register_shard(new_shard, new_membership, new_range.clone());
+        self.register_shard(new_shard, new_membership, new_range.clone()).await;
 
         let mut cursor = CdcCursor::new();
 
@@ -258,8 +258,6 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
             managed.key_range = narrowed_range.clone();
         }
 
-        // Rebuild directory from all registered shards (not just source + new).
-        self.rebuild_directory();
         // Split complete.
         Ok(())
     }

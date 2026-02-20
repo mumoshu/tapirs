@@ -14,7 +14,6 @@ type TapirShardManager = ShardManager<
     String,
     String,
     TcpTransport<TapirReplica<String, String>>,
-    Arc<InMemoryShardDirectory<TcpAddress>>,
     HttpDiscoveryClient,
 >;
 
@@ -43,7 +42,6 @@ impl ShardManagerState {
         let manager = ShardManager::new(
             tapirs::Rng::from_seed(thread_rng().r#gen()),
             transport,
-            Arc::clone(&directory),
             Arc::clone(&discovery_client),
         );
         Self {
@@ -157,7 +155,7 @@ async fn handle_request(
             .directory
             .put(shard, membership, view);
 
-        match state.manager.lock().await.leave(shard, addr) {
+        match state.manager.lock().await.leave(shard, addr).await {
             Ok(()) => (200, r#"{"ok":true}"#.to_string()),
             Err(e) => (500, format!(r#"{{"error":"leave failed: {e}"}}"#)),
         }
@@ -203,7 +201,8 @@ async fn handle_request(
             .manager
             .lock()
             .await
-            .register_shard(shard, membership, key_range);
+            .register_shard(shard, membership, key_range)
+            .await;
         (200, r#"{"ok":true}"#.to_string())
     } else if method == "POST" && path == "/v1/split" {
         #[derive(Deserialize)]
