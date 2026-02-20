@@ -475,7 +475,11 @@ impl Node {
     }
 }
 
-pub async fn run(cfg: NodeConfig, discovery_json: Option<String>) {
+pub async fn run(
+    cfg: NodeConfig,
+    discovery_json: Option<String>,
+    discovery_tapir_endpoint: Option<String>,
+) {
     let persist_dir = cfg
         .persist_dir
         .unwrap_or_else(|| "/tmp/tapi".to_string());
@@ -485,6 +489,13 @@ pub async fn run(cfg: NodeConfig, discovery_json: Option<String>) {
 
     let node = if let Some(json_path) = discovery_json {
         let backend = load_json_discovery_backend(&json_path).await;
+        let mut node = Node::with_discovery_backend(persist_dir, backend);
+        if let Some(ref url) = cfg.shard_manager_url {
+            node.shard_manager_url = Some(url.clone());
+        }
+        Arc::new(node)
+    } else if let Some(endpoint) = discovery_tapir_endpoint {
+        let backend = load_tapir_discovery_backend(&endpoint).await;
         let mut node = Node::with_discovery_backend(persist_dir, backend);
         if let Some(ref url) = cfg.shard_manager_url {
             node.shard_manager_url = Some(url.clone());
@@ -580,4 +591,36 @@ async fn load_json_discovery_backend(json_path: &str) -> DiscoveryBackend {
     };
 
     DiscoveryBackend::Json(dir)
+}
+
+/// Parse a `--discovery-tapir-endpoint` and build a `DiscoveryBackend::Tapir`.
+///
+/// Uses eventual consistent reads (unlogged scan) — suitable for node
+/// shard discovery via CachingShardDirectory PULL.
+async fn load_tapir_discovery_backend(endpoint: &str) -> DiscoveryBackend {
+    use tapirs::discovery::tapir;
+
+    let ephemeral_addr = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let a = l.local_addr().unwrap();
+        drop(l);
+        TcpAddress(a)
+    };
+    let disc_dir = Arc::new(tapirs::discovery::InMemoryShardDirectory::new());
+    let persist_dir = format!("/tmp/tapi_node_disc_{}", std::process::id());
+    let disc_transport = TcpTransport::with_directory(ephemeral_addr, persist_dir, disc_dir);
+
+    let rng = production_rng();
+    let dir = tapir::parse_tapir_endpoint::<TcpAddress, _>(
+        endpoint,
+        tapir::ReadMode::Eventual,
+        disc_transport,
+        rng,
+    )
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("error: failed to create TAPIR discovery backend: {e}");
+        std::process::exit(1);
+    });
+    DiscoveryBackend::Tapir(dir)
 }

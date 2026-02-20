@@ -47,6 +47,13 @@ enum Command {
         /// CachingShardDirectory's remote backend via DiscoveryBackend::Json.
         #[arg(long)]
         discovery_json: Option<String>,
+        /// TAPIR discovery cluster endpoint.
+        ///
+        /// Static: comma-separated replica addresses (e.g. "10.0.0.1:6000,10.0.0.2:6000").
+        /// DNS: "srv://hostname:port" for periodic re-resolution.
+        /// Uses eventual consistent reads (unlogged scan) for shard discovery.
+        #[arg(long)]
+        discovery_tapir_endpoint: Option<String>,
         #[arg(long)]
         shard_manager_url: Option<String>,
     },
@@ -203,6 +210,7 @@ async fn main() {
             persist_dir,
             discovery_url,
             discovery_json,
+            discovery_tapir_endpoint,
             shard_manager_url,
         } => {
             let mut cfg = config_path
@@ -221,7 +229,7 @@ async fn main() {
             if let Some(url) = shard_manager_url {
                 cfg.shard_manager_url = Some(url);
             }
-            node::run(cfg, discovery_json).await;
+            node::run(cfg, discovery_json, discovery_tapir_endpoint).await;
         }
         Command::Admin { action } => {
             admin_client::run(action).await;
