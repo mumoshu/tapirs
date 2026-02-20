@@ -3,6 +3,7 @@ mod admin_server;
 mod client;
 mod config;
 mod discovery;
+mod discovery_backend;
 mod node;
 mod repl;
 mod shard_manager_server;

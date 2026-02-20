@@ -1,3 +1,4 @@
+pub mod json;
 pub mod tapir;
 
 use std::collections::{HashMap, HashSet};
