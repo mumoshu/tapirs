@@ -30,6 +30,7 @@ pub use tapir::{
     RoutingClient, RoutingReadOnlyTransaction, RoutingTransaction,
     Sharded, ShardNumber, Timestamp as TapirTimestamp, TransactionError,
 };
+pub use tapir::dns_shard_client::DnsRefreshingShardClient;
 pub use tapir::dynamic_router::{DynamicRouter, ShardDirectory, ShardEntry};
 pub use tapir::shard_manager::ShardManager;
 pub use transport::{
