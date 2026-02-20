@@ -105,9 +105,16 @@ enum Command {
         /// Address to listen on.
         #[arg(long, default_value = "127.0.0.1:9001")]
         listen_addr: String,
-        /// Discovery service URL.
+        /// Discovery service URL (HTTP).
         #[arg(long)]
-        discovery_url: String,
+        discovery_url: Option<String>,
+        /// TAPIR discovery cluster endpoint.
+        ///
+        /// Static: comma-separated replica addresses (e.g. "10.0.0.1:6000,10.0.0.2:6000").
+        /// DNS: "srv://hostname:port" for periodic re-resolution.
+        /// Uses linearizable reads (RO transactions) for shard authority.
+        #[arg(long)]
+        discovery_tapir_endpoint: Option<String>,
     },
 }
 
@@ -251,8 +258,9 @@ async fn main() {
         Command::ShardManager {
             listen_addr,
             discovery_url,
+            discovery_tapir_endpoint,
         } => {
-            shard_manager_server::run(listen_addr, discovery_url).await;
+            shard_manager_server::run(listen_addr, discovery_url, discovery_tapir_endpoint).await;
         }
     }
 }

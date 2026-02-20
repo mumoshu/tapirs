@@ -1,7 +1,11 @@
 use crate::discovery::HttpDiscoveryClient;
 use tapirs::discovery::json::JsonRemoteShardDirectory;
+use tapirs::discovery::tapir::TapirRemoteShardDirectory;
 use tapirs::discovery::{DiscoveryError, RemoteShardDirectory};
-use tapirs::{IrMembership, ShardNumber, TcpAddress};
+use tapirs::{IrMembership, ShardNumber, TapirReplica, TcpAddress, TcpTransport};
+
+type DiscoveryTapirDir =
+    TapirRemoteShardDirectory<TcpAddress, TcpTransport<TapirReplica<String, String>>>;
 
 /// Dispatch enum for [`RemoteShardDirectory<TcpAddress>`] backends.
 ///
@@ -11,6 +15,7 @@ use tapirs::{IrMembership, ShardNumber, TcpAddress};
 pub enum DiscoveryBackend {
     Http(HttpDiscoveryClient),
     Json(JsonRemoteShardDirectory<TcpAddress>),
+    Tapir(DiscoveryTapirDir),
 }
 
 impl RemoteShardDirectory<TcpAddress> for DiscoveryBackend {
@@ -21,6 +26,7 @@ impl RemoteShardDirectory<TcpAddress> for DiscoveryBackend {
         match self {
             Self::Http(c) => c.get(shard).await,
             Self::Json(c) => c.get(shard).await,
+            Self::Tapir(c) => c.get(shard).await,
         }
     }
 
@@ -33,6 +39,7 @@ impl RemoteShardDirectory<TcpAddress> for DiscoveryBackend {
         match self {
             Self::Http(c) => c.put(shard, membership, view).await,
             Self::Json(c) => c.put(shard, membership, view).await,
+            Self::Tapir(c) => c.put(shard, membership, view).await,
         }
     }
 
@@ -40,6 +47,7 @@ impl RemoteShardDirectory<TcpAddress> for DiscoveryBackend {
         match self {
             Self::Http(c) => c.remove(shard).await,
             Self::Json(c) => c.remove(shard).await,
+            Self::Tapir(c) => c.remove(shard).await,
         }
     }
 
@@ -49,6 +57,7 @@ impl RemoteShardDirectory<TcpAddress> for DiscoveryBackend {
         match self {
             Self::Http(c) => c.all().await,
             Self::Json(c) => c.all().await,
+            Self::Tapir(c) => c.all().await,
         }
     }
 
@@ -62,6 +71,7 @@ impl RemoteShardDirectory<TcpAddress> for DiscoveryBackend {
         match self {
             Self::Http(c) => c.replace(old, new, membership, view).await,
             Self::Json(c) => c.replace(old, new, membership, view).await,
+            Self::Tapir(c) => c.replace(old, new, membership, view).await,
         }
     }
 }

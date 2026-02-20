@@ -54,9 +54,10 @@ async fn bootstrap_cluster(
     let mgr_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mgr_addr = mgr_listener.local_addr().unwrap();
     let discovery_url = format!("http://{discovery_addr}");
+    let disc_client = HttpDiscoveryClient::new(&discovery_url);
     tokio::spawn(crate::shard_manager_server::serve(
         mgr_listener,
-        discovery_url.clone(),
+        Arc::new(crate::discovery_backend::DiscoveryBackend::Http(disc_client)),
     ));
 
     // === tapi node (one per num_nodes) ===

@@ -1,4 +1,5 @@
 use crate::discovery::HttpDiscoveryClient;
+use crate::discovery_backend::DiscoveryBackend;
 use rand::{thread_rng, Rng as _};
 use serde::Deserialize;
 use std::sync::Arc;
@@ -14,17 +15,17 @@ type TapirShardManager = ShardManager<
     String,
     String,
     TcpTransport<TapirReplica<String, String>>,
-    HttpDiscoveryClient,
+    DiscoveryBackend,
 >;
 
 struct ShardManagerState {
     manager: tokio::sync::Mutex<TapirShardManager>,
     directory: Arc<InMemoryShardDirectory<TcpAddress>>,
-    discovery_client: Arc<HttpDiscoveryClient>,
+    remote: Arc<DiscoveryBackend>,
 }
 
 impl ShardManagerState {
-    fn new(discovery_url: &str) -> Self {
+    fn new(remote: Arc<DiscoveryBackend>) -> Self {
         let ephemeral_addr = {
             let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
             let a = l.local_addr().unwrap();
@@ -38,16 +39,15 @@ impl ShardManagerState {
             persist_dir,
             Arc::clone(&directory),
         );
-        let discovery_client = Arc::new(HttpDiscoveryClient::new(discovery_url));
         let manager = ShardManager::new(
             tapirs::Rng::from_seed(thread_rng().r#gen()),
             transport,
-            Arc::clone(&discovery_client),
+            Arc::clone(&remote),
         );
         Self {
             manager: tokio::sync::Mutex::new(manager),
             directory,
-            discovery_client,
+            remote,
         }
     }
 }
@@ -81,7 +81,7 @@ async fn handle_request(
 
         // Query discovery for existing membership.
         let existing = state
-            .discovery_client
+            .remote
             .all()
             .await
             .ok()
@@ -124,7 +124,7 @@ async fn handle_request(
 
         // Query discovery for existing membership.
         let existing = state
-            .discovery_client
+            .remote
             .all()
             .await
             .ok()
@@ -176,7 +176,7 @@ async fn handle_request(
 
         // Query discovery for shard membership.
         let existing = state
-            .discovery_client
+            .remote
             .all()
             .await
             .ok()
@@ -324,8 +324,8 @@ fn status_text(code: u16) -> &'static str {
     }
 }
 
-pub(crate) async fn serve(listener: TcpListener, discovery_url: String) {
-    let state = Arc::new(ShardManagerState::new(&discovery_url));
+pub(crate) async fn serve(listener: TcpListener, remote: Arc<DiscoveryBackend>) {
+    let state = Arc::new(ShardManagerState::new(remote));
 
     loop {
         match listener.accept().await {
@@ -401,7 +401,43 @@ pub(crate) async fn serve(listener: TcpListener, discovery_url: String) {
     }
 }
 
-pub async fn run(listen_addr: String, discovery_url: String) {
+pub async fn run(
+    listen_addr: String,
+    discovery_url: Option<String>,
+    discovery_tapir_endpoint: Option<String>,
+) {
+    let backend = if let Some(endpoint) = discovery_tapir_endpoint {
+        // Create a separate transport for the discovery cluster.
+        let ephemeral_addr = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+            let a = l.local_addr().unwrap();
+            drop(l);
+            TcpAddress(a)
+        };
+        let disc_dir = Arc::new(tapirs::discovery::InMemoryShardDirectory::new());
+        let persist_dir = format!("/tmp/tapi_sm_disc_{}", std::process::id());
+        let disc_transport = TcpTransport::with_directory(ephemeral_addr, persist_dir, disc_dir);
+
+        let rng = tapirs::Rng::from_seed(thread_rng().r#gen());
+        let dir = tapirs::discovery::tapir::parse_tapir_endpoint::<TcpAddress, _>(
+            &endpoint,
+            tapirs::discovery::tapir::ReadMode::Strong,
+            disc_transport,
+            rng,
+        )
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("error: failed to create TAPIR discovery backend: {e}");
+            std::process::exit(1);
+        });
+        DiscoveryBackend::Tapir(dir)
+    } else if let Some(url) = discovery_url {
+        DiscoveryBackend::Http(HttpDiscoveryClient::new(&url))
+    } else {
+        eprintln!("error: either --discovery-url or --discovery-tapir-endpoint is required");
+        std::process::exit(1);
+    };
+
     let addr: std::net::SocketAddr = listen_addr
         .parse()
         .unwrap_or_else(|e| panic!("invalid shard-manager listen address '{listen_addr}': {e}"));
@@ -412,5 +448,5 @@ pub async fn run(listen_addr: String, discovery_url: String) {
 
     tracing::info!(%addr, "shard-manager server starting");
 
-    serve(listener, discovery_url).await;
+    serve(listener, Arc::new(backend)).await;
 }
