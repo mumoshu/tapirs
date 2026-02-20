@@ -125,10 +125,6 @@ fn check_container_running(container: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn wait_for_tcp(addr: &str, timeout_secs: u64) -> Result<(), String> {
-    wait_for_service(addr, timeout_secs, None)
-}
-
 /// Wait for a TCP port to become reachable, periodically checking that
 /// the container is still running. Bails fast if the container exits.
 fn wait_for_service(

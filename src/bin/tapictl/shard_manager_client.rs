@@ -66,6 +66,7 @@ impl HttpShardManagerClient {
         Err(format!("unexpected response: {body}"))
     }
 
+    #[allow(dead_code)]
     pub fn join(&self, shard: u32, listen_addr: &str) -> Result<(), String> {
         let body = serde_json::json!({
             "shard": shard,
@@ -76,6 +77,7 @@ impl HttpShardManagerClient {
         self.parse_response(&resp)
     }
 
+    #[allow(dead_code)]
     pub fn leave(&self, shard: u32, listen_addr: &str) -> Result<(), String> {
         let body = serde_json::json!({
             "shard": shard,
@@ -86,6 +88,7 @@ impl HttpShardManagerClient {
         self.parse_response(&resp)
     }
 
+    #[allow(dead_code)]
     pub fn register(
         &self,
         shard: u32,
