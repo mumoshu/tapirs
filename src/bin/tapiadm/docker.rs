@@ -516,8 +516,8 @@ pub fn remove_node(name: &str) -> Result<(), String> {
 
 pub fn get_nodes() -> Result<(), String> {
     println!(
-        "{:<20} {:<16} {:<24} {}",
-        "NAME", "CONTAINER IP", "ADMIN (HOST)", "STATUS"
+        "{:<20} {:<16} {:<24} STATUS",
+        "NAME", "CONTAINER IP", "ADMIN (HOST)"
     );
 
     // Initial compose nodes.
@@ -560,7 +560,7 @@ pub fn get_nodes() -> Result<(), String> {
 }
 
 pub fn get_replicas() -> Result<(), String> {
-    println!("{:<8} {:<20} {}", "SHARD", "NODE", "LISTEN ADDR");
+    println!("{:<8} {:<20} LISTEN ADDR", "SHARD", "NODE");
 
     // Collect all nodes with their admin addresses.
     let mut all_nodes: Vec<(String, String)> = Vec::new(); // (name, host_admin_addr)
