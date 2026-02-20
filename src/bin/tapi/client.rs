@@ -11,8 +11,35 @@ use tapirs::{
 };
 use std::sync::RwLock;
 
-pub async fn run(cfg: ClientConfig, input_source: crate::repl::InputSource) -> i32 {
-    let shards = if cfg.shards.is_empty() {
+/// JSON schema for `--discovery-json` shard topology file.
+#[derive(serde::Deserialize)]
+struct DiscoveryJson {
+    shards: Vec<DiscoveryJsonShard>,
+}
+
+#[derive(serde::Deserialize)]
+struct DiscoveryJsonShard {
+    number: u32,
+    /// Explicit replica addresses (static mode).
+    #[serde(default)]
+    membership: Vec<String>,
+    /// Headless service "host:port" resolved via DNS at startup (DNS mode).
+    #[serde(default)]
+    headless_service: Option<String>,
+    #[serde(default)]
+    key_range_start: Option<String>,
+    #[serde(default)]
+    key_range_end: Option<String>,
+}
+
+pub async fn run(
+    cfg: ClientConfig,
+    discovery_json: Option<String>,
+    input_source: crate::repl::InputSource,
+) -> i32 {
+    let shards = if let Some(json_path) = discovery_json {
+        load_discovery_json(&json_path).await
+    } else if cfg.shards.is_empty() {
         if let Some(ref url) = cfg.discovery_url {
             let client = HttpDiscoveryClient::new(url);
             let entries = client
@@ -29,7 +56,7 @@ pub async fn run(cfg: ClientConfig, input_source: crate::repl::InputSource) -> i
                 })
                 .collect()
         } else {
-            eprintln!("error: no shards configured. Use --config or provide shard info.");
+            eprintln!("error: no shards configured. Use --config, --discovery-url, or --discovery-json.");
             std::process::exit(1);
         }
     } else {
@@ -104,6 +131,44 @@ pub async fn run(cfg: ClientConfig, input_source: crate::repl::InputSource) -> i
     let tapir_client = Arc::new(TapirClient::new(tapirs::Rng::from_seed(thread_rng().r#gen()), transport));
 
     crate::repl::run(tapir_client, router, input_source).await
+}
+
+/// Parse a `--discovery-json` file into shard configs.
+///
+/// Static mode entries provide explicit `membership` addresses. DNS mode entries
+/// specify a `headless_service` hostname that is resolved via DNS at startup.
+async fn load_discovery_json(json_path: &str) -> Vec<ShardConfig> {
+    let content = std::fs::read_to_string(json_path)
+        .unwrap_or_else(|e| panic!("failed to read discovery JSON {json_path}: {e}"));
+    let discovery: DiscoveryJson = serde_json::from_str(&content)
+        .unwrap_or_else(|e| panic!("failed to parse discovery JSON {json_path}: {e}"));
+
+    let mut shard_configs = Vec::new();
+    for shard in discovery.shards {
+        let replicas = if let Some(ref headless) = shard.headless_service {
+            // DNS mode: resolve hostname at startup.
+            let mut addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host(headless)
+                .await
+                .unwrap_or_else(|e| panic!("failed to resolve DNS for '{headless}': {e}"))
+                .collect();
+            if addrs.is_empty() {
+                panic!("DNS resolution for '{headless}' returned zero addresses");
+            }
+            addrs.sort();
+            addrs.iter().map(|a| a.to_string()).collect()
+        } else {
+            // Static mode: addresses provided directly.
+            shard.membership
+        };
+
+        shard_configs.push(ShardConfig {
+            id: shard.number,
+            replicas,
+            key_range_start: shard.key_range_start,
+            key_range_end: shard.key_range_end,
+        });
+    }
+    shard_configs
 }
 
 /// Partition key space (a-z) evenly across N shards with sequential IDs 0..N.

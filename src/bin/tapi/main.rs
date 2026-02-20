@@ -61,6 +61,16 @@ enum Command {
         #[arg(long)]
         discovery_url: Option<String>,
 
+        /// Path to a JSON file describing shard topology.
+        ///
+        /// Static mode (explicit addresses):
+        ///   {"shards":[{"number":0,"membership":["addr:port",...],"key_range_end":"n"}]}
+        ///
+        /// DNS mode (headless service, resolved at startup):
+        ///   {"shards":[{"number":0,"headless_service":"svc.ns:port"}]}
+        #[arg(long)]
+        discovery_json: Option<String>,
+
         /// Execute commands inline (semicolons separate commands).
         /// Can be specified multiple times.
         ///
@@ -204,6 +214,7 @@ async fn main() {
         Command::Client {
             config: config_path,
             discovery_url,
+            discovery_json,
             execute,
             script,
         } => {
@@ -223,7 +234,7 @@ async fn main() {
                 repl::InputSource::Stdin
             };
 
-            let exit_code = client::run(cfg, input_source).await;
+            let exit_code = client::run(cfg, discovery_json, input_source).await;
             std::process::exit(exit_code);
         }
         Command::Discovery { listen_addr } => {
