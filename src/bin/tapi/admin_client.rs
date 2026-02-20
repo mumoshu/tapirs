@@ -57,7 +57,7 @@ async fn send_admin_request(addr: &str, request_json: &str) -> Result<AdminStatu
 ///   2. Deduplicate: build a map of shard -> list of hosting nodes
 ///   3. For each unique shard (in shard-ID order):
 ///      a. Force view change on one node -- synchronizes the IR record
-///     so the backup captures all committed operations
+///      so the backup captures all committed operations
 ///      b. Wait for view change to settle (5 seconds)
 ///      c. Send backup_shard command to the same node
 ///      d. Write the ShardBackup JSON to `<output>/shard_<id>.json`
@@ -171,12 +171,12 @@ struct RestoreRequest<'a> {
 ///   2. Read each `<backup_dir>/shard_<id>.json` into memory
 ///   3. For each shard s (in shard-ID order):
 ///      a. Assign replicas round-robin: replica r -> node (r % num_nodes)
-///     (a single node may host multiple replicas of the same shard --
-///     TAPIR replicas are single-threaded, so this effectively
-///     utilizes multiple CPU cores on one machine)
+///      (a single node may host multiple replicas of the same shard --
+///      TAPIR replicas are single-threaded, so this effectively
+///      utilizes multiple CPU cores on one machine)
 ///      b. Each replica gets a unique listen addr: node_ip:port where
-///     port is allocated sequentially from base_port across all
-///     (shard, replica) pairs on that node
+///      port is allocated sequentially from base_port across all
+///      (shard, replica) pairs on that node
 ///      c. Compute new_membership = all listen addrs for this shard
 ///      d. Send restore_shard command to each assigned node's admin server
 ///      e. Optionally register the shard with the discovery service

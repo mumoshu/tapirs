@@ -36,6 +36,8 @@ enum Input {
     Lines(std::vec::IntoIter<String>),
 }
 
+type TapirTcpClient = TapirClient<String, String, TcpTransport<TapirReplica<String, String>>>;
+
 type Client = RoutingClient<
     String,
     String,
@@ -63,7 +65,7 @@ enum ActiveTxn {
 }
 
 pub async fn run(
-    tapir_client: Arc<TapirClient<String, String, TcpTransport<TapirReplica<String, String>>>>,
+    tapir_client: Arc<TapirTcpClient>,
     router: Arc<DynamicRouter<String>>,
     input_source: InputSource,
 ) -> i32 {
@@ -130,7 +132,7 @@ pub async fn run(
             },
         };
 
-        let parts: Vec<&str> = line.trim().split_whitespace().collect();
+        let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.is_empty() {
             continue;
         }
