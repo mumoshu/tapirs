@@ -143,7 +143,7 @@ where
         tokio::spawn(future);
     }
 
-    fn on_membership_changed(&self, membership: &IrMembership<Self::Address>) {
+    fn on_membership_changed(&self, membership: &IrMembership<Self::Address>, view: u64) {
         // Called synchronously by IrReplica after a view change completes.
         // This MUST NOT block or fail — the IR/TAPIR view change protocol
         // (proved by TLA+) is the source of truth for intra-shard membership.
@@ -152,7 +152,7 @@ where
         // external discovery service and pulls remote state, with graceful
         // retry on failure. This write only updates the local HashMap.
         if let Some(shard) = *self.inner.shard.read().unwrap() {
-            self.inner.directory.put(shard, membership.clone());
+            self.inner.directory.put(shard, membership.clone(), view);
         }
     }
 }
@@ -173,7 +173,7 @@ where
         let directory = Arc::clone(&self.inner.directory);
         async move {
             loop {
-                if let Some(m) = directory.get(shard) {
+                if let Some((m, _view)) = directory.get(shard) {
                     return m;
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;

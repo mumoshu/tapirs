@@ -87,6 +87,6 @@ impl<U: ReplicaUpcalls> TcpTransport<U> {
     /// Also stores the shard number so on_membership_changed can update the right entry.
     pub fn set_shard_addresses(&self, shard: ShardNumber, membership: IrMembership<TcpAddress>) {
         *self.inner.shard.write().unwrap() = Some(shard);
-        self.inner.directory.put(shard, membership);
+        self.inner.directory.put(shard, membership, 0);
     }
 }

@@ -21,7 +21,7 @@ pub async fn run(cfg: ClientConfig, input_source: crate::repl::InputSource) -> i
                 .unwrap_or_else(|e| panic!("failed to fetch topology from discovery: {e}"));
             entries
                 .into_iter()
-                .map(|(shard, membership)| ShardConfig {
+                .map(|(shard, membership, _view)| ShardConfig {
                     id: shard.0,
                     replicas: tapirs::discovery::membership_to_strings(&membership),
                     key_range_start: None,

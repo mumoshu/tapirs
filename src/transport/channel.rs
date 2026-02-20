@@ -99,7 +99,7 @@ impl<U: IrReplicaUpcalls> Registry<U> {
     }
 
     pub fn put_shard_addresses(&self, shard: ShardNumber, membership: IrMembership<usize>) {
-        self.directory.put(shard, membership);
+        self.directory.put(shard, membership, 0);
     }
 
     pub fn directory(&self) -> &Arc<InMemoryShardDirectory<usize>> {
@@ -252,7 +252,7 @@ impl<U: IrReplicaUpcalls> Transport<U> for Channel<U> {
         }
     }
 
-    fn on_membership_changed(&self, membership: &IrMembership<Self::Address>) {
+    fn on_membership_changed(&self, membership: &IrMembership<Self::Address>, view: u64) {
         // Called synchronously by IrReplica after a view change completes.
         // This MUST NOT block or fail — the IR/TAPIR view change protocol
         // (proved by TLA+) is the source of truth for intra-shard membership.
@@ -261,7 +261,7 @@ impl<U: IrReplicaUpcalls> Transport<U> for Channel<U> {
         // external discovery service and pulls remote state, with graceful
         // retry on failure. This write only updates the local HashMap.
         if let Some(shard) = *self.shard.read().unwrap() {
-            self.directory.put(shard, membership.clone());
+            self.directory.put(shard, membership.clone(), view);
         }
     }
 }
@@ -274,7 +274,7 @@ impl<K: Key, V: Value> TapirTransport<K, V> for Channel<TapirReplica<K, V>> {
         let directory = Arc::clone(&self.directory);
         async move {
             loop {
-                if let Some(membership) = directory.get(shard) {
+                if let Some((membership, _view)) = directory.get(shard) {
                     break membership;
                 }
 

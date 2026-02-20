@@ -819,7 +819,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                                 &format!("checkpoint_{}", sync.view.number.0),
                                 Some(&sync.upcalls),
                             );
-                            self.inner.transport.on_membership_changed(&sync.view.membership);
+                            self.inner.transport.on_membership_changed(&sync.view.membership, sync.view.number.0);
                         }
                     }
                 } else if !msg.from_client
@@ -894,7 +894,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                     sync.leader_record = Some(LeaderRecord { record: new_record, view });
                     sync.delta_op_ids.clear();
                     self.persist_view_info(&*sync);
-                    self.inner.transport.on_membership_changed(&sync.view.membership);
+                    self.inner.transport.on_membership_changed(&sync.view.membership, sync.view.number.0);
                 }
             }
             Message::<U, T>::AddMember(AddMember{address}) => {

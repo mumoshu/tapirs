@@ -72,7 +72,7 @@ pub trait Transport<U: IrReplicaUpcalls>: Clone + Send + Sync + 'static {
 
     /// Called after a view change completes with the new group membership.
     /// Default: no-op.
-    fn on_membership_changed(&self, _membership: &IrMembership<Self::Address>) {}
+    fn on_membership_changed(&self, _membership: &IrMembership<Self::Address>, _view: u64) {}
 }
 
 pub trait TapirTransport<K: Key, V: Value>: Transport<TapirReplica<K, V>> {

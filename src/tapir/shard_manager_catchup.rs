@@ -61,18 +61,20 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         client.bootstrap_record(Record::<Replica<K, V>>::default(), view);
     }
 
-    /// Coordinate joining a new replica to an existing shard.
+    /// Sole entry point for adding a replica to a shard. Sends AddMember to IR.
     ///
     /// Discovers the existing membership from the address directory, fetches
     /// the leader_record, bootstraps the new replica, then triggers AddMember.
     /// Retries fetch_leader_record up to 5 times with 1s backoff for transient
     /// cases where a recent bootstrap hasn't fully propagated.
+    ///
+    /// See [`ShardManager`] module docs § "Membership Change Authority".
     pub async fn join(
         &mut self,
         shard: ShardNumber,
         new_address: T::Address,
     ) -> Result<(), String> {
-        let membership = self
+        let (membership, _view) = self
             .address_directory
             .get(shard)
             .ok_or_else(|| format!("shard {shard:?} not found in address directory"))?;
@@ -115,17 +117,19 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         Err(last_err)
     }
 
-    /// Coordinate removing a replica from an existing shard.
+    /// Sole entry point for removing a replica from a shard. Sends RemoveMember to IR.
     ///
     /// Discovers the current membership from the address directory, then
     /// broadcasts RemoveMember to trigger a view change that removes the
     /// address from the group. Symmetric with `join` which sends AddMember.
+    ///
+    /// See [`ShardManager`] module docs § "Membership Change Authority".
     pub fn leave(
         &mut self,
         shard: ShardNumber,
         address: T::Address,
     ) -> Result<(), String> {
-        let membership = self
+        let (membership, _view) = self
             .address_directory
             .get(shard)
             .ok_or_else(|| format!("shard {shard:?} not found in address directory"))?;

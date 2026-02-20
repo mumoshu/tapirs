@@ -46,9 +46,10 @@ pub struct Node {
     pub replicas: Mutex<HashMap<ShardNumber, ReplicaHandle>>,
     persist_dir: String,
     directory: Arc<InMemoryShardDirectory<TcpAddress>>,
-    // Holds the CachingShardDirectory alive so its background sync task
-    // continues running. When None, no discovery sync is active.
-    _discovery_dir: Option<Arc<CachingShardDirectory<TcpAddress, HttpDiscoveryClient>>>,
+    /// Holds the CachingShardDirectory alive so its background sync task
+    /// continues running. When None, no discovery sync is active.
+    /// Also used to register/unregister own_shards for PUSH filtering.
+    discovery_dir: Option<Arc<CachingShardDirectory<TcpAddress, HttpDiscoveryClient>>>,
     shard_manager_url: Option<String>,
 }
 
@@ -58,7 +59,7 @@ impl Node {
             replicas: Mutex::new(HashMap::new()),
             persist_dir,
             directory: Arc::new(InMemoryShardDirectory::new()),
-            _discovery_dir: None,
+            discovery_dir: None,
             shard_manager_url: None,
         }
     }
@@ -75,7 +76,7 @@ impl Node {
             replicas: Mutex::new(HashMap::new()),
             persist_dir,
             directory,
-            _discovery_dir: Some(discovery_dir),
+            discovery_dir: Some(discovery_dir),
             shard_manager_url: None,
         }
     }
@@ -116,11 +117,6 @@ impl Node {
         // Populate shard directory so TapirTransport::shard_addresses works.
         transport.set_shard_addresses(shard, membership.clone());
 
-        // If discovery is configured, register this shard for push.
-        if let Some(ref dir) = self._discovery_dir {
-            dir.add_own_shard(shard);
-        }
-
         // Start listener BEFORE creating replica (IrReplica::new starts tick tasks).
         transport
             .listen(listen_addr)
@@ -153,6 +149,11 @@ impl Node {
                 listen_addr,
             },
         );
+
+        // Register as own shard so CachingShardDirectory pushes membership for it.
+        if let Some(ref dir) = self.discovery_dir {
+            dir.add_own_shard(shard);
+        }
 
         Ok(())
     }
@@ -352,11 +353,14 @@ impl Node {
     }
 
     pub fn remove_replica(&self, shard: ShardNumber) -> bool {
-        let removed = self.replicas.lock().unwrap().remove(&shard);
+        let mut replicas = self.replicas.lock().unwrap();
+        let removed = replicas.remove(&shard);
         if removed.is_some() {
-            // Remove from discovery push list. Discovery deregistration
-            // happens on the next background sync cycle.
-            if let Some(ref dir) = self._discovery_dir {
+            // Unregister from own_shards so CachingShardDirectory stops pushing for it.
+            // Safe because Node's replica map is keyed by ShardNumber — at most one
+            // replica per shard per node. (TAPIR membership is a set of distinct addresses;
+            // two replicas of the same shard on one node is an invalid configuration.)
+            if let Some(ref dir) = self.discovery_dir {
                 dir.remove_own_shard(shard);
             }
             tracing::info!(?shard, "replica removed");
@@ -460,10 +464,6 @@ impl Node {
             transport,
         );
         client.bootstrap_record(backup.record.clone(), restore_view);
-
-        if let Some(ref dir) = self._discovery_dir {
-            dir.add_own_shard(shard);
-        }
 
         tracing::info!(?shard, %listen_addr, "shard restored from backup");
         Ok(())

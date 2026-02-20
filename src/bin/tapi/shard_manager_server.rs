@@ -80,13 +80,13 @@ async fn handle_request(
             .all()
             .await
             .ok()
-            .and_then(|entries| entries.into_iter().find(|(s, _)| *s == shard))
-            .map(|(_, m)| m)
-            .filter(|m| m.len() > 0);
+            .and_then(|entries| entries.into_iter().find(|(s, _, _)| *s == shard))
+            .map(|(_, m, v)| (m, v))
+            .filter(|(m, _)| m.len() > 0);
 
-        if let Some(membership) = existing {
+        if let Some((membership, view)) = existing {
             // Populate address directory so manager.join() can discover membership.
-            state.directory.put(shard, membership);
+            state.directory.put(shard, membership, view);
 
             match state.manager.lock().await.join(shard, new_addr).await {
                 Ok(()) => (200, r#"{"ok":true}"#.to_string()),
@@ -123,11 +123,11 @@ async fn handle_request(
             .all()
             .await
             .ok()
-            .and_then(|entries| entries.into_iter().find(|(s, _)| *s == shard))
-            .map(|(_, m)| m)
-            .filter(|m| m.len() > 0);
+            .and_then(|entries| entries.into_iter().find(|(s, _, _)| *s == shard))
+            .map(|(_, m, v)| (m, v))
+            .filter(|(m, _)| m.len() > 0);
 
-        let Some(membership) = existing else {
+        let Some((membership, view)) = existing else {
             return (
                 400,
                 format!(r#"{{"error":"shard {} not found in discovery"}}"#, req.shard),
@@ -148,7 +148,7 @@ async fn handle_request(
         // Populate address directory so manager.leave() can discover membership.
         state
             .directory
-            .put(shard, membership);
+            .put(shard, membership, view);
 
         match state.manager.lock().await.leave(shard, addr) {
             Ok(()) => (200, r#"{"ok":true}"#.to_string()),
@@ -175,18 +175,18 @@ async fn handle_request(
             .all()
             .await
             .ok()
-            .and_then(|entries| entries.into_iter().find(|(s, _)| *s == shard))
-            .map(|(_, m)| m)
-            .filter(|m| m.len() > 0);
+            .and_then(|entries| entries.into_iter().find(|(s, _, _)| *s == shard))
+            .map(|(_, m, v)| (m, v))
+            .filter(|(m, _)| m.len() > 0);
 
-        let Some(membership) = existing else {
+        let Some((membership, view)) = existing else {
             return (
                 400,
                 format!(r#"{{"error":"shard {} not found in discovery"}}"#, req.shard),
             );
         };
 
-        state.directory.put(shard, membership.clone());
+        state.directory.put(shard, membership.clone(), view);
 
         let key_range = KeyRange {
             start: req.key_range_start,
@@ -223,7 +223,7 @@ async fn handle_request(
 
         state
             .directory
-            .put(ShardNumber(req.new_shard), new_membership.clone());
+            .put(ShardNumber(req.new_shard), new_membership.clone(), 0);
 
         match state
             .manager
@@ -287,7 +287,7 @@ async fn handle_request(
 
         state
             .directory
-            .put(ShardNumber(req.new_shard), new_membership.clone());
+            .put(ShardNumber(req.new_shard), new_membership.clone(), 0);
 
         match state
             .manager

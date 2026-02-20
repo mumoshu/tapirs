@@ -114,6 +114,9 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
 
     /// Split a shard at `split_key`: keys < split_key stay on `source`,
     /// keys >= split_key move to `new_shard`.
+    ///
+    /// See [`ShardManager`] module docs for membership authority chain and
+    /// push-pull cycle risks.
     pub async fn split(
         &mut self,
         source: ShardNumber,
@@ -339,6 +342,9 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
     /// 2s, first tick skipped by `changed_view_recently`, second tick (~4s after
     /// freeze) triggers a natural view change sealing the commits. The final
     /// `scan_changes` poll picks up this delta.
+    ///
+    /// See [`ShardManager`] module docs for membership authority chain and
+    /// push-pull cycle risks.
     pub async fn merge(
         &mut self,
         absorbed: ShardNumber,
@@ -690,6 +696,9 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
     /// during drain), and empty `transaction_log`. The bloated source shard
     /// with its unbounded IR record, delta accumulation, and transaction log
     /// is removed entirely.
+    ///
+    /// See [`ShardManager`] module docs for membership authority chain and
+    /// push-pull cycle risks.
     pub async fn compact(
         &mut self,
         source: ShardNumber,

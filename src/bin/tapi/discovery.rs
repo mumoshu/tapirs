@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use tapirs::discovery::{
     DiscoveryError, RemoteShardDirectory,
@@ -16,6 +16,8 @@ use tokio::net::TcpListener;
 pub struct ShardMembership {
     pub id: u32,
     pub replicas: Vec<String>,
+    #[serde(default)]
+    pub view: u64,
 }
 
 /// Full cluster topology returned by the discovery service.
@@ -70,9 +72,10 @@ impl RemoteShardDirectory<TcpAddress> for HttpDiscoveryClient {
         &self,
         shard: ShardNumber,
         membership: IrMembership<TcpAddress>,
+        view: u64,
     ) -> Result<(), DiscoveryError> {
         let replicas = membership_to_strings(&membership);
-        let body = serde_json::to_string(&serde_json::json!({ "replicas": replicas }))
+        let body = serde_json::to_string(&serde_json::json!({ "replicas": replicas, "view": view }))
             .map_err(|e| DiscoveryError::InvalidResponse(e.to_string()))?;
         let id = shard.0;
         let addr_str = self.addr.to_string();
@@ -83,6 +86,8 @@ impl RemoteShardDirectory<TcpAddress> for HttpDiscoveryClient {
         let (resp, _) = self.http_request(&request).await?;
         if resp.contains("200 OK") {
             Ok(())
+        } else if resp.contains("409") {
+            Err(DiscoveryError::Tombstoned)
         } else {
             Err(DiscoveryError::InvalidResponse(resp))
         }
@@ -106,7 +111,7 @@ impl RemoteShardDirectory<TcpAddress> for HttpDiscoveryClient {
 
     async fn all(
         &self,
-    ) -> Result<Vec<(ShardNumber, IrMembership<TcpAddress>)>, DiscoveryError> {
+    ) -> Result<Vec<(ShardNumber, IrMembership<TcpAddress>, u64)>, DiscoveryError> {
         let addr_str = self.addr.to_string();
         let request = format!(
             "GET /v1/cluster HTTP/1.1\r\nHost: {addr_str}\r\nConnection: close\r\n\r\n",
@@ -118,7 +123,7 @@ impl RemoteShardDirectory<TcpAddress> for HttpDiscoveryClient {
         for s in topo.shards {
             let membership = strings_to_membership::<TcpAddress>(&s.replicas)
                 .map_err(DiscoveryError::InvalidResponse)?;
-            result.push((ShardNumber(s.id), membership));
+            result.push((ShardNumber(s.id), membership, s.view));
         }
         Ok(result)
     }
@@ -128,12 +133,14 @@ impl RemoteShardDirectory<TcpAddress> for HttpDiscoveryClient {
         old: ShardNumber,
         new: ShardNumber,
         membership: IrMembership<TcpAddress>,
+        view: u64,
     ) -> Result<(), DiscoveryError> {
         let replicas = membership_to_strings(&membership);
         let body = serde_json::to_string(&serde_json::json!({
             "old_id": old.0,
             "new_id": new.0,
             "replicas": replicas,
+            "view": view,
         }))
         .map_err(|e| DiscoveryError::InvalidResponse(e.to_string()))?;
         let addr_str = self.addr.to_string();
@@ -155,10 +162,13 @@ impl RemoteShardDirectory<TcpAddress> for HttpDiscoveryClient {
 #[derive(Debug, Deserialize)]
 struct RegisterShardRequest {
     replicas: Vec<String>,
+    #[serde(default)]
+    view: u64,
 }
 
 struct DiscoveryState {
     shards: RwLock<HashMap<u32, ShardMembership>>,
+    tombstones: RwLock<HashSet<u32>>,
 }
 
 fn handle_request(state: &DiscoveryState, method: &str, path: &str, body: &str) -> (u16, String) {
@@ -169,6 +179,8 @@ fn handle_request(state: &DiscoveryState, method: &str, path: &str, body: &str) 
             old_id: u32,
             new_id: u32,
             replicas: Vec<String>,
+            #[serde(default)]
+            view: u64,
         }
         let req: ReplaceShardRequest = match serde_json::from_str(body) {
             Ok(r) => r,
@@ -177,12 +189,22 @@ fn handle_request(state: &DiscoveryState, method: &str, path: &str, body: &str) 
             }
         };
         let mut shards = state.shards.write().unwrap();
+        // Tombstone old shard.
         shards.remove(&req.old_id);
+        state.tombstones.write().unwrap().insert(req.old_id);
+        // Insert new shard with monotonic check.
+        if let Some(existing) = shards.get(&req.new_id) {
+            if existing.view > req.view {
+                tracing::info!(old = req.old_id, new = req.new_id, "shard replaced (new shard stale, kept existing)");
+                return (200, r#"{"ok":true}"#.to_string());
+            }
+        }
         shards.insert(
             req.new_id,
             ShardMembership {
                 id: req.new_id,
                 replicas: req.replicas,
+                view: req.view,
             },
         );
         tracing::info!(old = req.old_id, new = req.new_id, "shard replaced");
@@ -214,27 +236,43 @@ fn handle_request(state: &DiscoveryState, method: &str, path: &str, body: &str) 
                 }
             }
             "POST" => {
+                // Reject tombstoned shards.
+                if state.tombstones.read().unwrap().contains(&id) {
+                    return (409, r#"{"error":"shard tombstoned"}"#.to_string());
+                }
                 let req: RegisterShardRequest = match serde_json::from_str(body) {
                     Ok(r) => r,
                     Err(e) => {
                         return (400, format!(r#"{{"error":"invalid JSON: {e}"}}"#));
                     }
                 };
+                let mut shards = state.shards.write().unwrap();
+                // Reject stale: if current view > incoming view, no-op.
+                if let Some(existing) = shards.get(&id) {
+                    if existing.view > req.view {
+                        return (200, r#"{"ok":true}"#.to_string());
+                    }
+                }
                 let membership = ShardMembership {
                     id,
                     replicas: req.replicas,
+                    view: req.view,
                 };
-                state.shards.write().unwrap().insert(id, membership);
-                tracing::info!(shard = id, "shard registered/updated");
+                shards.insert(id, membership);
+                tracing::info!(shard = id, view = req.view, "shard registered/updated");
                 (200, r#"{"ok":true}"#.to_string())
             }
             "DELETE" => {
-                let removed = state.shards.write().unwrap().remove(&id);
+                let mut shards = state.shards.write().unwrap();
+                let removed = shards.remove(&id);
+                // Tombstone the shard (even if already tombstoned, idempotent).
+                state.tombstones.write().unwrap().insert(id);
                 if removed.is_some() {
-                    tracing::info!(shard = id, "shard deregistered");
+                    tracing::info!(shard = id, "shard deregistered (tombstoned)");
                     (200, r#"{"ok":true}"#.to_string())
                 } else {
-                    (404, r#"{"error":"shard not found"}"#.to_string())
+                    // Return 200 even if already tombstoned — idempotent.
+                    (200, r#"{"ok":true}"#.to_string())
                 }
             }
             _ => (405, r#"{"error":"method not allowed"}"#.to_string()),
@@ -250,6 +288,7 @@ fn status_text(code: u16) -> &'static str {
         400 => "Bad Request",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        409 => "Conflict",
         _ => "Unknown",
     }
 }
@@ -257,6 +296,7 @@ fn status_text(code: u16) -> &'static str {
 pub(crate) async fn serve(listener: TcpListener) {
     let state = Arc::new(DiscoveryState {
         shards: RwLock::new(HashMap::new()),
+        tombstones: RwLock::new(HashSet::new()),
     });
 
     loop {
@@ -354,6 +394,7 @@ mod tests {
     fn state() -> DiscoveryState {
         DiscoveryState {
             shards: RwLock::new(HashMap::new()),
+            tombstones: RwLock::new(HashSet::new()),
         }
     }
 
@@ -457,8 +498,9 @@ mod tests {
     #[test]
     fn delete_nonexistent() {
         let s = state();
+        // DELETE always returns 200 (idempotent tombstoning).
         let (code, _) = handle_request(&s, "DELETE", "/v1/shards/99", "");
-        assert_eq!(code, 404);
+        assert_eq!(code, 200);
     }
 
     #[test]
@@ -522,6 +564,7 @@ mod tests {
             .put(
                 ShardNumber(1),
                 IrMembership::new(vec![m("127.0.0.1:5001"), m("127.0.0.1:5002")]),
+                0,
             )
             .await
             .unwrap();
@@ -529,6 +572,7 @@ mod tests {
             .put(
                 ShardNumber(2),
                 IrMembership::new(vec![m("127.0.0.1:6001")]),
+                0,
             )
             .await
             .unwrap();
@@ -552,6 +596,7 @@ mod tests {
             .put(
                 ShardNumber(1),
                 IrMembership::new(vec![m("127.0.0.1:5001")]),
+                0,
             )
             .await
             .unwrap();
@@ -566,8 +611,9 @@ mod tests {
         let addr = start_test_server().await;
         let client = HttpDiscoveryClient::new(&addr.to_string());
 
+        // DELETE is idempotent — always returns 200 (tombstones the shard).
         let result = client.remove(ShardNumber(99)).await;
-        assert!(matches!(result, Err(DiscoveryError::NotFound)));
+        assert!(result.is_ok());
     }
 
     #[tokio::test]
@@ -581,6 +627,7 @@ mod tests {
             .put(
                 ShardNumber(1),
                 IrMembership::new(vec![m("127.0.0.1:5001"), m("127.0.0.1:5002")]),
+                0,
             )
             .await
             .unwrap();
@@ -591,6 +638,7 @@ mod tests {
                 ShardNumber(1),
                 ShardNumber(3),
                 IrMembership::new(vec![m("127.0.0.1:7001"), m("127.0.0.1:7002")]),
+                0,
             )
             .await
             .unwrap();
@@ -626,13 +674,13 @@ mod tests {
             std::time::Duration::from_millis(50),
         );
 
-        // PUSH: put membership locally, register as own shard.
+        // PUSH: put membership locally and register as own shard.
+        dir.add_own_shard(ShardNumber(1));
         let membership = IrMembership::new(vec![
             TcpAddress("127.0.0.1:5001".parse().unwrap()),
             TcpAddress("127.0.0.1:5002".parse().unwrap()),
         ]);
-        dir.put(ShardNumber(1), membership);
-        dir.add_own_shard(ShardNumber(1));
+        dir.put(ShardNumber(1), membership, 0);
 
         // Wait for background sync to push.
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -648,6 +696,7 @@ mod tests {
             .put(
                 ShardNumber(2),
                 IrMembership::new(vec![m("127.0.0.1:7001"), m("127.0.0.1:7002")]),
+                0,
             )
             .await
             .unwrap();
@@ -656,7 +705,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         // Verify it was pulled into the local directory.
-        let pulled = dir.get(ShardNumber(2)).unwrap();
+        let (pulled, _) = dir.get(ShardNumber(2)).unwrap();
         assert_eq!(pulled.len(), 2);
     }
 
@@ -679,17 +728,16 @@ mod tests {
         let membership = IrMembership::new(vec![
             TcpAddress("127.0.0.1:5001".parse().unwrap()),
         ]);
-        dir.put(ShardNumber(1), membership);
-        dir.add_own_shard(ShardNumber(1));
+        dir.put(ShardNumber(1), membership, 0);
 
-        let got = dir.get(ShardNumber(1)).unwrap();
+        let (got, _) = dir.get(ShardNumber(1)).unwrap();
         assert_eq!(got.len(), 1);
 
         // Background sync fails silently — no panic.
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         // Local data is unaffected.
-        let got = dir.get(ShardNumber(1)).unwrap();
+        let (got, _) = dir.get(ShardNumber(1)).unwrap();
         assert_eq!(got.len(), 1);
     }
 }

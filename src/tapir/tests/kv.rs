@@ -706,7 +706,13 @@ async fn fuzz_tapir_transactions() {
         Arc::clone(&discovery),
         Duration::from_millis(500),
     );
-    disc_dir.add_own_shard(ShardNumber(0));
+    // All replicas share one InMemoryShardDirectory, so on_membership_changed
+    // writes are instantly visible. Register all shards as own_shards so PUSH
+    // syncs them to remote (verified at end of test). Commit 6 will replace
+    // this with per-node directories where PUSH filtering matters.
+    for s in 0..num_shards {
+        disc_dir.add_own_shard(ShardNumber(s));
+    }
 
     let (shards, clients, client_transports, registry) = build_sharded_kv_faulty(
         &mut lib_rng,
@@ -787,6 +793,7 @@ async fn fuzz_tapir_transactions() {
             (address_offset..address_offset + count).collect(),
         );
         address_offset += count;
+        disc_dir.add_own_shard(new_shard_num);
         new_shard_memberships.push(membership);
         new_shard_replicas.push(replicas);
     }

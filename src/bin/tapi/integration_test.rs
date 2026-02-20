@@ -101,7 +101,7 @@ async fn bootstrap_cluster(
             let membership = tapirs::discovery::strings_to_membership::<TcpAddress>(&registered)
                 .expect("parse membership");
             disc_client
-                .put(ShardNumber(shard_idx), membership)
+                .put(ShardNumber(shard_idx), membership, 0)
                 .await
                 .unwrap();
 
@@ -411,7 +411,7 @@ async fn test_rolling_membership_replacement() {
         live_addrs.push(new_addr);
         let addrs: Vec<TcpAddress> = live_addrs.iter().map(|a| TcpAddress(*a)).collect();
         disc_client
-            .put(ShardNumber(0), tapirs::IrMembership::new(addrs))
+            .put(ShardNumber(0), tapirs::IrMembership::new(addrs), 0)
             .await
             .unwrap();
 
@@ -455,7 +455,7 @@ async fn test_rolling_membership_replacement() {
         live_addrs.retain(|a| *a != original_addrs[i]);
         let addrs: Vec<TcpAddress> = live_addrs.iter().map(|a| TcpAddress(*a)).collect();
         disc_client
-            .put(ShardNumber(0), tapirs::IrMembership::new(addrs))
+            .put(ShardNumber(0), tapirs::IrMembership::new(addrs), 0)
             .await
             .unwrap();
 
@@ -626,9 +626,25 @@ async fn test_disaster_recovery_backup_restore() {
     }
 
     // 9. Register new addresses in discovery.
+    //
+    //    Use the restore view number (backup.view + 10, same as restore_shard)
+    //    so the monotonic-write check accepts the put — the discovery server
+    //    already has a higher view from the original replicas' PUSH.
+    //
+    //    In a real deployment, the discovery server is part of the cluster
+    //    state. If you destroy all replicas and restore from backup, you'd
+    //    ideally restore the discovery server state too (so view numbers are
+    //    consistent). Today the discovery server is stateless (in-memory
+    //    only), so a restore scenario inherits whatever stale state the
+    //    discovery server accumulated from the old cluster. Using the
+    //    restore view number (backup.view + 10) works as a workaround
+    //    because it's strictly higher than anything the old cluster used.
+    //    If the discovery server later gains a persistent metadata store,
+    //    backup/restore should snapshot and restore the discovery state too.
+    let restore_view = backup.view.number.0 + 10;
     let addrs: Vec<TcpAddress> = new_addrs.iter().map(|a| TcpAddress(*a)).collect();
     disc_client
-        .put(ShardNumber(0), tapirs::IrMembership::new(addrs))
+        .put(ShardNumber(0), tapirs::IrMembership::new(addrs), restore_view)
         .await
         .unwrap();
 
@@ -866,9 +882,19 @@ async fn test_cluster_backup_restore_via_admin() {
         }
 
         // Register restored shard with discovery.
+        //
+        //   Use restore view (backup.view + 10, same as Node::restore_shard)
+        //   so the monotonic-write check accepts the put — the discovery server
+        //   already has a higher view from the original replicas' PUSH.
+        //
+        //   See comment in test_disaster_recovery_backup_restore for the full
+        //   rationale: discovery is part of cluster state and ideally should be
+        //   restored alongside replicas. Today the discovery server is stateless
+        //   (in-memory only), so we use the restore view as a workaround.
+        let restore_view = backup_value["view"]["number"].as_u64().unwrap_or(0) + 10;
         let addrs: Vec<TcpAddress> = new_addrs.iter().map(|a| TcpAddress(*a)).collect();
         disc_client
-            .put(ShardNumber(shard_id), tapirs::IrMembership::new(addrs))
+            .put(ShardNumber(shard_id), tapirs::IrMembership::new(addrs), restore_view)
             .await
             .unwrap();
     }

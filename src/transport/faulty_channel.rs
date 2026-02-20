@@ -544,8 +544,8 @@ impl<U: IrReplicaUpcalls> Transport<U> for FaultyChannelTransport<U> {
         Channel::<U>::spawn(future)
     }
 
-    fn on_membership_changed(&self, membership: &IrMembership<Self::Address>) {
-        self.inner.on_membership_changed(membership);
+    fn on_membership_changed(&self, membership: &IrMembership<Self::Address>, view: u64) {
+        self.inner.on_membership_changed(membership, view);
     }
 }
 

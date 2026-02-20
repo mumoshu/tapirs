@@ -289,7 +289,7 @@ async fn restore_cluster(
             )
             .map_err(|e| format!("parse membership for shard {shard_id}: {e}"))?;
             disc_client
-                .put(tapirs::ShardNumber(shard_id), membership)
+                .put(tapirs::ShardNumber(shard_id), membership, 0)
                 .await
                 .map_err(|e| format!("register shard {shard_id} with discovery: {e}"))?;
             println!("  Registered shard {shard_id} with discovery");
