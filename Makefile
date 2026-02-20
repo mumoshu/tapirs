@@ -1,17 +1,19 @@
+.PHONY: test lock_server_stress_test coordinator_failure_stress_test_3 coordinator_failure_stress_test_7 bench fuzz fuzz100 maelstrom
+
 test:
-	clear && cargo clippy -- -D clippy::disallowed_methods && cargo test --release -- # --nocapture
+	cargo clippy -- -D clippy::disallowed_methods && timeout -k 10s 180s cargo test --release
 
 lock_server_stress_test:
-	clear && cargo test --release -- lock_server_loop --nocapture --include-ignored
+	timeout -k 10s 600s cargo test --release -- lock_server_loop --nocapture --include-ignored
 
 coordinator_failure_stress_test_3:
-	clear && cargo test --release -- coordinator_recovery_3_loop --nocapture --include-ignored
+	timeout -k 10s 600s cargo test --release -- coordinator_recovery_3_loop --nocapture --include-ignored
 
 coordinator_failure_stress_test_7:
-	clear && cargo test --release -- coordinator_recovery_7_loop --nocapture --include-ignored
+	timeout -k 10s 600s cargo test --release -- coordinator_recovery_7_loop --nocapture --include-ignored
 
 bench:
-	clear && cargo test throughput_3_ser --release -- --nocapture
+	timeout -k 10s 180s cargo test throughput_3_ser --release -- --nocapture
 
 fuzz:
 	./scripts/fuzz-multi-seed.sh
