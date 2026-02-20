@@ -111,6 +111,20 @@ impl<A> InMemoryRemoteDirectory<A> {
 }
 
 impl<A: Clone> InMemoryRemoteDirectory<A> {
+    /// Create with initial shard entries (for test setup).
+    pub fn with_shards(entries: Vec<(ShardNumber, IrMembership<A>, u64)>) -> Self {
+        let mut map = HashMap::new();
+        for (shard, membership, view) in entries {
+            map.insert(shard, (membership, view));
+        }
+        Self {
+            state: Arc::new(RwLock::new(RemoteDirectoryState {
+                shards: map,
+                tombstones: HashSet::new(),
+            })),
+        }
+    }
+
     /// Direct read for test assertions. Returns `None` for tombstoned or absent shards.
     pub fn get(&self, shard: ShardNumber) -> Option<(IrMembership<A>, u64)> {
         let state = self.state.read().unwrap();
