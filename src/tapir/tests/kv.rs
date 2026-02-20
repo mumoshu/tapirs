@@ -1146,6 +1146,7 @@ async fn fuzz_tapir_transactions() {
         );
         let mut manager = ShardManager::new(
             manager_rng, manager_transport, reshard_address_directory,
+            Arc::new(InMemoryRemoteDirectory::new()),
         );
         for (i, entry) in reshard_shard_entries.iter().enumerate() {
             manager.register_shard(
@@ -1469,7 +1470,7 @@ async fn test_add_replica_with_preload() {
     let original_membership =
         IrMembership::new((0..3).collect::<Vec<_>>());
     let address_directory = Arc::clone(registry.directory());
-    let mut manager = ShardManager::new(rng.fork(), manager_channel, address_directory);
+    let mut manager = ShardManager::new(rng.fork(), manager_channel, address_directory, Arc::new(InMemoryRemoteDirectory::new()));
     manager.register_shard(shard, original_membership, KeyRange {
         start: None,
         end: None,
@@ -1915,7 +1916,7 @@ async fn test_merge_two_shards() {
     // Set up ShardManager.
     let manager_channel = registry.channel(move |_, _| None);
     let address_directory = Arc::clone(registry.directory());
-    let mut manager = ShardManager::new(rng.fork(), manager_channel, address_directory);
+    let mut manager = ShardManager::new(rng.fork(), manager_channel, address_directory, Arc::new(InMemoryRemoteDirectory::new()));
     manager.register_shard(
         ShardNumber(0),
         IrMembership::new(vec![0, 1, 2]),
@@ -1992,7 +1993,7 @@ async fn test_split_merge_two_shards() {
     // Set up ShardManager.
     let manager_channel = registry.channel(move |_, _| None);
     let address_directory = Arc::clone(registry.directory());
-    let mut manager = ShardManager::new(rng.fork(), manager_channel, address_directory);
+    let mut manager = ShardManager::new(rng.fork(), manager_channel, address_directory, Arc::new(InMemoryRemoteDirectory::new()));
     manager.register_shard(
         ShardNumber(0),
         IrMembership::new(vec![0, 1, 2]),
@@ -2219,7 +2220,7 @@ async fn test_compact_new_shard_rejects_old_prepare_after_range_scan_on_old_shar
     // Set up ShardManager, register shard 0, compact to shard 1.
     let manager_channel = registry.channel(move |_, _| None);
     let address_directory = Arc::clone(registry.directory());
-    let mut manager = ShardManager::new(rng.fork(), manager_channel, address_directory);
+    let mut manager = ShardManager::new(rng.fork(), manager_channel, address_directory, Arc::new(InMemoryRemoteDirectory::new()));
     manager.register_shard(
         ShardNumber(0),
         IrMembership::new(vec![0, 1, 2]),
@@ -2315,7 +2316,7 @@ async fn test_compact_new_shard_rejects_old_prepare_after_quorum_read_on_old_sha
     // Set up ShardManager, register shard 0, compact to shard 1.
     let manager_channel = registry.channel(move |_, _| None);
     let address_directory = Arc::clone(registry.directory());
-    let mut manager = ShardManager::new(rng.fork(), manager_channel, address_directory);
+    let mut manager = ShardManager::new(rng.fork(), manager_channel, address_directory, Arc::new(InMemoryRemoteDirectory::new()));
     manager.register_shard(
         ShardNumber(0),
         IrMembership::new(vec![0, 1, 2]),

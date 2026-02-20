@@ -2,7 +2,7 @@ use super::{
     dynamic_router::{ShardDirectory, ShardEntry},
     Key, KeyRange, ShardClient, ShardNumber, Value,
 };
-use crate::discovery::{NoRemote, RemoteShardDirectory, ShardDirectory as AddressDirectory};
+use crate::discovery::{RemoteShardDirectory, ShardDirectory as AddressDirectory};
 use crate::transport::Transport;
 use crate::tapir::Replica;
 use crate::{IrClientId, IrMembership};
@@ -108,7 +108,7 @@ pub struct ShardManager<
     V: Value,
     T: Transport<Replica<K, V>>,
     D: AddressDirectory<T::Address>,
-    RD: RemoteShardDirectory<T::Address> = NoRemote,
+    RD: RemoteShardDirectory<T::Address>,
 > {
     pub(crate) shards: HashMap<ShardNumber, ManagedShard<K, V, T>>,
     pub(crate) directory: ShardDirectory<K>,
@@ -120,28 +120,6 @@ pub struct ShardManager<
     remote: Arc<RD>,
 }
 
-impl<K: Key, V: Value, T: Transport<Replica<K, V>>, D: AddressDirectory<T::Address>>
-    ShardManager<K, V, T, D, NoRemote>
-{
-    pub fn new(
-        mut rng: crate::Rng,
-        transport: T,
-        address_directory: D,
-    ) -> Self {
-        let client_id = IrClientId::new(&mut rng);
-        Self {
-            shards: HashMap::new(),
-            directory: ShardDirectory::new(vec![]),
-            address_directory,
-            transport: transport.clone(),
-            client_id,
-            rng,
-            on_progress: None,
-            remote: Arc::new(NoRemote),
-        }
-    }
-}
-
 impl<
     K: Key,
     V: Value,
@@ -150,7 +128,7 @@ impl<
     RD: RemoteShardDirectory<T::Address>,
 > ShardManager<K, V, T, D, RD>
 {
-    pub fn with_remote(
+    pub fn new(
         mut rng: crate::Rng,
         transport: T,
         address_directory: D,

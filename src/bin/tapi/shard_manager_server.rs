@@ -15,6 +15,7 @@ type TapirShardManager = ShardManager<
     String,
     TcpTransport<TapirReplica<String, String>>,
     Arc<InMemoryShardDirectory<TcpAddress>>,
+    HttpDiscoveryClient,
 >;
 
 struct ShardManagerState {
@@ -38,11 +39,17 @@ impl ShardManagerState {
             persist_dir,
             Arc::clone(&directory),
         );
-        let manager = ShardManager::new(tapirs::Rng::from_seed(thread_rng().r#gen()), transport, Arc::clone(&directory));
+        let discovery_client = Arc::new(HttpDiscoveryClient::new(discovery_url));
+        let manager = ShardManager::new(
+            tapirs::Rng::from_seed(thread_rng().r#gen()),
+            transport,
+            Arc::clone(&directory),
+            Arc::clone(&discovery_client),
+        );
         Self {
             manager: tokio::sync::Mutex::new(manager),
             directory,
-            discovery_client: Arc::new(HttpDiscoveryClient::new(discovery_url)),
+            discovery_client,
         }
     }
 }
