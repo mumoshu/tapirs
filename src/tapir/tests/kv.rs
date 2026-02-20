@@ -13,7 +13,7 @@ use crate::{
     TapirClient, TapirReplica, TapirTimestamp, Transport as _,
 };
 use futures::future::join_all;
-use rand::{rngs::StdRng, thread_rng, Rng, SeedableRng};
+use rand::{rngs::StdRng, seq::SliceRandom, thread_rng, Rng, SeedableRng};
 use std::{
     collections::BTreeMap,
     sync::{
@@ -521,7 +521,7 @@ fn build_shard_faulty(
     registry: &ChannelRegistry<TapirReplica<K, V>>,
     config: &NetworkFaultConfig,
     seed: u64,
-    directory: &Arc<InMemoryShardDirectory<usize>>,
+    per_replica_locals: &[Arc<InMemoryShardDirectory<usize>>],
 ) -> Vec<Arc<IrReplica<TapirReplica<K, V>, FaultyTransport>>> {
     let initial_address = registry.len();
     let membership = IrMembership::new(
@@ -530,13 +530,18 @@ fn build_shard_faulty(
             .collect::<Vec<_>>(),
     );
 
+    // Seed each replica's local directory with the shard membership.
+    for local in per_replica_locals.iter().take(num_replicas) {
+        local.put(shard, membership.clone(), 0);
+    }
+
     let replicas = (0..num_replicas)
         .map(|i| {
             let node_seed = seed.wrapping_add(initial_address as u64 + i as u64);
             let config = config.clone();
             let membership = membership.clone();
             let replica_rng = rng.fork();
-            let dir = Arc::clone(directory);
+            let dir = Arc::clone(&per_replica_locals[i]);
 
             Arc::new_cyclic(
                 |weak: &std::sync::Weak<IrReplica<TapirReplica<K, V>, FaultyTransport>>| {
@@ -552,8 +557,6 @@ fn build_shard_faulty(
         })
         .collect::<Vec<_>>();
 
-    directory.put(shard, membership, 0);
-
     replicas
 }
 
@@ -563,13 +566,13 @@ fn build_clients_faulty(
     registry: &ChannelRegistry<TapirReplica<K, V>>,
     config: &NetworkFaultConfig,
     seed: u64,
-    directory: &Arc<InMemoryShardDirectory<usize>>,
+    directories: &[Arc<InMemoryShardDirectory<usize>>],
 ) -> (Vec<Arc<TapirClient<K, V, FaultyTransport>>>, Vec<FaultyTransport>) {
     let mut clients = Vec::new();
     let mut transports = Vec::new();
     for i in 0..num_clients {
         let client_seed = seed.wrapping_add(10000 + i as u64);
-        let channel = registry.channel(move |_, _| unreachable!(), Arc::clone(directory));
+        let channel = registry.channel(move |_, _| unreachable!(), Arc::clone(&directories[i]));
         let transport = FaultyChannelTransport::new(channel, config.clone(), client_seed);
         transports.push(transport.clone());
         clients.push(Arc::new(TapirClient::new(rng.fork(), transport)));
@@ -577,6 +580,8 @@ fn build_clients_faulty(
     (clients, transports)
 }
 
+/// Returns (shards, clients, client_transports, registry, node_shard_sets).
+/// `node_shard_sets[node_idx]` = set of ShardNumbers assigned to that node.
 fn build_sharded_kv_faulty(
     rng: &mut crate::Rng,
     linearizable: bool,
@@ -584,14 +589,17 @@ fn build_sharded_kv_faulty(
     num_clients: usize,
     config: &NetworkFaultConfig,
     seed: u64,
-    directory: &Arc<InMemoryShardDirectory<usize>>,
+    node_locals: &[Arc<InMemoryShardDirectory<usize>>],
+    client_locals: &[Arc<InMemoryShardDirectory<usize>>],
 ) -> (
     Vec<Vec<Arc<IrReplica<TapirReplica<K, V>, FaultyTransport>>>>,
     Vec<Arc<TapirClient<K, V, FaultyTransport>>>,
     Vec<FaultyTransport>,
     ChannelRegistry<TapirReplica<K, V>>,
+    Vec<std::collections::HashSet<ShardNumber>>,
 ) {
     let num_shards = replica_counts.len();
+    let num_nodes = node_locals.len();
 
     init_tracing();
 
@@ -603,26 +611,45 @@ fn build_sharded_kv_faulty(
 
     let registry = ChannelRegistry::default();
 
+    // Use a local seeded RNG for node assignment shuffling (deterministic).
+    let mut assign_rng = StdRng::seed_from_u64(seed.wrapping_add(99999));
+
+    // Track which shards each node hosts (for own_shards registration).
+    let mut node_shard_sets: Vec<std::collections::HashSet<ShardNumber>> =
+        (0..num_nodes).map(|_| std::collections::HashSet::new()).collect();
+
     let mut shards = Vec::new();
     for shard in 0..num_shards {
         let shard_seed = seed.wrapping_add(shard as u64 * 100);
+        let count = replica_counts[shard];
+
+        // Shuffle node indices — take first `count` for no same-shard collision.
+        let mut node_indices: Vec<usize> = (0..num_nodes).collect();
+        node_indices.shuffle(&mut assign_rng);
+        let per_replica_locals: Vec<_> = (0..count)
+            .map(|r| {
+                node_shard_sets[node_indices[r]].insert(ShardNumber(shard as u32));
+                Arc::clone(&node_locals[node_indices[r]])
+            })
+            .collect();
+
         let replicas = build_shard_faulty(
             rng,
             ShardNumber(shard as u32),
             linearizable,
-            replica_counts[shard],
+            count,
             &registry,
             config,
             shard_seed,
-            directory,
+            &per_replica_locals,
         );
         shards.push(replicas);
     }
 
     let (clients, client_transports) =
-        build_clients_faulty(rng, num_clients, &registry, config, seed.wrapping_add(5000), directory);
+        build_clients_faulty(rng, num_clients, &registry, config, seed.wrapping_add(5000), client_locals);
 
-    (shards, clients, client_transports, registry)
+    (shards, clients, client_transports, registry, node_shard_sets)
 }
 
 /// Build non-overlapping key ranges covering `[0, num_keys)` across shards.
@@ -708,31 +735,62 @@ async fn fuzz_tapir_transactions() {
     });
     eprintln!("fuzz_tapir_transactions: num_shards={num_shards} replica_counts={replica_counts:?} seed={seed}");
 
-    // Create shared address directory and discovery for sync testing.
-    let address_directory = Arc::new(InMemoryShardDirectory::new());
-    let discovery = Arc::new(InMemoryRemoteDirectory::<usize>::new());
-    let disc_dir = CachingShardDirectory::new(
-        Arc::clone(&address_directory),
-        Arc::clone(&discovery),
-        Duration::from_millis(500),
-    );
-    // All replicas share one InMemoryShardDirectory, so on_membership_changed
-    // writes are instantly visible. Register all shards as own_shards so PUSH
-    // syncs them to remote (verified at end of test). Commit 6 will replace
-    // this with per-node directories where PUSH filtering matters.
-    for s in 0..num_shards {
-        disc_dir.add_own_shard(ShardNumber(s));
-    }
+    // Pre-build 8 potential new shard replica counts (for splits and compacts).
+    // Generated early so we know the max replica count for node allocation.
+    let new_shard_replica_counts: Vec<usize> = (0..8)
+        .map(|_| [3, 5, 7][rng.gen_range(0..3usize)])
+        .collect();
 
-    let (shards, clients, client_transports, registry) = build_sharded_kv_faulty(
+    let sync_interval = Duration::from_millis(200);
+    let cluster_remote = Arc::new(InMemoryRemoteDirectory::<usize>::new());
+
+    // Create simulated nodes: num_nodes = max replica count across all shards
+    // (guarantees no 2 replicas of same shard on same node).
+    let num_nodes = replica_counts.iter()
+        .chain(new_shard_replica_counts.iter())
+        .copied().max().unwrap();
+    let node_locals: Vec<Arc<InMemoryShardDirectory<usize>>> = (0..num_nodes)
+        .map(|_| Arc::new(InMemoryShardDirectory::new()))
+        .collect();
+    let node_cachings: Vec<_> = node_locals.iter()
+        .map(|local| CachingShardDirectory::new(
+            Arc::clone(local), Arc::clone(&cluster_remote), sync_interval,
+        ))
+        .collect();
+
+    // Create client directories (one per client, separate from replica nodes).
+    let client_locals: Vec<Arc<InMemoryShardDirectory<usize>>> = (0..num_clients)
+        .map(|_| Arc::new(InMemoryShardDirectory::new()))
+        .collect();
+    let client_cachings: Vec<_> = client_locals.iter()
+        .map(|local| CachingShardDirectory::new(
+            Arc::clone(local), Arc::clone(&cluster_remote), sync_interval,
+        ))
+        .collect();
+
+    let (shards, clients, client_transports, registry, node_shard_sets) = build_sharded_kv_faulty(
         &mut lib_rng,
         true,
         &replica_counts,
         num_clients,
         &config,
         seed,
-        &address_directory,
+        &node_locals,
+        &client_locals,
     );
+
+    // Register own_shards on each node's CachingShardDirectory for PUSH filtering.
+    for (node_idx, shard_set) in node_shard_sets.iter().enumerate() {
+        for &shard in shard_set {
+            node_cachings[node_idx].add_own_shard(shard);
+        }
+    }
+
+    // Wait for discovery propagation:
+    //   1st sync cycle (≤200ms): replicas PUSH membership → cluster_remote
+    //   2nd sync cycle (≤400ms): clients PULL from cluster_remote → client local
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    tokio::task::yield_now().await;
 
     // Build router for key-to-shard mapping.
     let shard_dir = ShardDirectory::new(build_shard_entries(num_shards, num_keys));
@@ -780,16 +838,25 @@ async fn fuzz_tapir_transactions() {
     // Account for client addresses.
     address_offset += num_clients;
 
-    // Pre-build 8 potential new shard replica groups (for splits and compacts).
-    let new_shard_replica_counts: Vec<usize> = (0..8)
-        .map(|_| [3, 5, 7][rng.gen_range(0..3usize)])
-        .collect();
     let shard_entries = build_shard_entries(num_shards, num_keys);
     let mut new_shard_replicas = Vec::new();
     let mut new_shard_memberships = Vec::new();
+    // Use seeded RNG for node assignment of new shard replicas.
+    let mut new_assign_rng = StdRng::seed_from_u64(seed.wrapping_add(88888));
     for (i, &count) in new_shard_replica_counts.iter().enumerate() {
         let new_shard_num = ShardNumber(num_shards + i as u32);
         let new_seed = seed.wrapping_add(20000 + i as u64 * 100);
+
+        // Assign new shard replicas to existing nodes.
+        let mut node_indices: Vec<usize> = (0..num_nodes).collect();
+        node_indices.shuffle(&mut new_assign_rng);
+        let per_replica_locals: Vec<_> = (0..count)
+            .map(|r| {
+                node_cachings[node_indices[r]].add_own_shard(new_shard_num);
+                Arc::clone(&node_locals[node_indices[r]])
+            })
+            .collect();
+
         let replicas = build_shard_faulty(
             &mut lib_rng,
             new_shard_num,
@@ -798,13 +865,12 @@ async fn fuzz_tapir_transactions() {
             &registry,
             &config,
             new_seed,
-            &address_directory,
+            &per_replica_locals,
         );
         let membership = IrMembership::new(
             (address_offset..address_offset + count).collect(),
         );
         address_offset += count;
-        disc_dir.add_own_shard(new_shard_num);
         new_shard_memberships.push(membership);
         new_shard_replicas.push(replicas);
     }
@@ -1141,7 +1207,7 @@ async fn fuzz_tapir_transactions() {
 
     // Spawn resharding task (admin client workload).
     let reshard_router = Arc::clone(&router);
-    let reshard_address_directory = Arc::clone(&address_directory);
+    let reshard_cluster_remote = Arc::clone(&cluster_remote);
     let reshard_config = config.clone();
     let reshard_shard_entries = shard_entries.clone();
     let reshard_event_log = event_log.clone();
@@ -1150,14 +1216,25 @@ async fn fuzz_tapir_transactions() {
     let reshard_handle = tokio::spawn(async move {
         use crate::tapir::shard_manager::ShardManager;
 
-        // Create ShardManager with its own FaultyChannelTransport.
-        let manager_channel = registry.channel(move |_, _| None, Arc::clone(&reshard_address_directory));
+        // Seed manager's local directory with known memberships.
+        // ShardManager initiates all membership changes (join/leave), so its
+        // directory is always current without background discovery sync.
+        let manager_local = Arc::new(InMemoryShardDirectory::new());
+        for (i, m) in initial_memberships.iter().enumerate() {
+            manager_local.put(ShardNumber(i as u32), m.clone(), 0);
+        }
+        for (i, m) in new_shard_memberships.iter().enumerate() {
+            manager_local.put(ShardNumber(num_shards + i as u32), m.clone(), 0);
+        }
+        let manager_channel = registry.channel(
+            move |_, _| None, Arc::clone(&manager_local),
+        );
         let manager_transport = FaultyChannelTransport::new(
             manager_channel, reshard_config, manager_seed,
         );
         let mut manager = ShardManager::new(
-            manager_rng, manager_transport, reshard_address_directory,
-            Arc::new(InMemoryRemoteDirectory::new()),
+            manager_rng, manager_transport, Arc::clone(&manager_local),
+            Arc::clone(&reshard_cluster_remote),
         );
         for (i, entry) in reshard_shard_entries.iter().enumerate() {
             manager.register_shard(
@@ -1320,39 +1397,33 @@ async fn fuzz_tapir_transactions() {
     // Let replicas drain pending operations after all view changes settle.
     FaultyTransport::sleep(Duration::from_secs(5)).await;
 
-    // Verify address directory is populated with all active shards.
-    // Compact deregisters the source shard, so check the final set rather
-    // than the original 0..num_shards.
+    // Wait for final sync propagation after all workloads complete.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    tokio::task::yield_now().await;
+
+    // Verify cluster_remote has all active shards.
     let active_shards = final_shards.lock().unwrap();
     if let Some(ref shard_list) = *active_shards {
         for &shard in shard_list {
-            if address_directory.get(shard).is_none() {
+            if cluster_remote.get(shard).is_none() {
                 event_log.dump(seed);
                 panic!(
-                    "address directory should contain shard {shard:?} (seed={seed})"
+                    "cluster_remote should contain shard {shard:?} (seed={seed})"
                 );
             }
         }
     } else {
         for s in 0..num_shards {
-            let shard = ShardNumber(s);
-            if address_directory.get(shard).is_none() {
+            if cluster_remote.get(ShardNumber(s)).is_none() {
                 event_log.dump(seed);
-                panic!("address directory should contain shard {s} (seed={seed})");
+                panic!("cluster_remote should contain shard {s} (seed={seed})");
             }
         }
     }
 
-    // Verify discovery received shard 0 via background sync push.
-    tokio::task::yield_now().await;
-    let disc_shard_0 = discovery.get(ShardNumber(0));
-    if disc_shard_0.is_none() {
-        event_log.dump(seed);
-        panic!("discovery should contain shard 0 after sync (seed={seed})");
-    }
-
-    // Keep CachingShardDirectory alive until after assertions.
-    drop(disc_dir);
+    // Keep all discovery infrastructure alive until end of assertions.
+    drop(node_cachings);
+    drop(client_cachings);
 
     // Run invariant checker: serializability, strict serializability,
     // cross-shard atomicity (via dependency graph + real-time ordering).
