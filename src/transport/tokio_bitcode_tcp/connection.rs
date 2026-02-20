@@ -31,10 +31,10 @@ where
     // Check for existing open connection (short lock).
     {
         let conns = inner.connections.lock().unwrap();
-        if let Some(tx) = conns.get(&addr) {
-            if !tx.is_closed() {
-                return tx.clone();
-            }
+        if let Some(tx) = conns.get(&addr)
+            && !tx.is_closed()
+        {
+            return tx.clone();
         }
     }
 

@@ -30,16 +30,16 @@ impl<K: Ord> KeyRange<K> {
     /// a_start < b_end AND b_start < a_end (None = unbounded).
     pub fn overlaps(&self, other: &KeyRange<K>) -> bool {
         // No overlap if self ends before other starts.
-        if let (Some(self_end), Some(other_start)) = (&self.end, &other.start) {
-            if self_end <= other_start {
-                return false;
-            }
+        if let (Some(self_end), Some(other_start)) = (&self.end, &other.start)
+            && self_end <= other_start
+        {
+            return false;
         }
         // No overlap if other ends before self starts.
-        if let (Some(other_end), Some(self_start)) = (&other.end, &self.start) {
-            if other_end <= self_start {
-                return false;
-            }
+        if let (Some(other_end), Some(self_start)) = (&other.end, &self.start)
+            && other_end <= self_start
+        {
+            return false;
         }
         true
     }

@@ -193,11 +193,11 @@ fn handle_request(state: &DiscoveryState, method: &str, path: &str, body: &str) 
         shards.remove(&req.old_id);
         state.tombstones.write().unwrap().insert(req.old_id);
         // Insert new shard with monotonic check.
-        if let Some(existing) = shards.get(&req.new_id) {
-            if existing.view > req.view {
-                tracing::info!(old = req.old_id, new = req.new_id, "shard replaced (new shard stale, kept existing)");
-                return (200, r#"{"ok":true}"#.to_string());
-            }
+        if let Some(existing) = shards.get(&req.new_id)
+            && existing.view > req.view
+        {
+            tracing::info!(old = req.old_id, new = req.new_id, "shard replaced (new shard stale, kept existing)");
+            return (200, r#"{"ok":true}"#.to_string());
         }
         shards.insert(
             req.new_id,
@@ -248,10 +248,10 @@ fn handle_request(state: &DiscoveryState, method: &str, path: &str, body: &str) 
                 };
                 let mut shards = state.shards.write().unwrap();
                 // Reject stale: if current view > incoming view, no-op.
-                if let Some(existing) = shards.get(&id) {
-                    if existing.view > req.view {
-                        return (200, r#"{"ok":true}"#.to_string());
-                    }
+                if let Some(existing) = shards.get(&id)
+                    && existing.view > req.view
+                {
+                    return (200, r#"{"ok":true}"#.to_string());
                 }
                 let membership = ShardMembership {
                     id,
@@ -330,16 +330,16 @@ pub(crate) async fn serve(listener: TcpListener) {
                         if trimmed.is_empty() {
                             break; // End of headers.
                         }
-                        if let Some(val) = trimmed.strip_prefix("Content-Length:") {
-                            if let Ok(len) = val.trim().parse::<usize>() {
-                                content_length = len;
-                            }
+                        if let Some(val) = trimmed.strip_prefix("Content-Length:")
+                            && let Ok(len) = val.trim().parse::<usize>()
+                        {
+                            content_length = len;
                         }
                         // Also accept lowercase per HTTP spec.
-                        if let Some(val) = trimmed.strip_prefix("content-length:") {
-                            if let Ok(len) = val.trim().parse::<usize>() {
-                                content_length = len;
-                            }
+                        if let Some(val) = trimmed.strip_prefix("content-length:")
+                            && let Ok(len) = val.trim().parse::<usize>()
+                        {
+                            content_length = len;
                         }
                     }
 

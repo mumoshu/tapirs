@@ -92,16 +92,16 @@ async fn read_loop_inbound<U: ReplicaUpcalls>(
                     payload,
                 } => {
                     let cb = inner.receive_callback.lock().unwrap().clone();
-                    if let Some(cb) = cb {
-                        if let Some(reply) = cb(from, payload) {
-                            let reply_wire =
-                                WireMessage::<U>::Reply {
-                                    request_id,
-                                    payload: reply,
-                                };
-                            if let Ok(frame) = FrameCodec::encode(&reply_wire) {
-                                let _ = writer.write_all(&frame).await;
-                            }
+                    if let Some(cb) = cb
+                        && let Some(reply) = cb(from, payload)
+                    {
+                        let reply_wire =
+                            WireMessage::<U>::Reply {
+                                request_id,
+                                payload: reply,
+                            };
+                        if let Ok(frame) = FrameCodec::encode(&reply_wire) {
+                            let _ = writer.write_all(&frame).await;
                         }
                     }
                 }

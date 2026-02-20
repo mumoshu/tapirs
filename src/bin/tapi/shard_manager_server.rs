@@ -359,15 +359,15 @@ pub(crate) async fn serve(listener: TcpListener, discovery_url: String) {
                         if trimmed.is_empty() {
                             break;
                         }
-                        if let Some(val) = trimmed.strip_prefix("Content-Length:") {
-                            if let Ok(len) = val.trim().parse::<usize>() {
-                                content_length = len;
-                            }
+                        if let Some(val) = trimmed.strip_prefix("Content-Length:")
+                            && let Ok(len) = val.trim().parse::<usize>()
+                        {
+                            content_length = len;
                         }
-                        if let Some(val) = trimmed.strip_prefix("content-length:") {
-                            if let Ok(len) = val.trim().parse::<usize>() {
-                                content_length = len;
-                            }
+                        if let Some(val) = trimmed.strip_prefix("content-length:")
+                            && let Ok(len) = val.trim().parse::<usize>()
+                        {
+                            content_length = len;
                         }
                     }
 

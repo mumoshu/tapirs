@@ -517,10 +517,10 @@ where
                 }
 
                 // Keep latest version per key
-                if let Some((ts, _)) = seen.get(&ck.key) {
-                    if *ts >= ck.timestamp.0 {
-                        continue;
-                    }
+                if let Some((ts, _)) = seen.get(&ck.key)
+                    && *ts >= ck.timestamp.0
+                {
+                    continue;
                 }
                 seen.insert(ck.key.clone(), (ck.timestamp.0, entry));
             }

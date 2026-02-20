@@ -86,10 +86,10 @@ impl<F: Future<Output = Result<(), StorageError>>> Future for FaultyReadFuture<F
 
         // 1. Apply latency (once, before first poll of inner)
         if !this.latency_applied {
-            if let Some(latency) = this.state.lock().unwrap().config.slow_io_latency {
-                if latency > Duration::ZERO {
-                    std::thread::sleep(latency);
-                }
+            if let Some(latency) = this.state.lock().unwrap().config.slow_io_latency
+                && latency > Duration::ZERO
+            {
+                std::thread::sleep(latency);
             }
             this.latency_applied = true;
         }
@@ -160,10 +160,10 @@ impl<F: Future<Output = Result<(), StorageError>>> Future for FaultyWriteFuture<
 
         // 2. Apply latency
         if !this.latency_applied {
-            if let Some(latency) = this.state.lock().unwrap().config.slow_io_latency {
-                if latency > Duration::ZERO {
-                    std::thread::sleep(latency);
-                }
+            if let Some(latency) = this.state.lock().unwrap().config.slow_io_latency
+                && latency > Duration::ZERO
+            {
+                std::thread::sleep(latency);
             }
             this.latency_applied = true;
         }
@@ -210,10 +210,10 @@ impl<F: Future<Output = Result<(), StorageError>>> Future for FaultyFsyncFuture<
 
         // 1. Apply latency
         if !this.latency_applied {
-            if let Some(latency) = this.state.lock().unwrap().config.slow_io_latency {
-                if latency > Duration::ZERO {
-                    std::thread::sleep(latency);
-                }
+            if let Some(latency) = this.state.lock().unwrap().config.slow_io_latency
+                && latency > Duration::ZERO
+            {
+                std::thread::sleep(latency);
             }
             this.latency_applied = true;
         }

@@ -147,10 +147,10 @@ fn wait_for_service(
         }
         // Check container health every 2 iterations (every ~1s).
         check_counter += 1;
-        if let Some(cname) = container {
-            if check_counter % 2 == 0 {
-                check_container_running(cname)?;
-            }
+        if let Some(cname) = container
+            && check_counter % 2 == 0
+        {
+            check_container_running(cname)?;
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
@@ -167,13 +167,10 @@ fn send_admin_command(addr: &str, json: &str) -> Result<String, String> {
     stream
         .shutdown(std::net::Shutdown::Write)
         .map_err(|e| format!("shutdown write to {addr}: {e}"))?;
-    let mut response = String::new();
     let reader = std::io::BufReader::new(&stream);
-    for line_result in reader.lines() {
-        let l = line_result.map_err(|e| format!("read from {addr}: {e}"))?;
-        response = l;
-        break;
-    }
+    let response = reader.lines().next()
+        .unwrap_or(Ok(String::new()))
+        .map_err(|e| format!("read from {addr}: {e}"))?;
     Ok(response)
 }
 
@@ -601,11 +598,11 @@ pub fn get_replicas() -> Result<(), String> {
     for (name, admin_addr) in &all_nodes {
         match send_admin_command(admin_addr, r#"{"command":"status"}"#) {
             Ok(resp) => {
-                if let Ok(status) = serde_json::from_str::<StatusResp>(&resp) {
-                    if let Some(shards) = status.shards {
-                        for s in shards {
-                            entries.push((s.shard, name.clone(), s.listen_addr));
-                        }
+                if let Ok(status) = serde_json::from_str::<StatusResp>(&resp)
+                    && let Some(shards) = status.shards
+                {
+                    for s in shards {
+                        entries.push((s.shard, name.clone(), s.listen_addr));
                     }
                 }
             }
@@ -627,18 +624,16 @@ fn get_compose_network() -> Result<String, String> {
     // Try to get the network name from docker compose.
     let output = docker_compose_output(&["config", "--format", "json"])?;
     // Parse JSON to find network names.
-    if let Ok(config) = serde_json::from_str::<serde_json::Value>(&output) {
-        if let Some(networks) = config.get("networks") {
-            if let Some(obj) = networks.as_object() {
-                for (_, net) in obj {
-                    if let Some(name) = net.get("name") {
-                        if let Some(s) = name.as_str() {
-                            if s.contains("tapir-net") {
-                                return Ok(s.to_string());
-                            }
-                        }
-                    }
-                }
+    if let Ok(config) = serde_json::from_str::<serde_json::Value>(&output)
+        && let Some(networks) = config.get("networks")
+        && let Some(obj) = networks.as_object()
+    {
+        for (_, net) in obj {
+            if let Some(name) = net.get("name")
+                && let Some(s) = name.as_str()
+                && s.contains("tapir-net")
+            {
+                return Ok(s.to_string());
             }
         }
     }
