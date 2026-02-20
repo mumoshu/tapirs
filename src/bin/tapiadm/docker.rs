@@ -144,7 +144,7 @@ fn wait_for_service(
         // Check container health every 2 iterations (every ~1s).
         check_counter += 1;
         if let Some(cname) = container
-            && check_counter % 2 == 0
+            && check_counter.is_multiple_of(2)
         {
             check_container_running(cname)?;
         }
