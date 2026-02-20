@@ -150,8 +150,7 @@ impl<F: Future<Output = Result<(), StorageError>>> Future for FaultyWriteFuture<
         // 1. Check ENOSPC before attempting write
         if !this.enospc_checked {
             if Self::should_fail_enospc(&this.state, this.buf_size as u64) {
-                return Poll::Ready(Err(StorageError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                return Poll::Ready(Err(StorageError::Io(std::io::Error::other(
                     "No space left on device (simulated)",
                 ))));
             }
@@ -224,8 +223,7 @@ impl<F: Future<Output = Result<(), StorageError>>> Future for FaultyFsyncFuture<
             Poll::Ready(Ok(())) => {
                 // 3. Inject fsync failure
                 if Self::should_fail(&this.state) {
-                    Poll::Ready(Err(StorageError::Io(std::io::Error::new(
-                        std::io::ErrorKind::Other,
+                    Poll::Ready(Err(StorageError::Io(std::io::Error::other(
                         "injected fsync failure",
                     ))))
                 } else {
