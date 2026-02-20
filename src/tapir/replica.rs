@@ -798,7 +798,7 @@ where
         let shard = self.inner.shard();
         let mut changes = Vec::new();
 
-        for (_op_id, entry) in &delta.inconsistent {
+        for entry in delta.inconsistent.values() {
             if let IO::Commit {
                 transaction_id,
                 transaction,
