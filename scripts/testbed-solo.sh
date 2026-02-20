@@ -240,6 +240,17 @@ print_guide() {
   ${BOLD}Node status:${RESET}
     ${TAPI} admin status --admin-listen-addr 127.0.0.1:${ADMIN_PORTS[0]}
 
+  ${BOLD}Clone shard to a new cluster (blue-green compaction):${RESET}
+    # 1. Start a second solo cluster on different ports (edit configs).
+    # 2. Clone shard 0 from this cluster to the new one:
+    tapictl solo clone \\
+      --source-nodes-admin-addrs 127.0.0.1:${ADMIN_PORTS[0]},127.0.0.1:${ADMIN_PORTS[1]},127.0.0.1:${ADMIN_PORTS[2]} \\
+      --source-shard 0 \\
+      --dest-nodes-admin-addrs 127.0.0.1:9021,127.0.0.1:9022,127.0.0.1:9023 \\
+      --dest-shard 0 \\
+      --dest-base-port 7000
+    # 3. Switch clients to the new cluster, tear down the old one.
+
   ${BOLD}Teardown:${RESET}
     scripts/testbed-solo.sh down
 
