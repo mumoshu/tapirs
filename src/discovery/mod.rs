@@ -1,3 +1,5 @@
+pub mod tapir;
+
 use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::str::FromStr;

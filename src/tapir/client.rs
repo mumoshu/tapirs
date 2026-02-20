@@ -115,6 +115,19 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Client<K, V, T> {
 }
 
 impl<K: Key, V: Value, T: TapirTransport<K, V>> Transaction<K, V, T> {
+    /// Read a key within this RW transaction.
+    ///
+    /// This is an **inconsistent** read — it reaches a single replica via
+    /// unlogged read and may return stale data (e.g. when routed to a
+    /// replica outside the quorum that agreed on the latest value, or when
+    /// FINALIZE has not yet been applied). Consistency is guaranteed only
+    /// after both the read and write sets are committed: OCC validates at
+    /// commit time, and a transaction with a stale read fails to commit.
+    /// This avoids redundant coordination at both read and commit time.
+    ///
+    /// If you need a standalone consistent read (not part of a write
+    /// transaction), use [`ReadOnlyTransaction::get`] instead, which provides
+    /// linearizable reads via the validated-read / quorum-read protocol.
     pub fn get(&self, key: impl Into<Sharded<K>>) -> impl Future<Output = Result<Option<V>, TransactionError>> {
         let key = key.into();
         let client = Arc::clone(&self.client);
@@ -167,6 +180,14 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Transaction<K, V, T> {
     /// `[start.key, end.key]`, overlaying the transaction's own buffered writes.
     /// The caller provides the shard explicitly via `start.shard` (must equal
     /// `end.shard`). Multi-shard scans should be split by the caller.
+    ///
+    /// Like [`Transaction::get`], this is an **inconsistent** read — it
+    /// reaches a single replica and may return stale results (e.g. when
+    /// routed to a replica outside the quorum that agreed on the latest
+    /// values, or when FINALIZE has not yet been applied). The scan is
+    /// validated at commit time by OCC (phantom prevention): a transaction
+    /// with a stale scan fails to commit. For a standalone consistent
+    /// scan, use [`ReadOnlyTransaction::scan`] instead.
     pub fn scan(
         &self,
         start: Sharded<K>,
