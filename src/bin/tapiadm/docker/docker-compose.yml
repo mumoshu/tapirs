@@ -6,67 +6,129 @@ networks:
         - subnet: 172.28.0.0/24
 
 services:
-  discovery:
+  discovery1:
     image: tapiadm-tapi
     build:
       context: ..
       dockerfile: .tapiadm/Dockerfile
-    command: ["discovery", "--listen-addr", "0.0.0.0:8080"]
-    ports:
-      - "8080:8080"
+    command: ["node", "--config", "/etc/tapi/discovery.toml"]
+    volumes:
+      - ./discovery1.toml:/etc/tapi/discovery.toml:ro
+      - discovery1-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/127.0.0.1/6000' 2>/dev/null || exit 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
     networks:
       tapir-net:
-        ipv4_address: 172.28.0.2
+        ipv4_address: 172.28.0.4
+
+  discovery2:
+    image: tapiadm-tapi
+    command: ["node", "--config", "/etc/tapi/discovery.toml"]
+    volumes:
+      - ./discovery2.toml:/etc/tapi/discovery.toml:ro
+      - discovery2-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/127.0.0.1/6000' 2>/dev/null || exit 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
+    networks:
+      tapir-net:
+        ipv4_address: 172.28.0.5
+
+  discovery3:
+    image: tapiadm-tapi
+    command: ["node", "--config", "/etc/tapi/discovery.toml"]
+    volumes:
+      - ./discovery3.toml:/etc/tapi/discovery.toml:ro
+      - discovery3-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/127.0.0.1/6000' 2>/dev/null || exit 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
+    networks:
+      tapir-net:
+        ipv4_address: 172.28.0.6
 
   shard-manager:
     image: tapiadm-tapi
-    command: ["shard-manager", "--listen-addr", "0.0.0.0:9001", "--discovery-url", "http://172.28.0.2:8080"]
+    command: ["shard-manager", "--listen-addr", "0.0.0.0:9001", "--discovery-tapir-endpoint", "172.28.0.4:6000,172.28.0.5:6000,172.28.0.6:6000"]
     ports:
       - "9001:9001"
     depends_on:
-      - discovery
+      discovery1:
+        condition: service_healthy
+      discovery2:
+        condition: service_healthy
+      discovery3:
+        condition: service_healthy
     networks:
       tapir-net:
         ipv4_address: 172.28.0.3
 
   node1:
     image: tapiadm-tapi
-    command: ["node", "--admin-listen-addr", "0.0.0.0:9000", "--persist-dir", "/data", "--discovery-url", "http://172.28.0.2:8080", "--shard-manager-url", "http://172.28.0.3:9001"]
+    command: ["node", "--admin-listen-addr", "0.0.0.0:9000", "--persist-dir", "/data", "--discovery-tapir-endpoint", "172.28.0.4:6000,172.28.0.5:6000,172.28.0.6:6000", "--shard-manager-url", "http://172.28.0.3:9001"]
     ports:
       - "9011:9000"
     volumes:
       - node1-data:/data
     depends_on:
-      - discovery
-      - shard-manager
+      discovery1:
+        condition: service_healthy
+      discovery2:
+        condition: service_healthy
+      discovery3:
+        condition: service_healthy
+      shard-manager:
+        condition: service_started
     networks:
       tapir-net:
         ipv4_address: 172.28.0.11
 
   node2:
     image: tapiadm-tapi
-    command: ["node", "--admin-listen-addr", "0.0.0.0:9000", "--persist-dir", "/data", "--discovery-url", "http://172.28.0.2:8080", "--shard-manager-url", "http://172.28.0.3:9001"]
+    command: ["node", "--admin-listen-addr", "0.0.0.0:9000", "--persist-dir", "/data", "--discovery-tapir-endpoint", "172.28.0.4:6000,172.28.0.5:6000,172.28.0.6:6000", "--shard-manager-url", "http://172.28.0.3:9001"]
     ports:
       - "9012:9000"
     volumes:
       - node2-data:/data
     depends_on:
-      - discovery
-      - shard-manager
+      discovery1:
+        condition: service_healthy
+      discovery2:
+        condition: service_healthy
+      discovery3:
+        condition: service_healthy
+      shard-manager:
+        condition: service_started
     networks:
       tapir-net:
         ipv4_address: 172.28.0.12
 
   node3:
     image: tapiadm-tapi
-    command: ["node", "--admin-listen-addr", "0.0.0.0:9000", "--persist-dir", "/data", "--discovery-url", "http://172.28.0.2:8080", "--shard-manager-url", "http://172.28.0.3:9001"]
+    command: ["node", "--admin-listen-addr", "0.0.0.0:9000", "--persist-dir", "/data", "--discovery-tapir-endpoint", "172.28.0.4:6000,172.28.0.5:6000,172.28.0.6:6000", "--shard-manager-url", "http://172.28.0.3:9001"]
     ports:
       - "9013:9000"
     volumes:
       - node3-data:/data
     depends_on:
-      - discovery
-      - shard-manager
+      discovery1:
+        condition: service_healthy
+      discovery2:
+        condition: service_healthy
+      discovery3:
+        condition: service_healthy
+      shard-manager:
+        condition: service_started
     networks:
       tapir-net:
         ipv4_address: 172.28.0.13
@@ -89,6 +151,9 @@ services:
       - tools
 
 volumes:
+  discovery1-data:
+  discovery2-data:
+  discovery3-data:
   node1-data:
   node2-data:
   node3-data:

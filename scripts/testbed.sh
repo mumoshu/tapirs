@@ -6,9 +6,12 @@
 #   scripts/testbed.sh up      Build binaries, create cluster, smoke-test, print guide
 #   scripts/testbed.sh down    Tear down all testbed resources
 #
-# The cluster runs in Docker: 2 shards x 3 replicas across 3 nodes,
-# with discovery (port 8080), shard-manager (port 9001), and admin
-# ports on 9011-9013.
+# Two-tier deployment:
+#   Tier 1 — Discovery store: 3-node single-shard TAPIR cluster (static membership)
+#   Tier 2 — Main cluster: 2 shards x 3 replicas across 3 nodes
+#
+# Services: shard-manager (port 9001), node admin ports 9011-9013.
+# Discovery store is internal (no host port mapping).
 #
 set -euo pipefail
 
@@ -76,7 +79,7 @@ find_or_build_binaries() {
 # Check that required host ports are free
 # ---------------------------------------------------------------------------
 check_ports() {
-    local ports=(8080 9001 9011 9012 9013)
+    local ports=(9001 9011 9012 9013)
     local busy=()
 
     for port in "${ports[@]}"; do

@@ -18,6 +18,11 @@ struct AdminRequest {
     backup: Option<crate::node::ShardBackup>,
     #[serde(default)]
     new_membership: Option<Vec<String>>,
+    /// Static membership for add_replica. When provided, creates the replica
+    /// with the specified membership directly (no shard-manager involvement).
+    /// When absent, uses create_replica() which coordinates via shard-manager.
+    #[serde(default)]
+    membership: Option<Vec<String>>,
 }
 
 #[derive(Serialize)]
@@ -104,7 +109,7 @@ async fn handle_request(node: &Node, line: &str) -> AdminResponse {
                     backup: None,
                 };
             };
-            let Some(listen_addr_str) = req.listen_addr else {
+            let Some(ref listen_addr_str) = req.listen_addr else {
                 return AdminResponse {
                     ok: false,
                     message: Some("missing 'listen_addr' field".into()),
@@ -123,20 +128,44 @@ async fn handle_request(node: &Node, line: &str) -> AdminResponse {
                     };
                 }
             };
-            let storage_str = req.storage.as_deref().unwrap_or("memory");
-            match node.create_replica(ShardNumber(shard_id), listen_addr, storage_str).await {
-                Ok(()) => AdminResponse {
-                    ok: true,
-                    message: Some(format!("replica for shard {shard_id} created")),
-                    shards: None,
-                    backup: None,
-                },
-                Err(e) => AdminResponse {
-                    ok: false,
-                    message: Some(format!("create_replica failed: {e}")),
-                    shards: None,
-                    backup: None,
-                },
+            if let Some(membership_strs) = req.membership {
+                // Static add with explicit membership (no shard-manager).
+                let cfg = crate::config::ReplicaConfig {
+                    shard: shard_id,
+                    listen_addr: listen_addr_str.clone(),
+                    membership: membership_strs,
+                };
+                match node.add_replica(&cfg).await {
+                    Ok(()) => AdminResponse {
+                        ok: true,
+                        message: Some(format!("replica for shard {shard_id} added with static membership")),
+                        shards: None,
+                        backup: None,
+                    },
+                    Err(e) => AdminResponse {
+                        ok: false,
+                        message: Some(format!("add_replica failed: {e}")),
+                        shards: None,
+                        backup: None,
+                    },
+                }
+            } else {
+                // Dynamic add via shard-manager.
+                let storage_str = req.storage.as_deref().unwrap_or("memory");
+                match node.create_replica(ShardNumber(shard_id), listen_addr, storage_str).await {
+                    Ok(()) => AdminResponse {
+                        ok: true,
+                        message: Some(format!("replica for shard {shard_id} created")),
+                        shards: None,
+                        backup: None,
+                    },
+                    Err(e) => AdminResponse {
+                        ok: false,
+                        message: Some(format!("create_replica failed: {e}")),
+                        shards: None,
+                        backup: None,
+                    },
+                }
             }
         }
         "view_change" => {

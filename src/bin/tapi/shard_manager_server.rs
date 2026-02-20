@@ -165,6 +165,8 @@ async fn handle_request(
             shard: u32,
             key_range_start: Option<String>,
             key_range_end: Option<String>,
+            #[serde(default)]
+            replicas: Option<Vec<String>>,
         }
         let req: RegisterRequest = match serde_json::from_str(body) {
             Ok(r) => r,
@@ -174,21 +176,36 @@ async fn handle_request(
         };
         let shard = ShardNumber(req.shard);
 
-        // Query discovery for shard membership.
-        let existing = state
-            .remote
-            .all()
-            .await
-            .ok()
-            .and_then(|entries| entries.into_iter().find(|(s, _, _)| *s == shard))
-            .map(|(_, m, v)| (m, v))
-            .filter(|(m, _)| m.len() > 0);
+        // Use provided replicas or query discovery for shard membership.
+        let (membership, view) = if let Some(ref replicas) = req.replicas {
+            match strings_to_membership::<TcpAddress>(replicas) {
+                Ok(m) => (m, 0u64),
+                Err(e) => {
+                    return (400, format!(r#"{{"error":"invalid replicas: {e}"}}"#));
+                }
+            }
+        } else {
+            let existing = state
+                .remote
+                .all()
+                .await
+                .ok()
+                .and_then(|entries| entries.into_iter().find(|(s, _, _)| *s == shard))
+                .map(|(_, m, v)| (m, v))
+                .filter(|(m, _)| m.len() > 0);
 
-        let Some((membership, view)) = existing else {
-            return (
-                400,
-                format!(r#"{{"error":"shard {} not found in discovery"}}"#, req.shard),
-            );
+            match existing {
+                Some((m, v)) => (m, v),
+                None => {
+                    return (
+                        400,
+                        format!(
+                            r#"{{"error":"shard {} not found in discovery (provide replicas in request or populate discovery first)"}}"#,
+                            req.shard
+                        ),
+                    );
+                }
+            }
         };
 
         state.directory.put(shard, membership.clone(), view);

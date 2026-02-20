@@ -3,11 +3,11 @@ use std::io::{BufRead, Read, Write};
 use std::path::PathBuf;
 use std::process::Command;
 
-const DISCOVERY_IP: &str = "172.28.0.2";
 const SHARD_MGR_IP: &str = "172.28.0.3";
+const DISCOVERY_IPS: [&str; 3] = ["172.28.0.4", "172.28.0.5", "172.28.0.6"];
+const DISCOVERY_TAPIR_PORT: u16 = 6000;
 const NODE_IPS: [&str; 3] = ["172.28.0.11", "172.28.0.12", "172.28.0.13"];
 const NODE_NAMES: [&str; 3] = ["node1", "node2", "node3"];
-const DISCOVERY_PORT: u16 = 8080;
 const SHARD_MGR_PORT: u16 = 9001;
 const REPLICA_BASE_PORT: u16 = 6000;
 const NUM_SHARDS: u32 = 2;
@@ -193,6 +193,34 @@ fn http_post(host: &str, port: u16, path: &str, body: &str) -> Result<String, St
     Ok(body)
 }
 
+fn discovery_tapir_endpoint() -> String {
+    DISCOVERY_IPS
+        .iter()
+        .map(|ip| format!("{ip}:{DISCOVERY_TAPIR_PORT}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn generate_discovery_configs() -> Result<(), String> {
+    let wd = work_dir();
+    let membership: Vec<String> = DISCOVERY_IPS
+        .iter()
+        .map(|ip| format!("{ip}:{DISCOVERY_TAPIR_PORT}"))
+        .collect();
+    let membership_toml: Vec<String> = membership.iter().map(|a| format!("\"{a}\"")).collect();
+    let membership_str = membership_toml.join(", ");
+
+    for (i, ip) in DISCOVERY_IPS.iter().enumerate() {
+        let n = i + 1;
+        let config = format!(
+            "admin_listen_addr = \"0.0.0.0:9000\"\npersist_dir = \"/data\"\n\n[[replicas]]\nshard = 0\nlisten_addr = \"{ip}:{DISCOVERY_TAPIR_PORT}\"\nmembership = [{membership_str}]\n"
+        );
+        std::fs::write(wd.join(format!("discovery{n}.toml")), config)
+            .map_err(|e| format!("write discovery{n}.toml: {e}"))?;
+    }
+    Ok(())
+}
+
 pub fn up() -> Result<(), String> {
     let wd = work_dir();
     let root = project_root();
@@ -208,37 +236,34 @@ pub fn up() -> Result<(), String> {
     std::fs::write(root.join(".dockerignore"), DOCKERIGNORE)
         .map_err(|e| format!("write .dockerignore: {e}"))?;
 
+    // 3. Generate discovery store configs (3-node static membership TAPIR cluster).
+    generate_discovery_configs()?;
+
     // Initialize nodes.json.
     write_dynamic_nodes(&[]);
 
-    // 3. Build image.
+    // 4. Build image.
     println!("[1/7] Building Docker image (this may take a few minutes on first run)...");
     docker_compose(&["build"])?;
     println!("[1/7] Docker image built.");
 
-    // 4. Start discovery.
-    println!("[2/7] Starting discovery service...");
-    docker_compose(&["up", "-d", "discovery"])?;
-    println!("  Waiting for discovery to become ready...");
-    wait_for_service(
-        &format!("127.0.0.1:{DISCOVERY_PORT}"),
-        30,
-        Some("tapiadm-discovery-1"),
-    )?;
-    println!("[2/7] Discovery ready at 127.0.0.1:{DISCOVERY_PORT}");
+    // 5. Start discovery store (3-node TAPIR cluster with static membership).
+    println!("[2/7] Starting discovery store (3-node TAPIR cluster)...");
+    docker_compose(&["up", "-d", "discovery1", "discovery2", "discovery3"])?;
+    println!("  Discovery containers starting (healthchecks ensure readiness).");
 
-    // 5. Start shard-manager.
+    // 6. Start shard-manager (depends_on discovery healthy).
     println!("[3/7] Starting shard-manager...");
     docker_compose(&["up", "-d", "shard-manager"])?;
     println!("  Waiting for shard-manager to become ready...");
     wait_for_service(
         &format!("127.0.0.1:{SHARD_MGR_PORT}"),
-        30,
+        90,
         Some("tapiadm-shard-manager-1"),
     )?;
     println!("[3/7] Shard-manager ready at 127.0.0.1:{SHARD_MGR_PORT}");
 
-    // 6. Start nodes.
+    // 7. Start nodes.
     println!("[4/7] Starting nodes...");
     docker_compose(&["up", "-d", "node1", "node2", "node3"])?;
     for (i, _ip) in NODE_IPS.iter().enumerate() {
@@ -250,17 +275,24 @@ pub fn up() -> Result<(), String> {
     }
     println!("[4/7] All nodes ready.");
 
-    // 7. Bootstrap replicas.
+    // 8. Bootstrap replicas with static membership (no shard-manager involvement).
     println!("[5/7] Bootstrapping replicas ({NUM_SHARDS} shards x {} replicas)...", NODE_IPS.len());
     for shard in 0..NUM_SHARDS {
-        let mut replicas: Vec<String> = Vec::new();
+        // Build full membership list for this shard.
+        let membership: Vec<String> = NODE_IPS
+            .iter()
+            .map(|ip| format!("{ip}:{}", REPLICA_BASE_PORT + shard as u16))
+            .collect();
+        let membership_json: Vec<String> =
+            membership.iter().map(|r| format!("\"{r}\"")).collect();
+        let membership_str = membership_json.join(",");
+
         for (i, ip) in NODE_IPS.iter().enumerate() {
-            let listen_port = REPLICA_BASE_PORT + shard as u16;
-            let listen_addr = format!("{ip}:{listen_port}");
+            let listen_addr = format!("{ip}:{}", REPLICA_BASE_PORT + shard as u16);
             let admin_addr = format!("127.0.0.1:{}", HOST_ADMIN_BASE + i as u16);
 
             let cmd = format!(
-                r#"{{"command":"add_replica","shard":{shard},"listen_addr":"{listen_addr}"}}"#
+                r#"{{"command":"add_replica","shard":{shard},"listen_addr":"{listen_addr}","membership":[{membership_str}]}}"#
             );
             let resp = send_admin_command(&admin_addr, &cmd)?;
             if !resp.contains("\"ok\":true") && !resp.contains("\"ok\": true") {
@@ -273,44 +305,29 @@ pub fn up() -> Result<(), String> {
                 "  Shard {shard}: replica on {} at {listen_addr}",
                 NODE_NAMES[i]
             );
-
-            replicas.push(listen_addr);
-
-            // Register cumulative membership with discovery.
-            let replicas_json: Vec<String> =
-                replicas.iter().map(|r| format!("\"{r}\"")).collect();
-            let body = format!(r#"{{"replicas":[{}]}}"#, replicas_json.join(","));
-            let disc_resp = http_post(
-                "127.0.0.1",
-                DISCOVERY_PORT,
-                &format!("/v1/shards/{shard}"),
-                &body,
-            )?;
-            if !disc_resp.contains("\"ok\":true") && !disc_resp.contains("\"ok\": true") {
-                return Err(format!(
-                    "discovery register shard {shard}: {disc_resp}"
-                ));
-            }
-
-            // Wait for view change settlement.
-            if replicas.len() > 1 {
-                println!("  Waiting for view change settlement...");
-                std::thread::sleep(std::time::Duration::from_secs(5));
-            }
         }
+
+        // Wait for view change settlement after all replicas are up.
+        println!("  Waiting for view change settlement...");
+        std::thread::sleep(std::time::Duration::from_secs(5));
     }
 
     println!("[5/7] Replicas bootstrapped.");
 
-    // 8. Register shard layout with shard-manager.
+    // 9. Register shard layout with shard-manager (writes to TAPIR discovery store).
     println!("[6/7] Registering shard layout with shard-manager...");
     let split_key = compute_split_key(NUM_SHARDS);
     for shard in 0..NUM_SHARDS {
         let (start, end) = shard_key_range(shard, NUM_SHARDS, &split_key);
+        let replicas: Vec<String> = NODE_IPS
+            .iter()
+            .map(|ip| format!("{ip}:{}", REPLICA_BASE_PORT + shard as u16))
+            .collect();
         let body = serde_json::json!({
             "shard": shard,
             "key_range_start": start,
             "key_range_end": end,
+            "replicas": replicas,
         })
         .to_string();
         let resp = http_post("127.0.0.1", SHARD_MGR_PORT, "/v1/register", &body)?;
@@ -322,12 +339,9 @@ pub fn up() -> Result<(), String> {
 
     println!("[6/7] Shard layout registered.");
 
-    // 9. Generate client.toml.
+    // 10. Generate client.toml.
     println!("[7/7] Generating client configuration...");
     let mut client_toml = String::new();
-    client_toml.push_str(&format!(
-        "discovery_url = \"http://{DISCOVERY_IP}:{DISCOVERY_PORT}\"\n\n"
-    ));
     for shard in 0..NUM_SHARDS {
         let (start, end) = shard_key_range(shard, NUM_SHARDS, &split_key);
         client_toml.push_str("[[shards]]\n");
@@ -349,12 +363,15 @@ pub fn up() -> Result<(), String> {
     std::fs::write(wd.join("client.toml"), &client_toml)
         .map_err(|e| format!("write client.toml: {e}"))?;
 
-    // 10. Print instructions.
+    // 11. Print instructions.
+    let endpoint = discovery_tapir_endpoint();
     println!();
     println!("TAPIR cluster is ready!");
     println!();
+    println!("Discovery store: {endpoint}");
+    println!();
     println!("REPL access:");
-    println!("  cd {WORK_DIR} && docker compose run --rm client");
+    println!("  cd {WORK_DIR} && docker compose --profile tools run --rm client");
     println!("  # begin; put hello world; commit; begin; get hello; abort");
     println!();
     println!("Nodes:");
@@ -438,6 +455,7 @@ pub fn add_node(name: Option<String>) -> Result<(), String> {
 
     // Run the container.
     println!("Creating node {name}...");
+    let endpoint = discovery_tapir_endpoint();
     docker_cmd(&[
         "run",
         "-d",
@@ -455,8 +473,8 @@ pub fn add_node(name: Option<String>) -> Result<(), String> {
         "0.0.0.0:9000",
         "--persist-dir",
         "/data",
-        "--discovery-url",
-        &format!("http://{DISCOVERY_IP}:{DISCOVERY_PORT}"),
+        "--discovery-tapir-endpoint",
+        &endpoint,
         "--shard-manager-url",
         &format!("http://{SHARD_MGR_IP}:{SHARD_MGR_PORT}"),
     ])?;
