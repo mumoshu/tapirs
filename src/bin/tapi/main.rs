@@ -41,6 +41,12 @@ enum Command {
         persist_dir: Option<String>,
         #[arg(long)]
         discovery_url: Option<String>,
+        /// Path to a JSON file describing shard topology for discovery.
+        ///
+        /// Same format as `tapi client --discovery-json`. Used as
+        /// CachingShardDirectory's remote backend via DiscoveryBackend::Json.
+        #[arg(long)]
+        discovery_json: Option<String>,
         #[arg(long)]
         shard_manager_url: Option<String>,
     },
@@ -189,6 +195,7 @@ async fn main() {
             admin_listen_addr,
             persist_dir,
             discovery_url,
+            discovery_json,
             shard_manager_url,
         } => {
             let mut cfg = config_path
@@ -207,7 +214,7 @@ async fn main() {
             if let Some(url) = shard_manager_url {
                 cfg.shard_manager_url = Some(url);
             }
-            node::run(cfg).await;
+            node::run(cfg, discovery_json).await;
         }
         Command::Admin { action } => {
             admin_client::run(action).await;

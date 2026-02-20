@@ -33,6 +33,15 @@ impl<A: Clone + Send + Sync + 'static> JsonRemoteShardDirectory<A> {
             _dns_tasks: Vec::new(),
         }
     }
+
+    /// Add static membership entries to an existing directory (e.g. after
+    /// constructing with `with_dns` for DNS shards).
+    pub fn add_static_shards(&mut self, shards: Vec<(ShardNumber, IrMembership<A>)>) {
+        let mut state = self.state.write().unwrap();
+        for (shard, membership) in shards {
+            state.insert(shard, membership);
+        }
+    }
 }
 
 impl<A> JsonRemoteShardDirectory<A>

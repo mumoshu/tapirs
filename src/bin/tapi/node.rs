@@ -1,5 +1,6 @@
 use crate::config::{NodeConfig, ReplicaConfig};
 use crate::discovery::HttpDiscoveryClient;
+use crate::discovery_backend::DiscoveryBackend;
 use rand::{thread_rng, Rng as _};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -49,7 +50,7 @@ pub struct Node {
     /// Holds the CachingShardDirectory alive so its background sync task
     /// continues running. When None, no discovery sync is active.
     /// Also used to register/unregister own_shards for PUSH filtering.
-    discovery_dir: Option<Arc<CachingShardDirectory<TcpAddress, HttpDiscoveryClient>>>,
+    discovery_dir: Option<Arc<CachingShardDirectory<TcpAddress, DiscoveryBackend>>>,
     shard_manager_url: Option<String>,
 }
 
@@ -65,11 +66,15 @@ impl Node {
     }
 
     pub(crate) fn with_discovery(persist_dir: String, discovery_url: &str) -> Self {
+        let backend = DiscoveryBackend::Http(HttpDiscoveryClient::new(discovery_url));
+        Self::with_discovery_backend(persist_dir, backend)
+    }
+
+    pub(crate) fn with_discovery_backend(persist_dir: String, backend: DiscoveryBackend) -> Self {
         let directory = Arc::new(InMemoryShardDirectory::new());
-        let client = Arc::new(HttpDiscoveryClient::new(discovery_url));
         let discovery_dir = CachingShardDirectory::new(
             Arc::clone(&directory),
-            client,
+            Arc::new(backend),
             std::time::Duration::from_secs(10),
         );
         Self {
@@ -470,7 +475,7 @@ impl Node {
     }
 }
 
-pub async fn run(cfg: NodeConfig) {
+pub async fn run(cfg: NodeConfig, discovery_json: Option<String>) {
     let persist_dir = cfg
         .persist_dir
         .unwrap_or_else(|| "/tmp/tapi".to_string());
@@ -478,12 +483,21 @@ pub async fn run(cfg: NodeConfig) {
         .admin_listen_addr
         .unwrap_or_else(|| "127.0.0.1:9000".to_string());
 
-    let node = match (&cfg.discovery_url, &cfg.shard_manager_url) {
-        (Some(disc), Some(mgr)) => {
-            Arc::new(Node::with_discovery_and_shard_manager(persist_dir, disc, mgr))
+    let node = if let Some(json_path) = discovery_json {
+        let backend = load_json_discovery_backend(&json_path).await;
+        let mut node = Node::with_discovery_backend(persist_dir, backend);
+        if let Some(ref url) = cfg.shard_manager_url {
+            node.shard_manager_url = Some(url.clone());
         }
-        (Some(disc), None) => Arc::new(Node::with_discovery(persist_dir, disc)),
-        _ => Arc::new(Node::new(persist_dir)),
+        Arc::new(node)
+    } else {
+        match (&cfg.discovery_url, &cfg.shard_manager_url) {
+            (Some(disc), Some(mgr)) => {
+                Arc::new(Node::with_discovery_and_shard_manager(persist_dir, disc, mgr))
+            }
+            (Some(disc), None) => Arc::new(Node::with_discovery(persist_dir, disc)),
+            _ => Arc::new(Node::new(persist_dir)),
+        }
     };
 
     for replica_cfg in &cfg.replicas {
@@ -502,4 +516,68 @@ pub async fn run(cfg: NodeConfig) {
         .await
         .expect("failed to listen for Ctrl-C");
     tracing::info!("shutting down");
+}
+
+/// Parse a `--discovery-json` file and build a `DiscoveryBackend::Json`.
+///
+/// Same JSON format as `tapi client --discovery-json`:
+/// - Static: `{"shards":[{"number":0,"membership":["addr:port",...]}]}`
+/// - DNS: `{"shards":[{"number":0,"headless_service":"svc.ns:port"}]}`
+async fn load_json_discovery_backend(json_path: &str) -> DiscoveryBackend {
+    use tapirs::discovery::json::JsonRemoteShardDirectory;
+
+    #[derive(serde::Deserialize)]
+    struct DiscoveryJson {
+        shards: Vec<DiscoveryJsonShard>,
+    }
+    #[derive(serde::Deserialize)]
+    struct DiscoveryJsonShard {
+        number: u32,
+        #[serde(default)]
+        membership: Vec<String>,
+        #[serde(default)]
+        headless_service: Option<String>,
+    }
+
+    let content = std::fs::read_to_string(json_path)
+        .unwrap_or_else(|e| panic!("failed to read discovery JSON {json_path}: {e}"));
+    let discovery: DiscoveryJson = serde_json::from_str(&content)
+        .unwrap_or_else(|e| panic!("failed to parse discovery JSON {json_path}: {e}"));
+
+    // Separate static and DNS shards.
+    let mut static_shards = Vec::new();
+    let mut dns_shards = Vec::new();
+
+    for shard in discovery.shards {
+        let shard_num = ShardNumber(shard.number);
+        if let Some(ref headless) = shard.headless_service {
+            let (host, port_str) = headless.rsplit_once(':')
+                .unwrap_or_else(|| panic!("headless_service '{headless}' missing :port"));
+            let port: u16 = port_str.parse()
+                .unwrap_or_else(|e| panic!("invalid port in '{headless}': {e}"));
+            dns_shards.push((shard_num, host.to_string(), port));
+        } else {
+            let membership = tapirs::discovery::strings_to_membership::<TcpAddress>(&shard.membership)
+                .unwrap_or_else(|e| panic!("invalid membership for shard {}: {e}", shard.number));
+            static_shards.push((shard_num, membership));
+        }
+    }
+
+    let dir = if dns_shards.is_empty() {
+        JsonRemoteShardDirectory::new(static_shards)
+    } else if static_shards.is_empty() {
+        JsonRemoteShardDirectory::with_dns(dns_shards, Duration::from_secs(30))
+            .await
+            .unwrap_or_else(|e| panic!("DNS discovery failed: {e}"))
+    } else {
+        // Mixed mode: build DNS directory first, then add static entries.
+        // Not expected in practice but handle gracefully.
+        let mut dir = JsonRemoteShardDirectory::with_dns(dns_shards, Duration::from_secs(30))
+            .await
+            .unwrap_or_else(|e| panic!("DNS discovery failed: {e}"));
+        dir.add_static_shards(static_shards);
+        dir
+    };
+
+    DiscoveryBackend::Json(dir)
 }
