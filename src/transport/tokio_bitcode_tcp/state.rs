@@ -48,10 +48,6 @@ pub(super) struct TransportInner<U: ReplicaUpcalls> {
 }
 
 impl<U: ReplicaUpcalls> TcpTransport<U> {
-    pub fn new(address: TcpAddress, persist_dir: String) -> Self {
-        Self::with_directory(address, persist_dir, Arc::new(InMemoryShardDirectory::new()))
-    }
-
     pub fn with_directory(
         address: TcpAddress,
         persist_dir: String,

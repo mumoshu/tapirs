@@ -561,6 +561,7 @@ impl<K: Key, V: Value> TapirTransport<K, V> for FaultyChannelTransport<TapirRepl
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::discovery::InMemoryShardDirectory;
     use crate::transport::ChannelRegistry;
     use crate::ir::message::FinalizeInconsistent;
     use crate::ir::{OpId, ClientId};
@@ -574,9 +575,10 @@ mod tests {
         FaultyChannelTransport<TestUpcalls>,
     ) {
         let registry = ChannelRegistry::<TestUpcalls>::default();
+        let dir = Arc::new(InMemoryShardDirectory::new());
 
-        let ch0 = registry.channel(|_from, _msg| None);
-        let ch1 = registry.channel(|_from, _msg| None);
+        let ch0 = registry.channel(|_from, _msg| None, Arc::clone(&dir));
+        let ch1 = registry.channel(|_from, _msg| None, Arc::clone(&dir));
 
         let faulty0 = FaultyChannelTransport::with_seed(ch0, 42);
         let faulty1 = FaultyChannelTransport::with_seed(ch1, 43);
@@ -588,8 +590,9 @@ mod tests {
     fn test_drop_rate_determinism() {
         // Create two transports with same seed and drop_rate
         let registry = ChannelRegistry::<TestUpcalls>::default();
-        let ch1 = registry.channel(|_from, _msg| None);
-        let ch2 = registry.channel(|_from, _msg| None);
+        let dir = Arc::new(InMemoryShardDirectory::new());
+        let ch1 = registry.channel(|_from, _msg| None, Arc::clone(&dir));
+        let ch2 = registry.channel(|_from, _msg| None, Arc::clone(&dir));
 
         let mut config = NetworkFaultConfig::default();
         config.drop_rate = 0.5;
@@ -667,7 +670,8 @@ mod tests {
     #[test]
     fn test_clock_skew() {
         let registry = ChannelRegistry::<TestUpcalls>::default();
-        let ch = registry.channel(|_from, _msg| None);
+        let dir = Arc::new(InMemoryShardDirectory::new());
+        let ch = registry.channel(|_from, _msg| None, Arc::clone(&dir));
         let faulty = FaultyChannelTransport::with_seed(ch.clone(), 42);
 
         let base_time = ch.time();
@@ -713,8 +717,9 @@ mod tests {
     fn test_reorder_buffer_determinism() {
         // Create two transports with same seed
         let registry = ChannelRegistry::<TestUpcalls>::default();
-        let ch1 = registry.channel(|_from, _msg| None);
-        let ch2 = registry.channel(|_from, _msg| None);
+        let dir = Arc::new(InMemoryShardDirectory::new());
+        let ch1 = registry.channel(|_from, _msg| None, Arc::clone(&dir));
+        let ch2 = registry.channel(|_from, _msg| None, Arc::clone(&dir));
 
         let mut config = NetworkFaultConfig::default();
         config.reorder_buffer_size = 5;
@@ -738,7 +743,8 @@ mod tests {
     #[test]
     fn test_duplicate_rate() {
         let registry = ChannelRegistry::<TestUpcalls>::default();
-        let ch = registry.channel(|_from, _msg| None);
+        let dir = Arc::new(InMemoryShardDirectory::new());
+        let ch = registry.channel(|_from, _msg| None, Arc::clone(&dir));
 
         let mut config = NetworkFaultConfig::default();
         config.duplicate_rate = 1.0; // Always duplicate
@@ -802,6 +808,7 @@ mod tests {
 
         // 3. Create ChannelRegistry and FaultyChannelTransports
         let registry = Arc::new(ChannelRegistry::<TestUpcalls>::default());
+        let dir = Arc::new(InMemoryShardDirectory::new());
         let received: Arc<Mutex<Vec<(usize, usize, u64)>>> = Arc::new(Mutex::new(Vec::new()));
         let mut transports = Vec::new();
 
@@ -817,7 +824,7 @@ mod tests {
                         .push((from, node_id, fi.op_id.number));
                 }
                 None
-            });
+            }, Arc::clone(&dir));
             let transport = FaultyChannelTransport::new(ch, config.clone(), seed + node_id as u64);
             transports.push(transport);
         }

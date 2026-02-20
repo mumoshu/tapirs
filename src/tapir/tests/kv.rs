@@ -47,6 +47,7 @@ fn build_shard(
     linearizable: bool,
     num_replicas: usize,
     registry: &ChannelRegistry<TapirReplica<K, V>>,
+    directory: &Arc<InMemoryShardDirectory<usize>>,
 ) -> Vec<Arc<IrReplica<TapirReplica<K, V>, ChannelTransport<TapirReplica<K, V>>>>> {
     let initial_address = registry.len();
     let membership = IrMembership::new(
@@ -58,6 +59,7 @@ fn build_shard(
     fn create_replica(
         rng: &mut crate::Rng,
         registry: &ChannelRegistry<TapirReplica<K, V>>,
+        directory: &Arc<InMemoryShardDirectory<usize>>,
         shard: ShardNumber,
         membership: &IrMembership<usize>,
         linearizable: bool,
@@ -68,7 +70,7 @@ fn build_shard(
             >| {
                 let weak = weak.clone();
                 let channel =
-                    registry.channel(move |from, message| weak.upgrade()?.receive(from, message));
+                    registry.channel(move |from, message| weak.upgrade()?.receive(from, message), Arc::clone(directory));
                 channel.set_shard(shard);
                 let upcalls = TapirReplica::new(shard, linearizable);
                 IrReplica::new(
@@ -83,10 +85,10 @@ fn build_shard(
     }
 
     let replicas = (0..num_replicas)
-        .map(|_| create_replica(rng, &registry, shard, &membership, linearizable))
+        .map(|_| create_replica(rng, &registry, directory, shard, &membership, linearizable))
         .collect::<Vec<_>>();
 
-    registry.put_shard_addresses(shard, membership.clone());
+    directory.put(shard, membership.clone(), 0);
 
     replicas
 }
@@ -95,17 +97,19 @@ fn build_clients(
     rng: &mut crate::Rng,
     num_clients: usize,
     registry: &ChannelRegistry<TapirReplica<K, V>>,
+    directory: &Arc<InMemoryShardDirectory<usize>>,
 ) -> Vec<Arc<TapirClient<K, V, ChannelTransport<TapirReplica<K, V>>>>> {
     fn create_client(
         rng: &mut crate::Rng,
         registry: &ChannelRegistry<TapirReplica<K, V>>,
+        directory: &Arc<InMemoryShardDirectory<usize>>,
     ) -> Arc<TapirClient<K, V, ChannelTransport<TapirReplica<K, V>>>> {
-        let channel = registry.channel(move |_, _| unreachable!());
+        let channel = registry.channel(move |_, _| unreachable!(), Arc::clone(directory));
         Arc::new(TapirClient::new(rng.fork(), channel))
     }
 
     let clients = (0..num_clients)
-        .map(|_| create_client(rng, &registry))
+        .map(|_| create_client(rng, &registry, directory))
         .collect::<Vec<_>>();
 
     clients
@@ -139,6 +143,7 @@ fn build_sharded_kv(
     println!("---------------------------");
 
     let registry = ChannelRegistry::default();
+    let dir = Arc::new(InMemoryShardDirectory::new());
     let mut rng = test_rng(42);
 
     let mut shards = Vec::new();
@@ -149,11 +154,12 @@ fn build_sharded_kv(
             linearizable,
             num_replicas,
             &registry,
+            &dir,
         );
         shards.push(replicas);
     }
 
-    let clients = build_clients(&mut rng, num_clients, &registry);
+    let clients = build_clients(&mut rng, num_clients, &registry, &dir);
 
     (shards, clients)
 }
@@ -515,6 +521,7 @@ fn build_shard_faulty(
     registry: &ChannelRegistry<TapirReplica<K, V>>,
     config: &NetworkFaultConfig,
     seed: u64,
+    directory: &Arc<InMemoryShardDirectory<usize>>,
 ) -> Vec<Arc<IrReplica<TapirReplica<K, V>, FaultyTransport>>> {
     let initial_address = registry.len();
     let membership = IrMembership::new(
@@ -529,12 +536,13 @@ fn build_shard_faulty(
             let config = config.clone();
             let membership = membership.clone();
             let replica_rng = rng.fork();
+            let dir = Arc::clone(directory);
 
             Arc::new_cyclic(
                 |weak: &std::sync::Weak<IrReplica<TapirReplica<K, V>, FaultyTransport>>| {
                     let weak = weak.clone();
                     let channel = registry
-                        .channel(move |from, message| weak.upgrade()?.receive(from, message));
+                        .channel(move |from, message| weak.upgrade()?.receive(from, message), dir);
                     let transport = FaultyChannelTransport::new(channel, config, node_seed);
                     transport.set_shard(shard);
                     let upcalls = TapirReplica::new(shard, linearizable);
@@ -544,7 +552,7 @@ fn build_shard_faulty(
         })
         .collect::<Vec<_>>();
 
-    registry.put_shard_addresses(shard, membership);
+    directory.put(shard, membership, 0);
 
     replicas
 }
@@ -555,12 +563,13 @@ fn build_clients_faulty(
     registry: &ChannelRegistry<TapirReplica<K, V>>,
     config: &NetworkFaultConfig,
     seed: u64,
+    directory: &Arc<InMemoryShardDirectory<usize>>,
 ) -> (Vec<Arc<TapirClient<K, V, FaultyTransport>>>, Vec<FaultyTransport>) {
     let mut clients = Vec::new();
     let mut transports = Vec::new();
     for i in 0..num_clients {
         let client_seed = seed.wrapping_add(10000 + i as u64);
-        let channel = registry.channel(move |_, _| unreachable!());
+        let channel = registry.channel(move |_, _| unreachable!(), Arc::clone(directory));
         let transport = FaultyChannelTransport::new(channel, config.clone(), client_seed);
         transports.push(transport.clone());
         clients.push(Arc::new(TapirClient::new(rng.fork(), transport)));
@@ -575,7 +584,7 @@ fn build_sharded_kv_faulty(
     num_clients: usize,
     config: &NetworkFaultConfig,
     seed: u64,
-    address_directory: Arc<InMemoryShardDirectory<usize>>,
+    directory: &Arc<InMemoryShardDirectory<usize>>,
 ) -> (
     Vec<Vec<Arc<IrReplica<TapirReplica<K, V>, FaultyTransport>>>>,
     Vec<Arc<TapirClient<K, V, FaultyTransport>>>,
@@ -592,7 +601,7 @@ fn build_sharded_kv_faulty(
     );
     eprintln!("---------------------------");
 
-    let registry = ChannelRegistry::with_directory(address_directory);
+    let registry = ChannelRegistry::default();
 
     let mut shards = Vec::new();
     for shard in 0..num_shards {
@@ -605,12 +614,13 @@ fn build_sharded_kv_faulty(
             &registry,
             config,
             shard_seed,
+            directory,
         );
         shards.push(replicas);
     }
 
     let (clients, client_transports) =
-        build_clients_faulty(rng, num_clients, &registry, config, seed.wrapping_add(5000));
+        build_clients_faulty(rng, num_clients, &registry, config, seed.wrapping_add(5000), directory);
 
     (shards, clients, client_transports, registry)
 }
@@ -721,7 +731,7 @@ async fn fuzz_tapir_transactions() {
         num_clients,
         &config,
         seed,
-        Arc::clone(&address_directory),
+        &address_directory,
     );
 
     // Build router for key-to-shard mapping.
@@ -788,6 +798,7 @@ async fn fuzz_tapir_transactions() {
             &registry,
             &config,
             new_seed,
+            &address_directory,
         );
         let membership = IrMembership::new(
             (address_offset..address_offset + count).collect(),
@@ -1140,7 +1151,7 @@ async fn fuzz_tapir_transactions() {
         use crate::tapir::shard_manager::ShardManager;
 
         // Create ShardManager with its own FaultyChannelTransport.
-        let manager_channel = registry.channel(move |_, _| None);
+        let manager_channel = registry.channel(move |_, _| None, Arc::clone(&reshard_address_directory));
         let manager_transport = FaultyChannelTransport::new(
             manager_channel, reshard_config, manager_seed,
         );
@@ -1419,10 +1430,11 @@ async fn test_add_replica_with_preload() {
     let mut rng = test_rng(42);
     let shard = ShardNumber(0);
     let registry = ChannelRegistry::default();
+    let dir = Arc::new(InMemoryShardDirectory::new());
 
     // Build 3-replica shard and 1 client.
-    let replicas = build_shard(&mut rng, shard, true, 3, &registry);
-    let clients = build_clients(&mut rng, 1, &registry);
+    let replicas = build_shard(&mut rng, shard, true, 3, &registry, &dir);
+    let clients = build_clients(&mut rng, 1, &registry, &dir);
     let shard_dir = ShardDirectory::new(vec![ShardEntry {
         shard,
         range: KeyRange {
@@ -1451,7 +1463,7 @@ async fn test_add_replica_with_preload() {
         >| {
             let weak = weak.clone();
             let channel =
-                registry.channel(move |from, message| weak.upgrade()?.receive(from, message));
+                registry.channel(move |from, message| weak.upgrade()?.receive(from, message), Arc::clone(&dir));
             channel.set_shard(shard);
             let upcalls = TapirReplica::new(shard, true);
             // Start with membership=[self] only — the real membership comes via AddMember.
@@ -1466,11 +1478,10 @@ async fn test_add_replica_with_preload() {
     );
 
     // Set up ShardManager with the original 3-replica membership.
-    let manager_channel = registry.channel(move |_, _| None);
+    let manager_channel = registry.channel(move |_, _| None, Arc::clone(&dir));
     let original_membership =
         IrMembership::new((0..3).collect::<Vec<_>>());
-    let address_directory = Arc::clone(registry.directory());
-    let mut manager = ShardManager::new(rng.fork(), manager_channel, address_directory, Arc::new(InMemoryRemoteDirectory::new()));
+    let mut manager = ShardManager::new(rng.fork(), manager_channel, Arc::clone(&dir), Arc::new(InMemoryRemoteDirectory::new()));
     manager.register_shard(shard, original_membership, KeyRange {
         start: None,
         end: None,
@@ -1891,11 +1902,12 @@ async fn test_merge_two_shards() {
 
     let mut rng = test_rng(42);
     let registry = ChannelRegistry::default();
+    let dir = Arc::new(InMemoryShardDirectory::new());
 
     // Build 2 adjacent shards: shard 0 covers [None, 50), shard 1 covers [50, None).
-    let _replicas_0 = build_shard(&mut rng, ShardNumber(0), false, 3, &registry);
-    let _replicas_1 = build_shard(&mut rng, ShardNumber(1), false, 3, &registry);
-    let clients = build_clients(&mut rng, 1, &registry);
+    let _replicas_0 = build_shard(&mut rng, ShardNumber(0), false, 3, &registry, &dir);
+    let _replicas_1 = build_shard(&mut rng, ShardNumber(1), false, 3, &registry, &dir);
+    let clients = build_clients(&mut rng, 1, &registry, &dir);
 
     // Commit data on each shard.
     let txn = clients[0].begin();
@@ -1914,9 +1926,8 @@ async fn test_merge_two_shards() {
     tokio::time::sleep(Duration::from_secs(5)).await;
 
     // Set up ShardManager.
-    let manager_channel = registry.channel(move |_, _| None);
-    let address_directory = Arc::clone(registry.directory());
-    let mut manager = ShardManager::new(rng.fork(), manager_channel, address_directory, Arc::new(InMemoryRemoteDirectory::new()));
+    let manager_channel = registry.channel(move |_, _| None, Arc::clone(&dir));
+    let mut manager = ShardManager::new(rng.fork(), manager_channel, Arc::clone(&dir), Arc::new(InMemoryRemoteDirectory::new()));
     manager.register_shard(
         ShardNumber(0),
         IrMembership::new(vec![0, 1, 2]),
@@ -1973,10 +1984,11 @@ async fn test_split_merge_two_shards() {
 
     let mut rng = test_rng(42);
     let registry = ChannelRegistry::default();
+    let dir = Arc::new(InMemoryShardDirectory::new());
 
     // Build 1 shard covering [None, None) with 3 replicas.
-    let _replicas_0 = build_shard(&mut rng, ShardNumber(0), false, 3, &registry);
-    let clients = build_clients(&mut rng, 1, &registry);
+    let _replicas_0 = build_shard(&mut rng, ShardNumber(0), false, 3, &registry, &dir);
+    let clients = build_clients(&mut rng, 1, &registry, &dir);
 
     // Commit 4 keys.
     for (key, val) in [(10, 100), (30, 300), (60, 600), (80, 800)] {
@@ -1991,9 +2003,8 @@ async fn test_split_merge_two_shards() {
     tokio::time::sleep(Duration::from_secs(5)).await;
 
     // Set up ShardManager.
-    let manager_channel = registry.channel(move |_, _| None);
-    let address_directory = Arc::clone(registry.directory());
-    let mut manager = ShardManager::new(rng.fork(), manager_channel, address_directory, Arc::new(InMemoryRemoteDirectory::new()));
+    let manager_channel = registry.channel(move |_, _| None, Arc::clone(&dir));
+    let mut manager = ShardManager::new(rng.fork(), manager_channel, Arc::clone(&dir), Arc::new(InMemoryRemoteDirectory::new()));
     manager.register_shard(
         ShardNumber(0),
         IrMembership::new(vec![0, 1, 2]),
@@ -2001,7 +2012,7 @@ async fn test_split_merge_two_shards() {
     );
 
     // Split at key=50: shard 0 gets [None, 50), shard 1 gets [50, None).
-    let _replicas_1 = build_shard(&mut rng, ShardNumber(1), false, 3, &registry);
+    let _replicas_1 = build_shard(&mut rng, ShardNumber(1), false, 3, &registry, &dir);
     let new_membership = IrMembership::new(vec![4, 5, 6]);
     manager.split(ShardNumber(0), 50, ShardNumber(1), new_membership).await.unwrap();
 
@@ -2074,10 +2085,11 @@ async fn cdc_view_based_scan_changes() {
     let mut rng = test_rng(42);
     let shard = ShardNumber(0);
     let registry = ChannelRegistry::default();
+    let dir = Arc::new(InMemoryShardDirectory::new());
 
     // Build 3-replica shard.
-    let replicas = build_shard(&mut rng, shard, false, 3, &registry);
-    let clients = build_clients(&mut rng, 1, &registry);
+    let replicas = build_shard(&mut rng, shard, false, 3, &registry, &dir);
+    let clients = build_clients(&mut rng, 1, &registry, &dir);
 
     // Commit two transactions.
     let txn = clients[0].begin();
@@ -2098,7 +2110,7 @@ async fn cdc_view_based_scan_changes() {
 
     // Create a ShardClient to call scan_changes.
     let membership = IrMembership::new(vec![0, 1, 2]);
-    let channel = registry.channel(move |_, _| unreachable!());
+    let channel = registry.channel(move |_, _| unreachable!(), Arc::clone(&dir));
     let shard_client: ShardClient<K, V, Transport> =
         ShardClient::new(rng.fork(), IrClientId::new(&mut rng), shard, membership, channel);
 
@@ -2186,10 +2198,11 @@ async fn test_compact_new_shard_rejects_old_prepare_after_range_scan_on_old_shar
 
     let mut rng = test_rng(200);
     let registry = ChannelRegistry::default();
+    let dir = Arc::new(InMemoryShardDirectory::new());
 
     // Build shard 0 (3 replicas, linearizable).
-    let _replicas_0 = build_shard(&mut rng, ShardNumber(0), true, 3, &registry);
-    let clients = build_clients(&mut rng, 1, &registry);
+    let _replicas_0 = build_shard(&mut rng, ShardNumber(0), true, 3, &registry, &dir);
+    let clients = build_clients(&mut rng, 1, &registry, &dir);
 
     // Commit a key so there's data.
     let txn = clients[0].begin();
@@ -2206,7 +2219,7 @@ async fn test_compact_new_shard_rejects_old_prepare_after_range_scan_on_old_shar
         IrClientId::new(&mut rng),
         ShardNumber(0),
         membership_0,
-        registry.channel(move |_, _| unreachable!()),
+        registry.channel(move |_, _| unreachable!(), Arc::clone(&dir)),
     );
     let _scan_results = shard_client_0.quorum_scan(0, 100, scan_ts).await;
 
@@ -2215,12 +2228,11 @@ async fn test_compact_new_shard_rejects_old_prepare_after_range_scan_on_old_shar
     tokio::time::sleep(Duration::from_secs(5)).await;
 
     // Build new shard replicas for shard 1 (compact target).
-    let _replicas_1 = build_shard(&mut rng, ShardNumber(1), true, 3, &registry);
+    let _replicas_1 = build_shard(&mut rng, ShardNumber(1), true, 3, &registry, &dir);
 
     // Set up ShardManager, register shard 0, compact to shard 1.
-    let manager_channel = registry.channel(move |_, _| None);
-    let address_directory = Arc::clone(registry.directory());
-    let mut manager = ShardManager::new(rng.fork(), manager_channel, address_directory, Arc::new(InMemoryRemoteDirectory::new()));
+    let manager_channel = registry.channel(move |_, _| None, Arc::clone(&dir));
+    let mut manager = ShardManager::new(rng.fork(), manager_channel, Arc::clone(&dir), Arc::new(InMemoryRemoteDirectory::new()));
     manager.register_shard(
         ShardNumber(0),
         IrMembership::new(vec![0, 1, 2]),
@@ -2242,7 +2254,7 @@ async fn test_compact_new_shard_rejects_old_prepare_after_range_scan_on_old_shar
         IrClientId::new(&mut rng),
         ShardNumber(1),
         IrMembership::new(vec![5, 6, 7]),
-        registry.channel(move |_, _| unreachable!()),
+        registry.channel(move |_, _| unreachable!(), Arc::clone(&dir)),
     );
     let old_ts = TapirTimestamp { time: 100, client_id: IrClientId(888) };
     let txn_id = crate::OccTransactionId {
@@ -2281,10 +2293,11 @@ async fn test_compact_new_shard_rejects_old_prepare_after_quorum_read_on_old_sha
 
     let mut rng = test_rng(201);
     let registry = ChannelRegistry::default();
+    let dir = Arc::new(InMemoryShardDirectory::new());
 
     // Build shard 0 (3 replicas, linearizable).
-    let _replicas_0 = build_shard(&mut rng, ShardNumber(0), true, 3, &registry);
-    let clients = build_clients(&mut rng, 1, &registry);
+    let _replicas_0 = build_shard(&mut rng, ShardNumber(0), true, 3, &registry, &dir);
+    let clients = build_clients(&mut rng, 1, &registry, &dir);
 
     // Commit a key so there's data to read.
     let txn = clients[0].begin();
@@ -2301,7 +2314,7 @@ async fn test_compact_new_shard_rejects_old_prepare_after_quorum_read_on_old_sha
         IrClientId::new(&mut rng),
         ShardNumber(0),
         membership_0,
-        registry.channel(move |_, _| unreachable!()),
+        registry.channel(move |_, _| unreachable!(), Arc::clone(&dir)),
     );
     let (value, _write_ts) = shard_client_0.quorum_read(20, read_ts).await.unwrap();
     assert_eq!(value, Some(200), "quorum_read should return committed value");
@@ -2311,12 +2324,11 @@ async fn test_compact_new_shard_rejects_old_prepare_after_quorum_read_on_old_sha
     tokio::time::sleep(Duration::from_secs(5)).await;
 
     // Build new shard replicas for shard 1 (compact target).
-    let _replicas_1 = build_shard(&mut rng, ShardNumber(1), true, 3, &registry);
+    let _replicas_1 = build_shard(&mut rng, ShardNumber(1), true, 3, &registry, &dir);
 
     // Set up ShardManager, register shard 0, compact to shard 1.
-    let manager_channel = registry.channel(move |_, _| None);
-    let address_directory = Arc::clone(registry.directory());
-    let mut manager = ShardManager::new(rng.fork(), manager_channel, address_directory, Arc::new(InMemoryRemoteDirectory::new()));
+    let manager_channel = registry.channel(move |_, _| None, Arc::clone(&dir));
+    let mut manager = ShardManager::new(rng.fork(), manager_channel, Arc::clone(&dir), Arc::new(InMemoryRemoteDirectory::new()));
     manager.register_shard(
         ShardNumber(0),
         IrMembership::new(vec![0, 1, 2]),
@@ -2338,7 +2350,7 @@ async fn test_compact_new_shard_rejects_old_prepare_after_quorum_read_on_old_sha
         IrClientId::new(&mut rng),
         ShardNumber(1),
         IrMembership::new(vec![5, 6, 7]),
-        registry.channel(move |_, _| unreachable!()),
+        registry.channel(move |_, _| unreachable!(), Arc::clone(&dir)),
     );
     let old_ts = TapirTimestamp { time: 150, client_id: IrClientId(888) };
     let txn_id = crate::OccTransactionId {

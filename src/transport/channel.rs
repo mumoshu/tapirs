@@ -35,14 +35,12 @@ impl Default for RetryBackoff {
 
 pub struct Registry<U: IrReplicaUpcalls> {
     inner: Arc<RwLock<Inner<U>>>,
-    directory: Arc<InMemoryShardDirectory<usize>>,
 }
 
 impl<M: IrReplicaUpcalls> Default for Registry<M> {
     fn default() -> Self {
         Self {
             inner: Default::default(),
-            directory: Arc::new(InMemoryShardDirectory::new()),
         }
     }
 }
@@ -69,19 +67,13 @@ impl<U: IrReplicaUpcalls> Default for Inner<U> {
 }
 
 impl<U: IrReplicaUpcalls> Registry<U> {
-    pub fn with_directory(directory: Arc<InMemoryShardDirectory<usize>>) -> Self {
-        Self {
-            inner: Default::default(),
-            directory,
-        }
-    }
-
     pub fn channel(
         &self,
         callback: impl Fn(usize, IrMessage<U, Channel<U>>) -> Option<IrMessage<U, Channel<U>>>
             + Send
             + Sync
             + 'static,
+        directory: Arc<InMemoryShardDirectory<usize>>,
     ) -> Channel<U> {
         let mut inner = self.inner.write().unwrap();
         let address = inner.callbacks.len();
@@ -91,19 +83,11 @@ impl<U: IrReplicaUpcalls> Registry<U> {
             address,
             persistent: Default::default(),
             inner: Arc::clone(&self.inner),
-            directory: Arc::clone(&self.directory),
+            directory,
             shard: Arc::new(RwLock::new(None)),
             epoch,
             retry_backoff: RetryBackoff::default(),
         }
-    }
-
-    pub fn put_shard_addresses(&self, shard: ShardNumber, membership: IrMembership<usize>) {
-        self.directory.put(shard, membership, 0);
-    }
-
-    pub fn directory(&self) -> &Arc<InMemoryShardDirectory<usize>> {
-        &self.directory
     }
 
     pub fn len(&self) -> usize {
@@ -324,10 +308,11 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_ordering_send_maintains_fifo_without_faults() {
         let registry = Registry::<TestUpcalls>::default();
+        let dir = Arc::new(InMemoryShardDirectory::new());
         let received = Arc::new(Mutex::new(Vec::new()));
 
         let recv_clone = Arc::clone(&received);
-        let ch0 = registry.channel(|_, _| None);
+        let ch0 = registry.channel(|_, _| None, Arc::clone(&dir));
         let ch1 = registry.channel(move |from, msg| {
             if let TestMessage::FinalizeInconsistent(finalize) = msg {
                 recv_clone.lock().unwrap().push((from, finalize.op_id.number));
@@ -335,7 +320,7 @@ mod tests {
             } else {
                 None
             }
-        });
+        }, Arc::clone(&dir));
 
         // Send 5 numbered messages from node 0 to node 1
         for seq in 0..5 {
@@ -358,16 +343,17 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_ordering_do_send_preserves_delivered_order() {
         let registry = Registry::<TestUpcalls>::default();
+        let dir = Arc::new(InMemoryShardDirectory::new());
         let received = Arc::new(Mutex::new(Vec::new()));
 
         let recv_clone = Arc::clone(&received);
-        let ch0 = registry.channel(|_, _| None);
+        let ch0 = registry.channel(|_, _| None, Arc::clone(&dir));
         let _ch1 = registry.channel(move |from, msg| {
             if let TestMessage::FinalizeInconsistent(finalize) = msg {
                 recv_clone.lock().unwrap().push((from, finalize.op_id.number));
             }
             None
-        });
+        }, Arc::clone(&dir));
 
         // Send 10 messages via do_send (fire-and-forget)
         for seq in 0..10 {
@@ -395,10 +381,11 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(42);
 
         let registry = Registry::<TestUpcalls>::default();
+        let dir = Arc::new(InMemoryShardDirectory::new());
         let received = Arc::new(Mutex::new(Vec::new()));
 
         let recv_clone = Arc::clone(&received);
-        let ch0_inner = registry.channel(|_, _| None);
+        let ch0_inner = registry.channel(|_, _| None, Arc::clone(&dir));
         let ch1_inner = registry.channel(move |from, msg| {
             if let TestMessage::FinalizeInconsistent(finalize) = msg {
                 recv_clone.lock().unwrap().push((from, finalize.op_id.number));
@@ -406,7 +393,7 @@ mod tests {
             } else {
                 None
             }
-        });
+        }, Arc::clone(&dir));
 
         // Wrap in FaultyChannelTransport with drop_rate=0.3
         let mut config = NetworkFaultConfig::default();
@@ -439,10 +426,11 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_delivery_send_retries_with_sustained_loss() {
         let registry = Registry::<TestUpcalls>::default();
+        let dir = Arc::new(InMemoryShardDirectory::new());
         let attempt_counts = Arc::new(Mutex::new(Vec::new()));
 
         let attempts_clone = Arc::clone(&attempt_counts);
-        let ch0 = registry.channel(|_, _| None);
+        let ch0 = registry.channel(|_, _| None, Arc::clone(&dir));
         let attempt_counter = Arc::new(AtomicUsize::new(0));
         let counter_clone = Arc::clone(&attempt_counter);
 
@@ -460,7 +448,7 @@ mod tests {
             } else {
                 None
             }
-        });
+        }, Arc::clone(&dir));
 
         // Send 3 messages
         for seq in 0..3 {
@@ -487,14 +475,15 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_delivery_do_send_fires_once_ignores_reply() {
         let registry = Registry::<TestUpcalls>::default();
+        let dir = Arc::new(InMemoryShardDirectory::new());
         let receive_count = Arc::new(AtomicUsize::new(0));
 
         let count_clone = Arc::clone(&receive_count);
-        let ch0 = registry.channel(|_, _| None);
+        let ch0 = registry.channel(|_, _| None, Arc::clone(&dir));
         let _ch1 = registry.channel(move |_, _| {
             count_clone.fetch_add(1, AtomicOrdering::SeqCst);
             None // Always return None (not ready)
-        });
+        }, Arc::clone(&dir));
 
         // Send 5 messages via do_send
         for seq in 0..5 {
@@ -515,10 +504,11 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_delivery_send_reply_drop_triggers_retry() {
         let registry = Registry::<TestUpcalls>::default();
+        let dir = Arc::new(InMemoryShardDirectory::new());
         let callback_count = Arc::new(AtomicUsize::new(0));
 
         let count_clone = Arc::clone(&callback_count);
-        let ch0 = registry.channel(|_, _| None);
+        let ch0 = registry.channel(|_, _| None, Arc::clone(&dir));
         let _ch1 = registry.channel(move |_, msg| {
             let count = count_clone.fetch_add(1, AtomicOrdering::SeqCst);
 
@@ -532,7 +522,7 @@ mod tests {
             } else {
                 None
             }
-        });
+        }, Arc::clone(&dir));
 
         // Send 1 message
         timeout(Duration::from_secs(5), ch0.send::<TestMessage>(1, test_message(0)))
@@ -551,15 +541,16 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(123);
 
         let registry = Registry::<TestUpcalls>::default();
+        let dir = Arc::new(InMemoryShardDirectory::new());
 
-        let ch0_inner = registry.channel(|_, _| None);
+        let ch0_inner = registry.channel(|_, _| None, Arc::clone(&dir));
         let ch1_inner = registry.channel(|_, msg| {
             if let TestMessage::FinalizeInconsistent(_) = msg {
                 Some(test_reply())
             } else {
                 None
             }
-        });
+        }, Arc::clone(&dir));
 
         let config = NetworkFaultConfig::default();
         let ch0 = FaultyChannelTransport::new(ch0_inner, config.clone(), 42);
@@ -607,11 +598,12 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_integration_concurrent_senders_fifo_per_pair() {
         let registry = Registry::<TestUpcalls>::default();
+        let dir = Arc::new(InMemoryShardDirectory::new());
         let received = Arc::new(Mutex::new(Vec::new()));
 
         let recv_clone = Arc::clone(&received);
-        let ch0 = registry.channel(|_, _| None);
-        let ch1 = registry.channel(|_, _| None);
+        let ch0 = registry.channel(|_, _| None, Arc::clone(&dir));
+        let ch1 = registry.channel(|_, _| None, Arc::clone(&dir));
         let _ch2 = registry.channel(move |from, msg| {
             if let TestMessage::FinalizeInconsistent(finalize) = msg {
                 recv_clone.lock().unwrap().push((from, finalize.op_id.number));
@@ -619,7 +611,7 @@ mod tests {
             } else {
                 None
             }
-        });
+        }, Arc::clone(&dir));
 
         // Spawn concurrent tasks
         let ch0_clone = ch0.clone();

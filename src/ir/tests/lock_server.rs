@@ -1,4 +1,5 @@
 use crate::{
+    discovery::InMemoryShardDirectory,
     ChannelRegistry, ChannelTransport, IrClient, IrClientId, IrMembership, IrMembershipSize,
     IrOpId, IrRecord, IrReplica, IrReplicaUpcalls, Transport,
 };
@@ -171,19 +172,21 @@ async fn lock_server(num_replicas: usize) {
     }
 
     let registry = ChannelRegistry::default();
+    let dir = Arc::new(InMemoryShardDirectory::new());
     let membership = IrMembership::new((0..num_replicas).collect::<Vec<_>>());
     let mut lib_rng = test_rng(num_replicas as u64);
 
     fn create_replica(
         rng: &mut crate::Rng,
         registry: &ChannelRegistry<Upcalls>,
+        dir: &Arc<InMemoryShardDirectory<usize>>,
         membership: &IrMembership<usize>,
     ) -> Arc<IrReplica<Upcalls, ChannelTransport<Upcalls>>> {
         Arc::new_cyclic(
             |weak: &std::sync::Weak<IrReplica<Upcalls, ChannelTransport<Upcalls>>>| {
                 let weak = weak.clone();
                 let channel =
-                    registry.channel(move |from, message| weak.upgrade()?.receive(from, message));
+                    registry.channel(move |from, message| weak.upgrade()?.receive(from, message), Arc::clone(dir));
                 let upcalls = Upcalls { locked: None };
                 IrReplica::new(rng.fork(), membership.clone(), upcalls, channel, None)
             },
@@ -191,20 +194,21 @@ async fn lock_server(num_replicas: usize) {
     }
 
     let mut replicas = (0..num_replicas)
-        .map(|_| create_replica(&mut lib_rng, &registry, &membership))
+        .map(|_| create_replica(&mut lib_rng, &registry, &dir, &membership))
         .collect::<Vec<_>>();
 
     fn create_client(
         rng: &mut crate::Rng,
         registry: &ChannelRegistry<Upcalls>,
+        dir: &Arc<InMemoryShardDirectory<usize>>,
         membership: &IrMembership<usize>,
     ) -> Arc<IrClient<Upcalls, ChannelTransport<Upcalls>>> {
-        let channel = registry.channel(move |_, _| unreachable!());
+        let channel = registry.channel(move |_, _| unreachable!(), Arc::clone(dir));
         Arc::new(IrClient::new(rng.fork(), membership.clone(), channel))
     }
 
     let clients = (0..2)
-        .map(|_| create_client(&mut lib_rng, &registry, &membership))
+        .map(|_| create_client(&mut lib_rng, &registry, &dir, &membership))
         .collect::<Vec<_>>();
 
     let decide_lock = |results: HashMap<LockResult, usize>, membership: IrMembershipSize| {
@@ -220,9 +224,10 @@ async fn lock_server(num_replicas: usize) {
         rng: &mut crate::Rng,
         replicas: &mut Vec<Arc<IrReplica<Upcalls, ChannelTransport<Upcalls>>>>,
         registry: &ChannelRegistry<Upcalls>,
+        dir: &Arc<InMemoryShardDirectory<usize>>,
         membership: &IrMembership<usize>,
     ) {
-        let new = create_replica(rng, &registry, &membership);
+        let new = create_replica(rng, &registry, dir, &membership);
         for d in &*replicas {
             new.transport().do_send(
                 d.address(),
@@ -265,7 +270,7 @@ async fn lock_server(num_replicas: usize) {
                 }
             }
             if rng.r#gen() {
-                add_replica(&mut lib_rng, &mut replicas, &registry, &membership);
+                add_replica(&mut lib_rng, &mut replicas, &registry, &dir, &membership);
             }
         }
     }
