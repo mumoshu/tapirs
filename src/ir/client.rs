@@ -832,7 +832,7 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
         for addr in &sync.view.membership {
             self.inner
                 .transport
-                .do_send(addr, AddMember { address: address.clone() });
+                .do_send(addr, AddMember { address });
         }
     }
 
@@ -843,7 +843,7 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
         for addr in &sync.view.membership {
             self.inner
                 .transport
-                .do_send(addr, RemoveMember { address: address.clone() });
+                .do_send(addr, RemoveMember { address });
         }
     }
 }
