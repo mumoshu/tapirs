@@ -78,10 +78,11 @@ impl RemoteShardDirectory<TcpAddress> for HttpDiscoveryClient {
             "GET /v1/shards/{id} HTTP/1.1\r\nHost: {addr_str}\r\nConnection: close\r\n\r\n",
         );
         let (resp, body) = self.http_request(&request).await?;
-        if resp.contains("404") {
+        let status_line = resp.lines().next().unwrap_or("");
+        if status_line.contains("404") {
             return Ok(None);
         }
-        if !resp.contains("200 OK") {
+        if !status_line.contains("200") {
             return Err(DiscoveryError::InvalidResponse(resp));
         }
         let sm: ShardMembership = serde_json::from_str(&body)
@@ -107,9 +108,10 @@ impl RemoteShardDirectory<TcpAddress> for HttpDiscoveryClient {
             body.len(),
         );
         let (resp, _) = self.http_request(&request).await?;
-        if resp.contains("200 OK") {
+        let status_line = resp.lines().next().unwrap_or("");
+        if status_line.contains("200") {
             Ok(())
-        } else if resp.contains("409") {
+        } else if status_line.contains("409") {
             Err(DiscoveryError::Tombstoned)
         } else {
             Err(DiscoveryError::InvalidResponse(resp))
@@ -123,9 +125,10 @@ impl RemoteShardDirectory<TcpAddress> for HttpDiscoveryClient {
             "DELETE /v1/shards/{id} HTTP/1.1\r\nHost: {addr_str}\r\nConnection: close\r\n\r\n",
         );
         let (resp, _) = self.http_request(&request).await?;
-        if resp.contains("200 OK") {
+        let status_line = resp.lines().next().unwrap_or("");
+        if status_line.contains("200") {
             Ok(())
-        } else if resp.contains("404") {
+        } else if status_line.contains("404") {
             Err(DiscoveryError::NotFound)
         } else {
             Err(DiscoveryError::InvalidResponse(resp))
@@ -172,7 +175,8 @@ impl RemoteShardDirectory<TcpAddress> for HttpDiscoveryClient {
             body.len(),
         );
         let (resp, _) = self.http_request(&request).await?;
-        if resp.contains("200 OK") {
+        let status_line = resp.lines().next().unwrap_or("");
+        if status_line.contains("200") {
             Ok(())
         } else {
             Err(DiscoveryError::InvalidResponse(resp))
