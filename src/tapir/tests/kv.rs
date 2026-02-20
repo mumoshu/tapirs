@@ -652,6 +652,49 @@ fn build_sharded_kv_faulty(
     (shards, clients, client_transports, registry, node_shard_sets)
 }
 
+/// Build a 3-replica discovery shard (K=String, V=String) on a separate
+/// ChannelRegistry for the TAPIR-backed discovery cluster.
+///
+/// Returns (replicas, registry, directory) for fault injection and
+/// ShardClient construction.
+fn build_discovery_shard(
+    rng: &mut crate::Rng,
+) -> (
+    Vec<Arc<IrReplica<TapirReplica<String, String>, ChannelTransport<TapirReplica<String, String>>>>>,
+    ChannelRegistry<TapirReplica<String, String>>,
+    Arc<InMemoryShardDirectory<usize>>,
+) {
+    let registry = ChannelRegistry::default();
+    let directory = Arc::new(InMemoryShardDirectory::new());
+    let shard = ShardNumber(0);
+    let num_replicas = 3;
+
+    let membership = IrMembership::new((0..num_replicas).collect::<Vec<_>>());
+    let replicas: Vec<_> = (0..num_replicas)
+        .map(|_| {
+            let replica_rng = rng.fork();
+            let dir = Arc::clone(&directory);
+            let m = membership.clone();
+            Arc::new_cyclic(
+                |weak: &std::sync::Weak<
+                    IrReplica<TapirReplica<String, String>, ChannelTransport<TapirReplica<String, String>>>,
+                >| {
+                    let weak = weak.clone();
+                    let channel = registry
+                        .channel(move |from, message| weak.upgrade()?.receive(from, message), dir);
+                    channel.set_shard(shard);
+                    let upcalls = TapirReplica::new(shard, false);
+                    IrReplica::new(replica_rng, m, upcalls, channel, Some(TapirReplica::tick))
+                },
+            )
+        })
+        .collect();
+
+    directory.put(shard, membership, 0);
+
+    (replicas, registry, directory)
+}
+
 /// Build non-overlapping key ranges covering `[0, num_keys)` across shards.
 ///
 /// Keys are distributed as evenly as possible. With num_shards=3, num_keys=5:
@@ -742,7 +785,23 @@ async fn fuzz_tapir_transactions() {
         .collect();
 
     let sync_interval = Duration::from_millis(200);
-    let cluster_remote = Arc::new(InMemoryRemoteDirectory::<usize>::new());
+
+    // Build TAPIR discovery cluster (separate 3-replica String,String cluster).
+    let (discovery_replicas, discovery_registry, discovery_directory) =
+        build_discovery_shard(&mut lib_rng);
+    // Create a ShardClient for discovery shard 0 and build TapirRemoteShardDirectory.
+    let disc_channel: ChannelTransport<TapirReplica<String, String>> = discovery_registry.channel(
+        move |_, _| None,
+        Arc::clone(&discovery_directory),
+    );
+    let disc_membership = IrMembership::new((0..3usize).collect());
+    let cluster_remote = Arc::new(
+        crate::discovery::tapir::TapirRemoteShardDirectory::<usize, _>::with_eventual_consistent_read(
+            lib_rng.fork(),
+            disc_membership,
+            disc_channel,
+        ),
+    );
 
     // Create simulated nodes: num_nodes = max replica count across all shards
     // (guarantees no 2 replicas of same shard on same node).
@@ -900,10 +959,14 @@ async fn fuzz_tapir_transactions() {
     //   3. Network partition: isolates a replica, forcing the remaining
     //      replicas to complete a view change (sync/merge) without it, then
     //      heals so the lagging replica catches up via StartView.
+    //   4. Discovery cluster view change: forces a view change on a random
+    //      discovery replica, exercising CachingShardDirectory's resilience
+    //      to discovery cluster unavailability during view transitions.
     let fault_seed = rng.r#gen::<u64>();
     let fault_shards = shards.clone();
     let fault_clients = clients.clone();
     let fault_client_transports = client_transports.clone();
+    let fault_discovery_replicas = discovery_replicas.clone();
     let fault_event_log = event_log.clone();
     let fault_handle = tokio::spawn(async move {
         let mut rng = StdRng::seed_from_u64(fault_seed);
@@ -915,7 +978,7 @@ async fn fuzz_tapir_transactions() {
 
             let event: u8 = rng.gen_range(0..100);
 
-            if event < 35 {
+            if event < 30 {
                 // --- Replica-initiated view change ---
                 let shard_idx = rng.gen_range(0..fault_shards.len());
                 let replica_idx = rng.gen_range(0..fault_shards[shard_idx].len());
@@ -923,7 +986,7 @@ async fn fuzz_tapir_transactions() {
                     round, shard: shard_idx, replica: replica_idx,
                 });
                 fault_shards[shard_idx][replica_idx].force_view_change();
-            } else if event < 65 {
+            } else if event < 55 {
                 // --- Client-initiated view change ---
                 let client_idx = rng.gen_range(0..fault_clients.len());
                 let shard_idx = rng.gen_range(0..fault_shards.len());
@@ -932,7 +995,7 @@ async fn fuzz_tapir_transactions() {
                 });
                 fault_clients[client_idx]
                     .force_view_change(ShardNumber(shard_idx as u32));
-            } else {
+            } else if event < 85 {
                 // --- Network partition + heal ---
                 // Partition must be applied on ALL transports for a full
                 // network partition (each transport has independent fault state).
@@ -970,6 +1033,13 @@ async fn fuzz_tapir_transactions() {
                 for ct in &fault_client_transports {
                     ct.heal_node(target_addr);
                 }
+            } else {
+                // --- Discovery cluster view change ---
+                // Forces a view change on a random discovery replica,
+                // temporarily making the discovery cluster unavailable.
+                // CachingShardDirectory uses cached entries during this.
+                let replica_idx = rng.gen_range(0..fault_discovery_replicas.len());
+                fault_discovery_replicas[replica_idx].force_view_change();
             }
 
             // Let view change propagate (replicas exchange DoViewChange,
