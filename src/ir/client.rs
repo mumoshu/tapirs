@@ -298,7 +298,7 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
             let majority_view = find_majority_view(&results, f_plus_one);
             results
                 .into_values()
-                .filter(|r| majority_view.map_or(true, |v| r.view.number == v))
+                .filter(|r| majority_view.is_none_or(|v| r.view.number == v))
                 .map(|r| r.result)
                 .collect()
         }

@@ -209,7 +209,7 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
                 match ir {
                     IR::QuorumRead(value, ts) => {
                         all_out_of_range = false;
-                        if best.as_ref().map_or(true, |(_, best_ts)| ts > *best_ts) {
+                        if best.as_ref().is_none_or(|(_, best_ts)| ts > *best_ts) {
                             best = Some((value, ts));
                         }
                     }
@@ -546,7 +546,7 @@ fn merge_responses<K, V>(
         let mut best_span = u64::MAX;
 
         for (i, (q, eev)) in cursors.iter().enumerate() {
-            if q.front().map_or(false, |d| d.from_view == view) {
+            if q.front().is_some_and(|d| d.from_view == view) {
                 let inferred_to = q.get(1).map(|d| d.from_view).unwrap_or(*eev + 1);
                 let span = inferred_to.saturating_sub(view);
                 if span < best_span {
@@ -562,7 +562,7 @@ fn merge_responses<K, V>(
 
         for (i, (q, _)) in cursors.iter_mut().enumerate() {
             if i != idx {
-                while q.front().map_or(false, |d| d.from_view < pos) {
+                while q.front().is_some_and(|d| d.from_view < pos) {
                     q.pop_front();
                 }
             }
