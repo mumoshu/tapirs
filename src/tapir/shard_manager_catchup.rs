@@ -1,4 +1,4 @@
-use crate::discovery::ShardDirectory as AddressDirectory;
+use crate::discovery::{RemoteShardDirectory, ShardDirectory as AddressDirectory};
 use crate::ir::{Record, SharedView, View, ViewNumber};
 use crate::tapir::shard_manager::ShardManager;
 use crate::tapir::{Key, Replica, ShardClient, ShardNumber, Value};
@@ -6,7 +6,7 @@ use crate::transport::Transport;
 use crate::{IrClientId, IrMembership};
 use std::time::Duration;
 
-impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDirectory<T::Address>> ShardManager<K, V, T, D> {
+impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDirectory<T::Address>, RD: RemoteShardDirectory<T::Address>> ShardManager<K, V, T, D, RD> {
     /// Add a new replica to an existing shard by pre-loading it with the
     /// shard's leader_record before triggering a membership change.
     pub async fn add_replica(

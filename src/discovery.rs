@@ -76,6 +76,27 @@ pub trait RemoteShardDirectory<A: Clone + Send + Sync + 'static>: Send + Sync + 
     }
 }
 
+// ---- NoRemote ----
+
+/// No-op remote directory for ShardManager instances that don't need
+/// cluster-wide tombstone propagation (e.g., unit tests without
+/// CachingShardDirectory sync). All operations succeed silently.
+pub struct NoRemote;
+
+impl<A: Clone + Send + Sync + 'static> RemoteShardDirectory<A> for NoRemote {
+    async fn put(&self, _: ShardNumber, _: IrMembership<A>, _: u64) -> Result<(), DiscoveryError> {
+        Ok(())
+    }
+    async fn remove(&self, _: ShardNumber) -> Result<(), DiscoveryError> {
+        Ok(())
+    }
+    async fn all(
+        &self,
+    ) -> Result<Vec<(ShardNumber, IrMembership<A>, u64)>, DiscoveryError> {
+        Ok(vec![])
+    }
+}
+
 // ---- InMemoryRemoteDirectory ----
 
 struct RemoteDirectoryState<A> {

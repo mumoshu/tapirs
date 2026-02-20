@@ -2,11 +2,12 @@ use super::{
     dynamic_router::{ShardDirectory, ShardEntry},
     Key, KeyRange, ShardClient, ShardNumber, Value,
 };
-use crate::discovery::ShardDirectory as AddressDirectory;
+use crate::discovery::{NoRemote, RemoteShardDirectory, ShardDirectory as AddressDirectory};
 use crate::transport::Transport;
 use crate::tapir::Replica;
 use crate::{IrClientId, IrMembership};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Shard lifecycle manager for TAPIR clusters.
 ///
@@ -102,7 +103,13 @@ pub struct ManagedShard<K: Key, V: Value, T: Transport<Replica<K, V>>> {
 /// Sidecar that orchestrates resharding operations (split, merge, migrate)
 /// using `IrClient` to interact with shard groups via the normal protocol.
 /// NOT in the message path — uses the same API as application clients.
-pub struct ShardManager<K: Key, V: Value, T: Transport<Replica<K, V>>, D: AddressDirectory<T::Address>> {
+pub struct ShardManager<
+    K: Key,
+    V: Value,
+    T: Transport<Replica<K, V>>,
+    D: AddressDirectory<T::Address>,
+    RD: RemoteShardDirectory<T::Address> = NoRemote,
+> {
     pub(crate) shards: HashMap<ShardNumber, ManagedShard<K, V, T>>,
     pub(crate) directory: ShardDirectory<K>,
     pub(crate) address_directory: D,
@@ -110,9 +117,12 @@ pub struct ShardManager<K: Key, V: Value, T: Transport<Replica<K, V>>, D: Addres
     client_id: IrClientId,
     pub(crate) rng: crate::Rng,
     pub(crate) on_progress: Option<Box<dyn Fn(&str) + Send + Sync>>,
+    remote: Arc<RD>,
 }
 
-impl<K: Key, V: Value, T: Transport<Replica<K, V>>, D: AddressDirectory<T::Address>> ShardManager<K, V, T, D> {
+impl<K: Key, V: Value, T: Transport<Replica<K, V>>, D: AddressDirectory<T::Address>>
+    ShardManager<K, V, T, D, NoRemote>
+{
     pub fn new(
         mut rng: crate::Rng,
         transport: T,
@@ -127,6 +137,35 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>, D: AddressDirectory<T::Addre
             client_id,
             rng,
             on_progress: None,
+            remote: Arc::new(NoRemote),
+        }
+    }
+}
+
+impl<
+    K: Key,
+    V: Value,
+    T: Transport<Replica<K, V>>,
+    D: AddressDirectory<T::Address>,
+    RD: RemoteShardDirectory<T::Address>,
+> ShardManager<K, V, T, D, RD>
+{
+    pub fn with_remote(
+        mut rng: crate::Rng,
+        transport: T,
+        address_directory: D,
+        remote: Arc<RD>,
+    ) -> Self {
+        let client_id = IrClientId::new(&mut rng);
+        Self {
+            shards: HashMap::new(),
+            directory: ShardDirectory::new(vec![]),
+            address_directory,
+            transport: transport.clone(),
+            client_id,
+            rng,
+            on_progress: None,
+            remote,
         }
     }
 
@@ -187,36 +226,40 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>, D: AddressDirectory<T::Addre
         });
     }
 
-    /// Atomically replace one shard with another in all directories.
+    /// Atomically replace one shard with another in all directories and
+    /// tombstone the old shard in remote discovery.
     ///
     /// Removes `old` from the local shard registry, performs an atomic swap
     /// in the address directory (cross-shard discovery), and swaps the shard
     /// number in-place in the key-range directory (no full rebuild needed
     /// since key ranges are unchanged).
     ///
-    /// Caller MUST tombstone old shard in remote discovery to prevent
-    /// push-pull cycles. See [`ShardManager`] module docs § "Careful
-    /// Handling: Avoiding Push-Pull Cycles".
-    pub(crate) fn replace_shard(
+    /// See [`ShardManager`] module docs § "Careful Handling: Avoiding
+    /// Push-Pull Cycles".
+    pub(crate) async fn replace_shard(
         &mut self,
         old: ShardNumber,
         new: ShardNumber,
         membership: IrMembership<T::Address>,
     ) {
         self.shards.remove(&old);
-        self.address_directory.replace(old, new, membership, 0);
+        self.address_directory.replace(old, new, membership.clone(), 0);
         self.directory.replace(old, new);
+        // Tombstone old shard in remote — prevents other nodes from re-pushing stale data.
+        let _ = self.remote.replace(old, new, membership, 0).await;
     }
 
-    /// Removes shard from local directories.
+    /// Removes shard from local directories and tombstones in remote
+    /// discovery.
     ///
-    /// Caller MUST tombstone in remote discovery to prevent push-pull
-    /// cycles. See [`ShardManager`] module docs § "Careful Handling:
-    /// Avoiding Push-Pull Cycles".
-    pub fn deregister_shard(&mut self, shard: ShardNumber) {
+    /// See [`ShardManager`] module docs § "Careful Handling: Avoiding
+    /// Push-Pull Cycles".
+    pub async fn deregister_shard(&mut self, shard: ShardNumber) {
         self.shards.remove(&shard);
         self.address_directory.remove(shard);
         self.rebuild_directory();
+        // Tombstone in remote — prevents other nodes from re-pushing stale data.
+        let _ = self.remote.remove(shard).await;
     }
 
     pub fn shard_client(&self, shard: ShardNumber) -> Option<&ShardClient<K, V, T>> {

@@ -1,6 +1,6 @@
 use super::replica::{ShardConfig, ShardPhase};
 use super::{Change, Key, KeyRange, ShardNumber, Value};
-use crate::discovery::ShardDirectory as AddressDirectory;
+use crate::discovery::{RemoteShardDirectory, ShardDirectory as AddressDirectory};
 use crate::tapir::shard_manager::ShardManager;
 use crate::tapir::{Replica, Sharded};
 use crate::transport::Transport;
@@ -62,7 +62,7 @@ impl CdcCursor {
     }
 }
 
-impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDirectory<T::Address>> ShardManager<K, V, T, D> {
+impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDirectory<T::Address>, RD: RemoteShardDirectory<T::Address>> ShardManager<K, V, T, D, RD> {
     /// Freeze the source shard, query its read-protection watermarks, and
     /// raise min_prepare_time on the target to subsume all historical
     /// range_reads and last_read_commit_ts entries from the source.
@@ -463,7 +463,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         }
 
         // Remove absorbed shard and rebuild directory.
-        self.deregister_shard(absorbed);
+        self.deregister_shard(absorbed).await;
         // Merge complete.
         Ok(())
     }
@@ -800,7 +800,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, D: AddressDi
         // Phase 3c: Atomic swap — source disappears, new shard appears in all
         // directories simultaneously. No rebuild_directory needed.
         self.report_progress("compact:decommission");
-        self.replace_shard(source, new_shard, new_membership_for_swap);
+        self.replace_shard(source, new_shard, new_membership_for_swap).await;
         // Compact complete.
         Ok(())
     }
