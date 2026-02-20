@@ -2,14 +2,14 @@ use crate::config::{NodeConfig, ReplicaConfig};
 use crate::discovery::HttpDiscoveryClient;
 use crate::discovery_backend::DiscoveryBackend;
 use rand::{thread_rng, Rng as _};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tapirs::discovery::{CachingShardDirectory, InMemoryShardDirectory};
+pub use tapirs::node::ShardBackup;
 use tapirs::{
-    IrClient, IrMembership, IrRecord, IrReplica, IrSharedView, IrView, IrViewNumber,
+    IrClient, IrMembership, IrReplica, IrSharedView, IrView, IrViewNumber,
     ShardNumber, TapirReplica, TcpAddress, TcpTransport,
 };
 
@@ -22,25 +22,6 @@ type TapirIrReplica = IrReplica<TapirReplica<String, String>, TcpTransport<Tapir
 pub struct ReplicaHandle {
     pub replica: Arc<TapirIrReplica>,
     pub listen_addr: SocketAddr,
-}
-
-/// A shard backup containing the IR record and view.
-///
-/// The record holds all IR operations (consensus: Prepare with results;
-/// inconsistent: Commit/Abort). When fed to a fresh replica via
-/// IrClient::bootstrap_record() → BootstrapRecord → StartView → sync(),
-/// TAPIR replays all operations to reconstruct OCC + MVCC state.
-///
-/// The backup reflects state as of the last completed view change.
-/// In TAPIR's leaderless design, the IR record is NOT consistent
-/// across intra-shard replicas until a view change merges their
-/// divergent records. Operations committed after the last view change
-/// may not be captured. Force a view change before backup to ensure
-/// the most up-to-date state.
-#[derive(Serialize, Deserialize)]
-pub struct ShardBackup {
-    pub record: IrRecord<TapirReplica<String, String>>,
-    pub view: IrSharedView<TcpAddress>,
 }
 
 pub struct Node {

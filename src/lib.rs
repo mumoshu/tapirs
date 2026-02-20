@@ -3,6 +3,7 @@
 pub mod discovery;
 mod ir;
 mod mvcc;
+pub mod node;
 mod occ;
 mod rng;
 mod tapir;

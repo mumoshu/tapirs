@@ -2,52 +2,15 @@ use crate::AdminAction;
 use crate::node::ShardBackup;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
+use tapirs::node::admin_client::send_admin_request;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
-
-#[derive(Deserialize)]
-struct AdminStatusResponse {
-    ok: bool,
-    message: Option<String>,
-    shards: Option<Vec<ShardInfoResponse>>,
-    backup: Option<ShardBackup>,
-}
-
-#[derive(Deserialize)]
-struct ShardInfoResponse {
-    shard: u32,
-    #[allow(dead_code)]
-    listen_addr: String,
-}
 
 /// Cluster metadata stored in cluster.json.
 #[derive(Serialize, Deserialize)]
 struct ClusterMetadata {
     shards: Vec<u32>,
     replicas_per_shard: HashMap<u32, usize>,
-}
-
-async fn send_admin_request(addr: &str, request_json: &str) -> Result<AdminStatusResponse, String> {
-    let stream = TcpStream::connect(addr)
-        .await
-        .map_err(|e| format!("connect to {addr}: {e}"))?;
-    let (reader, mut writer) = stream.into_split();
-
-    let mut line = request_json.to_string();
-    line.push('\n');
-    writer
-        .write_all(line.as_bytes())
-        .await
-        .map_err(|e| format!("send to {addr}: {e}"))?;
-
-    let mut lines = BufReader::new(reader).lines();
-    let response_line = lines
-        .next_line()
-        .await
-        .map_err(|e| format!("read from {addr}: {e}"))?
-        .ok_or_else(|| format!("no response from {addr}"))?;
-
-    serde_json::from_str(&response_line).map_err(|e| format!("parse response from {addr}: {e}"))
 }
 
 /// Back up all shards in a running cluster to a directory.
