@@ -15,7 +15,7 @@ thread_local! {
     /// Shared fault state for testing. When enabled, all FaultyDiskIo instances
     /// created via `open()` in this thread will share the same fault state,
     /// allowing runtime configuration changes to affect all instances.
-    static SHARED_FAULT_STATE: RefCell<Option<Arc<Mutex<FaultState>>>> = RefCell::new(None);
+    static SHARED_FAULT_STATE: RefCell<Option<Arc<Mutex<FaultState>>>> = const { RefCell::new(None) };
 }
 
 /// Wrapper around any DiskIo implementation with configurable fault injection.
