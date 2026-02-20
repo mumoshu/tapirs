@@ -27,17 +27,17 @@ pub enum ReshardError {
 /// **Stabilization**: The cursor is "stabilized" when `last_view` matches
 /// `effective_end_view` — meaning we've consumed everything the source has.
 /// The loop breaks when stabilized AND no new changes arrived.
-struct CdcCursor {
+pub(crate) struct CdcCursor {
     last_view: Option<u64>,
 }
 
 impl CdcCursor {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self { last_view: None }
     }
 
     /// The `from_view` argument for the next `scan_changes` call.
-    fn next_from(&self) -> u64 {
+    pub(crate) fn next_from(&self) -> u64 {
         match self.last_view {
             Some(v) => v + 1,
             None => 0,
@@ -46,7 +46,7 @@ impl CdcCursor {
 
     /// Advance the cursor from a scan result's `effective_end_view`.
     /// Only advances when the source reported deltas exist (`Some`).
-    fn advance(&mut self, effective_end_view: Option<u64>) {
+    pub(crate) fn advance(&mut self, effective_end_view: Option<u64>) {
         if let Some(eev) = effective_end_view {
             self.last_view = Some(match self.last_view {
                 Some(prev) => prev.max(eev),
@@ -57,7 +57,7 @@ impl CdcCursor {
 
     /// True when we've consumed everything the source has.
     /// Both `None` (no history) and `Some(N) == Some(N)` count as stable.
-    fn stabilized(&self, effective_end_view: Option<u64>) -> bool {
+    pub(crate) fn stabilized(&self, effective_end_view: Option<u64>) -> bool {
         self.last_view == effective_end_view
     }
 }
@@ -817,7 +817,7 @@ fn filter_changes<K: Ord + Clone, V: Clone>(
 }
 
 /// Ship a set of changes to a target shard by wrapping each as an IO::Commit.
-async fn ship_changes<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>>(
+pub(crate) async fn ship_changes<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>>(
     client: &super::ShardClient<K, V, T>,
     shard: ShardNumber,
     changes: &[Change<K, V>],

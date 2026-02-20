@@ -1,4 +1,5 @@
 mod client;
+pub mod clustermanager;
 pub mod dns_shard_client;
 pub mod dynamic_router;
 pub mod key_range;

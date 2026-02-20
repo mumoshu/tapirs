@@ -31,6 +31,7 @@ pub use tapir::{
     RoutingClient, RoutingReadOnlyTransaction, RoutingTransaction,
     Sharded, ShardNumber, Timestamp as TapirTimestamp, TransactionError,
 };
+pub use tapir::clustermanager::{CloneError, SoloClusterManager};
 pub use tapir::dns_shard_client::DnsRefreshingShardClient;
 pub use tapir::dynamic_router::{DynamicRouter, ShardDirectory, ShardEntry};
 pub use tapir::shard_manager::ShardManager;
