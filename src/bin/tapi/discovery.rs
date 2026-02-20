@@ -68,6 +68,29 @@ impl HttpDiscoveryClient {
 }
 
 impl RemoteShardDirectory<TcpAddress> for HttpDiscoveryClient {
+    async fn get(
+        &self,
+        shard: ShardNumber,
+    ) -> Result<Option<(IrMembership<TcpAddress>, u64)>, DiscoveryError> {
+        let id = shard.0;
+        let addr_str = self.addr.to_string();
+        let request = format!(
+            "GET /v1/shards/{id} HTTP/1.1\r\nHost: {addr_str}\r\nConnection: close\r\n\r\n",
+        );
+        let (resp, body) = self.http_request(&request).await?;
+        if resp.contains("404") {
+            return Ok(None);
+        }
+        if !resp.contains("200 OK") {
+            return Err(DiscoveryError::InvalidResponse(resp));
+        }
+        let sm: ShardMembership = serde_json::from_str(&body)
+            .map_err(|e| DiscoveryError::InvalidResponse(format!("{e}\nbody: {body}")))?;
+        let membership = strings_to_membership::<TcpAddress>(&sm.replicas)
+            .map_err(DiscoveryError::InvalidResponse)?;
+        Ok(Some((membership, sm.view)))
+    }
+
     async fn put(
         &self,
         shard: ShardNumber,

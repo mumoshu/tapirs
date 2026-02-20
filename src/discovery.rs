@@ -40,6 +40,13 @@ impl std::error::Error for DiscoveryError {}
 /// Uses RPITIT (`impl Future`) — no dynamic dispatch. All consumers are generic
 /// over `T: RemoteShardDirectory<A>`.
 pub trait RemoteShardDirectory<A: Clone + Send + Sync + 'static>: Send + Sync + 'static {
+    fn get(
+        &self,
+        shard: ShardNumber,
+    ) -> impl std::future::Future<Output = Result<Option<(IrMembership<A>, u64)>, DiscoveryError>>
+           + Send
+           + '_;
+
     fn put(
         &self,
         shard: ShardNumber,
@@ -124,18 +131,20 @@ impl<A: Clone> InMemoryRemoteDirectory<A> {
             })),
         }
     }
-
-    /// Direct read for test assertions. Returns `None` for tombstoned or absent shards.
-    pub fn get(&self, shard: ShardNumber) -> Option<(IrMembership<A>, u64)> {
-        let state = self.state.read().unwrap();
-        if state.tombstones.contains(&shard) {
-            return None;
-        }
-        state.shards.get(&shard).cloned()
-    }
 }
 
 impl<A: Clone + Send + Sync + 'static> RemoteShardDirectory<A> for InMemoryRemoteDirectory<A> {
+    async fn get(
+        &self,
+        shard: ShardNumber,
+    ) -> Result<Option<(IrMembership<A>, u64)>, DiscoveryError> {
+        let state = self.state.read().unwrap();
+        if state.tombstones.contains(&shard) {
+            return Ok(None);
+        }
+        Ok(state.shards.get(&shard).cloned())
+    }
+
     async fn put(
         &self,
         shard: ShardNumber,
@@ -580,7 +589,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (got, view) = remote.get(ShardNumber(1)).unwrap();
+        let (got, view) = remote.get(ShardNumber(1)).await.unwrap().unwrap();
         assert_eq!(got.len(), 2);
         assert!(got.contains(10));
         assert!(got.contains(20));
@@ -595,7 +604,7 @@ mod tests {
             .await
             .unwrap();
         remote.remove(ShardNumber(1)).await.unwrap();
-        assert!(remote.get(ShardNumber(1)).is_none());
+        assert!(remote.get(ShardNumber(1)).await.unwrap().is_none());
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
@@ -634,7 +643,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (got, view) = remote.get(ShardNumber(1)).unwrap();
+        let (got, view) = remote.get(ShardNumber(1)).await.unwrap().unwrap();
         assert_eq!(got.len(), 2); // still the original
         assert_eq!(view, 5);
     }
@@ -663,11 +672,11 @@ mod tests {
             .unwrap();
 
         // Old shard gone, new shard present, unrelated shard untouched.
-        assert!(remote.get(ShardNumber(1)).is_none());
-        let (got, _) = remote.get(ShardNumber(3)).unwrap();
+        assert!(remote.get(ShardNumber(1)).await.unwrap().is_none());
+        let (got, _) = remote.get(ShardNumber(3)).await.unwrap().unwrap();
         assert_eq!(got.len(), 2);
         assert!(got.contains(40));
-        assert!(remote.get(ShardNumber(2)).is_some());
+        assert!(remote.get(ShardNumber(2)).await.unwrap().is_some());
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
@@ -680,7 +689,7 @@ mod tests {
 
         // Remove creates a tombstone.
         remote.remove(ShardNumber(1)).await.unwrap();
-        assert!(remote.get(ShardNumber(1)).is_none());
+        assert!(remote.get(ShardNumber(1)).await.unwrap().is_none());
 
         // Put to tombstoned shard is rejected.
         let result = remote
@@ -709,7 +718,7 @@ mod tests {
             .put(ShardNumber(3), IrMembership::new(vec![50]), 1)
             .await
             .unwrap();
-        let (got, _) = remote.get(ShardNumber(3)).unwrap();
+        let (got, _) = remote.get(ShardNumber(3)).await.unwrap().unwrap();
         assert!(got.contains(50));
     }
 
@@ -810,7 +819,7 @@ mod tests {
         // Yield to let the background task run.
         tokio::task::yield_now().await;
 
-        let (pushed, _) = remote.get(ShardNumber(1)).unwrap();
+        let (pushed, _) = remote.get(ShardNumber(1)).await.unwrap().unwrap();
         assert_eq!(pushed.len(), 3);
         assert!(pushed.contains(10));
         assert!(pushed.contains(20));
@@ -860,7 +869,7 @@ mod tests {
         // Let it sync — shard 1 pushed to remote.
         tokio::time::sleep(Duration::from_millis(150)).await;
         tokio::task::yield_now().await;
-        assert!(remote.get(ShardNumber(1)).is_some());
+        assert!(remote.get(ShardNumber(1)).await.unwrap().is_some());
 
         // Simulate ShardManager's replace: tombstone old shard in remote directly.
         remote
@@ -874,8 +883,8 @@ mod tests {
             .unwrap();
 
         // Remote: shard 1 tombstoned, shard 2 present.
-        assert!(remote.get(ShardNumber(1)).is_none());
-        assert!(remote.get(ShardNumber(2)).is_some());
+        assert!(remote.get(ShardNumber(1)).await.unwrap().is_none());
+        assert!(remote.get(ShardNumber(2)).await.unwrap().is_some());
 
         // Next sync cycle: PULL picks up shard 2, PUSH of shard 1 is rejected (tombstoned).
         tokio::time::sleep(Duration::from_millis(150)).await;
@@ -887,7 +896,7 @@ mod tests {
         assert!(pulled.contains(40));
 
         // Remote shard 1 remains tombstoned — PUSH didn't overwrite.
-        assert!(remote.get(ShardNumber(1)).is_none());
+        assert!(remote.get(ShardNumber(1)).await.unwrap().is_none());
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]

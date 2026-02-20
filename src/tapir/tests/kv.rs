@@ -3,7 +3,7 @@ use super::invariant_checker::{InvariantChecker, TxnOutcome, TxnRecord};
 use crate::{
     discovery::{
         CachingShardDirectory, InMemoryRemoteDirectory, InMemoryShardDirectory,
-        ShardDirectory as _,
+        RemoteShardDirectory as _, ShardDirectory as _,
     },
     tapir::dynamic_router::{DynamicRouter, ShardDirectory, ShardEntry},
     tapir::key_range::KeyRange,
@@ -1405,7 +1405,7 @@ async fn fuzz_tapir_transactions() {
     let active_shards = final_shards.lock().unwrap();
     if let Some(ref shard_list) = *active_shards {
         for &shard in shard_list {
-            if cluster_remote.get(shard).is_none() {
+            if cluster_remote.get(shard).await.unwrap().is_none() {
                 event_log.dump(seed);
                 panic!(
                     "cluster_remote should contain shard {shard:?} (seed={seed})"
@@ -1414,7 +1414,7 @@ async fn fuzz_tapir_transactions() {
         }
     } else {
         for s in 0..num_shards {
-            if cluster_remote.get(ShardNumber(s)).is_none() {
+            if cluster_remote.get(ShardNumber(s)).await.unwrap().is_none() {
                 event_log.dump(seed);
                 panic!("cluster_remote should contain shard {s} (seed={seed})");
             }
