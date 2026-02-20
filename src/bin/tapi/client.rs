@@ -35,10 +35,13 @@ struct DiscoveryJsonShard {
 pub async fn run(
     cfg: ClientConfig,
     discovery_json: Option<String>,
+    discovery_tapir_endpoint: Option<String>,
     input_source: crate::repl::InputSource,
 ) -> i32 {
     let shards = if let Some(json_path) = discovery_json {
         load_discovery_json(&json_path).await
+    } else if let Some(ref endpoint) = discovery_tapir_endpoint {
+        load_tapir_discovery(endpoint).await
     } else if cfg.shards.is_empty() {
         if let Some(ref url) = cfg.discovery_url {
             let client = HttpDiscoveryClient::new(url);
@@ -56,7 +59,7 @@ pub async fn run(
                 })
                 .collect()
         } else {
-            eprintln!("error: no shards configured. Use --config, --discovery-url, or --discovery-json.");
+            eprintln!("error: no shards configured. Use --config, --discovery-url, --discovery-json, or --discovery-tapir-endpoint.");
             std::process::exit(1);
         }
     } else {
@@ -169,6 +172,52 @@ async fn load_discovery_json(json_path: &str) -> Vec<ShardConfig> {
         });
     }
     shard_configs
+}
+
+/// Fetch shard topology from a TAPIR discovery cluster endpoint.
+///
+/// Uses eventual consistent reads (unlogged scan to 1 random replica).
+async fn load_tapir_discovery(endpoint: &str) -> Vec<ShardConfig> {
+    use tapirs::discovery::{tapir, RemoteShardDirectory as _};
+
+    let ephemeral_addr = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let a = l.local_addr().unwrap();
+        drop(l);
+        TcpAddress(a)
+    };
+    let disc_dir = Arc::new(tapirs::discovery::InMemoryShardDirectory::new());
+    let persist_dir = format!("/tmp/tapi_client_disc_{}", std::process::id());
+    let disc_transport: TcpTransport<TapirReplica<String, String>> =
+        TcpTransport::with_directory(ephemeral_addr, persist_dir, disc_dir);
+
+    let rng = tapirs::Rng::from_seed(thread_rng().r#gen());
+    let dir = tapir::parse_tapir_endpoint::<TcpAddress, _>(
+        endpoint,
+        tapir::ReadMode::Eventual,
+        disc_transport,
+        rng,
+    )
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("error: failed to create TAPIR discovery backend: {e}");
+        std::process::exit(1);
+    });
+
+    let entries = dir
+        .all()
+        .await
+        .unwrap_or_else(|e| panic!("failed to fetch topology from TAPIR discovery: {e}"));
+
+    entries
+        .into_iter()
+        .map(|(shard, membership, _view)| ShardConfig {
+            id: shard.0,
+            replicas: tapirs::discovery::membership_to_strings(&membership),
+            key_range_start: None,
+            key_range_end: None,
+        })
+        .collect()
 }
 
 /// Partition key space (a-z) evenly across N shards with sequential IDs 0..N.

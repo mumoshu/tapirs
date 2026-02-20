@@ -85,6 +85,14 @@ enum Command {
         #[arg(long)]
         discovery_json: Option<String>,
 
+        /// TAPIR discovery cluster endpoint.
+        ///
+        /// Static: comma-separated replica addresses (e.g. "10.0.0.1:6000,10.0.0.2:6000").
+        /// DNS: "srv://hostname:port" for periodic re-resolution.
+        /// Reads shard topology via unlogged scan (eventual consistency).
+        #[arg(long)]
+        discovery_tapir_endpoint: Option<String>,
+
         /// Execute commands inline (semicolons separate commands).
         /// Can be specified multiple times.
         ///
@@ -238,6 +246,7 @@ async fn main() {
             config: config_path,
             discovery_url,
             discovery_json,
+            discovery_tapir_endpoint,
             execute,
             script,
         } => {
@@ -257,7 +266,8 @@ async fn main() {
                 repl::InputSource::Stdin
             };
 
-            let exit_code = client::run(cfg, discovery_json, input_source).await;
+            let exit_code =
+                client::run(cfg, discovery_json, discovery_tapir_endpoint, input_source).await;
             std::process::exit(exit_code);
         }
         Command::Discovery { listen_addr } => {
