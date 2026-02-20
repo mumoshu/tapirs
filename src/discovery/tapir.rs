@@ -1,12 +1,15 @@
 use std::fmt::Display;
 use std::marker::PhantomData;
+use std::net::SocketAddr;
 use std::str::FromStr;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
 use crate::discovery::{
     membership_to_strings, strings_to_membership, DiscoveryError, RemoteShardDirectory,
 };
+use crate::tapir::dns_shard_client::{DnsRefreshingShardClient, DnsResolveError};
 use crate::tapir::{Client as TapirClient, ShardClient, ShardNumber, Sharded};
 use crate::{IrClientId, IrMembership, TapirTransport};
 
@@ -59,6 +62,7 @@ pub enum ReadMode {
 pub struct TapirRemoteShardDirectory<A, T: TapirTransport<String, String>> {
     client: TapirClient<String, String, T>,
     shard_client: ShardClient<String, String, T>,
+    dns_client: Option<DnsRefreshingShardClient<String, String, T>>,
     read_mode: ReadMode,
     _phantom: PhantomData<A>,
 }
@@ -85,9 +89,11 @@ where
             transport.clone(),
         );
         let client = TapirClient::new(rng, transport);
+        client.set_shard_client(DISCOVERY_SHARD, shard_client.clone());
         Self {
             client,
             shard_client,
+            dns_client: None,
             read_mode: ReadMode::Strong,
             _phantom: PhantomData,
         }
@@ -109,9 +115,11 @@ where
             transport.clone(),
         );
         let client = TapirClient::new(rng, transport);
+        client.set_shard_client(DISCOVERY_SHARD, shard_client.clone());
         Self {
             client,
             shard_client,
+            dns_client: None,
             read_mode: ReadMode::Eventual,
             _phantom: PhantomData,
         }
@@ -136,6 +144,22 @@ where
         .unwrap()
     }
 
+    /// Return the current ShardClient, refreshing from DNS if applicable.
+    ///
+    /// When DNS mode is active, gets the latest ShardClient from
+    /// `DnsRefreshingShardClient` and updates TapirClient's cache so
+    /// RO/RW transactions use the current membership.
+    fn current_shard_client(&self) -> ShardClient<String, String, T> {
+        match &self.dns_client {
+            Some(dns) => {
+                let sc = dns.get();
+                self.client.set_shard_client(DISCOVERY_SHARD, sc.clone());
+                sc
+            }
+            None => self.shard_client.clone(),
+        }
+    }
+
     /// Consistent read of a key's raw JSON value.
     ///
     /// Uses the configured read mode: RO transaction for strong (linearizable),
@@ -143,6 +167,8 @@ where
     /// data — RW transaction `get()` is inconsistent (reaches 1 replica,
     /// validated at commit time via OCC, not at read time).
     async fn read_raw(&self, key: &str) -> Result<Option<String>, DiscoveryError> {
+        // Refresh shard client cache (no-op if not DNS mode).
+        let sc = self.current_shard_client();
         match self.read_mode {
             ReadMode::Strong => {
                 let ro = self.client.begin_read_only();
@@ -150,13 +176,114 @@ where
                     .await
                     .map_err(|e| DiscoveryError::ConnectionFailed(format!("{e:?}")))
             }
-            ReadMode::Eventual => self
-                .shard_client
+            ReadMode::Eventual => sc
                 .get(key.to_string(), None)
                 .await
                 .map_err(|e| DiscoveryError::ConnectionFailed(format!("{e:?}")))
                 .map(|(v, _)| v),
         }
+    }
+}
+
+impl<A, T> TapirRemoteShardDirectory<A, T>
+where
+    A: FromStr + Display + Copy + Eq + Send + Sync + 'static,
+    <A as FromStr>::Err: Display,
+    T: TapirTransport<String, String>,
+    T::Address: From<SocketAddr> + Ord,
+{
+    /// Create with DNS-based membership that resolves periodically.
+    ///
+    /// Uses [`DnsRefreshingShardClient`] internally — the `ShardClient`'s
+    /// membership is automatically updated when resolved IPs change.
+    /// All reads and writes use the latest DNS-resolved membership via
+    /// [`current_shard_client()`].
+    pub async fn with_dns(
+        dns_host: String,
+        port: u16,
+        resolve_interval: Duration,
+        read_mode: ReadMode,
+        transport: T,
+        mut rng: crate::Rng,
+    ) -> Result<Self, DnsResolveError> {
+        let dns_client = DnsRefreshingShardClient::new(
+            dns_host,
+            port,
+            DISCOVERY_SHARD,
+            resolve_interval,
+            transport.clone(),
+            rng.fork(),
+        )
+        .await?;
+
+        let shard_client = dns_client.get();
+        let client = TapirClient::new(rng, transport);
+        client.set_shard_client(DISCOVERY_SHARD, shard_client.clone());
+
+        Ok(Self {
+            client,
+            shard_client,
+            dns_client: Some(dns_client),
+            read_mode,
+            _phantom: PhantomData,
+        })
+    }
+}
+
+/// Parse a discovery endpoint string and create a [`TapirRemoteShardDirectory`].
+///
+/// Supports two schemes:
+/// - **Static**: `"addr1:port,addr2:port,..."` — comma-separated socket addresses
+/// - **DNS**: `"srv://hostname:port"` — headless service name, periodically re-resolved
+///
+/// DNS mode resolves every 30 seconds via [`DnsRefreshingShardClient`].
+pub async fn parse_tapir_endpoint<A, T>(
+    endpoint: &str,
+    mode: ReadMode,
+    transport: T,
+    rng: crate::Rng,
+) -> Result<TapirRemoteShardDirectory<A, T>, String>
+where
+    A: FromStr + Display + Copy + Eq + Send + Sync + 'static,
+    <A as FromStr>::Err: Display,
+    T: TapirTransport<String, String>,
+    T::Address: From<SocketAddr> + Ord,
+{
+    if let Some(rest) = endpoint.strip_prefix("srv://") {
+        let (host, port_str) = rest
+            .rsplit_once(':')
+            .ok_or_else(|| format!("invalid srv:// endpoint (expected host:port): {endpoint}"))?;
+        let port: u16 = port_str
+            .parse()
+            .map_err(|e| format!("invalid port in endpoint '{endpoint}': {e}"))?;
+        TapirRemoteShardDirectory::with_dns(
+            host.to_string(),
+            port,
+            Duration::from_secs(30),
+            mode,
+            transport,
+            rng,
+        )
+        .await
+        .map_err(|e| format!("DNS resolution for endpoint '{endpoint}': {e}"))
+    } else {
+        let addrs: Vec<SocketAddr> = endpoint
+            .split(',')
+            .map(|s| {
+                s.trim()
+                    .parse::<SocketAddr>()
+                    .map_err(|e| format!("invalid address in endpoint '{endpoint}': {e}"))
+            })
+            .collect::<Result<_, _>>()?;
+        let membership = IrMembership::new(addrs.into_iter().map(T::Address::from).collect());
+        Ok(match mode {
+            ReadMode::Strong => {
+                TapirRemoteShardDirectory::with_strong_consistent_read(rng, membership, transport)
+            }
+            ReadMode::Eventual => {
+                TapirRemoteShardDirectory::with_eventual_consistent_read(rng, membership, transport)
+            }
+        })
     }
 }
 
@@ -282,6 +409,8 @@ where
     async fn all(
         &self,
     ) -> Result<Vec<(ShardNumber, IrMembership<A>, u64)>, DiscoveryError> {
+        // Refresh shard client cache (no-op if not DNS mode).
+        let sc = self.current_shard_client();
         let entries = match self.read_mode {
             ReadMode::Strong => {
                 let ro = self.client.begin_read_only();
@@ -298,8 +427,7 @@ where
                     .map_err(|e| DiscoveryError::ConnectionFailed(format!("{e:?}")))?
             }
             ReadMode::Eventual => {
-                let (results, _ts) = self
-                    .shard_client
+                let (results, _ts) = sc
                     .scan(SCAN_START.to_string(), SCAN_END.to_string(), None)
                     .await
                     .map_err(|e| DiscoveryError::ConnectionFailed(format!("{e:?}")))?;

@@ -98,6 +98,14 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Client<K, V, T> {
         }
     }
 
+    /// Update or insert a cached ShardClient for the given shard.
+    ///
+    /// Used by DNS-refreshing discovery to push updated membership
+    /// into the TapirClient cache when resolved IPs change.
+    pub fn set_shard_client(&self, shard: ShardNumber, client: ShardClient<K, V, T>) {
+        self.inner.lock().unwrap().clients.insert(shard, client);
+    }
+
     pub fn begin(&self) -> Transaction<K, V, T> {
         let transaction_id = OccTransactionId {
             client_id: self.inner.lock().unwrap().id,

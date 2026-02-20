@@ -104,6 +104,14 @@ where
         })
     }
 
+}
+
+impl<K, V, T> DnsRefreshingShardClient<K, V, T>
+where
+    K: Key,
+    V: Value,
+    T: Transport<Replica<K, V>>,
+{
     /// Get a clone of the current ShardClient.
     ///
     /// Cloning is cheap (`ShardClient` wraps `Arc<IrClient>`). Callers
