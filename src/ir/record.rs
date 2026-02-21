@@ -62,6 +62,8 @@ impl Consistency {
 pub struct InconsistentEntry<IO> {
     pub op: IO,
     pub state: State,
+    /// View in which this entry was last inserted or modified.
+    pub modified_view: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -69,6 +71,8 @@ pub struct ConsensusEntry<CO, CR> {
     pub op: CO,
     pub result: CR,
     pub state: State,
+    /// View in which this entry was last inserted or modified.
+    pub modified_view: u64,
 }
 
 pub type Record<U> =
@@ -105,6 +109,24 @@ impl<IO, CO, CR> Default for RecordImpl<IO, CO, CR> {
 }
 
 impl<IO: Clone, CO: Clone, CR: Clone> RecordImpl<IO, CO, CR> {
+    /// Returns entries modified at or after `since_view`.
+    pub fn entries_since(&self, since_view: u64) -> Self {
+        Self {
+            inconsistent: self
+                .inconsistent
+                .iter()
+                .filter(|(_, e)| e.modified_view >= since_view)
+                .map(|(id, e)| (*id, e.clone()))
+                .collect(),
+            consensus: self
+                .consensus
+                .iter()
+                .filter(|(_, e)| e.modified_view >= since_view)
+                .map(|(id, e)| (*id, e.clone()))
+                .collect(),
+        }
+    }
+
     pub fn filter_by_op_ids(&self, op_ids: &HashSet<OpId>) -> Self {
         Self {
             inconsistent: self

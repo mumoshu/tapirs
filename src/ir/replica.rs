@@ -413,6 +413,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                             let state = vacant.insert(RecordInconsistentEntry {
                                 op,
                                 state: RecordEntryState::Tentative,
+                                modified_view: sync.view.number.0,
                             }).state;
                             sync.delta_op_ids.insert(op_id);
                             state
@@ -451,6 +452,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                                 result: sync.upcalls.exec_consensus(&op),
                                 op,
                                 state: RecordEntryState::Tentative,
+                                modified_view: sync.view.number.0,
                             });
                             sync.delta_op_ids.insert(op_id);
                             (entry.result.clone(), entry.state)
@@ -467,6 +469,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
             Message::<U, T>::FinalizeInconsistent(FinalizeInconsistent { op_id }) => {
                 if sync.status.is_normal() && let Some(entry) = Arc::make_mut(&mut sync.record).inconsistent.get_mut(&op_id) && entry.state.is_tentative() {
                     entry.state = RecordEntryState::Finalized(sync.view.number);
+                    entry.modified_view = sync.view.number.0;
                     sync.delta_op_ids.insert(op_id);
                     let result = sync.upcalls.exec_inconsistent(&entry.op);
 
@@ -487,6 +490,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                         if entry.state.is_tentative() {
                             entry.state = RecordEntryState::Finalized(sync.view.number);
                             entry.result = result;
+                            entry.modified_view = sync.view.number.0;
                             sync.upcalls.finalize_consensus(&entry.op, &entry.result);
                             sync.delta_op_ids.insert(op_id);
                         } else if cfg!(debug_assertions) && entry.result != result {
@@ -631,12 +635,15 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                                         match R.inconsistent.entry(op_id) {
                                             Entry::Vacant(vacant) => {
                                                 // Mark as finalized as `sync` will execute it.
-                                                vacant.insert(entry).state = RecordEntryState::Finalized(sync.view.number);
+                                                let e = vacant.insert(entry);
+                                                e.state = RecordEntryState::Finalized(sync.view.number);
+                                                e.modified_view = sync.view.number.0;
                                             }
                                             Entry::Occupied(mut occupied) => {
                                                 if let RecordEntryState::Finalized(view) = entry.state {
-                                                    let state = &mut occupied.get_mut().state;
-                                                    *state = RecordEntryState::Finalized(view);
+                                                    let e = occupied.get_mut();
+                                                    e.state = RecordEntryState::Finalized(view);
+                                                    e.modified_view = view.0;
                                                 }
                                             }
                                         }
@@ -729,6 +736,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                                             op: entry.op.clone(),
                                             result: result.clone(),
                                             state: RecordEntryState::Finalized(sync.view.number),
+                                            modified_view: sync.view.number.0,
                                         },
                                     );
                                 }
