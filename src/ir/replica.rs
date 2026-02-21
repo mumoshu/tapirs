@@ -1003,4 +1003,11 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
         sync.view.make_mut().number.0 += 1;
         Self::broadcast_do_view_change(&self.inner.transport, &mut *sync);
     }
+
+    /// Current view number of this replica. Advances immediately when
+    /// AddMember/RemoveMember/DoViewChange is received, before the view
+    /// change completes (i.e., during ViewChanging status).
+    pub fn view_number(&self) -> u64 {
+        self.inner.sync.lock().unwrap().view.number.0
+    }
 }

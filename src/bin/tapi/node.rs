@@ -367,6 +367,13 @@ impl Node {
         }
     }
 
+    /// Returns the current view number of the replica hosting `shard` on this node,
+    /// or None if this node has no replica for that shard.
+    pub fn shard_view_number(&self, shard: ShardNumber) -> Option<u64> {
+        let replicas = self.replicas.lock().unwrap();
+        replicas.get(&shard).map(|h| h.replica.view_number())
+    }
+
     #[allow(clippy::disallowed_methods)] // output order unspecified; used for display only
     pub fn shard_list(&self) -> Vec<(ShardNumber, SocketAddr)> {
         self.replicas
