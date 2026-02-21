@@ -105,8 +105,8 @@ impl<IO: DiskIo> VlogSegment<IO> {
     /// entries (Section 3.4.1 recommends a write buffer for batching small writes).
     /// With 4 KiB padding, a typical ~20-byte TAPIR entry (16-byte key + 8-byte ts
     /// + small value + 24 bytes overhead ≈ 68 bytes) would occupy 4096 bytes on disk,
-    /// wasting ~98% of each block — write amplification that defeats WiscKey's core
-    /// design goal of reducing I/O amplification.
+    ///   wasting ~98% of each block — write amplification that defeats WiscKey's core
+    ///   design goal of reducing I/O amplification.
     ///
     /// **Consumers of this format** (correctness of the format is defined by how
     /// these consumers parse and verify the data appended here):
@@ -386,11 +386,11 @@ impl<IO: DiskIo> VlogSegment<IO> {
     /// The paper specifies two verification checks on vlog reads:
     ///   1. Range check: verify the value address falls within the valid vLog range.
     ///   2. Key match: verify the vlog entry's key matches the queried key.
-    /// If either fails, the paper returns "not found." The paper also mentions
-    /// checksums as optional: "if necessary, a magic number or checksum can be
-    /// easily added to the header" — the paper does NOT require CRC verification
-    /// on reads, relying instead on the range + key-match checks for crash
-    /// consistency.
+    ///      If either fails, the paper returns "not found." The paper also mentions
+    ///      checksums as optional: "if necessary, a magic number or checksum can be
+    ///      easily added to the header" — the paper does NOT require CRC verification
+    ///      on reads, relying instead on the range + key-match checks for crash
+    ///      consistency.
     ///
     /// **Our extensions beyond the paper**:
     ///

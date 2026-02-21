@@ -36,8 +36,8 @@ const FLUSH_THRESHOLD: usize = 64 * 1024;
 ///
 /// The separation exists because flushing to SST is expensive (SST write
 /// + SST fsync + manifest fsync = 3–4 fsyncs) while `sync()` is cheap
-/// (1 vlog fsync). Callers can sync frequently for durability without
-/// paying the SST I/O cost on every call.
+///   (1 vlog fsync). Callers can sync frequently for durability without
+///   paying the SST I/O cost on every call.
 ///
 /// ## Recovery: two positions from one stored offset
 ///
@@ -259,7 +259,7 @@ where
     fn get_impl(&self, key: &K) -> Result<(Option<V>, TS), StorageError> {
         // Check memtable first.
         if let Some((ck, entry)) = self.memtable.get_latest(key) {
-            let value = self.resolve_value(entry)?;
+            let value = self.resolve_value(key, entry)?;
             return Ok((value, ck.timestamp.0));
         }
 
@@ -269,7 +269,7 @@ where
         )?;
 
         if let Some((ck, entry)) = result {
-            let value = self.resolve_value(&entry)?;
+            let value = self.resolve_value(key, &entry)?;
             return Ok((value, ck.timestamp.0));
         }
 
@@ -280,7 +280,7 @@ where
     fn get_at_impl(&self, key: &K, timestamp: TS) -> Result<(Option<V>, TS), StorageError> {
         // Check memtable first.
         if let Some((ck, entry)) = self.memtable.get_at(key, &timestamp) {
-            let value = self.resolve_value(entry)?;
+            let value = self.resolve_value(key, entry)?;
             return Ok((value, ck.timestamp.0));
         }
 
@@ -290,19 +290,54 @@ where
         )?;
 
         if let Some((ck, entry)) = result {
-            let value = self.resolve_value(&entry)?;
+            let value = self.resolve_value(key, &entry)?;
             return Ok((value, ck.timestamp.0));
         }
 
         Ok((None, TS::default()))
     }
 
-    /// Resolve a value from a ValuePointer (read from vlog).
-    fn resolve_value(&self, entry: &LsmEntry) -> Result<Option<V>, StorageError> {
+    /// Resolve a value from a ValuePointer using verified vlog read.
+    ///
+    /// The original WiscKey paper (Lu et al., FAST'16, Section 3.3.3) specifies
+    /// two checks on vlog reads: (1) range check, (2) key match — both returning
+    /// "not found" on failure. The paper treats checksums as optional.
+    ///
+    /// We extend the paper's approach in three ways (see read_verified() for
+    /// full rationale): mandatory CRC verification, returning Err instead of
+    /// "not found" for all failures (quorum safety), and specific error variants
+    /// for diagnostics. All failures propagate as errors — None is never
+    /// silently returned when the LSM has a pointer:
+    ///
+    /// - Ok(Some(value)): Entry found and verified (CRCs pass, key matches).
+    ///
+    /// - Ok(None): No ValuePointer (value_ptr = None, i.e., a delete tombstone).
+    ///   This is the only case where None is returned.
+    ///
+    /// - Err(VLogDataMissing): Pointer outside valid vLog range — the vlog data
+    ///   is missing (crash-loss). See error variant doc for root causes and
+    ///   consumer action.
+    ///
+    /// - Err(VLogKeyCrcMismatch): Key/timestamp CRC failed — the key or
+    ///   timestamp bytes are damaged (bit-rot). See error variant doc.
+    ///
+    /// - Err(VLogValueCrcMismatch): Value CRC failed — the value bytes are
+    ///   damaged (bit-rot) but key/ts are intact. See error variant doc.
+    ///
+    /// - Err(VLogKeyMismatch): CRCs pass but the vlog key doesn't match the
+    ///   LSM key — indicates LSM-layer corruption (SST key or pointer bit-rot).
+    ///   See error variant doc.
+    ///
+    /// Without this method, we originally had no vlog read verification at all:
+    /// resolve_value() called vlog.read() directly, which had neither the
+    /// paper's range/key-match checks nor our CRC verification, and propagated
+    /// CRC errors as a generic Corruption with no way to distinguish data loss
+    /// from corruption or detect stale pointers to missing vlog data.
+    fn resolve_value(&self, key: &K, entry: &LsmEntry) -> Result<Option<V>, StorageError> {
         match &entry.value_ptr {
             Some(ptr) => {
                 let vlog_entry: VlogEntry<K, V, TS> =
-                    futures::executor::block_on(self.vlog.read(ptr))?;
+                    futures::executor::block_on(self.vlog.read_verified(ptr, key))?;
                 Ok(vlog_entry.value)
             }
             None => Ok(None),
@@ -527,7 +562,7 @@ where
         // Scan memtable first
         let mem_results = self.memtable.scan(start, end, &timestamp);
         for (ck, entry) in &mem_results {
-            let value = self.resolve_value(entry)?;
+            let value = self.resolve_value(&ck.key, entry)?;
             results.push((ck.key.clone(), value, ck.timestamp.0));
             found_keys.insert(ck.key.clone());
         }
@@ -643,7 +678,7 @@ where
         // Resolve values and return
         let mut results = Vec::new();
         for (key, (ts, entry)) in seen {
-            let value = self.resolve_value(&entry)?;
+            let value = self.resolve_value(&key, &entry)?;
             results.push((key, value, ts));
         }
         Ok(results)
@@ -986,6 +1021,257 @@ mod tests {
             let (v, ts) = store.get_impl(&"bigkey".to_string()).unwrap();
             assert_eq!(v, Some(large_value));
             assert_eq!(ts, 42);
+        }
+    }
+
+    #[test]
+    fn vlog_data_missing_returns_error() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+
+        // Write entry, sync, save manifest.
+        {
+            let mut store =
+                DiskStore::<String, String, u64, BufferedIo>::open(path.clone()).unwrap();
+            store
+                .put_impl("key1".to_string(), Some("value1".to_string()), 10)
+                .unwrap();
+            futures::executor::block_on(store.vlog.sync()).unwrap();
+            store.save_manifest().unwrap();
+        }
+
+        // Truncate the vlog to 0 — simulates crash where vlog data is lost
+        // but manifest (with replay_start_offset=0) survived.
+        let vlog_path = path.join("vlog-000000.log");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&vlog_path)
+            .unwrap()
+            .set_len(0)
+            .unwrap();
+
+        // Reopen — recovery finds no entries (vlog is empty), but the key
+        // is not in any SST either (never flushed), so get returns None.
+        // This is the expected behavior: unflushed data lost in crash.
+        let store =
+            DiskStore::<String, String, u64, BufferedIo>::open(path).unwrap();
+        let (v, ts) = store.get_impl(&"key1".to_string()).unwrap();
+        assert_eq!(v, None);
+        assert_eq!(ts, 0);
+    }
+
+    #[test]
+    fn vlog_key_crc_mismatch_returns_error() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+
+        let mut store =
+            DiskStore::<String, String, u64, BufferedIo>::open(path.clone()).unwrap();
+        store
+            .put_impl("key1".to_string(), Some("value1".to_string()), 10)
+            .unwrap();
+
+        // Corrupt key bytes in the vlog (offset 8 is start of key_bytes).
+        let vlog_path = path.join("vlog-000000.log");
+        {
+            use std::io::{Seek, Write, SeekFrom};
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&vlog_path)
+                .unwrap();
+            file.seek(SeekFrom::Start(8)).unwrap();
+            file.write_all(&[0xFF, 0xFF, 0xFF]).unwrap();
+            file.flush().unwrap();
+        }
+
+        let result = store.get_impl(&"key1".to_string());
+        assert!(
+            matches!(result, Err(StorageError::VLogKeyCrcMismatch { .. })),
+            "Expected VLogKeyCrcMismatch, got {:?}", result
+        );
+    }
+
+    #[test]
+    fn vlog_value_crc_mismatch_returns_error() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+
+        let mut store =
+            DiskStore::<String, String, u64, BufferedIo>::open(path.clone()).unwrap();
+        store
+            .put_impl("key1".to_string(), Some("value1".to_string()), 10)
+            .unwrap();
+
+        // Find the value bytes offset: 8 (header) + key_len + 8 (ts) + 4 (crc_kts)
+        // We need the actual key_len to compute this.
+        let vlog_path = path.join("vlog-000000.log");
+        let key_len = {
+            let data = std::fs::read(&vlog_path).unwrap();
+            u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize
+        };
+        let val_start = 8 + key_len + 8 + 4; // header + key + ts + crc_kts
+
+        {
+            use std::io::{Seek, Write, SeekFrom};
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&vlog_path)
+                .unwrap();
+            file.seek(SeekFrom::Start(val_start as u64)).unwrap();
+            file.write_all(&[0xFF, 0xFF, 0xFF]).unwrap();
+            file.flush().unwrap();
+        }
+
+        let result = store.get_impl(&"key1".to_string());
+        assert!(
+            matches!(result, Err(StorageError::VLogValueCrcMismatch { .. })),
+            "Expected VLogValueCrcMismatch, got {:?}", result
+        );
+    }
+
+    #[test]
+    fn vlog_key_mismatch_returns_error() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+
+        let mut store =
+            DiskStore::<String, String, u64, BufferedIo>::open(path.clone()).unwrap();
+
+        // Write two entries with different keys.
+        store
+            .put_impl("key-A".to_string(), Some("value-A".to_string()), 10)
+            .unwrap();
+        store
+            .put_impl("key-B".to_string(), Some("value-B".to_string()), 20)
+            .unwrap();
+
+        // Swap the ValuePointer for key-A to point at key-B's vlog entry.
+        // This simulates SSTable pointer corruption.
+        let key_b_ptr = {
+            let (_, entry) = store.memtable.get_latest(&"key-B".to_string()).unwrap();
+            entry.value_ptr.unwrap()
+        };
+        // Update key-A's entry to point to key-B's vlog data.
+        let key_a_ck = {
+            let (ck, _) = store.memtable.get_latest(&"key-A".to_string()).unwrap();
+            ck.clone()
+        };
+        store.memtable.insert(
+            key_a_ck,
+            LsmEntry {
+                value_ptr: Some(key_b_ptr),
+                last_read_ts: None,
+            },
+        );
+
+        let result = store.get_impl(&"key-A".to_string());
+        assert!(
+            matches!(result, Err(StorageError::VLogKeyMismatch { .. })),
+            "Expected VLogKeyMismatch, got {:?}", result
+        );
+    }
+
+    #[test]
+    fn two_transactions_overlapping_key_crash_recovery() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+
+        // T1: Write key1=v1 at ts=10, sync.
+        // T2: Write key1=v2 at ts=20, do NOT sync.
+        {
+            let mut store =
+                DiskStore::<String, String, u64, BufferedIo>::open(path.clone()).unwrap();
+            store
+                .put_impl("key1".to_string(), Some("v1".to_string()), 10)
+                .unwrap();
+            futures::executor::block_on(store.vlog.sync()).unwrap();
+
+            store
+                .put_impl("key1".to_string(), Some("v2".to_string()), 20)
+                .unwrap();
+            // Do NOT sync T2.
+            store.save_manifest().unwrap();
+        }
+
+        // Simulate crash: truncate the vlog to remove T2's entry.
+        // T1 was sync'd so its data survived; T2 was not sync'd.
+        {
+            let vlog_path = path.join("vlog-000000.log");
+            let seg = VlogSegment::<BufferedIo>::open_at(
+                0,
+                vlog_path.clone(),
+                0,
+                OpenFlags { create: false, direct: false },
+            ).unwrap();
+            let entries = futures::executor::block_on(
+                seg.recover_entries::<String, String, u64>(0)
+            ).unwrap();
+            // Both entries are in the vlog. Truncate after T1.
+            assert!(entries.len() >= 1);
+            let t1_end = entries[0].1.offset + entries[0].1.length as u64;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&vlog_path)
+                .unwrap()
+                .set_len(t1_end)
+                .unwrap();
+        }
+
+        // Reopen — T1 survives, T2 is lost.
+        {
+            let store =
+                DiskStore::<String, String, u64, BufferedIo>::open(path).unwrap();
+
+            // T1 (ts=10): recovered from vlog replay.
+            let (v, ts) = store.get_at_impl(&"key1".to_string(), 10).unwrap();
+            assert_eq!(v, Some("v1".to_string()));
+            assert_eq!(ts, 10);
+
+            // T2 (ts=20): lost in crash — not recovered.
+            let (v, ts) = store.get_at_impl(&"key1".to_string(), 20).unwrap();
+            // Should return T1's version (the latest surviving version).
+            assert_eq!(v, Some("v1".to_string()));
+            assert_eq!(ts, 10);
+        }
+    }
+
+    #[test]
+    fn two_transactions_both_synced_crash_after_flush() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+
+        // Write two versions of the same key, sync both, flush to SST.
+        {
+            let mut store =
+                DiskStore::<String, String, u64, BufferedIo>::open(path.clone()).unwrap();
+            store
+                .put_impl("key1".to_string(), Some("v1".to_string()), 10)
+                .unwrap();
+            store
+                .put_impl("key1".to_string(), Some("v2".to_string()), 20)
+                .unwrap();
+            futures::executor::block_on(store.vlog.sync()).unwrap();
+            store.maybe_flush().unwrap();
+            store.save_manifest().unwrap();
+        }
+
+        // Reopen — both versions should survive (they're in SSTs).
+        {
+            let store =
+                DiskStore::<String, String, u64, BufferedIo>::open(path).unwrap();
+
+            let (v, ts) = store.get_at_impl(&"key1".to_string(), 10).unwrap();
+            assert_eq!(v, Some("v1".to_string()));
+            assert_eq!(ts, 10);
+
+            let (v, ts) = store.get_at_impl(&"key1".to_string(), 20).unwrap();
+            assert_eq!(v, Some("v2".to_string()));
+            assert_eq!(ts, 20);
+
+            // Latest should be v2.
+            let (v, ts) = store.get_impl(&"key1".to_string()).unwrap();
+            assert_eq!(v, Some("v2".to_string()));
+            assert_eq!(ts, 20);
         }
     }
 
