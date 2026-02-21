@@ -157,7 +157,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
 
         // Phase 2: Catch-up tailing.
         self.report_progress("split:catch-up");
-        loop {
+        for _catchup_iter in 0..30u32 {
             let r = self.shards[&source]
                 .client
                 .scan_changes(cursor.next_from())
@@ -194,7 +194,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
             start: source_range.start.clone(),
             end: Some(split_key.clone()),
         };
-        loop {
+        for drain_iter in 0..60u32 {
             T::sleep(Duration::from_secs(1)).await;
             let r = self.shards[&source]
                 .client
@@ -209,6 +209,9 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
 
             if r.pending_prepares == 0 && changes.is_empty() && cursor.stabilized(r.effective_end_view) {
                 break;
+            }
+            if drain_iter == 59 {
+                tracing::warn!("split drain exceeded 60 iterations (pending_prepares={})", r.pending_prepares);
             }
         }
         // One final poll after all prepares resolved to capture sealed commits.
@@ -373,7 +376,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
 
         // Phase 2: Catch-up tailing.
         self.report_progress("merge:catch-up");
-        loop {
+        for _catchup_iter in 0..30u32 {
             let r = self.shards[&absorbed]
                 .client
                 .scan_changes(cursor.next_from())
@@ -400,7 +403,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
 
         // Phase 3b: Drain — wait for pending_prepares == 0 + final seal.
         self.report_progress("merge:drain-prepared");
-        loop {
+        for drain_iter in 0..60u32 {
             T::sleep(Duration::from_secs(1)).await;
             let r = self.shards[&absorbed]
                 .client
@@ -414,6 +417,9 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
 
             if r.pending_prepares == 0 && changes.is_empty() && cursor.stabilized(r.effective_end_view) {
                 break;
+            }
+            if drain_iter == 59 {
+                tracing::warn!("merge drain exceeded 60 iterations (pending_prepares={})", r.pending_prepares);
             }
         }
         // One final poll after all prepares resolved to capture sealed commits.
@@ -725,7 +731,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
 
         // Phase 2: Catch-up tailing.
         self.report_progress("compact:catch-up");
-        loop {
+        for _catchup_iter in 0..30u32 {
             let r = self.shards[&source]
                 .client
                 .scan_changes(cursor.next_from())
@@ -751,7 +757,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
 
         // Phase 3b: Drain — wait for pending_prepares == 0 + final seal.
         self.report_progress("compact:drain-prepared");
-        loop {
+        for drain_iter in 0..60u32 {
             T::sleep(Duration::from_secs(1)).await;
             let r = self.shards[&source]
                 .client
@@ -765,6 +771,9 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
 
             if r.pending_prepares == 0 && changes.is_empty() && cursor.stabilized(r.effective_end_view) {
                 break;
+            }
+            if drain_iter == 59 {
+                tracing::warn!("compact drain exceeded 60 iterations (pending_prepares={})", r.pending_prepares);
             }
         }
         // One final poll after all prepares resolved to capture sealed commits.
