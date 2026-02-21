@@ -49,7 +49,7 @@ const FLUSH_THRESHOLD: usize = 64 * 1024;
 ///    replayed from the vlog into the (empty) memtable — including any
 ///    sync'd-but-not-flushed entries that survived in the vlog.
 ///
-/// 2. **Append position** = `replay_start_offset + recovered_entries × 4096`.
+/// 2. **Append position** = `replay_start_offset + sum of recovered entry sizes`.
 ///    Computed after replay. New appends go here. Without this, the vlog's
 ///    write cursor would sit at `replay_start_offset`, and new writes
 ///    would overwrite recovered entries whose ValuePointers are still
@@ -206,13 +206,17 @@ where
             );
         }
 
-        // Position the vlog append cursor past all recovered entries.
-        // Each vlog entry occupies one 4 KiB block (padded in append()).
-        // Without this, new appends would start at replay_start_offset
-        // and overwrite recovered entries whose ValuePointers are still
-        // referenced by SSTs — causing CRC mismatches on subsequent reads.
-        let append_offset =
-            manifest.vlog_write_offset + (recovered_entries.len() as u64 * 4096);
+        // Compute append position by summing actual entry sizes (ptr.length).
+        // Each entry's on-disk size varies with key and value length
+        // (total = 24 + key_len + value_len, no padding). Using any fixed
+        // per-entry size assumption would produce a wrong offset — new appends
+        // would land at the wrong position, corrupting recovered data whose
+        // ValuePointers are still referenced by SSTs. See WiscKey (Lu et al.,
+        // FAST'16), Section 3.3.3.
+        let append_offset = recovered_entries.iter().fold(
+            manifest.vlog_write_offset,
+            |acc, (_, ptr)| acc + ptr.length as u64,
+        );
         vlog.set_write_offset(append_offset);
 
         if !recovered_entries.is_empty() {
@@ -914,20 +918,31 @@ mod tests {
             store.save_manifest().unwrap();
         }
 
-        // Stage 2: Corrupt the vlog file (simulate partial write)
+        // Stage 2: Corrupt the vlog file (simulate partial write of second entry).
+        // With tightly packed entries, we find the second entry's offset by
+        // recovering the vlog and truncating mid-way through entry #1's end.
         {
             let vlog_path = path.join("vlog-000000.log");
-            let metadata = std::fs::metadata(&vlog_path).unwrap();
-            let file_size = metadata.len();
-
-            // Truncate file to simulate incomplete write
-            if file_size >= 4096 {
-                let file = std::fs::OpenOptions::new()
-                    .write(true)
-                    .open(&vlog_path)
-                    .unwrap();
-                file.set_len(file_size - 2048).unwrap(); // Truncate last entry
-            }
+            // Recover to find first entry's size, then truncate after it
+            // but before second entry completes.
+            let seg = VlogSegment::<BufferedIo>::open_at(
+                0,
+                vlog_path.clone(),
+                0,
+                OpenFlags { create: false, direct: false },
+            ).unwrap();
+            let entries = futures::executor::block_on(
+                seg.recover_entries::<String, String, u64>(0)
+            ).unwrap();
+            assert_eq!(entries.len(), 2);
+            // Truncate mid-way through the second entry.
+            let second_entry_offset = entries[1].1.offset;
+            let truncate_at = second_entry_offset + 4; // past header, into key
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&vlog_path)
+                .unwrap();
+            file.set_len(truncate_at).unwrap();
         }
 
         // Stage 3: Recovery should succeed but recover only the first entry
@@ -944,6 +959,33 @@ mod tests {
             let (v, ts) = store.get_impl(&"key2".to_string()).unwrap();
             assert_eq!(v, None);
             assert_eq!(ts, 0);
+        }
+    }
+
+    #[test]
+    fn crash_recovery_large_values() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+
+        // Write a 10 KB value (would have been lost with old 4 KiB-per-entry format).
+        let large_value = "x".repeat(10_000);
+        {
+            let mut store =
+                DiskStore::<String, String, u64, BufferedIo>::open(path.clone()).unwrap();
+            store
+                .put_impl("bigkey".to_string(), Some(large_value.clone()), 42)
+                .unwrap();
+            futures::executor::block_on(store.vlog.sync()).unwrap();
+            store.save_manifest().unwrap();
+        }
+
+        // Reopen — recovery replays the large entry from the vlog.
+        {
+            let store =
+                DiskStore::<String, String, u64, BufferedIo>::open(path).unwrap();
+            let (v, ts) = store.get_impl(&"bigkey".to_string()).unwrap();
+            assert_eq!(v, Some(large_value));
+            assert_eq!(ts, 42);
         }
     }
 
