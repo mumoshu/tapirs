@@ -1,5 +1,5 @@
 use crate::discovery::HttpDiscoveryClient;
-use crate::helpers::{quorum_view_number, wait_for_view_change};
+use crate::helpers::{quorum_view_number, wait_for_operational, wait_for_view_change};
 use crate::node::Node;
 use rand::{thread_rng, Rng as _};
 use std::net::SocketAddr;
@@ -194,11 +194,11 @@ async fn create_test_client(
     let discovery_dir = tapirs::discovery::CachingShardDirectory::<TcpAddress, _>::new(
         Arc::clone(&dir),
         disc_client,
-        std::time::Duration::from_millis(100), // fast sync for tests
+        std::time::Duration::from_millis(50), // fast sync for tests
     );
 
     // Wait for initial sync to populate dir from discovery.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_millis(60)).await;
 
     // Same as client.rs: TcpTransport with shared directory.
     let transport: TestTransport = TcpTransport::with_directory(
@@ -277,7 +277,7 @@ async fn rw_get(
         }
         // OCC abort — read was stale (Decide not yet propagated), retry.
         tracing::info!("rw_get({key}): OCC abort on attempt {attempt}, retrying");
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
     panic!("rw_get({key}): failed after 10 retries");
 }
@@ -354,8 +354,13 @@ async fn test_view_change_during_transactions() {
     assert!(txn.commit().await.is_some());
 
     // Same as `tapi admin view-change --shard 0`.
-    cluster.nodes[0].force_view_change(ShardNumber(0));
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    let shard = ShardNumber(0);
+    let shard_nodes: Vec<&Arc<Node>> = cluster.nodes.iter()
+        .filter(|n| n.shard_view_number(shard).is_some())
+        .collect();
+    let old_view = quorum_view_number(&shard_nodes, shard);
+    cluster.nodes[0].force_view_change(shard);
+    wait_for_view_change(client, &shard_nodes, shard, old_view, "vc_probe").await;
 
     let val = rw_get(&client, "survive", "survive_read").await;
     assert_eq!(val, Some("yes".to_string()));
@@ -376,7 +381,7 @@ async fn test_remove_replica() {
 
     // Same as `tapi admin remove-replica --shard 0`.
     assert!(cluster.nodes[0].remove_replica(ShardNumber(0)));
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    wait_for_operational(client, "remove_probe").await;
 
     // Data should still be readable from remaining 2 replicas.
     let val = rw_get(&client, "before", "before_read").await;
@@ -544,9 +549,6 @@ async fn test_rolling_membership_replacement() {
             .await
             .unwrap();
 
-        // Let discovery sync propagate to client.
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
         // Verify R/W after remove.
         let txn = client.begin();
         txn.put(
@@ -651,8 +653,12 @@ async fn test_disaster_recovery_backup_restore() {
     // 3. Force view change to synchronize leader_record with current state.
     //    IR records diverge across replicas between view changes — this
     //    ensures the backup captures all committed operations.
+    let shard_nodes: Vec<&Arc<Node>> = cluster.nodes.iter()
+        .filter(|n| n.shard_view_number(shard).is_some())
+        .collect();
+    let old_view = quorum_view_number(&shard_nodes, shard);
     cluster.nodes[0].force_view_change(shard);
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    wait_for_view_change(client, &shard_nodes, shard, old_view, "dr_vc_probe").await;
 
     // 5. Take backup from node 0's replica.
     let backup = cluster.nodes[0]
@@ -671,7 +677,6 @@ async fn test_disaster_recovery_backup_restore() {
     for node in &cluster.nodes {
         node.remove_replica(shard);
     }
-    tokio::time::sleep(Duration::from_secs(1)).await;
 
     // 7. Create new nodes and allocate addresses.
     let discovery_url = format!("http://{}", cluster.discovery_addr);
@@ -733,13 +738,12 @@ async fn test_disaster_recovery_backup_restore() {
         .await
         .unwrap();
 
-    // 10. Wait for StartView processing + discovery sync.
-    tokio::time::sleep(Duration::from_secs(5)).await;
-
-    // 11. Create a fresh client that discovers the new replicas.
+    // 10. Create a fresh client (discovery sync runs in parallel with
+    //     replica bootstrap) and wait for restored shard to accept writes.
     let (client2, _td2, _disc_dir2) = create_test_client(cluster.discovery_addr, 1).await;
+    wait_for_operational(&client2, "dr_restore_probe").await;
 
-    // Verify ALL data is readable from restored shard.
+    // 11. Verify ALL data is readable from restored shard.
     for (key, value) in &test_data {
         let val = rw_get(&client2, key, &format!("{key}_post")).await;
         assert_eq!(
@@ -854,6 +858,12 @@ async fn test_cluster_backup_restore_via_admin() {
 
     // Force view changes and backup each shard.
     for (&shard_id, &admin_addr) in &shard_to_admin {
+        let shard = ShardNumber(shard_id);
+        let shard_nodes: Vec<&Arc<Node>> = cluster.nodes.iter()
+            .filter(|n| n.shard_view_number(shard).is_some())
+            .collect();
+        let old_view = quorum_view_number(&shard_nodes, shard);
+
         let vc_req = format!(r#"{{"command":"view_change","shard":{shard_id}}}"#);
         let resp = send_admin_line(&admin_addr, &vc_req).await;
         let parsed: serde_json::Value = serde_json::from_str(&resp).unwrap();
@@ -861,7 +871,8 @@ async fn test_cluster_backup_restore_via_admin() {
             parsed["ok"].as_bool().unwrap(),
             "view_change shard {shard_id}"
         );
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        wait_for_view_change(client, &shard_nodes, shard, old_view,
+            &format!("admin_vc_probe_s{shard_id}")).await;
 
         let backup_req = format!(r#"{{"command":"backup_shard","shard":{shard_id}}}"#);
         let resp = send_admin_line(&admin_addr, &backup_req).await;
@@ -898,7 +909,6 @@ async fn test_cluster_backup_restore_via_admin() {
             node.remove_replica(ShardNumber(shard_id));
         }
     }
-    tokio::time::sleep(Duration::from_secs(1)).await;
 
     // 6. Create new nodes and restore via admin protocol.
     let discovery_url = format!("http://{}", cluster.discovery_addr);
@@ -984,12 +994,14 @@ async fn test_cluster_backup_restore_via_admin() {
             .unwrap();
     }
 
-    // 7. Wait for restoration to settle.
-    tokio::time::sleep(Duration::from_secs(5)).await;
-
-    // 8. Create fresh client and verify all data survived.
+    // 7. Create fresh client (discovery sync runs in parallel with
+    //    replica bootstrap) and wait for restored shards to accept writes.
     let (client2, _td2, _disc_dir2) = create_test_client(cluster.discovery_addr, 2).await;
+    // Probe shard 0 (key < "n") and shard 1 (key >= "n").
+    wait_for_operational(&client2, "admin_restore_probe").await;
+    wait_for_operational(&client2, "restore_probe_s1").await;
 
+    // 8. Verify all data survived.
     for (key, value) in &test_data {
         let val = rw_get(&client2, key, &format!("{key}_post")).await;
         assert_eq!(
