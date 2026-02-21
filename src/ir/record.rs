@@ -1,7 +1,7 @@
 use super::{OpId, ReplicaUpcalls, ViewNumber};
 use crate::util::vectorize_btree;
 use serde::{Deserialize, Serialize};
-use std::{collections::{BTreeMap, HashSet}, fmt::Debug};
+use std::{collections::BTreeMap, fmt::Debug};
 
 /// The state of a record entry according to a replica.
 #[derive(Copy, Clone, PartialEq, Serialize, Deserialize)]
@@ -127,39 +127,25 @@ impl<IO: Clone, CO: Clone, CR: Clone> RecordImpl<IO, CO, CR> {
         }
     }
 
-    pub fn filter_by_op_ids(&self, op_ids: &HashSet<OpId>) -> Self {
-        Self {
-            inconsistent: self
-                .inconsistent
-                .iter()
-                .filter(|(id, _)| op_ids.contains(id))
-                .map(|(id, e)| (*id, e.clone()))
-                .collect(),
-            consensus: self
-                .consensus
-                .iter()
-                .filter(|(id, _)| op_ids.contains(id))
-                .map(|(id, e)| (*id, e.clone()))
-                .collect(),
-        }
-    }
 }
 
 impl<IO: Clone + PartialEq, CO: Clone + PartialEq, CR: Clone + PartialEq> RecordImpl<IO, CO, CR> {
     /// Returns a record containing only entries in `self` that differ from `base`.
     pub fn delta_from(&self, base: &Self) -> Self {
-        let mut delta_ids = HashSet::new();
-        for id in self.inconsistent.keys() {
-            if base.inconsistent.get(id) != self.inconsistent.get(id) {
-                delta_ids.insert(*id);
-            }
+        Self {
+            inconsistent: self
+                .inconsistent
+                .iter()
+                .filter(|(id, e)| base.inconsistent.get(id) != Some(e))
+                .map(|(id, e)| (*id, e.clone()))
+                .collect(),
+            consensus: self
+                .consensus
+                .iter()
+                .filter(|(id, e)| base.consensus.get(id) != Some(e))
+                .map(|(id, e)| (*id, e.clone()))
+                .collect(),
         }
-        for id in self.consensus.keys() {
-            if base.consensus.get(id) != self.consensus.get(id) {
-                delta_ids.insert(*id);
-            }
-        }
-        self.filter_by_op_ids(&delta_ids)
     }
 }
 

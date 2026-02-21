@@ -169,11 +169,6 @@ impl<IO: Clone, CO: Clone, CR: Clone> RecordPayload<IO, CO, CR> {
     }
 }
 
-pub(crate) struct LeaderRecord<IO, CO, CR, A> {
-    pub record: Arc<RecordImpl<IO, CO, CR>>,
-    pub view: SharedView<A>,
-}
-
 /// Informs a replica about a new view.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DoViewChange<IO, CO, CR, A> {
