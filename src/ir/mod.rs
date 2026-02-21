@@ -22,7 +22,7 @@ pub use op::Id as OpId;
 pub use record::{
     ConsensusEntry as RecordConsensusEntry,
     InconsistentEntry as RecordInconsistentEntry, Record, State as RecordEntryState,
-    VersionedEntry, VersionedRecord, VersionedVacantEntry,
+    VersionedEntry, VersionedRecord,
 };
 pub use replica::{Replica, Upcalls as ReplicaUpcalls};
 pub use shared_view::SharedView;
