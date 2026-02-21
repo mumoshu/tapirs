@@ -1,11 +1,11 @@
 use super::*;
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn increment_sequential_3() {
     increment_sequential_timeout(3).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn increment_sequential_7() {
     increment_sequential_timeout(7).await;
 }
@@ -40,12 +40,12 @@ async fn increment_sequential(num_replicas: usize) {
     assert!(committed > 0);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn increment_parallel_3() {
     increment_parallel_timeout(3).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn increment_parallel_7() {
     increment_parallel_timeout(7).await;
 }

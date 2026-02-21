@@ -1,16 +1,16 @@
 use super::*;
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn fuzz_rwr_3() {
     fuzz_rwr(3).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn fuzz_rwr_5() {
     fuzz_rwr(5).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn fuzz_rwr_7() {
     fuzz_rwr(7).await;
 }
@@ -62,7 +62,7 @@ async fn rwr(linearizable: bool, num_replicas: usize) {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn sharded() {
     let (_shards, clients) = build_sharded_kv(true, 5, 3, 2);
 
