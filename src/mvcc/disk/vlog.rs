@@ -377,6 +377,111 @@ impl<IO: DiskIo> VlogSegment<IO> {
         Ok((key, timestamp))
     }
 
+    /// Read and verify a vlog entry before returning it to the caller.
+    ///
+    /// **What the original paper does** (WiscKey, Lu et al., FAST'16, Section
+    /// 3.3.3, paragraph starting "if the key could be found in the LSM tree,
+    /// however, an additional step is required"):
+    ///
+    /// The paper specifies two verification checks on vlog reads:
+    ///   1. Range check: verify the value address falls within the valid vLog range.
+    ///   2. Key match: verify the vlog entry's key matches the queried key.
+    /// If either fails, the paper returns "not found." The paper also mentions
+    /// checksums as optional: "if necessary, a magic number or checksum can be
+    /// easily added to the header" — the paper does NOT require CRC verification
+    /// on reads, relying instead on the range + key-match checks for crash
+    /// consistency.
+    ///
+    /// **Our extensions beyond the paper**:
+    ///
+    /// 1. CRC verification (mandatory): We verify both crc_kts and crc_val on
+    ///    every read. The paper treats checksums as optional, but without them,
+    ///    silent value corruption (bit-rot) would go undetected — the key-match
+    ///    check only catches key corruption, not value corruption.
+    ///
+    /// 2. Errors instead of "not found": The paper returns "not found" for all
+    ///    verification failures, which is safe for a single-machine store with
+    ///    no recovery option. In TAPIR's quorum system (f+1 replicas), silently
+    ///    returning "not found" is dangerous: if a correlated event (e.g.,
+    ///    datacenter power outage) causes data loss on a quorum of replicas for
+    ///    the same key, all replicas return "not found" and the quorum read
+    ///    produces silent data loss for a committed key. We return Err instead
+    ///    so the consumer can propagate the error for retry on another replica
+    ///    or trigger repair.
+    ///
+    /// 3. Specific error variants: We use four distinct error variants instead
+    ///    of the paper's blanket "not found": VLogDataMissing (pointer outside
+    ///    valid range), VLogKeyCrcMismatch (key/ts CRC failed), VLogValueCrcMismatch
+    ///    (value CRC failed), VLogKeyMismatch (key doesn't match despite CRCs
+    ///    passing). The paper does not distinguish failure types. All trigger the
+    ///    same consumer action (propagate error for retry on another replica),
+    ///    but the distinction aids diagnostics — see each variant's doc comment
+    ///    in error.rs for direct cause, possible root causes, and consumer
+    ///    guidance.
+    ///
+    /// **Verification checks**:
+    ///
+    /// 1. Range: pointer must fall within the valid vLog range [0, write_offset).
+    ///    Failure → Err(VLogDataMissing): the vlog data is missing. This happens
+    ///    when an SST contains a ValuePointer but the vlog was truncated in a
+    ///    crash (e.g., crash between SST flush and manifest save, or fsync that
+    ///    didn't reach non-volatile storage). The data was never durably written
+    ///    to this replica.
+    ///
+    /// 2. CRC: both crc_kts and crc_val must match (our extension — paper does
+    ///    not require CRC on reads). Failure → Err(VLogKeyCrcMismatch) or
+    ///    Err(VLogValueCrcMismatch): the vlog data is present but damaged
+    ///    (bit-rot). On the normal read path, the entry was previously verified
+    ///    during flush or recovery, so a new CRC failure indicates silent disk
+    ///    corruption after the fact.
+    ///
+    /// 3. Key match (from the paper): the vlog entry's key must match the
+    ///    expected key from the LSM. Failure → Err(VLogKeyMismatch). Since the
+    ///    vlog CRCs passed, this mismatch has multiple possible root causes:
+    ///    (a) SSTable key corruption — bit-rot corrupted the key stored in the
+    ///    SST, causing the LSM to return a wrong entry for the query;
+    ///    (b) SSTable pointer corruption — the key in the SST is correct but
+    ///    the ValuePointer's offset/segment_id was corrupted, pointing to a
+    ///    different (valid) vlog entry; (c) vlog CRC false collision (~1/2³²,
+    ///    negligible) — the vlog data is actually corrupt but the corruption
+    ///    happened to pass CRC verification.
+    ///
+    /// Without this method, we originally called vlog.read() directly from
+    /// resolve_value(), which had no range check or key-match verification
+    /// (neither the paper's checks nor our extensions).
+    pub async fn read_verified<K, V, TS>(
+        &self,
+        ptr: &ValuePointer,
+        expected_key: &K,
+    ) -> Result<VlogEntry<K, V, TS>, StorageError>
+    where
+        K: PartialEq + for<'de> Deserialize<'de>,
+        V: for<'de> Deserialize<'de>,
+        TS: for<'de> Deserialize<'de>,
+    {
+        // 1. Range check: pointer must fall within valid vLog range.
+        if ptr.offset + ptr.length as u64 > self.write_offset {
+            return Err(StorageError::VLogDataMissing {
+                file: self.path.display().to_string(),
+                offset: ptr.offset,
+            });
+        }
+
+        // 2. CRC verification via read() — propagates VLogKeyCrcMismatch
+        //    or VLogValueCrcMismatch on failure.
+        let entry = self.read::<K, V, TS>(ptr).await?;
+
+        // 3. Key match: vlog entry key must match expected key from LSM.
+        if entry.key != *expected_key {
+            return Err(StorageError::VLogKeyMismatch {
+                file: self.path.display().to_string(),
+                offset: ptr.offset,
+            });
+        }
+
+        Ok(entry)
+    }
+
     /// Scan and recover entries from a starting offset for crash recovery.
     ///
     /// Uses the key_len and value_len header fields to compute exact entry
