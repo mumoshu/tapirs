@@ -46,21 +46,30 @@ impl GarbageCollector {
         };
         let mut pointer_updates = Vec::new();
 
-        // Scan entire old segment from offset 0
+        // Scan entire old segment from offset 0 to get entry boundaries.
+        // recover_entries() still deserializes all fields — Commit 6 replaces
+        // this with recover_pointers() which skips deserialization entirely.
         let entries = old_segment.recover_entries::<K, V, TS>(0).await?;
 
-        for (entry, old_ptr) in entries {
+        for (_entry, old_ptr) in entries {
             stats.entries_scanned += 1;
 
+            // Read only key+ts (skips value bytes entirely). Per WiscKey
+            // (Lu et al., FAST'16, Section 3.3.2), the per-field format
+            // enables reading just the key portion. Dead entries (the
+            // majority during GC) never touch value bytes.
+            let (key, ts): (K, TS) = old_segment.read_key_ts(&old_ptr).await?;
+
             // Check if LSM still references this entry at this location
-            match lsm.get_at(&entry.key, &entry.timestamp).await? {
+            match lsm.get_at(&key, &ts).await? {
                 Some((_, lsm_entry)) => {
                     // Check if the LSM entry's pointer matches the old segment location
                     if lsm_entry.value_ptr == Some(old_ptr) {
-                        // LIVE: This entry is still referenced by LSM at this exact location
-                        // Recopy to new segment
+                        // LIVE: Read full entry (including value) for recopy
+                        let entry: super::vlog::VlogEntry<K, V, TS> =
+                            old_segment.read(&old_ptr).await?;
                         let new_ptr = new_segment.append(&entry).await?;
-                        pointer_updates.push((entry.key, entry.timestamp, new_ptr));
+                        pointer_updates.push((key, ts, new_ptr));
                         stats.entries_live += 1;
                     } else {
                         // DEAD: LSM points to a different location (or None)
