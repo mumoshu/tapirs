@@ -765,6 +765,45 @@ where
     ) -> Result<bool, StorageError> {
         self.has_writes_in_range_impl(start, end, after_ts, before_ts)
     }
+
+    fn commit_batch(
+        &mut self,
+        writes: Vec<(K, Option<V>)>,
+        reads: Vec<(K, TS)>,
+        commit: TS,
+    ) -> Result<(), StorageError> {
+        // Batch all write-set entries into a single vlog append.
+        if !writes.is_empty() {
+            let vlog_entries: Vec<_> = writes
+                .iter()
+                .map(|(key, value)| VlogEntry {
+                    key: key.clone(),
+                    timestamp: commit,
+                    value: value.clone(),
+                })
+                .collect();
+
+            let ptrs = futures::executor::block_on(self.vlog.append_batch(&vlog_entries))?;
+
+            for (i, (key, _)) in writes.iter().enumerate() {
+                self.memtable.insert(
+                    CompositeKey::new(key.clone(), commit),
+                    LsmEntry {
+                        value_ptr: Some(ptrs[i]),
+                        last_read_ts: None,
+                    },
+                );
+            }
+        }
+
+        // Apply read-set timestamps (memtable-only, no vlog I/O).
+        for (key, read) in reads {
+            self.commit_get_impl(key, read, commit)?;
+        }
+
+        // Single flush check for the entire batch.
+        self.maybe_flush()
+    }
 }
 
 #[cfg(test)]

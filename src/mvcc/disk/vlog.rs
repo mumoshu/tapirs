@@ -651,6 +651,114 @@ impl<IO: DiskIo> VlogSegment<IO> {
         Ok(recovered)
     }
 
+    /// Append multiple entries in a single write, returning a `ValuePointer` per entry.
+    ///
+    /// Serializes all entries into one contiguous buffer and issues a single
+    /// `pwrite()`. Each entry uses the same on-disk layout as `append()`. The
+    /// returned pointers address individual entries within the batch — existing
+    /// consumers (`read()`, `read_key_ts()`, `read_verified()`, `recover_entries()`)
+    /// work unchanged because each entry is self-describing via its header.
+    pub async fn append_batch<K, V, TS>(
+        &mut self,
+        entries: &[VlogEntry<K, V, TS>],
+    ) -> Result<Vec<ValuePointer>, StorageError>
+    where
+        K: Serialize,
+        V: Serialize,
+        TS: Serialize,
+    {
+        if entries.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Pre-serialize all entries to compute total buffer size.
+        struct SerializedEntry {
+            key_bytes: Vec<u8>,
+            ts_bytes: Vec<u8>,
+            value_bytes: Vec<u8>,
+            crc_kts: u32,
+            crc_val: u32,
+            total_len: usize,
+        }
+
+        let mut serialized = Vec::with_capacity(entries.len());
+        let mut total_buf_size = 0usize;
+
+        for entry in entries {
+            let key_bytes =
+                bitcode::serialize(&entry.key).map_err(|e| StorageError::Codec(e.to_string()))?;
+            let ts_bytes = bitcode::serialize(&entry.timestamp)
+                .map_err(|e| StorageError::Codec(e.to_string()))?;
+            let value_bytes = bitcode::serialize(&entry.value)
+                .map_err(|e| StorageError::Codec(e.to_string()))?;
+
+            debug_assert_eq!(ts_bytes.len(), TS_SIZE);
+
+            let mut kts_hasher = crc32fast::Hasher::new();
+            kts_hasher.update(&key_bytes);
+            kts_hasher.update(&ts_bytes);
+            let crc_kts = kts_hasher.finalize();
+            let crc_val = crc32fast::hash(&value_bytes);
+
+            let total_len = ENTRY_OVERHEAD + key_bytes.len() + value_bytes.len();
+            total_buf_size += total_len;
+
+            serialized.push(SerializedEntry {
+                key_bytes,
+                ts_bytes,
+                value_bytes,
+                crc_kts,
+                crc_val,
+                total_len,
+            });
+        }
+
+        // Build one contiguous buffer with all entries.
+        let mut buf = AlignedBuf::new(total_buf_size);
+        let slice = buf.as_full_slice_mut();
+        let mut pos = 0;
+        let mut ptrs = Vec::with_capacity(serialized.len());
+        let base_offset = self.write_offset;
+
+        for se in &serialized {
+            let entry_offset = base_offset + pos as u64;
+            let key_len = se.key_bytes.len() as u32;
+            let value_len = se.value_bytes.len() as u32;
+
+            // Header: key_len(4) | value_len(4)
+            slice[pos..pos + 4].copy_from_slice(&key_len.to_le_bytes());
+            pos += 4;
+            slice[pos..pos + 4].copy_from_slice(&value_len.to_le_bytes());
+            pos += 4;
+
+            // Key + timestamp + crc_kts
+            slice[pos..pos + se.key_bytes.len()].copy_from_slice(&se.key_bytes);
+            pos += se.key_bytes.len();
+            slice[pos..pos + TS_SIZE].copy_from_slice(&se.ts_bytes);
+            pos += TS_SIZE;
+            slice[pos..pos + 4].copy_from_slice(&se.crc_kts.to_le_bytes());
+            pos += 4;
+
+            // Value + crc_val
+            slice[pos..pos + se.value_bytes.len()].copy_from_slice(&se.value_bytes);
+            pos += se.value_bytes.len();
+            slice[pos..pos + 4].copy_from_slice(&se.crc_val.to_le_bytes());
+            pos += 4;
+
+            ptrs.push(ValuePointer {
+                segment_id: self.id,
+                offset: entry_offset,
+                length: se.total_len as u32,
+            });
+        }
+
+        buf.set_len(total_buf_size);
+        self.io.pwrite(&buf, base_offset).await?;
+        self.write_offset += total_buf_size as u64;
+
+        Ok(ptrs)
+    }
+
     /// Sync the segment to disk.
     pub async fn sync(&self) -> Result<(), StorageError> {
         self.io.fsync().await
