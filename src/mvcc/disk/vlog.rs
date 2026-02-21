@@ -556,6 +556,101 @@ impl<IO: DiskIo> VlogSegment<IO> {
         Ok(recovered)
     }
 
+    /// Scan vlog entries and return only their ValuePointers, without deserializing
+    /// any fields.
+    ///
+    /// Same scanning logic as recover_entries() — reads the 8-byte header to compute
+    /// entry boundaries, verifies both CRCs (crc_kts and crc_val) over raw bytes —
+    /// but skips all bitcode deserialization. Used by GC where the scan phase only
+    /// needs entry boundaries (ValuePointers), and the liveness check uses
+    /// read_key_ts() for key+ts access.
+    pub async fn recover_pointers(
+        &self,
+        from_offset: u64,
+    ) -> Result<Vec<ValuePointer>, StorageError> {
+        let mut recovered = Vec::new();
+        let file_size = std::fs::metadata(&self.path)?.len();
+        let mut current_offset = from_offset;
+
+        while current_offset + 8 <= file_size {
+            // Read header (8 bytes) to get key_len and value_len.
+            let header_read_size = round_up(8);
+            let mut header_buf = AlignedBuf::new(header_read_size);
+            self.io.pread(&mut header_buf, current_offset).await?;
+            let header = header_buf.as_full_slice();
+
+            let key_len =
+                u32::from_le_bytes([header[0], header[1], header[2], header[3]]) as usize;
+            let value_len =
+                u32::from_le_bytes([header[4], header[5], header[6], header[7]]) as usize;
+
+            let total_len = ENTRY_OVERHEAD + key_len + value_len;
+
+            // Partial write: not enough data for the full entry.
+            if current_offset + total_len as u64 > file_size {
+                break;
+            }
+
+            // Read the full entry bytes for CRC verification (no deserialization).
+            let read_size = round_up(total_len);
+            let mut buf = AlignedBuf::new(read_size);
+            self.io.pread(&mut buf, current_offset).await?;
+            let raw = buf.as_full_slice();
+
+            // Verify crc_kts over key_bytes | ts_bytes.
+            let key_start = 8;
+            let key_end = key_start + key_len;
+            let ts_end = key_end + TS_SIZE;
+            let crc_kts_start = ts_end;
+
+            let key_bytes = &raw[key_start..key_end];
+            let ts_bytes = &raw[key_end..ts_end];
+
+            let stored_crc_kts = u32::from_le_bytes([
+                raw[crc_kts_start],
+                raw[crc_kts_start + 1],
+                raw[crc_kts_start + 2],
+                raw[crc_kts_start + 3],
+            ]);
+            let mut kts_hasher = crc32fast::Hasher::new();
+            kts_hasher.update(key_bytes);
+            kts_hasher.update(ts_bytes);
+            let actual_crc_kts = kts_hasher.finalize();
+
+            if stored_crc_kts != actual_crc_kts {
+                break; // CRC failure — stop recovery (prefix property).
+            }
+
+            // Verify crc_val over value_bytes.
+            let value_start = crc_kts_start + 4;
+            let value_end = value_start + value_len;
+            let crc_val_start = value_end;
+
+            let value_bytes = &raw[value_start..value_end];
+            let stored_crc_val = u32::from_le_bytes([
+                raw[crc_val_start],
+                raw[crc_val_start + 1],
+                raw[crc_val_start + 2],
+                raw[crc_val_start + 3],
+            ]);
+            let actual_crc_val = crc32fast::hash(value_bytes);
+
+            if stored_crc_val != actual_crc_val {
+                break; // CRC failure — stop recovery (prefix property).
+            }
+
+            let ptr = ValuePointer {
+                segment_id: self.id,
+                offset: current_offset,
+                length: total_len as u32,
+            };
+            recovered.push(ptr);
+            current_offset += total_len as u64;
+        }
+
+        Ok(recovered)
+    }
+
     /// Sync the segment to disk.
     pub async fn sync(&self) -> Result<(), StorageError> {
         self.io.fsync().await

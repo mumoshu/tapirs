@@ -47,11 +47,11 @@ impl GarbageCollector {
         let mut pointer_updates = Vec::new();
 
         // Scan entire old segment from offset 0 to get entry boundaries.
-        // recover_entries() still deserializes all fields — Commit 6 replaces
-        // this with recover_pointers() which skips deserialization entirely.
-        let entries = old_segment.recover_entries::<K, V, TS>(0).await?;
+        // recover_pointers() verifies both CRCs over raw bytes but skips
+        // all bitcode deserialization — only ValuePointers are returned.
+        let pointers = old_segment.recover_pointers(0).await?;
 
-        for (_entry, old_ptr) in entries {
+        for old_ptr in pointers {
             stats.entries_scanned += 1;
 
             // Read only key+ts (skips value bytes entirely). Per WiscKey
