@@ -435,17 +435,24 @@ impl<K: Key, V: Value, TS: Timestamp + Send, M: MvccBackend<K, V, TS>> Store<K, 
     }
 
     pub fn commit(&mut self, id: TransactionId, transaction: &Transaction<K, V, TS>, commit: TS) {
-        for (key, read) in transaction.shard_read_set(self.shard) {
-            MvccBackend::commit_get(&mut self.inner, key.clone(), read, commit).unwrap();
+        let reads: Vec<(K, TS)> = transaction
+            .shard_read_set(self.shard)
+            .map(|(key, read)| (key.clone(), read))
+            .collect();
+
+        if !reads.is_empty() {
             self.max_read_commit_time = Some(match self.max_read_commit_time {
                 Some(prev) => prev.max(commit),
                 None => commit,
             });
         }
 
-        for (key, value) in transaction.shard_write_set(self.shard) {
-            MvccBackend::put(&mut self.inner, key.clone(), value.clone(), commit).unwrap();
-        }
+        let writes: Vec<(K, Option<V>)> = transaction
+            .shard_write_set(self.shard)
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+
+        MvccBackend::commit_batch(&mut self.inner, writes, reads, commit).unwrap();
 
         // Note: Transaction may not be in the prepared list of this particular replica, and that's okay.
         self.remove_prepared(id);
