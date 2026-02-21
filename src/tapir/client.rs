@@ -306,6 +306,11 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Transaction<K, V, T> {
                     .await;
 
                 if results.values().any(|v| v.is_too_late() || v.is_too_old()) {
+                    // Refresh timestamp: TooLate means min_prepare_time was raised
+                    // (e.g., during resharding). A fresh transport.time() will be
+                    // above the barrier since the barrier is derived from historical
+                    // transaction timestamps.
+                    timestamp.time = client.lock().unwrap().transport.time().max(min_commit_timestamp);
                     continue;
                 }
 
