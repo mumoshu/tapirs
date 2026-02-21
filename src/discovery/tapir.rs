@@ -8,14 +8,20 @@ use serde::{Deserialize, Serialize};
 
 use crate::discovery::{
     membership_to_strings, strings_to_membership, DiscoveryError, RemoteShardDirectory,
+    ShardDirectoryChange, ShardDirectoryChangeSet,
 };
 use crate::tapir::dns_shard_client::{DnsRefreshingShardClient, DnsResolveError};
-use crate::tapir::{Client as TapirClient, ShardClient, ShardNumber, Sharded};
+use crate::tapir::{Client as TapirClient, KeyRange, ShardClient, ShardNumber, Sharded};
 use crate::{IrClientId, IrMembership, TapirTransport};
 
 const DISCOVERY_SHARD: ShardNumber = ShardNumber(0);
 const SCAN_START: &str = "shard:";
 const SCAN_END: &str = "shard:~";
+const ROUTE_CHANGE_LAST_INDEX: &str = "route_change_last_index";
+
+fn route_change_key(idx: u64) -> String {
+    format!("route_change:{idx}")
+}
 
 fn shard_key(shard: ShardNumber) -> String {
     format!("shard:{}", shard.0)
@@ -28,10 +34,17 @@ fn parse_shard_number(key: &str) -> Option<ShardNumber> {
 }
 
 #[derive(Serialize, Deserialize)]
-struct ShardRecord {
+#[serde(bound(
+    serialize = "K: serde::Serialize",
+    deserialize = "K: serde::de::DeserializeOwned"
+))]
+struct ShardRecord<K> {
     membership: Vec<String>,
     view: u64,
     status: ShardStatus,
+    /// Typed key range (set by `publish_route_changes`, absent from `put`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    key_range: Option<KeyRange<K>>,
 }
 
 #[derive(Serialize, Deserialize, PartialEq)]
@@ -65,6 +78,34 @@ pub struct TapirRemoteShardDirectory<A, T: TapirTransport<String, String>> {
     dns_client: Option<DnsRefreshingShardClient<String, String, T>>,
     read_mode: ReadMode,
     _phantom: PhantomData<A>,
+}
+
+fn parse_record<K: serde::de::DeserializeOwned>(json: &str) -> Result<ShardRecord<K>, DiscoveryError> {
+    serde_json::from_str(json)
+        .map_err(|e| DiscoveryError::InvalidResponse(format!("invalid JSON: {e}")))
+}
+
+fn parse_membership_from<A, K>(record: &ShardRecord<K>) -> Result<IrMembership<A>, DiscoveryError>
+where
+    A: FromStr + Display + Copy + Eq,
+    <A as FromStr>::Err: Display,
+{
+    strings_to_membership::<A>(&record.membership)
+        .map_err(|e| DiscoveryError::InvalidResponse(format!("invalid membership: {e}")))
+}
+
+fn to_json<A, K>(membership: &IrMembership<A>, view: u64, status: ShardStatus, key_range: Option<KeyRange<K>>) -> String
+where
+    A: Copy + Eq + Display,
+    K: Serialize,
+{
+    serde_json::to_string(&ShardRecord {
+        membership: membership_to_strings(membership),
+        view,
+        status,
+        key_range,
+    })
+    .unwrap()
 }
 
 impl<A, T> TapirRemoteShardDirectory<A, T>
@@ -123,25 +164,6 @@ where
             read_mode: ReadMode::Eventual,
             _phantom: PhantomData,
         }
-    }
-
-    fn parse_record(json: &str) -> Result<ShardRecord, DiscoveryError> {
-        serde_json::from_str(json)
-            .map_err(|e| DiscoveryError::InvalidResponse(format!("invalid JSON: {e}")))
-    }
-
-    fn parse_membership(record: &ShardRecord) -> Result<IrMembership<A>, DiscoveryError> {
-        strings_to_membership::<A>(&record.membership)
-            .map_err(|e| DiscoveryError::InvalidResponse(format!("invalid membership: {e}")))
-    }
-
-    fn to_json(membership: &IrMembership<A>, view: u64, status: ShardStatus) -> String {
-        serde_json::to_string(&ShardRecord {
-            membership: membership_to_strings(membership),
-            view,
-            status,
-        })
-        .unwrap()
     }
 
     /// Return the current ShardClient, refreshing from DNS if applicable.
@@ -287,10 +309,11 @@ where
     }
 }
 
-impl<A, T> RemoteShardDirectory<A> for TapirRemoteShardDirectory<A, T>
+impl<A, K, T> RemoteShardDirectory<A, K> for TapirRemoteShardDirectory<A, T>
 where
-    A: FromStr + Display + Copy + Eq + Send + Sync + 'static,
+    A: FromStr + Display + Copy + Eq + Send + Sync + Serialize + serde::de::DeserializeOwned + 'static,
     <A as FromStr>::Err: Display,
+    K: Clone + std::fmt::Debug + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
     T: TapirTransport<String, String>,
 {
     async fn get(
@@ -299,11 +322,11 @@ where
     ) -> Result<Option<(IrMembership<A>, u64)>, DiscoveryError> {
         match self.read_raw(&shard_key(shard)).await? {
             Some(json) => {
-                let record = Self::parse_record(&json)?;
+                let record = parse_record::<K>(&json)?;
                 if record.status == ShardStatus::Tombstoned {
                     return Ok(None);
                 }
-                let membership = Self::parse_membership(&record)?;
+                let membership = parse_membership_from(&record)?;
                 Ok(Some((membership, record.view)))
             }
             None => Ok(None),
@@ -322,7 +345,7 @@ where
         // RW transaction get() is inconsistent (1 replica, OCC-validated
         // at commit), so we must use read_raw() for correctness checks.
         if let Some(json) = self.read_raw(&key).await? {
-            let record = Self::parse_record(&json)?;
+            let record = parse_record::<K>(&json)?;
             if record.status == ShardStatus::Tombstoned {
                 return Err(DiscoveryError::Tombstoned);
             }
@@ -331,7 +354,7 @@ where
             }
         }
 
-        let new_json = Self::to_json(&membership, view, ShardStatus::Active);
+        let new_json = to_json::<_, K>(&membership, view, ShardStatus::Active, None);
 
         for _attempt in 0..5 {
             let txn = self.client.begin();
@@ -370,7 +393,7 @@ where
         let pre_read = self.read_raw(&key).await?;
         match &pre_read {
             Some(json) => {
-                let record = Self::parse_record(json)?;
+                let record = parse_record::<K>(json)?;
                 if record.status == ShardStatus::Tombstoned {
                     return Err(DiscoveryError::NotFound);
                 }
@@ -379,7 +402,7 @@ where
         }
 
         // Build tombstone from the consistent pre-read value.
-        let mut record = Self::parse_record(pre_read.as_ref().unwrap())?;
+        let mut record = parse_record::<K>(pre_read.as_ref().unwrap())?;
         record.status = ShardStatus::Tombstoned;
         let tombstone_json = serde_json::to_string(&record).unwrap();
 
@@ -443,11 +466,11 @@ where
             let Some(shard) = parse_shard_number(&key) else {
                 continue;
             };
-            let record = Self::parse_record(&json)?;
+            let record = parse_record::<K>(&json)?;
             if record.status == ShardStatus::Tombstoned {
                 continue;
             }
-            let membership = Self::parse_membership(&record)?;
+            let membership = parse_membership_from(&record)?;
             result.push((shard, membership, record.view));
         }
         result.sort_by_key(|(s, _, _)| *s);
@@ -463,11 +486,11 @@ where
     ) -> Result<(), DiscoveryError> {
         let old_key = shard_key(old);
         let new_key = shard_key(new);
-        let new_json = Self::to_json(&membership, view, ShardStatus::Active);
+        let new_json = to_json::<_, K>(&membership, view, ShardStatus::Active, None);
 
         // Consistent pre-read: build tombstone for old shard.
         let old_tombstone = if let Some(json) = self.read_raw(&old_key).await? {
-            let mut record = Self::parse_record(&json)?;
+            let mut record = parse_record::<K>(&json)?;
             record.status = ShardStatus::Tombstoned;
             Some(serde_json::to_string(&record).unwrap())
         } else {
@@ -505,6 +528,137 @@ where
         Err(DiscoveryError::ConnectionFailed(
             "replace failed after retries".to_string(),
         ))
+    }
+
+    async fn publish_route_changes(
+        &self,
+        changes: Vec<ShardDirectoryChange<K, A>>,
+    ) -> Result<(), DiscoveryError> {
+        let changeset_json = serde_json::to_string(&changes)
+            .map_err(|e| DiscoveryError::InvalidResponse(format!("serialize changeset: {e}")))?;
+
+        // Consistent pre-read of last index.
+        let current_idx: u64 = match self.read_raw(ROUTE_CHANGE_LAST_INDEX).await? {
+            Some(s) => s.parse().unwrap_or(0),
+            None => 0,
+        };
+        let new_idx = current_idx + 1;
+        let idx_key = route_change_key(new_idx);
+
+        // Pre-read shard entries and build JSON for each change.
+        let mut shard_writes: Vec<(String, String)> = Vec::new();
+        for change in &changes {
+            match change {
+                ShardDirectoryChange::SetRange { shard, range, membership, view } => {
+                    let key = shard_key(*shard);
+                    if let Some(json) = self.read_raw(&key).await? {
+                        let record = parse_record::<K>(&json)?;
+                        if record.status == ShardStatus::Tombstoned {
+                            continue;
+                        }
+                        if record.view > *view {
+                            // Stale view — update only key_range.
+                            let mut updated = record;
+                            updated.key_range = Some(range.clone());
+                            let json = serde_json::to_string(&updated).unwrap();
+                            shard_writes.push((key, json));
+                            continue;
+                        }
+                    }
+                    let json = to_json(membership, *view, ShardStatus::Active, Some(range.clone()));
+                    shard_writes.push((key, json));
+                }
+                ShardDirectoryChange::RemoveRange { shard } => {
+                    let key = shard_key(*shard);
+                    if let Some(json) = self.read_raw(&key).await? {
+                        let mut record = parse_record::<K>(&json)?;
+                        if record.status != ShardStatus::Tombstoned {
+                            record.status = ShardStatus::Tombstoned;
+                            let json = serde_json::to_string(&record).unwrap();
+                            shard_writes.push((key, json));
+                        }
+                    }
+                }
+            }
+        }
+
+        for _attempt in 0..5 {
+            let txn = self.client.begin();
+
+            // OCC-track the last-index key.
+            let _ = txn
+                .get(ROUTE_CHANGE_LAST_INDEX.to_string())
+                .await
+                .map_err(|e| DiscoveryError::ConnectionFailed(format!("{e:?}")))?;
+
+            // OCC-track the changeset key.
+            let _ = txn
+                .get(idx_key.clone())
+                .await
+                .map_err(|e| DiscoveryError::ConnectionFailed(format!("{e:?}")))?;
+
+            txn.put(idx_key.clone(), Some(changeset_json.clone()));
+            txn.put(
+                ROUTE_CHANGE_LAST_INDEX.to_string(),
+                Some(new_idx.to_string()),
+            );
+
+            // Shard entry writes in the same transaction.
+            for (key, json) in &shard_writes {
+                let _ = txn
+                    .get(key.clone())
+                    .await
+                    .map_err(|e| DiscoveryError::ConnectionFailed(format!("{e:?}")))?;
+                txn.put(key.clone(), Some(json.clone()));
+            }
+
+            if txn.commit().await.is_some() {
+                tokio::task::yield_now().await;
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                return Ok(());
+            }
+        }
+
+        Err(DiscoveryError::ConnectionFailed(
+            "publish_route_changes failed after retries".to_string(),
+        ))
+    }
+
+    async fn route_changes_since(
+        &self,
+        after_index: u64,
+    ) -> Result<Vec<(u64, ShardDirectoryChangeSet<K, A>)>, DiscoveryError> {
+        // Read last index (eventual — 1 replica).
+        let last_idx: u64 = match self.read_raw(ROUTE_CHANGE_LAST_INDEX).await? {
+            Some(s) => s.parse().unwrap_or(0),
+            None => return Ok(vec![]),
+        };
+
+        if last_idx <= after_index {
+            return Ok(vec![]);
+        }
+
+        let mut result = Vec::new();
+        for idx in (after_index + 1)..=last_idx {
+            let key = route_change_key(idx);
+            match self.read_raw(&key).await? {
+                Some(json) => {
+                    let changeset: ShardDirectoryChangeSet<K, A> = serde_json::from_str(&json)
+                        .map_err(|e| {
+                            DiscoveryError::InvalidResponse(format!(
+                                "invalid changeset at {key}: {e}"
+                            ))
+                        })?;
+                    result.push((idx, changeset));
+                }
+                None => {
+                    // Gap — eventual consistency hasn't caught up.
+                    break;
+                }
+            }
+        }
+
+        Ok(result)
     }
 }
 
@@ -572,7 +726,7 @@ mod tests {
         registry: &ChannelRegistry<DiscoveryReplica>,
         directory: &Arc<InMemoryShardDirectory<usize>>,
         mode: ReadMode,
-    ) -> TapirRemoteShardDirectory<usize, DiscoveryTransport> {
+    ) -> impl RemoteShardDirectory<usize, ()> {
         let membership = directory
             .get(DISCOVERY_SHARD)
             .map(|(m, _)| m)

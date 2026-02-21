@@ -6,7 +6,7 @@ use crate::transport::Transport;
 use crate::{IrClientId, IrMembership};
 use std::time::Duration;
 
-impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteShardDirectory<T::Address>> ShardManager<K, V, T, RD> {
+impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteShardDirectory<T::Address, K>> ShardManager<K, V, T, RD> {
     /// Add a new replica to an existing shard by pre-loading it with the
     /// shard's leader_record before triggering a membership change.
     pub async fn add_replica(

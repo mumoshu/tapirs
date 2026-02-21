@@ -67,7 +67,7 @@ impl HttpDiscoveryClient {
     }
 }
 
-impl RemoteShardDirectory<TcpAddress> for HttpDiscoveryClient {
+impl<K: Clone + Send + Sync + 'static> RemoteShardDirectory<TcpAddress, K> for HttpDiscoveryClient {
     async fn get(
         &self,
         shard: ShardNumber,
@@ -580,10 +580,18 @@ mod tests {
         addr
     }
 
+    /// Pin K=() so method calls are unambiguous (HttpDiscoveryClient
+    /// implements RemoteShardDirectory for all K).
+    fn disc(
+        c: HttpDiscoveryClient,
+    ) -> impl tapirs::discovery::RemoteShardDirectory<TcpAddress, ()> {
+        c
+    }
+
     #[tokio::test]
     async fn http_client_register_and_topology() {
         let addr = start_test_server().await;
-        let client = HttpDiscoveryClient::new(&addr.to_string());
+        let client = disc(HttpDiscoveryClient::new(&addr.to_string()));
         let m = |a: &str| TcpAddress(a.parse().unwrap());
 
         // Register two shards.
@@ -616,7 +624,7 @@ mod tests {
     #[tokio::test]
     async fn http_client_deregister() {
         let addr = start_test_server().await;
-        let client = HttpDiscoveryClient::new(&addr.to_string());
+        let client = disc(HttpDiscoveryClient::new(&addr.to_string()));
         let m = |a: &str| TcpAddress(a.parse().unwrap());
 
         client
@@ -636,7 +644,7 @@ mod tests {
     #[tokio::test]
     async fn http_client_deregister_nonexistent() {
         let addr = start_test_server().await;
-        let client = HttpDiscoveryClient::new(&addr.to_string());
+        let client = disc(HttpDiscoveryClient::new(&addr.to_string()));
 
         // DELETE is idempotent — always returns 200 (tombstones the shard).
         let result = client.remove(ShardNumber(99)).await;
@@ -646,7 +654,7 @@ mod tests {
     #[tokio::test]
     async fn http_client_replace_shard() {
         let addr = start_test_server().await;
-        let client = HttpDiscoveryClient::new(&addr.to_string());
+        let client = disc(HttpDiscoveryClient::new(&addr.to_string()));
         let m = |a: &str| TcpAddress(a.parse().unwrap());
 
         // Register shard 1.
@@ -680,7 +688,7 @@ mod tests {
     #[tokio::test]
     async fn http_client_connection_failure() {
         // Point at a port where nothing is listening.
-        let client = HttpDiscoveryClient::new("127.0.0.1:1");
+        let client = disc(HttpDiscoveryClient::new("127.0.0.1:1"));
 
         let result = client.all().await;
         assert!(matches!(result, Err(DiscoveryError::ConnectionFailed(_))));
@@ -695,7 +703,7 @@ mod tests {
         let addr = start_test_server().await;
         let directory = Arc::new(InMemoryShardDirectory::new());
         let client = Arc::new(HttpDiscoveryClient::new(&addr.to_string()));
-        let dir = CachingShardDirectory::<TcpAddress, _>::new(
+        let dir = CachingShardDirectory::<TcpAddress, (), _>::new(
             Arc::clone(&directory),
             Arc::clone(&client),
             std::time::Duration::from_millis(50),
@@ -713,20 +721,24 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         // Verify it was pushed to discovery.
-        let entries = client.all().await.unwrap();
+        use tapirs::discovery::RemoteShardDirectory;
+        let entries =
+            <HttpDiscoveryClient as RemoteShardDirectory<TcpAddress, ()>>::all(&client)
+                .await
+                .unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].0, ShardNumber(1));
 
         // PULL: register another shard directly on discovery (simulates another node).
         let m = |a: &str| TcpAddress(a.parse().unwrap());
-        client
-            .put(
-                ShardNumber(2),
-                IrMembership::new(vec![m("127.0.0.1:7001"), m("127.0.0.1:7002")]),
-                0,
-            )
-            .await
-            .unwrap();
+        <HttpDiscoveryClient as RemoteShardDirectory<TcpAddress, ()>>::put(
+            &client,
+            ShardNumber(2),
+            IrMembership::new(vec![m("127.0.0.1:7001"), m("127.0.0.1:7002")]),
+            0,
+        )
+        .await
+        .unwrap();
 
         // Wait for background sync to pull.
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -745,7 +757,7 @@ mod tests {
         // Point at a non-existent server.
         let directory = Arc::new(InMemoryShardDirectory::new());
         let client = Arc::new(HttpDiscoveryClient::new("127.0.0.1:1"));
-        let dir = CachingShardDirectory::<TcpAddress, _>::new(
+        let dir = CachingShardDirectory::<TcpAddress, (), _>::new(
             Arc::clone(&directory),
             client,
             std::time::Duration::from_millis(50),

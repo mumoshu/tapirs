@@ -1,6 +1,6 @@
 use super::replica::{ShardConfig, ShardPhase};
 use super::{Change, Key, KeyRange, ShardNumber, Value};
-use crate::discovery::RemoteShardDirectory;
+use crate::discovery::{RemoteShardDirectory, ShardDirectoryChange};
 use crate::tapir::shard_manager::ShardManager;
 use crate::tapir::{Replica, Sharded};
 use crate::transport::Transport;
@@ -62,7 +62,7 @@ impl CdcCursor {
     }
 }
 
-impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteShardDirectory<T::Address>> ShardManager<K, V, T, RD> {
+impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteShardDirectory<T::Address, K>> ShardManager<K, V, T, RD> {
     /// Freeze the source shard, query its read-protection watermarks, and
     /// raise min_prepare_time on the target to subsume all historical
     /// range_reads and last_read_commit_ts entries from the source.
@@ -138,12 +138,16 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
             end: Some(split_key.clone()),
         };
 
-        // Update source's key range in our map before registering the new shard
-        // to avoid overlapping ranges in the directory.
+        // Update source's key range in our map before creating the new shard
+        // client to avoid overlapping ranges in the directory.
         if let Some(managed) = self.shards.get_mut(&source) {
             managed.key_range = narrowed_range.clone();
         }
-        self.register_shard(new_shard, new_membership, new_range.clone()).await;
+        // Use create_shard_client (not register_shard) to avoid publishing
+        // routing prematurely. Routing is published atomically at freeze
+        // (Phase 3a) with both narrowed source and new shard in one changeset.
+        let new_membership_for_put = new_membership.clone();
+        self.create_shard_client(new_shard, new_membership, new_range.clone());
 
         let mut cursor = CdcCursor::new();
 
@@ -181,6 +185,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         })
         .expect("serialize freeze config");
         self.shards[&source].client.reconfigure(freeze);
+
         // Source frozen — drain pending prepares.
 
         // Phase 3b: Drain — wait for ALL prepared transactions to resolve + final seal.
@@ -260,6 +265,28 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         if let Some(managed) = self.shards.get_mut(&source) {
             managed.key_range = narrowed_range.clone();
         }
+
+        // Publish routing after drain + transfer + unfreeze. Both shards
+        // are fully ready: source handles narrowed range, new shard handles
+        // the split-off range with all committed data + read protection.
+        // Single publish_route_changes atomically updates both shards'
+        // key ranges and registers the new shard's membership.
+        self.report_progress("split:publish-route");
+        let source_membership = self.shards[&source].membership.clone();
+        let _ = self.remote.publish_route_changes(vec![
+            ShardDirectoryChange::SetRange {
+                shard: source,
+                range: narrowed_range,
+                membership: source_membership,
+                view: 0,
+            },
+            ShardDirectoryChange::SetRange {
+                shard: new_shard,
+                range: new_range,
+                membership: new_membership_for_put,
+                view: 0,
+            },
+        ]).await;
 
         // Split complete.
         Ok(())
@@ -399,6 +426,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         })
         .expect("serialize freeze config");
         self.shards[&absorbed].client.reconfigure(freeze);
+
         // Absorbed shard frozen — drain pending prepares.
 
         // Phase 3b: Drain — wait for pending_prepares == 0 + final seal.
@@ -433,6 +461,12 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
             ship_changes(&self.shards[&surviving].client, surviving, &changes, &mut self.rng).await;
         }
 
+        // No route update for merge after drain: the existing router state is
+        // correct. The absorbed shard stays routable — read-only transactions
+        // still work (ShardPhase::ReadOnly only blocks CO::Prepare, not reads).
+        // RW transactions on absorbed-range keys abort until the surviving
+        // shard's range is expanded in Phase 3c.
+
         // Transfer read protection from the merging shard to the survivor.
         //
         // Write safety: the surviving shard keeps its own range_reads and
@@ -463,11 +497,24 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
 
         // Update surviving shard's key range in our registry.
         if let Some(managed) = self.shards.get_mut(&surviving) {
-            managed.key_range = merged_range;
+            managed.key_range = merged_range.clone();
         }
 
-        // Remove absorbed shard and rebuild directory.
-        self.deregister_shard(absorbed).await;
+        // Publish route change: tombstone absorbed, set surviving's merged range.
+        // Single publish_route_changes atomically updates both.
+        let surviving_membership = self.shards[&surviving].membership.clone();
+        let _ = self.remote.publish_route_changes(vec![
+            ShardDirectoryChange::RemoveRange { shard: absorbed },
+            ShardDirectoryChange::SetRange {
+                shard: surviving,
+                range: merged_range,
+                membership: surviving_membership,
+                view: 0,
+            },
+        ]).await;
+
+        // Remove absorbed shard from local registry.
+        self.shards.remove(&absorbed);
         // Merge complete.
         Ok(())
     }
@@ -805,9 +852,21 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         self.transfer_read_protection(source, new_shard).await;
 
         // Phase 3c: Atomic swap — source disappears, new shard appears in all
-        // directories simultaneously. No rebuild_directory needed.
+        // directories simultaneously. Single publish_route_changes atomically
+        // tombstones the source shard and registers the new shard with its
+        // membership, key range, and changelog entry.
         self.report_progress("compact:decommission");
-        self.replace_shard(source, new_shard, new_membership_for_swap).await;
+        let source_range = self.shards[&new_shard].key_range.clone();
+        let _ = self.remote.publish_route_changes(vec![
+            ShardDirectoryChange::RemoveRange { shard: source },
+            ShardDirectoryChange::SetRange {
+                shard: new_shard,
+                range: source_range,
+                membership: new_membership_for_swap,
+                view: 0,
+            },
+        ]).await;
+        self.shards.remove(&source);
         // Compact complete.
         Ok(())
     }

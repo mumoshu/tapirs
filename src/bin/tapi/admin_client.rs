@@ -246,14 +246,18 @@ async fn restore_cluster(
         // Register with discovery if configured.
         if let Some(disc_url) = discovery_url {
             let disc_client = crate::discovery::HttpDiscoveryClient::new(disc_url);
-            use tapirs::discovery::RemoteShardDirectory as _;
+            use tapirs::discovery::RemoteShardDirectory;
             let membership = tapirs::discovery::strings_to_membership::<tapirs::TcpAddress>(
                 &new_membership,
             )
             .map_err(|e| format!("parse membership for shard {shard_id}: {e}"))?;
-            disc_client
-                .put(tapirs::ShardNumber(shard_id), membership, 0)
-                .await
+            <crate::discovery::HttpDiscoveryClient as RemoteShardDirectory<tapirs::TcpAddress, ()>>::put(
+                &disc_client,
+                tapirs::ShardNumber(shard_id),
+                membership,
+                0,
+            )
+            .await
                 .map_err(|e| format!("register shard {shard_id} with discovery: {e}"))?;
             println!("  Registered shard {shard_id} with discovery");
         }

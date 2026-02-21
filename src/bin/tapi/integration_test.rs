@@ -4,7 +4,7 @@ use crate::node::Node;
 use rand::{thread_rng, Rng as _};
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
-use tapirs::discovery::{InMemoryShardDirectory, RemoteShardDirectory as _};
+use tapirs::discovery::{InMemoryShardDirectory, RemoteShardDirectory};
 use tapirs::{
     DynamicRouter, KeyRange, RoutingClient, ShardDirectory, ShardEntry, ShardNumber, TapirClient,
     TapirReplica, TcpAddress, TcpTransport,
@@ -12,6 +12,12 @@ use tapirs::{
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tokio::time::Duration;
+
+/// Pin K=() so method calls are unambiguous (HttpDiscoveryClient
+/// implements RemoteShardDirectory for all K).
+fn disc(c: HttpDiscoveryClient) -> impl RemoteShardDirectory<TcpAddress, ()> {
+    c
+}
 
 fn alloc_addr() -> SocketAddr {
     let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -35,7 +41,7 @@ struct TestCluster {
     client: Arc<RoutingClient<K, V, TestTransport, DynamicRouter<K>>>,
     _temp_dirs: Vec<TempDir>,
     _client_temp_dir: TempDir,
-    _discovery_dir: Arc<tapirs::discovery::CachingShardDirectory<TcpAddress, HttpDiscoveryClient>>,
+    _discovery_dir: Arc<tapirs::discovery::CachingShardDirectory<TcpAddress, (), HttpDiscoveryClient>>,
 }
 
 type K = String;
@@ -82,7 +88,7 @@ async fn bootstrap_cluster(
     // === Phase 1: first replica per shard ===
     // Ports are allocated just-in-time and retried on "already in use"
     // to avoid TOCTOU races between parallel test processes.
-    let disc_client = HttpDiscoveryClient::new(&discovery_addr.to_string());
+    let disc_client = disc(HttpDiscoveryClient::new(&discovery_addr.to_string()));
     let mut replica_addrs: Vec<Vec<SocketAddr>> = Vec::new();
     for shard_idx in 0..num_shards {
         let shard = ShardNumber(shard_idx);
@@ -180,7 +186,7 @@ async fn create_test_client(
 ) -> (
     Arc<RoutingClient<K, V, TestTransport, DynamicRouter<K>>>,
     TempDir,
-    Arc<tapirs::discovery::CachingShardDirectory<TcpAddress, HttpDiscoveryClient>>,
+    Arc<tapirs::discovery::CachingShardDirectory<TcpAddress, (), HttpDiscoveryClient>>,
 ) {
     let local_addr = alloc_addr();
     let td = TempDir::new().unwrap();
@@ -191,7 +197,7 @@ async fn create_test_client(
     let disc_client = Arc::new(HttpDiscoveryClient::new(
         &discovery_addr.to_string(),
     ));
-    let discovery_dir = tapirs::discovery::CachingShardDirectory::<TcpAddress, _>::new(
+    let discovery_dir = tapirs::discovery::CachingShardDirectory::<TcpAddress, (), _>::new(
         Arc::clone(&dir),
         disc_client,
         std::time::Duration::from_millis(50), // fast sync for tests
@@ -416,7 +422,7 @@ async fn test_rolling_membership_replacement() {
 
     let cluster = bootstrap_cluster(1, 3, 3).await;
     let client = &cluster.client;
-    let disc_client = HttpDiscoveryClient::new(&cluster.discovery_addr.to_string());
+    let disc_client = disc(HttpDiscoveryClient::new(&cluster.discovery_addr.to_string()));
     let shard = ShardNumber(0);
 
     // Write initial data and verify R/W.
@@ -626,7 +632,7 @@ async fn test_disaster_recovery_backup_restore() {
     // 1. Bootstrap cluster: 1 shard, 3 replicas, 3 nodes.
     let cluster = bootstrap_cluster(1, 3, 3).await;
     let client = &cluster.client;
-    let disc_client = HttpDiscoveryClient::new(&cluster.discovery_addr.to_string());
+    let disc_client = disc(HttpDiscoveryClient::new(&cluster.discovery_addr.to_string()));
     let shard = ShardNumber(0);
 
     // 2. Write test data.
@@ -801,7 +807,7 @@ async fn test_cluster_backup_restore_via_admin() {
     // 1. Bootstrap cluster: 2 shards, 3 replicas, 3 nodes.
     let cluster = bootstrap_cluster(2, 3, 3).await;
     let client = &cluster.client;
-    let disc_client = HttpDiscoveryClient::new(&cluster.discovery_addr.to_string());
+    let disc_client = disc(HttpDiscoveryClient::new(&cluster.discovery_addr.to_string()));
 
     // 2. Write test data -- keys distributed across both shards.
     //    With 2 shards: shard 0 = [a..n), shard 1 = [n..z).

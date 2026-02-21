@@ -176,14 +176,21 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>, R: ShardRouter<K>> RoutingTransa
         async move {
             retry_out_of_range(&config, &on_retry, "get", T::sleep, || {
                 let shard = router.route(&key);
-                self.inner.get(Sharded { shard, key: key.clone() })
+                let key = key.clone();
+                async move {
+                    match shard {
+                        Some(s) => self.inner.get(Sharded { shard: s, key }).await,
+                        None => Err(TransactionError::OutOfRange),
+                    }
+                }
             })
             .await
         }
     }
 
     pub fn put(&self, key: K, value: Option<V>) {
-        let shard = self.router.route(&key);
+        let shard = self.router.route(&key)
+            .expect("route unavailable at put — preceding get() should have caught this");
         self.inner.put(Sharded { shard, key }, value);
     }
 
@@ -249,7 +256,13 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>, R: ShardRouter<K>>
         async move {
             retry_out_of_range(&config, &on_retry, "get", T::sleep, || {
                 let shard = router.route(&key);
-                self.inner.get(Sharded { shard, key: key.clone() })
+                let key = key.clone();
+                async move {
+                    match shard {
+                        Some(s) => self.inner.get(Sharded { shard: s, key }).await,
+                        None => Err(TransactionError::OutOfRange),
+                    }
+                }
             })
             .await
         }

@@ -302,7 +302,7 @@ async fn fuzz_tapir_transactions() {
         .map(|_| Arc::new(InMemoryShardDirectory::new()))
         .collect();
     let node_cachings: Vec<_> = node_locals.iter()
-        .map(|local| CachingShardDirectory::new(
+        .map(|local| CachingShardDirectory::<usize, i64, _>::new(
             Arc::clone(local), Arc::clone(&cluster_remote), sync_interval,
         ))
         .collect();
@@ -312,7 +312,7 @@ async fn fuzz_tapir_transactions() {
         .map(|_| Arc::new(InMemoryShardDirectory::new()))
         .collect();
     let client_cachings: Vec<_> = client_locals.iter()
-        .map(|local| CachingShardDirectory::new(
+        .map(|local| CachingShardDirectory::<usize, i64, _>::new(
             Arc::clone(local), Arc::clone(&cluster_remote), sync_interval,
         ))
         .collect();
@@ -427,7 +427,7 @@ async fn fuzz_tapir_transactions() {
     let manager_rng = lib_rng.fork();
     let manager_seed: u64 = rng.r#gen();
     let reshard_seed: u64 = rng.r#gen();
-    let final_shards: Arc<Mutex<Option<Vec<ShardNumber>>>> =
+    let final_shards: Arc<Mutex<Option<Vec<ShardEntry<i64>>>>> =
         Arc::new(Mutex::new(None));
 
     // Spawn fault injection task.
@@ -542,6 +542,31 @@ async fn fuzz_tapir_transactions() {
     // Stop flag: resharding task sets this when all rounds are done.
     let stop_flag = Arc::new(AtomicBool::new(false));
 
+    // Spawn background route-update task: poll CachingShardDirectory for key_range
+    // changes and update the DynamicRouter. When ShardManager publishes route
+    // changes via publish_route_changes(), the CachingShardDirectory's next PULL
+    // cycle (≤200ms) picks them up, and this task propagates them to the router —
+    // allowing clients to route to the new shard during the drain window.
+    let route_poll_caching = Arc::clone(&client_cachings[0]);
+    let route_poll_router = Arc::clone(&router);
+    let route_poll_stop = Arc::clone(&stop_flag);
+    let route_poll_handle = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(sync_interval).await;
+            let ranges = route_poll_caching.key_ranges();
+            if !ranges.is_empty() {
+                let entries: Vec<ShardEntry<i64>> = ranges
+                    .into_iter()
+                    .map(|(shard, range)| ShardEntry { shard, range })
+                    .collect();
+                route_poll_router.directory().write().unwrap().update(entries);
+            }
+            if route_poll_stop.load(Ordering::Relaxed) {
+                break;
+            }
+        }
+    });
+
     // Spawn concurrent client workloads.
     let handles: Vec<_> = routing_clients
         .iter()
@@ -600,31 +625,31 @@ async fn fuzz_tapir_transactions() {
                     let max_retries = 2u8;
                     let mut attempt = 0u8;
 
-                    'retry: loop {
-                        let txn_index = next_txn_index.fetch_add(1, Ordering::Relaxed) as usize;
-                        total_attempted.fetch_add(1, Ordering::Relaxed);
-                        let wall_start = tokio::time::Instant::now();
-                        let txn = routing_client.begin();
-                        let mut reads: Vec<(i64, Option<i64>)> = Vec::new();
-                        let mut writes: Vec<(i64, i64)> = Vec::new();
-                        let mut write_targets: Vec<i64> = Vec::new();
+                    if is_rmw {
+                        // RMW transaction (80%): read-modify-write with optional scan.
+                        'retry: loop {
+                            let txn_index = next_txn_index.fetch_add(1, Ordering::Relaxed) as usize;
+                            total_attempted.fetch_add(1, Ordering::Relaxed);
+                            let wall_start = tokio::time::Instant::now();
+                            let txn = routing_client.begin();
+                            let mut reads: Vec<(i64, Option<i64>)> = Vec::new();
+                            let mut writes: Vec<(i64, i64)> = Vec::new();
+                            let mut write_targets: Vec<i64> = Vec::new();
 
-                        txn_event_log.record(FuzzEvent::TxnBegin {
-                            txn_index, client_id: client_idx,
-                            txn_type: txn_type_str, keys: keys.clone(),
-                        });
-
-                        // 10% chance: drop transaction without committing (misuse simulation).
-                        if rng.gen_range(0..10u8) == 0 {
-                            drop(txn);
-                            txn_event_log.record(FuzzEvent::TxnDropped {
+                            txn_event_log.record(FuzzEvent::TxnBegin {
                                 txn_index, client_id: client_idx,
+                                txn_type: txn_type_str, keys: keys.clone(),
                             });
-                            break;
-                        }
 
-                        if is_rmw {
-                            // RMW transaction (80%): read-modify-write with optional scan.
+                            // 10% chance: drop transaction without committing (misuse simulation).
+                            if rng.gen_range(0..10u8) == 0 {
+                                drop(txn);
+                                txn_event_log.record(FuzzEvent::TxnDropped {
+                                    txn_index, client_id: client_idx,
+                                });
+                                break;
+                            }
+
                             for &key in &keys {
                                 let raw = match txn.get(key).await {
                                     Ok(val) => val,
@@ -662,97 +687,154 @@ async fn fuzz_tapir_transactions() {
                                     count: results.len(), stale_note,
                                 });
                             }
-                        } else {
-                            // Read-only transaction (20%).
-                            for &key in &keys {
-                                let val = match txn.get(key).await {
-                                    Ok(val) => val,
-                                    Err(_) => {
-                                        txn_event_log.record(FuzzEvent::TxnOutOfRange {
-                                            txn_index, client_id: client_idx, key,
-                                        });
-                                        break 'retry;
+
+                            match timeout(Duration::from_secs(10), txn.commit()).await {
+                                Ok(Some(ts)) => {
+                                    let wall_end = tokio::time::Instant::now();
+                                    txn_event_log.record(FuzzEvent::TxnCommitted {
+                                        txn_index, client_id: client_idx, commit_ts: ts.time,
+                                    });
+                                    let mut counts = committed_counts.lock().unwrap();
+                                    for &k in &write_targets {
+                                        *counts.entry(k).or_default() += 1;
                                     }
-                                };
-                                txn_event_log.record(FuzzEvent::TxnGet {
-                                    txn_index, client_id: client_idx, key, value: val, stale_note,
-                                });
-                                reads.push((key, val));
+                                    total_committed.fetch_add(1, Ordering::Relaxed);
+                                    collector.lock().unwrap().push(TxnRecord {
+                                        index: txn_index,
+                                        client_id: client_idx,
+                                        read_set: reads,
+                                        write_set: writes,
+                                        outcome: TxnOutcome::Committed(ts),
+                                        wall_start,
+                                        wall_end,
+                                    });
+                                    break;
+                                }
+                                Ok(None) => {
+                                    let wall_end = tokio::time::Instant::now();
+                                    txn_event_log.record(FuzzEvent::TxnAborted {
+                                        txn_index, client_id: client_idx,
+                                    });
+                                    collector.lock().unwrap().push(TxnRecord {
+                                        index: txn_index,
+                                        client_id: client_idx,
+                                        read_set: reads,
+                                        write_set: writes,
+                                        outcome: TxnOutcome::Aborted,
+                                        wall_start,
+                                        wall_end,
+                                    });
+                                    // 70% retry, 30% give up.
+                                    if attempt < max_retries && rng.gen_range(0..10u8) < 7 {
+                                        attempt += 1;
+                                        txn_event_log.record(FuzzEvent::TxnRetry {
+                                            txn_index, client_id: client_idx,
+                                            attempt, keys: keys.clone(),
+                                        });
+                                        continue;
+                                    }
+                                    break;
+                                }
+                                Err(_) => {
+                                    let wall_end = tokio::time::Instant::now();
+                                    txn_event_log.record(FuzzEvent::TxnTimedOut {
+                                        txn_index, client_id: client_idx,
+                                    });
+                                    may_have_committed.fetch_add(1, Ordering::Relaxed);
+                                    collector.lock().unwrap().push(TxnRecord {
+                                        index: txn_index,
+                                        client_id: client_idx,
+                                        read_set: reads,
+                                        write_set: writes,
+                                        outcome: TxnOutcome::TimedOut,
+                                        wall_start,
+                                        wall_end,
+                                    });
+                                    // 70% retry, 30% give up.
+                                    if attempt < max_retries && rng.gen_range(0..10u8) < 7 {
+                                        attempt += 1;
+                                        txn_event_log.record(FuzzEvent::TxnRetry {
+                                            txn_index, client_id: client_idx,
+                                            attempt, keys: keys.clone(),
+                                        });
+                                        continue;
+                                    }
+                                    break;
+                                }
                             }
                         }
+                    } else {
+                        // Read-only transaction (20%): quorum reads, no commit.
+                        'retry_ro: loop {
+                            let txn_index = next_txn_index.fetch_add(1, Ordering::Relaxed) as usize;
+                            total_attempted.fetch_add(1, Ordering::Relaxed);
+                            let txn = routing_client.begin_read_only();
 
-                        match timeout(Duration::from_secs(10), txn.commit()).await {
-                            Ok(Some(ts)) => {
-                                let wall_end = tokio::time::Instant::now();
-                                txn_event_log.record(FuzzEvent::TxnCommitted {
-                                    txn_index, client_id: client_idx, commit_ts: ts.time,
-                                });
-                                let mut counts = committed_counts.lock().unwrap();
-                                for &k in &write_targets {
-                                    *counts.entry(k).or_default() += 1;
-                                }
-                                total_committed.fetch_add(1, Ordering::Relaxed);
-                                collector.lock().unwrap().push(TxnRecord {
-                                    index: txn_index,
-                                    client_id: client_idx,
-                                    read_set: reads,
-                                    write_set: writes,
-                                    outcome: TxnOutcome::Committed(ts),
-                                    wall_start,
-                                    wall_end,
+                            txn_event_log.record(FuzzEvent::TxnBegin {
+                                txn_index, client_id: client_idx,
+                                txn_type: txn_type_str, keys: keys.clone(),
+                            });
+
+                            // 10% chance: drop transaction (misuse simulation).
+                            if rng.gen_range(0..10u8) == 0 {
+                                drop(txn);
+                                txn_event_log.record(FuzzEvent::TxnDropped {
+                                    txn_index, client_id: client_idx,
                                 });
                                 break;
                             }
-                            Ok(None) => {
-                                let wall_end = tokio::time::Instant::now();
-                                txn_event_log.record(FuzzEvent::TxnAborted {
-                                    txn_index, client_id: client_idx,
-                                });
-                                collector.lock().unwrap().push(TxnRecord {
-                                    index: txn_index,
-                                    client_id: client_idx,
-                                    read_set: reads,
-                                    write_set: writes,
-                                    outcome: TxnOutcome::Aborted,
-                                    wall_start,
-                                    wall_end,
-                                });
-                                // 70% retry, 30% give up.
-                                if attempt < max_retries && rng.gen_range(0..10u8) < 7 {
-                                    attempt += 1;
-                                    txn_event_log.record(FuzzEvent::TxnRetry {
-                                        txn_index, client_id: client_idx,
-                                        attempt, keys: keys.clone(),
+
+                            // Wrap quorum reads in a timeout — quorum reads
+                            // can block indefinitely if the shard is ViewChanging
+                            // during resharding.
+                            let ro_result = timeout(Duration::from_secs(10), async {
+                                for &key in &keys {
+                                    let val = match txn.get(key).await {
+                                        Ok(val) => val,
+                                        Err(e) => return Err(e),
+                                    };
+                                    txn_event_log.record(FuzzEvent::TxnGet {
+                                        txn_index, client_id: client_idx, key, value: val, stale_note,
                                     });
-                                    continue;
                                 }
-                                break;
-                            }
-                            Err(_) => {
-                                let wall_end = tokio::time::Instant::now();
-                                txn_event_log.record(FuzzEvent::TxnTimedOut {
-                                    txn_index, client_id: client_idx,
-                                });
-                                may_have_committed.fetch_add(1, Ordering::Relaxed);
-                                collector.lock().unwrap().push(TxnRecord {
-                                    index: txn_index,
-                                    client_id: client_idx,
-                                    read_set: reads,
-                                    write_set: writes,
-                                    outcome: TxnOutcome::TimedOut,
-                                    wall_start,
-                                    wall_end,
-                                });
-                                // 70% retry, 30% give up.
-                                if attempt < max_retries && rng.gen_range(0..10u8) < 7 {
-                                    attempt += 1;
-                                    txn_event_log.record(FuzzEvent::TxnRetry {
-                                        txn_index, client_id: client_idx,
-                                        attempt, keys: keys.clone(),
+                                Ok(())
+                            }).await;
+
+                            match ro_result {
+                                Ok(Ok(())) => {
+                                    // Quorum reads complete — no commit needed.
+                                    break;
+                                }
+                                Ok(Err(_)) => {
+                                    // OutOfRange — retry.
+                                    txn_event_log.record(FuzzEvent::TxnOutOfRange {
+                                        txn_index, client_id: client_idx, key: keys[0],
                                     });
-                                    continue;
+                                    if attempt < max_retries && rng.gen_range(0..10u8) < 7 {
+                                        attempt += 1;
+                                        txn_event_log.record(FuzzEvent::TxnRetry {
+                                            txn_index, client_id: client_idx,
+                                            attempt, keys: keys.clone(),
+                                        });
+                                        continue 'retry_ro;
+                                    }
+                                    break;
                                 }
-                                break;
+                                Err(_) => {
+                                    // Timed out (shard ViewChanging during resharding).
+                                    txn_event_log.record(FuzzEvent::TxnTimedOut {
+                                        txn_index, client_id: client_idx,
+                                    });
+                                    if attempt < max_retries && rng.gen_range(0..10u8) < 7 {
+                                        attempt += 1;
+                                        txn_event_log.record(FuzzEvent::TxnRetry {
+                                            txn_index, client_id: client_idx,
+                                            attempt, keys: keys.clone(),
+                                        });
+                                        continue 'retry_ro;
+                                    }
+                                    break;
+                                }
                             }
                         }
                     }
@@ -766,7 +848,6 @@ async fn fuzz_tapir_transactions() {
         .collect();
 
     // Spawn resharding task (admin client workload).
-    let reshard_router = Arc::clone(&router);
     let reshard_cluster_remote = Arc::clone(&cluster_remote);
     let reshard_config = config.clone();
     let reshard_shard_entries = shard_entries.clone();
@@ -848,9 +929,6 @@ async fn fuzz_tapir_transactions() {
                         match manager.split(source, split_key, new_shard_number, membership).await {
                             Ok(()) => {
                                 next_shard_idx += 1;
-                                reshard_router.directory().write().unwrap().update(
-                                    manager.shard_entries(),
-                                );
                                 reshard_event_log.record(FuzzEvent::ReshardSplitOk { round });
                             }
                             Err(e) => reshard_event_log.record(FuzzEvent::ReshardSplitErr {
@@ -871,9 +949,6 @@ async fn fuzz_tapir_transactions() {
                         });
                         match manager.merge(absorbed, surviving).await {
                             Ok(()) => {
-                                reshard_router.directory().write().unwrap().update(
-                                    manager.shard_entries(),
-                                );
                                 reshard_event_log.record(FuzzEvent::ReshardMergeOk { round });
                             }
                             Err(e) => reshard_event_log.record(FuzzEvent::ReshardMergeErr {
@@ -893,9 +968,6 @@ async fn fuzz_tapir_transactions() {
                     match manager.compact(source, new_shard_number, membership).await {
                         Ok(()) => {
                             next_shard_idx += 1;
-                            reshard_router.directory().write().unwrap().update(
-                                manager.shard_entries(),
-                            );
                             reshard_event_log.record(FuzzEvent::ReshardCompactOk { round });
                         }
                         Err(e) => reshard_event_log.record(FuzzEvent::ReshardCompactErr {
@@ -905,13 +977,14 @@ async fn fuzz_tapir_transactions() {
                     break;
                 }
             }
+
         }
 
         // Signal clients to stop after resharding completes.
         reshard_stop.store(true, Ordering::Relaxed);
 
         *reshard_final_shards.lock().unwrap() =
-            Some(manager.shards.keys().cloned().collect());
+            Some(manager.shard_entries());
     });
 
     // Wait for all workloads with overall timeout.
@@ -947,6 +1020,8 @@ async fn fuzz_tapir_transactions() {
         Ok(None) => {}
     }
 
+    route_poll_handle.abort();
+
     let attempted = total_attempted.load(Ordering::Relaxed);
     let committed = total_committed.load(Ordering::Relaxed);
     let timed_out = may_have_committed.load(Ordering::Relaxed);
@@ -968,32 +1043,54 @@ async fn fuzz_tapir_transactions() {
         }
     }
 
+    eprintln!("fuzz: starting drain sleep (seed={seed})");
+
     // Let replicas drain pending operations after all view changes settle.
     FaultyTransport::sleep(Duration::from_secs(5)).await;
+
+    eprintln!("fuzz: drain sleep done, starting sync wait (seed={seed})");
 
     // Wait for final sync propagation after all workloads complete.
     tokio::time::sleep(Duration::from_millis(500)).await;
     tokio::task::yield_now().await;
 
+    eprintln!("fuzz: sync wait done (seed={seed})");
+
+    eprintln!("fuzz: verifying cluster_remote shards (seed={seed})");
+
     // Verify cluster_remote has all active shards.
-    let active_shards = final_shards.lock().unwrap();
-    if let Some(ref shard_list) = *active_shards {
-        for &shard in shard_list {
-            if cluster_remote.get(shard).await.unwrap().is_none() {
-                event_log.dump(seed);
-                panic!(
-                    "cluster_remote should contain shard {shard:?} (seed={seed})"
-                );
+    use crate::discovery::RemoteShardDirectory;
+    {
+        let active_shards = final_shards.lock().unwrap();
+        if let Some(ref shard_entries) = *active_shards {
+            for entry in shard_entries {
+                if RemoteShardDirectory::<usize, i64>::get(&*cluster_remote, entry.shard)
+                    .await
+                    .unwrap()
+                    .is_none()
+                {
+                    event_log.dump(seed);
+                    panic!(
+                        "cluster_remote should contain shard {:?} (seed={seed})",
+                        entry.shard
+                    );
+                }
+            }
+        } else {
+            for s in 0..num_shards {
+                if RemoteShardDirectory::<usize, i64>::get(&*cluster_remote, ShardNumber(s))
+                    .await
+                    .unwrap()
+                    .is_none()
+                {
+                    event_log.dump(seed);
+                    panic!("cluster_remote should contain shard {s} (seed={seed})");
+                }
             }
         }
-    } else {
-        for s in 0..num_shards {
-            if cluster_remote.get(ShardNumber(s)).await.unwrap().is_none() {
-                event_log.dump(seed);
-                panic!("cluster_remote should contain shard {s} (seed={seed})");
-            }
-        }
-    }
+    } // drop active_shards before counter verification locks final_shards
+
+    eprintln!("fuzz: cluster_remote verification done (seed={seed})");
 
     // Keep all discovery infrastructure alive until end of assertions.
     drop(node_cachings);
@@ -1026,19 +1123,32 @@ async fn fuzz_tapir_transactions() {
         );
     }
 
+    eprintln!("fuzz: invariant check done, starting counter verification (seed={seed})");
+
     // Counter verification uses read-only transactions (quorum reads) rather
     // than RW transactions (single-replica unlogged reads). After resharding,
     // CDC ships data to new shards via invoke_inconsistent (f+1 delivery).
     // A single-replica read might hit one of the f replicas that didn't
     // receive the shipped data. Quorum reads query f+1 replicas and pick the
     // highest timestamp — by quorum intersection, at least one has the data.
-    // This also models production behavior where directory propagation is
-    // eventually consistent: quorum reads are robust to stale routing.
-    let verify_client = RoutingClient::new(Arc::clone(&clients[0]), Arc::clone(&router));
+    //
+    // Verification uses a separate authoritative router ("god's view") built
+    // from ShardManager's final shard entries, not the workload router which
+    // reflects eventual consistency and may be stale.
+    let verify_entries = final_shards.lock().unwrap().clone()
+        .unwrap_or_else(|| build_shard_entries(num_shards, num_keys));
+    let verify_dir = ShardDirectory::new(verify_entries);
+    let verify_router = Arc::new(DynamicRouter::new(Arc::new(RwLock::new(verify_dir))));
+    let verify_client = RoutingClient::new(Arc::clone(&clients[0]), verify_router);
     let mut counter_mismatches: Vec<String> = Vec::new();
     for (key, expected) in &inline_counts {
+        eprintln!("fuzz: verify key={key} (seed={seed})");
         let txn = verify_client.begin_read_only();
-        let actual = txn.get(*key).await.unwrap().unwrap_or(0);
+        let actual = txn
+            .get(*key)
+            .await
+            .unwrap_or_else(|e| panic!("key={key}: {e:?} (seed={seed})"))
+            .unwrap_or(0);
         if actual != *expected {
             counter_mismatches.push(format!(
                 "key={key}: actual={actual} expected={expected}"

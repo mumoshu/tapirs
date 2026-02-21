@@ -31,7 +31,7 @@ pub struct Node {
     /// Holds the CachingShardDirectory alive so its background sync task
     /// continues running. When None, no discovery sync is active.
     /// Also used to register/unregister own_shards for PUSH filtering.
-    discovery_dir: Option<Arc<CachingShardDirectory<TcpAddress, DiscoveryBackend>>>,
+    discovery_dir: Option<Arc<CachingShardDirectory<TcpAddress, String, DiscoveryBackend>>>,
     shard_manager_url: Option<String>,
 }
 

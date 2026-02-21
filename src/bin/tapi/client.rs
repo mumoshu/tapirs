@@ -3,7 +3,7 @@ use crate::discovery::HttpDiscoveryClient;
 use rand::{thread_rng, Rng as _};
 use std::sync::Arc;
 use tapirs::discovery::{
-    CachingShardDirectory, InMemoryShardDirectory, RemoteShardDirectory as _,
+    CachingShardDirectory, InMemoryShardDirectory, RemoteShardDirectory,
 };
 use tapirs::{
     DynamicRouter, IrMembership, KeyRange, ShardDirectory, ShardEntry, ShardNumber,
@@ -45,9 +45,9 @@ pub async fn run(
     } else if cfg.shards.is_empty() {
         if let Some(ref url) = cfg.discovery_url {
             let client = HttpDiscoveryClient::new(url);
-            let entries = client
-                .all()
-                .await
+            let entries =
+                <HttpDiscoveryClient as RemoteShardDirectory<TcpAddress, ()>>::all(&client)
+                    .await
                 .unwrap_or_else(|e| panic!("failed to fetch topology from discovery: {e}"));
             entries
                 .into_iter()
@@ -80,7 +80,7 @@ pub async fn run(
     // updates (learns about new shards and membership changes from other nodes).
     let _discovery_dir = cfg.discovery_url.as_ref().map(|url| {
         let client = Arc::new(HttpDiscoveryClient::new(url));
-        CachingShardDirectory::<TcpAddress, _>::new(
+        CachingShardDirectory::<TcpAddress, (), _>::new(
             Arc::clone(&address_directory),
             client,
             std::time::Duration::from_secs(10),
@@ -178,7 +178,7 @@ async fn load_discovery_json(json_path: &str) -> Vec<ShardConfig> {
 ///
 /// Uses eventual consistent reads (unlogged scan to 1 random replica).
 async fn load_tapir_discovery(endpoint: &str) -> Vec<ShardConfig> {
-    use tapirs::discovery::{tapir, RemoteShardDirectory as _};
+    use tapirs::discovery::{tapir, RemoteShardDirectory};
 
     let ephemeral_addr = {
         let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
@@ -204,9 +204,9 @@ async fn load_tapir_discovery(endpoint: &str) -> Vec<ShardConfig> {
         std::process::exit(1);
     });
 
-    let entries = dir
-        .all()
-        .await
+    let entries =
+        <_ as RemoteShardDirectory<TcpAddress, ()>>::all(&dir)
+            .await
         .unwrap_or_else(|e| panic!("failed to fetch topology from TAPIR discovery: {e}"));
 
     entries

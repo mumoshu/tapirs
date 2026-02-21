@@ -2,7 +2,7 @@ use super::{
     dynamic_router::ShardEntry,
     Key, KeyRange, ShardClient, ShardNumber, Value,
 };
-use crate::discovery::RemoteShardDirectory;
+use crate::discovery::{RemoteShardDirectory, ShardDirectoryChange};
 use crate::transport::Transport;
 use crate::tapir::Replica;
 use crate::{IrClientId, IrMembership};
@@ -97,6 +97,7 @@ use std::sync::Arc;
 pub struct ManagedShard<K: Key, V: Value, T: Transport<Replica<K, V>>> {
     pub shard: ShardNumber,
     pub key_range: KeyRange<K>,
+    pub membership: IrMembership<T::Address>,
     pub client: ShardClient<K, V, T>,
 }
 
@@ -107,7 +108,7 @@ pub struct ShardManager<
     K: Key,
     V: Value,
     T: Transport<Replica<K, V>>,
-    RD: RemoteShardDirectory<T::Address>,
+    RD: RemoteShardDirectory<T::Address, K>,
 > {
     pub(crate) shards: HashMap<ShardNumber, ManagedShard<K, V, T>>,
     pub(crate) transport: T,
@@ -121,7 +122,7 @@ impl<
     K: Key,
     V: Value,
     T: Transport<Replica<K, V>>,
-    RD: RemoteShardDirectory<T::Address>,
+    RD: RemoteShardDirectory<T::Address, K>,
 > ShardManager<K, V, T, RD>
 {
     pub fn new(
@@ -156,7 +157,15 @@ impl<
         membership: IrMembership<T::Address>,
         key_range: KeyRange<K>,
     ) {
-        let _ = self.remote.put(shard, membership.clone(), 0).await;
+        let _ = self.remote.publish_route_changes(vec![
+            ShardDirectoryChange::SetRange {
+                shard,
+                range: key_range.clone(),
+                membership: membership.clone(),
+                view: 0,
+            },
+        ]).await;
+        let stored_membership = membership.clone();
         let client = ShardClient::new(
             self.rng.fork(),
             self.client_id,
@@ -167,6 +176,7 @@ impl<
         self.shards.insert(shard, ManagedShard {
             shard,
             key_range,
+            membership: stored_membership,
             client,
         });
     }
@@ -182,6 +192,7 @@ impl<
         membership: IrMembership<T::Address>,
         key_range: KeyRange<K>,
     ) {
+        let stored_membership = membership.clone();
         let client = ShardClient::new(
             self.rng.fork(),
             self.client_id,
@@ -192,6 +203,7 @@ impl<
         self.shards.insert(shard, ManagedShard {
             shard,
             key_range,
+            membership: stored_membership,
             client,
         });
     }
@@ -242,4 +254,5 @@ impl<
             })
             .collect()
     }
+
 }

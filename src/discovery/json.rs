@@ -97,7 +97,7 @@ where
     }
 }
 
-impl<A: Clone + Send + Sync + 'static> RemoteShardDirectory<A> for JsonRemoteShardDirectory<A> {
+impl<A: Clone + Send + Sync + 'static, K: Clone + Send + Sync + 'static> RemoteShardDirectory<A, K> for JsonRemoteShardDirectory<A> {
     async fn get(
         &self,
         shard: ShardNumber,

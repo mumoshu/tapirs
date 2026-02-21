@@ -7,7 +7,36 @@ use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use crate::{IrMembership, ShardNumber};
+use serde::{Deserialize, Serialize};
+
+use crate::{IrMembership, KeyRange, ShardNumber};
+
+/// A single route change within a [`ShardDirectoryChangeSet`].
+///
+/// Published atomically by ShardManager during resharding to ensure consumers
+/// never see intermediate states with overlapping key ranges.
+///
+/// `SetRange` includes the shard's membership and view so that
+/// `publish_route_changes` can atomically update both the route changelog
+/// and the shard membership entries in a single write.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(bound(
+    serialize = "K: Serialize, A: Serialize",
+    deserialize = "K: serde::de::DeserializeOwned, A: serde::de::DeserializeOwned"
+))]
+pub enum ShardDirectoryChange<K, A> {
+    SetRange {
+        shard: ShardNumber,
+        range: KeyRange<K>,
+        membership: IrMembership<A>,
+        view: u64,
+    },
+    RemoveRange { shard: ShardNumber },
+}
+
+/// An atomic set of route changes published at a single index.
+pub type ShardDirectoryChangeSet<K, A> = Vec<ShardDirectoryChange<K, A>>;
 
 /// Error from a discovery service operation.
 #[derive(Debug)]
@@ -42,7 +71,7 @@ impl std::error::Error for DiscoveryError {}
 ///
 /// Uses RPITIT (`impl Future`) — no dynamic dispatch. All consumers are generic
 /// over `T: RemoteShardDirectory<A>`.
-pub trait RemoteShardDirectory<A: Clone + Send + Sync + 'static>: Send + Sync + 'static {
+pub trait RemoteShardDirectory<A: Clone + Send + Sync + 'static, K: Clone + Send + Sync + 'static = ()>: Send + Sync + 'static {
     fn get(
         &self,
         shard: ShardNumber,
@@ -68,6 +97,37 @@ pub trait RemoteShardDirectory<A: Clone + Send + Sync + 'static>: Send + Sync + 
            + Send
            + '_;
 
+    /// Publish an atomic set of route changes (additions and removals).
+    ///
+    /// Atomically updates both the route changelog (for consumers polling via
+    /// [`route_changes_since`]) and the shard membership entries. `SetRange`
+    /// puts the shard with its membership/view; `RemoveRange` tombstones it.
+    ///
+    /// Each changeset is indexed sequentially (1-based).
+    ///
+    /// Default: no-op. Implementations that support route changelog override this.
+    fn publish_route_changes(
+        &self,
+        _changes: Vec<ShardDirectoryChange<K, A>>,
+    ) -> impl std::future::Future<Output = Result<(), DiscoveryError>> + Send + '_ {
+        async { Ok(()) }
+    }
+
+    /// Read route changesets published after `after_index`.
+    ///
+    /// Returns `(index, changeset)` pairs in ascending order.
+    /// Consumers maintain a high watermark and pass it as `after_index`.
+    ///
+    /// Default: returns empty (no changelog support).
+    fn route_changes_since(
+        &self,
+        _after_index: u64,
+    ) -> impl std::future::Future<Output = Result<Vec<(u64, ShardDirectoryChangeSet<K, A>)>, DiscoveryError>>
+           + Send
+           + '_ {
+        async { Ok(vec![]) }
+    }
+
     /// Atomically replace one shard with another.
     ///
     /// Default: non-atomic `remove` + `put`. Implementations should override
@@ -88,9 +148,15 @@ pub trait RemoteShardDirectory<A: Clone + Send + Sync + 'static>: Send + Sync + 
 
 // ---- InMemoryRemoteDirectory ----
 
-struct RemoteDirectoryState<A> {
+struct RemoteDirectoryState<A, K> {
     shards: HashMap<ShardNumber, (IrMembership<A>, u64)>,
     tombstones: HashSet<ShardNumber>,
+    /// Per-shard typed key range, set by `publish_route_changes()` during resharding.
+    /// Separate from `shards` because `put()` (replica membership updates)
+    /// does not carry key ranges.
+    key_ranges: HashMap<ShardNumber, KeyRange<K>>,
+    /// Append-only route changelog. Index 0 = changeset at index 1 (1-based).
+    route_changelog: Vec<ShardDirectoryChangeSet<K, A>>,
 }
 
 /// In-process remote directory for tests.
@@ -99,28 +165,30 @@ struct RemoteDirectoryState<A> {
 /// `put()` calls for those shards are rejected with [`DiscoveryError::Tombstoned`].
 /// `all()` omits tombstoned entries.
 #[derive(Clone)]
-pub struct InMemoryRemoteDirectory<A> {
-    state: Arc<RwLock<RemoteDirectoryState<A>>>,
+pub struct InMemoryRemoteDirectory<A, K = ()> {
+    state: Arc<RwLock<RemoteDirectoryState<A, K>>>,
 }
 
-impl<A> Default for InMemoryRemoteDirectory<A> {
+impl<A, K> Default for InMemoryRemoteDirectory<A, K> {
     fn default() -> Self {
         Self {
             state: Arc::new(RwLock::new(RemoteDirectoryState {
                 shards: HashMap::new(),
                 tombstones: HashSet::new(),
+                key_ranges: HashMap::new(),
+                route_changelog: Vec::new(),
             })),
         }
     }
 }
 
-impl<A> InMemoryRemoteDirectory<A> {
+impl<A, K> InMemoryRemoteDirectory<A, K> {
     pub fn new() -> Self {
         Self::default()
     }
 }
 
-impl<A: Clone> InMemoryRemoteDirectory<A> {
+impl<A: Clone, K> InMemoryRemoteDirectory<A, K> {
     /// Create with initial shard entries (for test setup).
     pub fn with_shards(entries: Vec<(ShardNumber, IrMembership<A>, u64)>) -> Self {
         let mut map = HashMap::new();
@@ -131,12 +199,14 @@ impl<A: Clone> InMemoryRemoteDirectory<A> {
             state: Arc::new(RwLock::new(RemoteDirectoryState {
                 shards: map,
                 tombstones: HashSet::new(),
+                key_ranges: HashMap::new(),
+                route_changelog: Vec::new(),
             })),
         }
     }
 }
 
-impl<A: Clone + Send + Sync + 'static> RemoteShardDirectory<A> for InMemoryRemoteDirectory<A> {
+impl<A: Clone + Send + Sync + 'static, K: Clone + Send + Sync + 'static> RemoteShardDirectory<A, K> for InMemoryRemoteDirectory<A, K> {
     async fn get(
         &self,
         shard: ShardNumber,
@@ -172,6 +242,7 @@ impl<A: Clone + Send + Sync + 'static> RemoteShardDirectory<A> for InMemoryRemot
         }
         match state.shards.remove(&shard) {
             Some(_) => {
+                state.key_ranges.remove(&shard);
                 state.tombstones.insert(shard);
                 Ok(())
             }
@@ -199,6 +270,7 @@ impl<A: Clone + Send + Sync + 'static> RemoteShardDirectory<A> for InMemoryRemot
         let mut state = self.state.write().unwrap();
         // Tombstone old shard.
         state.shards.remove(&old);
+        state.key_ranges.remove(&old);
         state.tombstones.insert(old);
         // Insert new shard with monotonic check.
         match state.shards.get(&new) {
@@ -206,6 +278,49 @@ impl<A: Clone + Send + Sync + 'static> RemoteShardDirectory<A> for InMemoryRemot
             _ => { state.shards.insert(new, (membership, view)); }
         }
         Ok(())
+    }
+
+    async fn publish_route_changes(
+        &self,
+        changes: Vec<ShardDirectoryChange<K, A>>,
+    ) -> Result<(), DiscoveryError> {
+        let mut state = self.state.write().unwrap();
+        // Atomically update key_ranges, shard entries, and changelog.
+        for change in &changes {
+            match change {
+                ShardDirectoryChange::SetRange { shard, range, membership, view } => {
+                    state.key_ranges.insert(*shard, range.clone());
+                    // Monotonic view check for membership.
+                    match state.shards.get(shard) {
+                        Some((_, current_view)) if *current_view > *view => {}
+                        _ => { state.shards.insert(*shard, (membership.clone(), *view)); }
+                    }
+                }
+                ShardDirectoryChange::RemoveRange { shard } => {
+                    state.key_ranges.remove(shard);
+                    state.shards.remove(shard);
+                    state.tombstones.insert(*shard);
+                }
+            }
+        }
+        state.route_changelog.push(changes);
+        Ok(())
+    }
+
+    async fn route_changes_since(
+        &self,
+        after_index: u64,
+    ) -> Result<Vec<(u64, ShardDirectoryChangeSet<K, A>)>, DiscoveryError> {
+        let state = self.state.read().unwrap();
+        let start = after_index as usize; // changelog[0] = index 1
+        if start >= state.route_changelog.len() {
+            return Ok(vec![]);
+        }
+        Ok(state.route_changelog[start..]
+            .iter()
+            .enumerate()
+            .map(|(i, cs)| ((start + i + 1) as u64, cs.clone()))
+            .collect())
     }
 }
 
@@ -350,7 +465,7 @@ impl<A: Clone + Send + Sync + 'static> ShardDirectory<A> for InMemoryShardDirect
 ///
 /// All [`ShardDirectory`] methods operate on the local `InMemoryShardDirectory`
 /// only — they never block or fail due to remote unavailability.
-pub struct CachingShardDirectory<A, T> {
+pub struct CachingShardDirectory<A, K, T> {
     local: Arc<InMemoryShardDirectory<A>>,
     #[allow(dead_code)]
     remote: Arc<T>,
@@ -376,12 +491,19 @@ pub struct CachingShardDirectory<A, T> {
     ///
     /// Clients have empty `own_shards` — they are PULL-only.
     own_shards: RwLock<HashSet<ShardNumber>>,
+    /// Key ranges managed via route changelog.
+    /// Updated by applying changesets from `route_changes_since()`.
+    key_ranges: RwLock<HashMap<ShardNumber, KeyRange<K>>>,
+    /// High watermark for route changelog consumption (1-based index).
+    /// Never regresses — stale eventual reads are ignored.
+    route_hwm: RwLock<u64>,
 }
 
-impl<A, T> CachingShardDirectory<A, T>
+impl<A, K, T> CachingShardDirectory<A, K, T>
 where
     A: Clone + Send + Sync + 'static,
-    T: RemoteShardDirectory<A>,
+    K: Clone + Send + Sync + 'static,
+    T: RemoteShardDirectory<A, K>,
 {
     /// Create a new caching shard directory and spawn the background sync task.
     ///
@@ -401,6 +523,8 @@ where
             local,
             remote,
             own_shards: RwLock::new(HashSet::new()),
+            key_ranges: RwLock::new(HashMap::new()),
+            route_hwm: RwLock::new(0),
         });
 
         let weak = Arc::downgrade(&dir);
@@ -411,7 +535,7 @@ where
                     break;
                 };
 
-                // PULL: write ALL remote entries to local (no own_shards check).
+                // PULL membership: write ALL remote entries to local (no own_shards check).
                 // put() is monotonic — rejects if remote_view < current local_view.
                 // Alive replica's local (higher view) is never overwritten.
                 // Dead replica's local (lower view) gets overwritten by fresh remote data.
@@ -420,6 +544,35 @@ where
                     for (shard, membership, remote_view) in entries {
                         dir.local.put(shard, membership, remote_view);
                     }
+                }
+
+                // PULL route changelog: apply atomic changesets to key_ranges.
+                // High watermark never regresses — stale eventual reads are ignored.
+                // Within each changeset, process RemoveRange before SetRange to
+                // avoid transient overlapping ranges when a shard is replaced.
+                let hwm = *dir.route_hwm.read().unwrap();
+                if let Ok(changesets) = dir.remote.route_changes_since(hwm).await {
+                    let mut ranges = dir.key_ranges.write().unwrap();
+                    let mut new_hwm = hwm;
+                    for (idx, changes) in changesets {
+                        if idx != new_hwm + 1 {
+                            break; // gap — wait for eventual consistency
+                        }
+                        // Deletes first, then inserts.
+                        for change in &changes {
+                            if let ShardDirectoryChange::RemoveRange { shard } = change {
+                                ranges.remove(shard);
+                            }
+                        }
+                        for change in changes {
+                            if let ShardDirectoryChange::SetRange { shard, range, .. } = change {
+                                ranges.insert(shard, range);
+                            }
+                        }
+                        new_hwm = idx;
+                    }
+                    drop(ranges);
+                    *dir.route_hwm.write().unwrap() = new_hwm;
                 }
 
                 // PUSH: push only own_shards entries to remote.
@@ -438,6 +591,19 @@ where
         dir
     }
 
+    /// Return the current cached key ranges (pulled from remote).
+    pub fn key_ranges(&self) -> HashMap<ShardNumber, KeyRange<K>> {
+        self.key_ranges.read().unwrap().clone()
+    }
+
+    /// Return the current route changelog high watermark (1-based index).
+    ///
+    /// Increases monotonically as changesets are consumed.  Returns 0 if
+    /// no changesets have been applied yet.
+    pub fn route_hwm(&self) -> u64 {
+        *self.route_hwm.read().unwrap()
+    }
+
     /// Register a shard as hosted by this node (enables PUSH for it).
     pub fn add_own_shard(&self, shard: ShardNumber) {
         self.own_shards.write().unwrap().insert(shard);
@@ -449,9 +615,10 @@ where
     }
 }
 
-impl<A, T> ShardDirectory<A> for CachingShardDirectory<A, T>
+impl<A, K, T> ShardDirectory<A> for CachingShardDirectory<A, K, T>
 where
     A: Clone + Send + Sync + 'static,
+    K: Clone + Send + Sync + 'static,
     T: Send + Sync + 'static,
 {
     fn get(&self, shard: ShardNumber) -> Option<(IrMembership<A>, u64)> {

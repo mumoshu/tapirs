@@ -4,7 +4,7 @@ use std::fmt::Debug;
 use std::sync::{Arc, RwLock};
 
 /// A shard's key range assignment in the directory.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ShardEntry<K> {
     pub shard: ShardNumber,
     pub range: KeyRange<K>,
@@ -18,41 +18,34 @@ pub struct ShardDirectory<K> {
     entries: Vec<ShardEntry<K>>,
 }
 
-/// Panics if any two entries have overlapping key ranges.
-fn validate_no_overlaps<K: Ord + Clone + Debug>(entries: &[ShardEntry<K>]) {
+/// Returns true if any two entries have overlapping key ranges.
+fn has_overlaps<K: Ord + Clone + Debug>(entries: &[ShardEntry<K>]) -> bool {
     let mut sorted: Vec<_> = entries.iter().collect();
     sorted.sort_by(|a, b| a.range.start.cmp(&b.range.start));
     for pair in sorted.windows(2) {
-        let a = &pair[0];
-        let b = &pair[1];
-        assert!(
-            !a.range.overlaps(&b.range),
-            "overlapping shard key ranges: shard {:?} range {:?} overlaps shard {:?} range {:?}",
-            a.shard, a.range, b.shard, b.range,
-        );
+        if pair[0].range.overlaps(&pair[1].range) {
+            return true;
+        }
     }
+    false
 }
 
 impl<K: Ord + Clone + Debug> ShardDirectory<K> {
     pub fn new(entries: Vec<ShardEntry<K>>) -> Self {
-        validate_no_overlaps(&entries);
+        assert!(!has_overlaps(&entries), "initial ShardDirectory has overlapping ranges");
         Self {
             generation: 0,
             entries,
         }
     }
 
-    pub fn route(&self, key: &K) -> ShardNumber {
+    pub fn route(&self, key: &K) -> Option<ShardNumber> {
         for entry in &self.entries {
             if entry.range.contains(key) {
-                return entry.shard;
+                return Some(entry.shard);
             }
         }
-        panic!(
-            "key {:?} not covered by any shard range in directory ({} entries)",
-            key,
-            self.entries.len(),
-        );
+        None
     }
 
     pub fn shards_for_range(&self, start: &K, end: &K) -> Vec<ShardNumber> {
@@ -67,10 +60,22 @@ impl<K: Ord + Clone + Debug> ShardDirectory<K> {
         &self.entries
     }
 
-    pub fn update(&mut self, entries: Vec<ShardEntry<K>>) {
-        validate_no_overlaps(&entries);
+    /// Update the directory with new shard entries.
+    ///
+    /// Skips the update if the entries contain overlapping key ranges
+    /// (can happen transiently when the discovery source is eventually
+    /// consistent). Returns `true` if the update was applied.
+    pub fn update(&mut self, entries: Vec<ShardEntry<K>>) -> bool {
+        if has_overlaps(&entries) {
+            tracing::warn!(
+                "skipping directory update: overlapping key ranges ({} entries)",
+                entries.len()
+            );
+            return false;
+        }
         self.entries = entries;
         self.generation += 1;
+        true
     }
 
     /// Replace one shard number with another in-place.
@@ -110,7 +115,7 @@ impl<K> DynamicRouter<K> {
 }
 
 impl<K: Ord + Clone + Debug + Send + Sync + 'static> ShardRouter<K> for DynamicRouter<K> {
-    fn route(&self, key: &K) -> ShardNumber {
+    fn route(&self, key: &K) -> Option<ShardNumber> {
         self.directory.read().unwrap().route(key)
     }
 
@@ -143,15 +148,15 @@ mod tests {
             },
         ]);
 
-        assert_eq!(dir.route(&25), ShardNumber(0));
+        assert_eq!(dir.route(&25), Some(ShardNumber(0)));
         assert_eq!(dir.generation, 0);
 
         dir.replace(ShardNumber(0), ShardNumber(2));
 
         // Same key now routes to the new shard number.
-        assert_eq!(dir.route(&25), ShardNumber(2));
+        assert_eq!(dir.route(&25), Some(ShardNumber(2)));
         // Other shard untouched.
-        assert_eq!(dir.route(&75), ShardNumber(1));
+        assert_eq!(dir.route(&75), Some(ShardNumber(1)));
         // Generation bumped.
         assert_eq!(dir.generation, 1);
     }

@@ -1,7 +1,7 @@
 use crate::discovery::HttpDiscoveryClient;
 use tapirs::discovery::json::JsonRemoteShardDirectory;
 use tapirs::discovery::tapir::TapirRemoteShardDirectory;
-use tapirs::discovery::{DiscoveryError, RemoteShardDirectory};
+use tapirs::discovery::{DiscoveryError, RemoteShardDirectory, ShardDirectoryChange, ShardDirectoryChangeSet};
 use tapirs::{IrMembership, ShardNumber, TapirReplica, TcpAddress, TcpTransport};
 
 type DiscoveryTapirDir =
@@ -18,15 +18,24 @@ pub enum DiscoveryBackend {
     Tapir(DiscoveryTapirDir),
 }
 
-impl RemoteShardDirectory<TcpAddress> for DiscoveryBackend {
+impl RemoteShardDirectory<TcpAddress, String> for DiscoveryBackend {
     async fn get(
         &self,
         shard: ShardNumber,
     ) -> Result<Option<(IrMembership<TcpAddress>, u64)>, DiscoveryError> {
         match self {
-            Self::Http(c) => c.get(shard).await,
-            Self::Json(c) => c.get(shard).await,
-            Self::Tapir(c) => c.get(shard).await,
+            Self::Http(c) => {
+                <HttpDiscoveryClient as RemoteShardDirectory<TcpAddress, String>>::get(c, shard)
+                    .await
+            }
+            Self::Json(c) => {
+                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::get(c, shard)
+                    .await
+            }
+            Self::Tapir(c) => {
+                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::get(c, shard)
+                    .await
+            }
         }
     }
 
@@ -37,17 +46,41 @@ impl RemoteShardDirectory<TcpAddress> for DiscoveryBackend {
         view: u64,
     ) -> Result<(), DiscoveryError> {
         match self {
-            Self::Http(c) => c.put(shard, membership, view).await,
-            Self::Json(c) => c.put(shard, membership, view).await,
-            Self::Tapir(c) => c.put(shard, membership, view).await,
+            Self::Http(c) => {
+                <HttpDiscoveryClient as RemoteShardDirectory<TcpAddress, String>>::put(
+                    c, shard, membership, view,
+                )
+                .await
+            }
+            Self::Json(c) => {
+                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::put(
+                    c, shard, membership, view,
+                )
+                .await
+            }
+            Self::Tapir(c) => {
+                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::put(
+                    c, shard, membership, view,
+                )
+                .await
+            }
         }
     }
 
     async fn remove(&self, shard: ShardNumber) -> Result<(), DiscoveryError> {
         match self {
-            Self::Http(c) => c.remove(shard).await,
-            Self::Json(c) => c.remove(shard).await,
-            Self::Tapir(c) => c.remove(shard).await,
+            Self::Http(c) => {
+                <HttpDiscoveryClient as RemoteShardDirectory<TcpAddress, String>>::remove(c, shard)
+                    .await
+            }
+            Self::Json(c) => {
+                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::remove(c, shard)
+                    .await
+            }
+            Self::Tapir(c) => {
+                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::remove(c, shard)
+                    .await
+            }
         }
     }
 
@@ -55,9 +88,15 @@ impl RemoteShardDirectory<TcpAddress> for DiscoveryBackend {
         &self,
     ) -> Result<Vec<(ShardNumber, IrMembership<TcpAddress>, u64)>, DiscoveryError> {
         match self {
-            Self::Http(c) => c.all().await,
-            Self::Json(c) => c.all().await,
-            Self::Tapir(c) => c.all().await,
+            Self::Http(c) => {
+                <HttpDiscoveryClient as RemoteShardDirectory<TcpAddress, String>>::all(c).await
+            }
+            Self::Json(c) => {
+                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::all(c).await
+            }
+            Self::Tapir(c) => {
+                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::all(c).await
+            }
         }
     }
 
@@ -69,9 +108,58 @@ impl RemoteShardDirectory<TcpAddress> for DiscoveryBackend {
         view: u64,
     ) -> Result<(), DiscoveryError> {
         match self {
-            Self::Http(c) => c.replace(old, new, membership, view).await,
-            Self::Json(c) => c.replace(old, new, membership, view).await,
-            Self::Tapir(c) => c.replace(old, new, membership, view).await,
+            Self::Http(c) => {
+                <HttpDiscoveryClient as RemoteShardDirectory<TcpAddress, String>>::replace(
+                    c, old, new, membership, view,
+                )
+                .await
+            }
+            Self::Json(c) => {
+                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::replace(
+                    c, old, new, membership, view,
+                )
+                .await
+            }
+            Self::Tapir(c) => {
+                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::replace(
+                    c, old, new, membership, view,
+                )
+                .await
+            }
+        }
+    }
+
+    async fn publish_route_changes(
+        &self,
+        changes: Vec<ShardDirectoryChange<String, TcpAddress>>,
+    ) -> Result<(), DiscoveryError> {
+        match self {
+            Self::Http(c) => {
+                <HttpDiscoveryClient as RemoteShardDirectory<TcpAddress, String>>::publish_route_changes(c, changes).await
+            }
+            Self::Json(c) => {
+                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::publish_route_changes(c, changes).await
+            }
+            Self::Tapir(c) => {
+                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::publish_route_changes(c, changes).await
+            }
+        }
+    }
+
+    async fn route_changes_since(
+        &self,
+        after_index: u64,
+    ) -> Result<Vec<(u64, ShardDirectoryChangeSet<String, TcpAddress>)>, DiscoveryError> {
+        match self {
+            Self::Http(c) => {
+                <HttpDiscoveryClient as RemoteShardDirectory<TcpAddress, String>>::route_changes_since(c, after_index).await
+            }
+            Self::Json(c) => {
+                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::route_changes_since(c, after_index).await
+            }
+            Self::Tapir(c) => {
+                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::route_changes_since(c, after_index).await
+            }
         }
     }
 }
