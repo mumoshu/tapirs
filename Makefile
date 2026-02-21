@@ -1,7 +1,7 @@
 .PHONY: test lock_server_stress_test coordinator_failure_stress_test_3 coordinator_failure_stress_test_7 bench fuzz fuzz100 maelstrom
 
 test:
-	cargo clippy -- -D clippy::disallowed_methods && timeout -k 10s 180s cargo test --release
+	cargo clippy -- -D clippy::disallowed_methods && timeout -k 10s 120s cargo test --release
 
 lock_server_stress_test:
 	timeout -k 10s 600s cargo test --release -- lock_server_loop --nocapture --include-ignored
