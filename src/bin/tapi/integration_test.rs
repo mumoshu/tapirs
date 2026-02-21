@@ -1,4 +1,5 @@
 use crate::discovery::HttpDiscoveryClient;
+use crate::helpers::{quorum_view_number, wait_for_view_change};
 use crate::node::Node;
 use rand::{thread_rng, Rng as _};
 use std::net::SocketAddr;
@@ -31,7 +32,10 @@ struct TestCluster {
     shard_manager_addr: SocketAddr,
     nodes: Vec<Arc<Node>>,
     replica_addrs: Vec<Vec<SocketAddr>>, // [shard][replica_idx]
+    client: Arc<RoutingClient<K, V, TestTransport, DynamicRouter<K>>>,
     _temp_dirs: Vec<TempDir>,
+    _client_temp_dir: TempDir,
+    _discovery_dir: Arc<tapirs::discovery::CachingShardDirectory<TcpAddress, HttpDiscoveryClient>>,
 }
 
 type K = String;
@@ -75,18 +79,48 @@ async fn bootstrap_cluster(
         temp_dirs.push(td);
     }
 
-    // === tapi admin add-replica (one at a time per shard) ===
+    // === Phase 1: first replica per shard ===
     // Ports are allocated just-in-time and retried on "already in use"
     // to avoid TOCTOU races between parallel test processes.
     let disc_client = HttpDiscoveryClient::new(&discovery_addr.to_string());
     let mut replica_addrs: Vec<Vec<SocketAddr>> = Vec::new();
     for shard_idx in 0..num_shards {
-        let mut shard_addrs = Vec::new();
-        for replica_idx in 0..replicas_per_shard {
-            let node_idx = replica_idx as usize % num_nodes as usize;
-            let shard = ShardNumber(shard_idx);
+        let shard = ShardNumber(shard_idx);
+        let addr = loop {
+            let candidate = alloc_addr();
+            match nodes[0].create_replica(shard, candidate, "memory").await {
+                Ok(()) => break candidate,
+                Err(e) if e.contains("already in use") => continue,
+                Err(e) => panic!("create_replica failed: {e}"),
+            }
+        };
+        let registered = vec![addr.to_string()];
+        let membership = tapirs::discovery::strings_to_membership::<TcpAddress>(&registered)
+            .expect("parse membership");
+        disc_client
+            .put(ShardNumber(shard_idx), membership, 0)
+            .await
+            .unwrap();
+        replica_addrs.push(vec![addr]);
+    }
 
-            // Retry with a new port on bind failure (TOCTOU race).
+    // === Create client (after first replicas are registered in discovery) ===
+    let (client, client_temp_dir, discovery_dir) =
+        create_test_client(discovery_addr, num_shards).await;
+
+    // === Phase 2: remaining replicas with view-change-aware polling ===
+    for shard_idx in 0..num_shards {
+        let shard = ShardNumber(shard_idx);
+        for replica_idx in 1..replicas_per_shard {
+            let node_idx = replica_idx as usize % num_nodes as usize;
+
+            // Record view number before AddMember.
+            let shard_nodes: Vec<&Arc<Node>> = nodes
+                .iter()
+                .filter(|n| n.shard_view_number(shard).is_some())
+                .collect();
+            let old_view = quorum_view_number(&shard_nodes, shard);
+
             let addr = loop {
                 let candidate = alloc_addr();
                 match nodes[node_idx].create_replica(shard, candidate, "memory").await {
@@ -96,9 +130,12 @@ async fn bootstrap_cluster(
                 }
             };
 
-            // Operator registers with discovery.
-            shard_addrs.push(addr);
-            let registered: Vec<String> = shard_addrs.iter().map(|a| a.to_string()).collect();
+            // Register with discovery.
+            replica_addrs[shard_idx as usize].push(addr);
+            let registered: Vec<String> = replica_addrs[shard_idx as usize]
+                .iter()
+                .map(|a| a.to_string())
+                .collect();
             let membership = tapirs::discovery::strings_to_membership::<TcpAddress>(&registered)
                 .expect("parse membership");
             disc_client
@@ -106,15 +143,20 @@ async fn bootstrap_cluster(
                 .await
                 .unwrap();
 
-            // Wait for view change to settle.
-            let settle_time = if replica_idx == 0 {
-                Duration::from_secs(3)
-            } else {
-                Duration::from_secs(5)
-            };
-            tokio::time::sleep(settle_time).await;
+            // Wait for view change including new replica.
+            let all_shard_nodes: Vec<&Arc<Node>> = nodes
+                .iter()
+                .filter(|n| n.shard_view_number(shard).is_some())
+                .collect();
+            wait_for_view_change(
+                &client,
+                &all_shard_nodes,
+                shard,
+                old_view,
+                &format!("bootstrap_s{shard_idx}_r{replica_idx}"),
+            )
+            .await;
         }
-        replica_addrs.push(shard_addrs);
     }
 
     TestCluster {
@@ -122,7 +164,10 @@ async fn bootstrap_cluster(
         shard_manager_addr: mgr_addr,
         nodes,
         replica_addrs,
+        client,
         _temp_dirs: temp_dirs,
+        _client_temp_dir: client_temp_dir,
+        _discovery_dir: discovery_dir,
     }
 }
 
@@ -130,7 +175,8 @@ async fn bootstrap_cluster(
 /// Uses CachingShardDirectory for address resolution, NOT manual
 /// transport.set_shard_addresses().
 async fn create_test_client(
-    cluster: &TestCluster,
+    discovery_addr: SocketAddr,
+    num_shards: u32,
 ) -> (
     Arc<RoutingClient<K, V, TestTransport, DynamicRouter<K>>>,
     TempDir,
@@ -143,7 +189,7 @@ async fn create_test_client(
     // Same as client.rs: CachingShardDirectory auto-syncs shard->membership
     // from discovery, populating dir.
     let disc_client = Arc::new(HttpDiscoveryClient::new(
-        &cluster.discovery_addr.to_string(),
+        &discovery_addr.to_string(),
     ));
     let discovery_dir = tapirs::discovery::CachingShardDirectory::<TcpAddress, _>::new(
         Arc::clone(&dir),
@@ -163,7 +209,7 @@ async fn create_test_client(
 
     // Key routing — discovery doesn't store key ranges, so this is
     // still needed (same as client.rs).
-    let entries = build_shard_entries(cluster.replica_addrs.len() as u32);
+    let entries = build_shard_entries(num_shards);
     let directory = Arc::new(RwLock::new(ShardDirectory::new(entries)));
     let router = Arc::new(DynamicRouter::new(directory));
     let tapir_client = Arc::new(TapirClient::new(tapirs::Rng::from_seed(thread_rng().r#gen()), transport));
@@ -269,7 +315,7 @@ async fn test_read_write_transactions() {
         .try_init();
 
     let cluster = bootstrap_cluster(2, 3, 3).await;
-    let (client, _td, _disc_dir) = create_test_client(&cluster).await;
+    let client = &cluster.client;
 
     // PUT — same as tapi client REPL.
     let txn = client.begin();
@@ -301,7 +347,7 @@ async fn test_view_change_during_transactions() {
         .try_init();
 
     let cluster = bootstrap_cluster(2, 3, 3).await;
-    let (client, _td, _disc_dir) = create_test_client(&cluster).await;
+    let client = &cluster.client;
 
     let txn = client.begin();
     txn.put("survive".to_string(), Some("yes".to_string()));
@@ -322,7 +368,7 @@ async fn test_remove_replica() {
         .try_init();
 
     let cluster = bootstrap_cluster(1, 3, 3).await;
-    let (client, _td, _disc_dir) = create_test_client(&cluster).await;
+    let client = &cluster.client;
 
     let txn = client.begin();
     txn.put("before".to_string(), Some("ok".to_string()));
@@ -364,7 +410,7 @@ async fn test_rolling_membership_replacement() {
         .try_init();
 
     let cluster = bootstrap_cluster(1, 3, 3).await;
-    let (client, _td, _disc_dir) = create_test_client(&cluster).await;
+    let client = &cluster.client;
     let disc_client = HttpDiscoveryClient::new(&cluster.discovery_addr.to_string());
     let shard = ShardNumber(0);
 
@@ -399,6 +445,15 @@ async fn test_rolling_membership_replacement() {
             &shard_manager_url,
         ));
 
+        // Record view number before AddMember.
+        let all_nodes: Vec<&Arc<Node>> = cluster
+            .nodes
+            .iter()
+            .chain(new_nodes.iter())
+            .filter(|n| n.shard_view_number(shard).is_some())
+            .collect();
+        let old_view = quorum_view_number(&all_nodes, shard);
+
         let new_addr = loop {
             let candidate = alloc_addr();
             match new_node.create_replica(shard, candidate, "memory").await {
@@ -416,8 +471,18 @@ async fn test_rolling_membership_replacement() {
             .await
             .unwrap();
 
-        // Wait for AddMember view change to settle.
-        tokio::time::sleep(Duration::from_secs(10)).await;
+        // Wait for AddMember view change — includes new node.
+        new_nodes.push(new_node);
+        _new_temp_dirs.push(td);
+
+        let all_nodes: Vec<&Arc<Node>> = cluster
+            .nodes
+            .iter()
+            .chain(new_nodes.iter())
+            .filter(|n| n.shard_view_number(shard).is_some())
+            .collect();
+        wait_for_view_change(client, &all_nodes, shard, old_view, &format!("probe_add_{i}"))
+            .await;
 
         // Verify R/W after add.
         let txn = client.begin();
@@ -432,19 +497,38 @@ async fn test_rolling_membership_replacement() {
         let val = rw_get(&client, "data", &format!("data_after_add_{i}")).await;
         assert_eq!(val, Some("initial".to_string()));
 
-        new_nodes.push(new_node);
-        _new_temp_dirs.push(td);
-
         // === LEAVE + REMOVE original replica ===
         tracing::info!("--- round {i}: leaving original replica ---");
+
+        // Record view number before RemoveMember.
+        let all_nodes: Vec<&Arc<Node>> = cluster
+            .nodes
+            .iter()
+            .chain(new_nodes.iter())
+            .filter(|n| n.shard_view_number(shard).is_some())
+            .collect();
+        let old_view = quorum_view_number(&all_nodes, shard);
 
         cluster.nodes[i]
             .leave_shard(shard)
             .await
             .unwrap_or_else(|e| panic!("leave_shard failed in round {i}: {e}"));
 
-        // Wait for RemoveMember view change to settle.
-        tokio::time::sleep(Duration::from_secs(10)).await;
+        // Wait for RemoveMember view change.
+        let remaining_nodes: Vec<&Arc<Node>> = cluster
+            .nodes
+            .iter()
+            .chain(new_nodes.iter())
+            .filter(|n| n.shard_view_number(shard).is_some())
+            .collect();
+        wait_for_view_change(
+            client,
+            &remaining_nodes,
+            shard,
+            old_view,
+            &format!("probe_remove_{i}"),
+        )
+        .await;
 
         // Drop the local handle.
         assert!(
@@ -461,7 +545,7 @@ async fn test_rolling_membership_replacement() {
             .unwrap();
 
         // Let discovery sync propagate to client.
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
 
         // Verify R/W after remove.
         let txn = client.begin();
@@ -539,7 +623,7 @@ async fn test_disaster_recovery_backup_restore() {
 
     // 1. Bootstrap cluster: 1 shard, 3 replicas, 3 nodes.
     let cluster = bootstrap_cluster(1, 3, 3).await;
-    let (client, _td, _disc_dir) = create_test_client(&cluster).await;
+    let client = &cluster.client;
     let disc_client = HttpDiscoveryClient::new(&cluster.discovery_addr.to_string());
     let shard = ShardNumber(0);
 
@@ -653,7 +737,7 @@ async fn test_disaster_recovery_backup_restore() {
     tokio::time::sleep(Duration::from_secs(5)).await;
 
     // 11. Create a fresh client that discovers the new replicas.
-    let (client2, _td2, _disc_dir2) = create_test_client(&cluster).await;
+    let (client2, _td2, _disc_dir2) = create_test_client(cluster.discovery_addr, 1).await;
 
     // Verify ALL data is readable from restored shard.
     for (key, value) in &test_data {
@@ -712,7 +796,7 @@ async fn test_cluster_backup_restore_via_admin() {
 
     // 1. Bootstrap cluster: 2 shards, 3 replicas, 3 nodes.
     let cluster = bootstrap_cluster(2, 3, 3).await;
-    let (client, _td, _disc_dir) = create_test_client(&cluster).await;
+    let client = &cluster.client;
     let disc_client = HttpDiscoveryClient::new(&cluster.discovery_addr.to_string());
 
     // 2. Write test data -- keys distributed across both shards.
@@ -904,7 +988,7 @@ async fn test_cluster_backup_restore_via_admin() {
     tokio::time::sleep(Duration::from_secs(5)).await;
 
     // 8. Create fresh client and verify all data survived.
-    let (client2, _td2, _disc_dir2) = create_test_client(&cluster).await;
+    let (client2, _td2, _disc_dir2) = create_test_client(cluster.discovery_addr, 2).await;
 
     for (key, value) in &test_data {
         let val = rw_get(&client2, key, &format!("{key}_post")).await;

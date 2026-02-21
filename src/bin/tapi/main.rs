@@ -9,6 +9,8 @@ mod repl;
 mod shard_manager_server;
 
 #[cfg(test)]
+mod helpers;
+#[cfg(test)]
 mod integration_test;
 
 use clap::{Parser, Subcommand, ValueEnum};
