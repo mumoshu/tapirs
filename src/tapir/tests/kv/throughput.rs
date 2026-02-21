@@ -1,10 +1,14 @@
 use super::*;
 
+// Benchmark — excluded from `make test`. Run via `make bench`.
+#[ignore]
 #[tokio::test]
 async fn throughput_3_ser() {
     throughput(false, 3, 1000).await;
 }
 
+// Benchmark — excluded from `make test`. Run via `make bench`.
+#[ignore]
 #[tokio::test]
 async fn throughput_3_lin() {
     throughput(true, 3, 1000).await;
@@ -23,17 +27,22 @@ async fn throughput(linearizable: bool, num_replicas: usize, num_clients: usize)
         .run_until(async move {
             let (_replicas, clients) = build_kv(linearizable, num_replicas, num_clients);
 
+            let mut rng = StdRng::seed_from_u64(42);
+            let client_seeds: Vec<u64> = (0..num_clients).map(|_| rng.r#gen()).collect();
+
             let attempted = Arc::new(AtomicU64::new(0));
             let committed = Arc::new(AtomicU64::new(0));
 
-            for client in clients {
+            for (idx, client) in clients.into_iter().enumerate() {
                 let attempted = Arc::clone(&attempted);
                 let committed = Arc::clone(&committed);
+                let client_seed = client_seeds[idx];
                 tokio::task::spawn_local(async move {
+                    let mut rng = StdRng::seed_from_u64(client_seed);
                     let attempted = Arc::clone(&attempted);
                     let committed = Arc::clone(&committed);
                     loop {
-                        let i = thread_rng().gen_range(0..num_clients as i64 * 10); // thread_rng().gen::<i64>();
+                        let i = rng.gen_range(0..num_clients as i64 * 10);
                         let txn = client.begin();
                         let old = txn.get(i).await.unwrap().unwrap_or_default();
                         txn.put(i, Some(old + 1));
@@ -42,7 +51,7 @@ async fn throughput(linearizable: bool, num_replicas: usize, num_clients: usize)
                         committed.fetch_add(c, Ordering::Relaxed);
 
                         tokio::time::sleep(Duration::from_millis(
-                            thread_rng().gen_range(1..=num_clients as u64),
+                            rng.gen_range(1..=num_clients as u64),
                         ))
                         .await;
                     }

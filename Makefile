@@ -13,7 +13,7 @@ coordinator_failure_stress_test_7:
 	timeout -k 10s 600s cargo test --release -- coordinator_recovery_7_loop --nocapture --include-ignored
 
 bench:
-	timeout -k 10s 180s cargo test throughput_3_ser --release -- --nocapture
+	timeout -k 10s 180s cargo test throughput_3_ser --release -- --nocapture --include-ignored
 
 fuzz:
 	./scripts/fuzz-multi-seed.sh
