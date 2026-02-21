@@ -2050,4 +2050,133 @@ mod tests {
                        "Data lost or corrupted after GC for key {}", key);
         }
     }
+
+    // ========== Batch Commit Tests ==========
+
+    #[test]
+    fn commit_batch_multi_key_readable() {
+        let dir = TempDir::new().unwrap();
+        let mut store =
+            DiskStore::<String, String, u64, BufferedIo>::open(dir.path().to_path_buf())
+                .unwrap();
+
+        let writes = vec![
+            ("k1".to_string(), Some("v1".to_string())),
+            ("k2".to_string(), Some("v2".to_string())),
+            ("k3".to_string(), None), // tombstone
+        ];
+        let reads: Vec<(String, u64)> = vec![];
+
+        MvccBackend::commit_batch(&mut store, writes, reads, 10).unwrap();
+
+        let (v, ts) = store.get_impl(&"k1".to_string()).unwrap();
+        assert_eq!(v, Some("v1".to_string()));
+        assert_eq!(ts, 10);
+
+        let (v, ts) = store.get_impl(&"k2".to_string()).unwrap();
+        assert_eq!(v, Some("v2".to_string()));
+        assert_eq!(ts, 10);
+
+        let (v, ts) = store.get_impl(&"k3".to_string()).unwrap();
+        assert_eq!(v, None);
+        assert_eq!(ts, 10);
+    }
+
+    #[test]
+    fn commit_batch_with_reads() {
+        let dir = TempDir::new().unwrap();
+        let mut store =
+            DiskStore::<String, String, u64, BufferedIo>::open(dir.path().to_path_buf())
+                .unwrap();
+
+        // Write an initial version.
+        store.put_impl("x".to_string(), Some("old".to_string()), 5).unwrap();
+
+        // Batch commit: T2 writes y, reads x@5, commits at ts=10.
+        let writes = vec![("y".to_string(), Some("new".to_string()))];
+        let reads = vec![("x".to_string(), 5u64)];
+
+        MvccBackend::commit_batch(&mut store, writes, reads, 10).unwrap();
+
+        // Value written.
+        let (v, ts) = store.get_impl(&"y".to_string()).unwrap();
+        assert_eq!(v, Some("new".to_string()));
+        assert_eq!(ts, 10);
+
+        // Read timestamp recorded — last_read of x@5 should be 10.
+        let lr = store.get_last_read_impl(&"x".to_string()).unwrap();
+        assert!(lr.is_some());
+    }
+
+    #[test]
+    fn commit_batch_crash_recovery() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+
+        {
+            let mut store =
+                DiskStore::<String, String, u64, BufferedIo>::open(path.clone()).unwrap();
+
+            let writes = vec![
+                ("a".to_string(), Some("1".to_string())),
+                ("b".to_string(), Some("2".to_string())),
+                ("c".to_string(), Some("3".to_string())),
+            ];
+
+            MvccBackend::commit_batch(&mut store, writes, vec![], 10).unwrap();
+            store.save_manifest().unwrap();
+        }
+
+        // Reopen — all entries should be recovered from vlog replay.
+        {
+            let store =
+                DiskStore::<String, String, u64, BufferedIo>::open(path).unwrap();
+
+            let (v, _) = store.get_impl(&"a".to_string()).unwrap();
+            assert_eq!(v, Some("1".to_string()));
+
+            let (v, _) = store.get_impl(&"b".to_string()).unwrap();
+            assert_eq!(v, Some("2".to_string()));
+
+            let (v, _) = store.get_impl(&"c".to_string()).unwrap();
+            assert_eq!(v, Some("3".to_string()));
+        }
+    }
+
+    #[test]
+    fn commit_batch_matches_individual_puts() {
+        // Verify batch commit produces identical observable state to individual puts.
+        let dir_batch = TempDir::new().unwrap();
+        let dir_indiv = TempDir::new().unwrap();
+
+        let mut store_b =
+            DiskStore::<String, String, u64, BufferedIo>::open(dir_batch.path().to_path_buf())
+                .unwrap();
+        let mut store_i =
+            DiskStore::<String, String, u64, BufferedIo>::open(dir_indiv.path().to_path_buf())
+                .unwrap();
+
+        let keys = vec![
+            ("x".to_string(), Some("1".to_string())),
+            ("y".to_string(), Some("2".to_string())),
+            ("z".to_string(), None),
+        ];
+
+        // Path A: batch.
+        MvccBackend::commit_batch(&mut store_b, keys.clone(), vec![], 10).unwrap();
+
+        // Path B: individual puts.
+        for (k, v) in &keys {
+            MvccBackend::put(&mut store_i, k.clone(), v.clone(), 10).unwrap();
+        }
+
+        // Both should produce identical reads.
+        for (k, v) in &keys {
+            let (vb, tsb) = store_b.get_impl(k).unwrap();
+            let (vi, tsi) = store_i.get_impl(k).unwrap();
+            assert_eq!(vb, vi, "Mismatch for key {k}");
+            assert_eq!(tsb, tsi, "Timestamp mismatch for key {k}");
+            assert_eq!(vb, *v);
+        }
+    }
 }

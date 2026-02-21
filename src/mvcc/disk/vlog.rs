@@ -1087,7 +1087,7 @@ mod tests {
             timestamp: 1,
             value: Some("val-a".into()),
         };
-        let ptr1 = seg.append(&e1).await.unwrap();
+        let _ptr1 = seg.append(&e1).await.unwrap();
 
         let e2 = VlogEntry::<String, String, u64> {
             key: "b".into(),
@@ -1137,5 +1137,149 @@ mod tests {
         let (key, ts): (String, u64) = seg.read_key_ts(&ptr).await.unwrap();
         assert_eq!(key, "mykey");
         assert_eq!(ts, 99);
+    }
+
+    #[tokio::test]
+    async fn append_batch_roundtrip() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+        let flags = OpenFlags {
+            create: true,
+            direct: false,
+        };
+
+        let mut seg = VlogSegment::<BufferedIo>::open(1, path, flags).unwrap();
+
+        let entries = vec![
+            VlogEntry::<String, String, u64> {
+                key: "key-a".into(),
+                timestamp: 10,
+                value: Some("val-a".into()),
+            },
+            VlogEntry {
+                key: "key-b".into(),
+                timestamp: 10,
+                value: Some("val-b".into()),
+            },
+            VlogEntry {
+                key: "key-c".into(),
+                timestamp: 10,
+                value: None, // tombstone
+            },
+        ];
+
+        let ptrs = seg.append_batch(&entries).await.unwrap();
+        assert_eq!(ptrs.len(), 3);
+        assert_eq!(ptrs[0].offset, 0);
+        assert!(ptrs[1].offset > 0);
+        assert!(ptrs[2].offset > ptrs[1].offset);
+
+        // Read each entry back individually.
+        for (i, ptr) in ptrs.iter().enumerate() {
+            let e: VlogEntry<String, String, u64> = seg.read(ptr).await.unwrap();
+            assert_eq!(e.key, entries[i].key);
+            assert_eq!(e.timestamp, entries[i].timestamp);
+            assert_eq!(e.value, entries[i].value);
+        }
+    }
+
+    #[tokio::test]
+    async fn append_batch_matches_individual_appends() {
+        // Verify that append_batch produces the same logical layout as individual appends:
+        // same value pointers and identical entry data when read back.
+        let entries = vec![
+            VlogEntry::<u64, String, u64> {
+                key: 1,
+                timestamp: 100,
+                value: Some("hello".into()),
+            },
+            VlogEntry {
+                key: 2,
+                timestamp: 200,
+                value: Some("world".into()),
+            },
+        ];
+
+        // Path A: individual appends.
+        let tmp_a = NamedTempFile::new().unwrap();
+        let flags = OpenFlags { create: true, direct: false };
+        let mut seg_a = VlogSegment::<BufferedIo>::open(1, tmp_a.path().to_path_buf(), flags).unwrap();
+        let ptr_a0 = seg_a.append(&entries[0]).await.unwrap();
+        let ptr_a1 = seg_a.append(&entries[1]).await.unwrap();
+
+        // Path B: batch append.
+        let tmp_b = NamedTempFile::new().unwrap();
+        let mut seg_b = VlogSegment::<BufferedIo>::open(1, tmp_b.path().to_path_buf(), flags).unwrap();
+        let ptrs_b = seg_b.append_batch(&entries).await.unwrap();
+
+        // Pointers should match (same offsets and lengths).
+        assert_eq!(ptr_a0, ptrs_b[0]);
+        assert_eq!(ptr_a1, ptrs_b[1]);
+
+        // Entries should read back identically from both segments.
+        let e0a = seg_a.read::<u64, String, u64>(&ptr_a0).await.unwrap();
+        let e0b = seg_b.read::<u64, String, u64>(&ptrs_b[0]).await.unwrap();
+        assert_eq!(e0a.key, e0b.key);
+        assert_eq!(e0a.timestamp, e0b.timestamp);
+        assert_eq!(e0a.value, e0b.value);
+
+        let e1a = seg_a.read::<u64, String, u64>(&ptr_a1).await.unwrap();
+        let e1b = seg_b.read::<u64, String, u64>(&ptrs_b[1]).await.unwrap();
+        assert_eq!(e1a.key, e1b.key);
+        assert_eq!(e1a.timestamp, e1b.timestamp);
+        assert_eq!(e1a.value, e1b.value);
+    }
+
+    #[tokio::test]
+    async fn append_batch_recovery() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+        let flags = OpenFlags { create: true, direct: false };
+
+        let mut seg = VlogSegment::<BufferedIo>::open(1, path.clone(), flags).unwrap();
+
+        let entries = vec![
+            VlogEntry::<String, String, u64> {
+                key: "k1".into(),
+                timestamp: 1,
+                value: Some("v1".into()),
+            },
+            VlogEntry {
+                key: "k2".into(),
+                timestamp: 2,
+                value: Some("v2".into()),
+            },
+            VlogEntry {
+                key: "k3".into(),
+                timestamp: 3,
+                value: Some("v3".into()),
+            },
+        ];
+
+        seg.append_batch(&entries).await.unwrap();
+        seg.sync().await.unwrap();
+        drop(seg);
+
+        // Recover from offset 0.
+        let seg2 = VlogSegment::<BufferedIo>::open(1, path, flags).unwrap();
+        let recovered = seg2.recover_entries::<String, String, u64>(0).await.unwrap();
+
+        assert_eq!(recovered.len(), 3);
+        for (i, (entry, _ptr)) in recovered.iter().enumerate() {
+            assert_eq!(entry.key, entries[i].key);
+            assert_eq!(entry.value, entries[i].value);
+        }
+    }
+
+    #[tokio::test]
+    async fn append_batch_empty() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+        let flags = OpenFlags { create: true, direct: false };
+
+        let mut seg = VlogSegment::<BufferedIo>::open(1, path, flags).unwrap();
+        let ptrs = seg.append_batch::<String, String, u64>(&[]).await.unwrap();
+        assert!(ptrs.is_empty());
+        assert_eq!(seg.write_offset(), 0);
     }
 }
