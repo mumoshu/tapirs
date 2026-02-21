@@ -144,6 +144,17 @@ impl<K: Ord, TS: Ord> Memtable<K, TS> {
         std::mem::take(&mut self.map)
     }
 
+    /// Borrow the entries map (for SSTable write before clearing).
+    pub fn entries(&self) -> &BTreeMap<CompositeKey<K, TS>, LsmEntry> {
+        &self.map
+    }
+
+    /// Clear all entries and reset byte counter.
+    pub fn clear(&mut self) {
+        self.map.clear();
+        self.approx_bytes = 0;
+    }
+
     /// Iterate all entries (for flush or scan).
     pub fn iter(&self) -> impl Iterator<Item = (&CompositeKey<K, TS>, &LsmEntry)> {
         self.map.iter()

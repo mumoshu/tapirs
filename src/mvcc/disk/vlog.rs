@@ -64,6 +64,15 @@ impl<IO: DiskIo> VlogSegment<IO> {
         self.write_offset
     }
 
+    /// Set the write offset for the next append.
+    ///
+    /// Used during recovery to position the append cursor past recovered
+    /// entries, preventing new appends from overwriting recovered vlog data
+    /// whose ValuePointers are still referenced by SSTs.
+    pub(crate) fn set_write_offset(&mut self, offset: u64) {
+        self.write_offset = offset;
+    }
+
     pub fn path(&self) -> &PathBuf {
         &self.path
     }

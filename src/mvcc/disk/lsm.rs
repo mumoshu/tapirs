@@ -75,6 +75,29 @@ impl<IO: DiskIo> LsmTree<IO> {
     }
 
     /// Flush a memtable to a new L0 SSTable.
+    ///
+    /// The memtable is cleared only AFTER the SST write+fsync succeeds.
+    /// This is critical for crash safety with faulty storage:
+    ///
+    /// ```text
+    ///   1. put(k, "old", 5)  → committed via sync(), flushed to SST-A
+    ///      replay_start_offset advances to X
+    ///   2. put(k, "new", 5)  → vlog offset X, memtable shadows SST-A
+    ///      sync() OK → committed
+    ///   3. more puts fill memtable past 64 KiB
+    ///   4. maybe_flush() → flush_memtable():
+    ///      a. [OLD BUG] memtable.drain() empties memtable BEFORE SST write
+    ///      b. SSTableWriter::write → fsync fails (ambiguous: data may be durable)
+    ///      c. drained entries dropped — "new" lost from memory
+    ///      d. replay_start_offset NOT advanced (still X) — correct
+    ///   5. more puts → new memtable entries (k not among them)
+    ///   6. maybe_flush() SUCCEEDS → replay_start_offset = Y (past X)
+    ///   7. CRASH → recovery replays from Y → SST-A has "old" → WRONG
+    ///
+    /// Fix: borrow entries for SST write, clear memtable only on success.
+    /// If SST write fails, memtable retains the entries. Step 6's flush
+    /// then includes "new" in the SST, and recovery finds it.
+    /// ```
     pub async fn flush_memtable<K, TS>(
         &mut self,
         memtable: &mut Memtable<K, TS>,
@@ -83,8 +106,7 @@ impl<IO: DiskIo> LsmTree<IO> {
         K: Serialize + Clone + Ord,
         TS: Serialize + Clone + Ord,
     {
-        let entries = memtable.drain();
-        if entries.is_empty() {
+        if memtable.is_empty() {
             return Err(StorageError::Codec("empty memtable".into()));
         }
 
@@ -92,7 +114,14 @@ impl<IO: DiskIo> LsmTree<IO> {
         self.next_sst_id += 1;
         let path = self.sst_path(sst_id);
 
-        let num_entries = SSTableWriter::write::<K, TS, IO>(&path, &entries, self.io_flags).await?;
+        // Write SST from borrowed memtable entries. The memtable is NOT
+        // cleared yet — if the write/fsync fails, entries remain in memory
+        // and will be included in the next successful flush.
+        let num_entries =
+            SSTableWriter::write::<K, TS, IO>(&path, memtable.entries(), self.io_flags).await?;
+
+        // SST write+fsync succeeded — now safe to clear the memtable.
+        memtable.clear();
 
         let meta = SSTableMeta {
             id: sst_id,

@@ -19,6 +19,70 @@ const FLUSH_THRESHOLD: usize = 64 * 1024;
 /// Keys and metadata live in an LSM tree. Values live in the vlog.
 /// Default `IO = BufferedIo` for testing; production uses `SyncDirectIo`
 /// or `UringDirectIo`.
+///
+/// # Durability model: sync() vs maybe_flush()
+///
+/// **`sync()`** — Caller's explicit durability API. Fsyncs the vlog (WAL)
+/// so recent writes survive crashes. Cheap: one sequential fsync. Does
+/// NOT flush the memtable to SST or advance `replay_start_offset`. After
+/// crash, sync'd-but-not-flushed entries are recovered via vlog replay.
+///
+/// **`maybe_flush()`** — Internal memory management, triggered when the
+/// memtable exceeds 64 KiB. Fsyncs the vlog first (so SSTs never
+/// reference unsync'd vlog data), then flushes the memtable to SST,
+/// then advances `replay_start_offset` to the current vlog write
+/// position. This offset is stored in the manifest and determines where
+/// vlog replay begins on recovery.
+///
+/// The separation exists because flushing to SST is expensive (SST write
+/// + SST fsync + manifest fsync = 3–4 fsyncs) while `sync()` is cheap
+/// (1 vlog fsync). Callers can sync frequently for durability without
+/// paying the SST I/O cost on every call.
+///
+/// ## Recovery: two positions from one stored offset
+///
+/// The manifest stores `replay_start_offset` (as `vlog_write_offset` in
+/// the on-disk format). On recovery, DiskStore derives two positions:
+///
+/// 1. **Replay start** = `replay_start_offset` from manifest. Everything
+///    before this is covered by SSTs. Everything from here onward is
+///    replayed from the vlog into the (empty) memtable — including any
+///    sync'd-but-not-flushed entries that survived in the vlog.
+///
+/// 2. **Append position** = `replay_start_offset + recovered_entries × 4096`.
+///    Computed after replay. New appends go here. Without this, the vlog's
+///    write cursor would sit at `replay_start_offset`, and new writes
+///    would overwrite recovered entries whose ValuePointers are still
+///    referenced by SSTs.
+///
+/// ## Timeline: put, sync, put, flush, put, crash, recovery
+///
+/// ```text
+///   Op                    memtable (mem)     SST (disk)      write_offset  replay_start
+///   ────────────────────  ─────────────────  ──────────────  ────────────  ────────────
+///   open()                {}                 {}              0             0
+///   put(k, v1, ts=5)      {(k,5)→v1}        {}              4096          0
+///   sync() OK             {(k,5)→v1}        {}              4096          0  (no change)
+///     (vlog fsync'd — v1 is durable, but replay_start stays at 0)
+///   put(k, v2, ts=5)      {(k,5)→v2}        {}              8192          0
+///   maybe_flush():
+///     vlog.fsync()         {(k,5)→v2}        {}              8192          0  (vlog sync'd)
+///     memtable→SST         {}                {(k,5)→v2}     8192          0  (SST has v2)
+///     advance offset       {}                {(k,5)→v2}     8192          8192
+///     save_manifest        manifest: replay_start=8192, SSTs=[sst-0]
+///   put(k, v3, ts=5)      {(k,5)→v3}        {(k,5)→v2}     12288         8192
+///   sync() OK             {(k,5)→v3}        {(k,5)→v2}     12288         8192 (no change)
+///     (v3 is durable in vlog, but replay_start stays at 8192)
+///   CRASH
+///   recovery:
+///     load manifest       replay_start=8192, SSTs=[sst-0 with v2]
+///     open_at(8192)        vlog write cursor at 8192
+///     replay vlog          from 8192: finds v3 at offset 8192
+///       memtable = {(k,5)→v3}     SST = {(k,5)→v2}
+///     set append pos       vlog write cursor → 12288 (past recovered entries)
+///     get(k, ts=5)        → v3 from memtable (shadows v2 in SST) ✓
+///     put(k, v4, ts=5)    appends at 12288 — no overwrite ✓
+/// ```
 pub struct DiskStore<K, V, TS, IO: DiskIo> {
     memtable: Memtable<K, TS>,
     lsm: LsmTree<IO>,
@@ -26,9 +90,16 @@ pub struct DiskStore<K, V, TS, IO: DiskIo> {
     base_dir: PathBuf,
     io_flags: OpenFlags,
     next_segment_id: u64,
-    /// Vlog offset up to which data has been flushed to SSTables.
-    /// Entries after this offset are in memtable and need replay on recovery.
-    flushed_vlog_offset: u64,
+    /// Vlog offset up to which all entries are covered by SSTs.
+    ///
+    /// On recovery, vlog replay starts here — entries from this offset
+    /// onward are replayed into the memtable (including sync'd-but-not-
+    /// flushed entries that survived in the vlog). Only advanced by
+    /// `maybe_flush()` after both vlog fsync and SST flush succeed.
+    /// `sync()` provides caller-facing durability (vlog fsync) but does
+    /// not advance this offset — sync'd entries are recovered via vlog
+    /// replay from this (earlier) position.
+    replay_start_offset: u64,
     _v: std::marker::PhantomData<V>,
 }
 
@@ -82,7 +153,7 @@ where
             base_dir,
             io_flags,
             next_segment_id: 1,
-            flushed_vlog_offset: 0,
+            replay_start_offset: 0,
             _v: std::marker::PhantomData,
         })
     }
@@ -101,24 +172,26 @@ where
             io_flags,
         );
 
-        // Open the latest vlog segment at the flushed offset.
+        // Open the latest vlog segment at the replay start offset.
+        // This is the SST coverage boundary — everything before it is in SSTs.
         let seg_id = manifest
             .vlog_segment_ids
             .last()
             .copied()
             .unwrap_or(0);
         let vlog_path = base_dir.join(format!("vlog-{seg_id:06}.log"));
-        let vlog = VlogSegment::<IO>::open_at(
+        let mut vlog = VlogSegment::<IO>::open_at(
             seg_id,
             vlog_path,
             manifest.vlog_write_offset,
             io_flags,
         )?;
 
-        // Replay vlog entries after the flushed offset into memtable.
+        // Replay vlog entries from the replay start offset into the
+        // (empty) memtable. This picks up sync'd-but-not-flushed entries
+        // that survived in the vlog — they are durable (vlog fsync'd by
+        // a prior sync() call) but not yet covered by SSTs.
         let mut memtable = Memtable::new();
-
-        // Recover entries from vlog
         let recovered_entries = futures::executor::block_on(
             vlog.recover_entries::<K, V, TS>(manifest.vlog_write_offset)
         )?;
@@ -133,8 +206,23 @@ where
             );
         }
 
+        // Position the vlog append cursor past all recovered entries.
+        // Each vlog entry occupies one 4 KiB block (padded in append()).
+        // Without this, new appends would start at replay_start_offset
+        // and overwrite recovered entries whose ValuePointers are still
+        // referenced by SSTs — causing CRC mismatches on subsequent reads.
+        let append_offset =
+            manifest.vlog_write_offset + (recovered_entries.len() as u64 * 4096);
+        vlog.set_write_offset(append_offset);
+
         if !recovered_entries.is_empty() {
-            tracing::info!("Recovered {} entries from vlog", recovered_entries.len());
+            tracing::info!(
+                "Recovered {} entries from vlog (replay {}..{}, append from {})",
+                recovered_entries.len(),
+                manifest.vlog_write_offset,
+                append_offset,
+                append_offset,
+            );
         }
 
         Ok(Self {
@@ -144,7 +232,7 @@ where
             base_dir,
             io_flags,
             next_segment_id: manifest.next_segment_id,
-            flushed_vlog_offset: manifest.vlog_write_offset,
+            replay_start_offset: manifest.vlog_write_offset,
             _v: std::marker::PhantomData,
         })
     }
@@ -155,7 +243,7 @@ where
             l0_sstables: self.lsm.l0_metas().to_vec(),
             l1_sstables: self.lsm.l1_metas().to_vec(),
             vlog_segment_ids: vec![self.vlog.id],
-            vlog_write_offset: self.flushed_vlog_offset,
+            vlog_write_offset: self.replay_start_offset,
             next_sst_id: self.lsm.next_sst_id(),
             next_segment_id: self.next_segment_id,
             checksum: 0,
@@ -234,16 +322,15 @@ where
 
         // Insert into memtable.
         self.memtable.insert(
-            CompositeKey::new(key, timestamp),
+            CompositeKey::new(key.clone(), timestamp),
             LsmEntry {
                 value_ptr: Some(ptr),
                 last_read_ts: None,
             },
         );
 
-        // Flush if needed.
-        self.maybe_flush()?;
-        Ok(())
+        // Flush memtable to SST if it exceeds the size threshold.
+        self.maybe_flush()
     }
 
     /// Update last-read timestamp for OCC.
@@ -372,15 +459,38 @@ where
         }
     }
 
+    /// Flush the memtable to an SSTable when it exceeds the size threshold.
+    ///
+    /// This is the internal memory-management operation. Unlike `sync()`,
+    /// which is the caller's cheap durability API (1 vlog fsync), this
+    /// performs the full persistence cycle: vlog fsync → SST write + fsync →
+    /// manifest fsync — 3–4 fsyncs total.
+    ///
+    /// The vlog is fsync'd BEFORE the SST flush to ensure every ValuePointer
+    /// in the new SST references durable vlog data. Without this, a crash
+    /// after SST fsync but before vlog fsync would leave the SST with
+    /// dangling pointers to vlog entries that never made it to disk.
+    ///
+    /// After the flush, `replay_start_offset` advances to the current vlog
+    /// write position — everything before it is now both sync'd in the vlog
+    /// AND covered by SSTs, so recovery can safely start replay from here.
     fn maybe_flush(&mut self) -> Result<(), StorageError> {
         if self.memtable.approx_bytes() >= FLUSH_THRESHOLD {
+            // 1. Fsync the vlog first — ensures all vlog entries that will
+            //    be referenced by the new SST are durable on disk.
+            futures::executor::block_on(self.vlog.sync())?;
+
+            // 2. Flush memtable to SST (SST is fsync'd internally by
+            //    SSTableWriter::write).
             futures::executor::block_on(
                 self.lsm.flush_memtable(&mut self.memtable),
             )?;
 
-            // Update flushed offset - all data up to current vlog position
-            // is now safely in SSTables.
-            self.flushed_vlog_offset = self.vlog.write_offset();
+            // 3. All entries up to write_offset() are now:
+            //    - Durable in the vlog (step 1)
+            //    - Covered by SSTs (step 2)
+            //    Recovery can start replay from here.
+            self.replay_start_offset = self.vlog.write_offset();
 
             // Compact if needed, get list of old files to delete.
             let old_files = if self.lsm.needs_compaction() {
@@ -535,7 +645,17 @@ where
         Ok(results)
     }
 
-    /// Sync all data to disk.
+    /// Caller's explicit durability API: fsync the vlog (WAL).
+    ///
+    /// Makes all preceding `put()` calls crash-safe with a single
+    /// sequential fsync. This is cheap compared to `maybe_flush()` which
+    /// additionally writes an SST (3–4 fsyncs total). Callers can sync
+    /// frequently (e.g. every N ms) without paying the SST I/O cost.
+    ///
+    /// Does NOT advance `replay_start_offset` or touch the manifest.
+    /// On recovery, sync'd-but-not-flushed entries are picked up by
+    /// vlog replay starting from `replay_start_offset` (the SST coverage
+    /// boundary set by the last `maybe_flush()`).
     pub fn sync(&self) -> Result<(), StorageError> {
         futures::executor::block_on(self.vlog.sync())
     }

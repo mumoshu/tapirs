@@ -786,13 +786,20 @@ mod tests {
                             }
                         }
                         Err(_e) => {
-                            // Fsync failed - writes are lost
+                            // Fsync reported failure. FaultyDiskIo performs
+                            // the actual fsync before injecting the error, so
+                            // data may still be durable (ambiguous outcome).
+                            // If pending writes overwrite committed entries,
+                            // the committed value is now ambiguous — remove.
                             if !pending_writes.is_empty() {
                                 println!(
-                                    "  op {}: sync failed (fault injection), losing {} pending writes",
+                                    "  op {}: sync failed (fault injection), {} pending writes ambiguous",
                                     i,
                                     pending_writes.len()
                                 );
+                                for (k, _v, ts) in &pending_writes {
+                                    committed_data.remove(&(k.clone(), *ts));
+                                }
                                 pending_writes.clear();
                             }
                         }
@@ -815,17 +822,24 @@ mod tests {
         }
 
         // Final sync to commit remaining writes
-        if store.sync().is_ok() {
-            println!(
-                "final sync succeeded, committing {} remaining writes",
-                pending_writes.len()
-            );
-            for (k, v, ts) in pending_writes.drain(..) {
-                committed_data.insert((k, ts), v);
+        match store.sync() {
+            Ok(_) => {
+                println!(
+                    "final sync succeeded, committing {} remaining writes",
+                    pending_writes.len()
+                );
+                for (k, v, ts) in pending_writes.drain(..) {
+                    committed_data.insert((k, ts), v);
+                }
+                let _ = store.save_manifest();
             }
-            let _ = store.save_manifest();
-        } else {
-            println!("final sync failed, losing {} pending writes", pending_writes.len());
+            Err(_) => {
+                println!("final sync failed, {} pending writes ambiguous", pending_writes.len());
+                for (k, _v, ts) in &pending_writes {
+                    committed_data.remove(&(k.clone(), *ts));
+                }
+                pending_writes.clear();
+            }
         }
 
         println!("committed {} total writes", committed_data.len());

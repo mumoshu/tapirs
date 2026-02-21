@@ -780,9 +780,7 @@ mod tests {
                             pending_writes.push((key.clone(), value, ts));
                             all_keys.insert(key);
                         }
-                        Err(_) => {
-                            // ENOSPC or other write failure expected
-                        }
+                        Err(_) => {}
                     }
                 }
                 6..=7 => {
@@ -816,7 +814,18 @@ mod tests {
                             let _ = store.save_manifest();
                         }
                         Err(_) => {
-                            // Fsync failed - lose all pending writes
+                            // Fsync reported failure. With FaultyDiskIo, the
+                            // actual fsync may have succeeded (ambiguous
+                            // outcome, realistic for real hardware). If a
+                            // pending write overwrites a committed entry, the
+                            // committed value is now ambiguous — the store
+                            // might return either the old committed value or
+                            // the new "failed" value after recovery. Remove
+                            // such entries from committed_data so we don't
+                            // assert a specific value for them.
+                            for (k, _v, ts) in &pending_writes {
+                                committed_data.remove(&(k.clone(), *ts));
+                            }
                             pending_writes.clear();
                         }
                     }
@@ -833,11 +842,21 @@ mod tests {
         }
 
         // 6. Final sync attempt before crash
-        if store.sync().is_ok() {
-            for (k, v, ts) in pending_writes.drain(..) {
-                committed_data.insert((k, ts), v);
+        match store.sync() {
+            Ok(_) => {
+                for (k, v, ts) in pending_writes.drain(..) {
+                    committed_data.insert((k, ts), v);
+                }
+                let _ = store.save_manifest();
             }
-            let _ = store.save_manifest();
+            Err(_) => {
+                // Same ambiguous-fsync handling as the main loop:
+                // pending writes may overwrite committed entries.
+                for (k, _v, ts) in &pending_writes {
+                    committed_data.remove(&(k.clone(), *ts));
+                }
+                pending_writes.clear();
+            }
         }
 
         println!("committed {} writes before crash", committed_data.len());
