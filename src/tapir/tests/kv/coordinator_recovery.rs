@@ -1,32 +1,32 @@
 use super::*;
 
 #[ignore]
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn coordinator_recovery_3_loop() {
     loop {
         timeout_coordinator_recovery(3).await;
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn coordinator_recovery_3() {
     timeout_coordinator_recovery(3).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn coordinator_recovery_5() {
     timeout_coordinator_recovery(5).await;
 }
 
 #[ignore]
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn coordinator_recovery_7_loop() {
     loop {
         timeout_coordinator_recovery(7).await;
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn coordinator_recovery_7() {
     timeout_coordinator_recovery(7).await;
 }
@@ -34,13 +34,14 @@ async fn coordinator_recovery_7() {
 async fn timeout_coordinator_recovery(num_replicas: usize) {
     timeout(
         Duration::from_secs((num_replicas as u64 + 10) * 20),
-        coordinator_recovery(num_replicas),
+        coordinator_recovery(num_replicas, 42),
     )
     .await
     .unwrap();
 }
 
-async fn coordinator_recovery(num_replicas: usize) {
+async fn coordinator_recovery(num_replicas: usize, seed: u64) {
+    let mut rng = StdRng::seed_from_u64(seed);
     let (_replicas, clients) = build_kv(true, num_replicas, 3);
 
     'outer: for n in (0..50).step_by(2).chain((50..500).step_by(10)) {
@@ -64,7 +65,7 @@ async fn coordinator_recovery(num_replicas: usize) {
             });
         }
 
-        Transport::sleep(Duration::from_millis(thread_rng().gen_range(0..100))).await;
+        Transport::sleep(Duration::from_millis(rng.gen_range(0..100u64))).await;
 
         for i in 0..128 {
             let txn = clients[1].begin();
