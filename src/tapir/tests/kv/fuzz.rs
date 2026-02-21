@@ -822,72 +822,86 @@ async fn fuzz_tapir_transactions() {
             let mut shard_keys: Vec<_> = manager.shards.keys().cloned().collect();
             shard_keys.sort();
 
-            let op: u8 = reshard_rng.gen_range(0..3);
-            if op == 0 {
-                // Attempt split: random shard, midpoint key.
-                let source = shard_keys[reshard_rng.gen_range(0..shard_keys.len())];
-                let range = &manager.shards[&source].key_range;
-                let start = range.start.unwrap_or(0);
-                let end = range.end.unwrap_or(num_keys);
-                if end - start >= 2 && next_shard_idx < new_shard_memberships.len() {
-                    let split_key = start + (end - start) / 2;
+            // Try the preferred operation first, then rotate through alternatives.
+            // Without fallback, rounds become silent no-ops when the randomly chosen
+            // operation's preconditions aren't met (e.g., merge requires >= 2 shards
+            // but num_shards == 1), which can produce zero resharding events and
+            // fail the "resharding should overlap with client transactions" assertion.
+            let preferred_op: u8 = reshard_rng.gen_range(0..3);
+            let candidates = [preferred_op, (preferred_op + 1) % 3, (preferred_op + 2) % 3];
+
+            for op in candidates {
+                if op == 0 {
+                    // Attempt split: random shard, midpoint key.
+                    let source = shard_keys[reshard_rng.gen_range(0..shard_keys.len())];
+                    let range = &manager.shards[&source].key_range;
+                    let start = range.start.unwrap_or(0);
+                    let end = range.end.unwrap_or(num_keys);
+                    if end - start >= 2 && next_shard_idx < new_shard_memberships.len() {
+                        let split_key = start + (end - start) / 2;
+                        let new_shard_number = ShardNumber(num_shards + next_shard_idx as u32);
+                        let membership = new_shard_memberships[next_shard_idx].clone();
+                        reshard_event_log.record(FuzzEvent::ReshardSplitAttempt {
+                            round, source_shard: source.0, split_key,
+                        });
+                        match manager.split(source, split_key, new_shard_number, membership).await {
+                            Ok(()) => {
+                                next_shard_idx += 1;
+                                reshard_router.directory().write().unwrap().update(
+                                    manager.shard_entries(),
+                                );
+                                reshard_event_log.record(FuzzEvent::ReshardSplitOk { round });
+                            }
+                            Err(e) => reshard_event_log.record(FuzzEvent::ReshardSplitErr {
+                                round, error: format!("{e:?}"),
+                            }),
+                        }
+                        break;
+                    }
+                } else if op == 1 {
+                    if shard_keys.len() >= 2 {
+                        // Attempt merge: pick any two registered shards.
+                        // May be same shard or non-adjacent — ShardManager rejects.
+                        let absorbed = shard_keys[reshard_rng.gen_range(0..shard_keys.len())];
+                        let surviving = shard_keys[reshard_rng.gen_range(0..shard_keys.len())];
+
+                        reshard_event_log.record(FuzzEvent::ReshardMergeAttempt {
+                            round, absorbed: absorbed.0, surviving: surviving.0,
+                        });
+                        match manager.merge(absorbed, surviving).await {
+                            Ok(()) => {
+                                reshard_router.directory().write().unwrap().update(
+                                    manager.shard_entries(),
+                                );
+                                reshard_event_log.record(FuzzEvent::ReshardMergeOk { round });
+                            }
+                            Err(e) => reshard_event_log.record(FuzzEvent::ReshardMergeErr {
+                                round, error: format!("{e:?}"),
+                            }),
+                        }
+                        break;
+                    }
+                } else if next_shard_idx < new_shard_memberships.len() {
+                    // Attempt compact: replace source shard with clean replica group.
+                    let source = shard_keys[reshard_rng.gen_range(0..shard_keys.len())];
                     let new_shard_number = ShardNumber(num_shards + next_shard_idx as u32);
                     let membership = new_shard_memberships[next_shard_idx].clone();
-                    reshard_event_log.record(FuzzEvent::ReshardSplitAttempt {
-                        round, source_shard: source.0, split_key,
+                    reshard_event_log.record(FuzzEvent::ReshardCompactAttempt {
+                        round, source_shard: source.0,
                     });
-                    match manager.split(source, split_key, new_shard_number, membership).await {
+                    match manager.compact(source, new_shard_number, membership).await {
                         Ok(()) => {
                             next_shard_idx += 1;
                             reshard_router.directory().write().unwrap().update(
                                 manager.shard_entries(),
                             );
-                            reshard_event_log.record(FuzzEvent::ReshardSplitOk { round });
+                            reshard_event_log.record(FuzzEvent::ReshardCompactOk { round });
                         }
-                        Err(e) => reshard_event_log.record(FuzzEvent::ReshardSplitErr {
+                        Err(e) => reshard_event_log.record(FuzzEvent::ReshardCompactErr {
                             round, error: format!("{e:?}"),
                         }),
                     }
-                }
-            } else if op == 1 && shard_keys.len() >= 2 {
-                // Attempt merge: pick any two registered shards.
-                // May be same shard or non-adjacent — ShardManager rejects.
-                let absorbed = shard_keys[reshard_rng.gen_range(0..shard_keys.len())];
-                let surviving = shard_keys[reshard_rng.gen_range(0..shard_keys.len())];
-
-                reshard_event_log.record(FuzzEvent::ReshardMergeAttempt {
-                    round, absorbed: absorbed.0, surviving: surviving.0,
-                });
-                match manager.merge(absorbed, surviving).await {
-                    Ok(()) => {
-                        reshard_router.directory().write().unwrap().update(
-                            manager.shard_entries(),
-                        );
-                        reshard_event_log.record(FuzzEvent::ReshardMergeOk { round });
-                    }
-                    Err(e) => reshard_event_log.record(FuzzEvent::ReshardMergeErr {
-                        round, error: format!("{e:?}"),
-                    }),
-                }
-            } else if op == 2 && next_shard_idx < new_shard_memberships.len() {
-                // Attempt compact: replace source shard with clean replica group.
-                let source = shard_keys[reshard_rng.gen_range(0..shard_keys.len())];
-                let new_shard_number = ShardNumber(num_shards + next_shard_idx as u32);
-                let membership = new_shard_memberships[next_shard_idx].clone();
-                reshard_event_log.record(FuzzEvent::ReshardCompactAttempt {
-                    round, source_shard: source.0,
-                });
-                match manager.compact(source, new_shard_number, membership).await {
-                    Ok(()) => {
-                        next_shard_idx += 1;
-                        reshard_router.directory().write().unwrap().update(
-                            manager.shard_entries(),
-                        );
-                        reshard_event_log.record(FuzzEvent::ReshardCompactOk { round });
-                    }
-                    Err(e) => reshard_event_log.record(FuzzEvent::ReshardCompactErr {
-                        round, error: format!("{e:?}"),
-                    }),
+                    break;
                 }
             }
         }
