@@ -231,6 +231,7 @@ async fn fuzz_tapir_transactions() {
         .unwrap_or_else(|| thread_rng().r#gen());
 
     eprintln!("fuzz_tapir_transactions seed={seed}");
+    let _ = std::fs::write("/tmp/tapi-fuzz-seed.txt", seed.to_string());
 
     let mut rng = StdRng::seed_from_u64(seed);
     let mut lib_rng = test_rng(seed);
