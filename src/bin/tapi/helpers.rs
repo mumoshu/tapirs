@@ -74,7 +74,7 @@ pub async fn wait_for_view_change(
             tokio::time::Instant::now() < deadline,
             "timeout waiting for f+1 replicas to advance past view {old_view} on {shard:?}"
         );
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
 
     // Phase 2: transaction succeeds → quorum of replicas in Normal.
@@ -88,6 +88,35 @@ pub async fn wait_for_view_change(
             tokio::time::Instant::now() < deadline,
             "timeout waiting for shard to accept writes (probe key: {probe_key})"
         );
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// Wait for a shard to become operational (accepting writes).
+///
+/// Unlike `wait_for_view_change`, this does NOT wait for view number
+/// advancement. It only probes with a `put + commit` transaction until
+/// one succeeds, proving that a quorum of replicas are in Normal status
+/// and processing proposals.
+///
+/// Use this after operations that don't trigger a view change
+/// (e.g., `remove_replica`, post-restore settlement).
+pub async fn wait_for_operational(
+    client: &Arc<RoutingClient<K, V, TestTransport, DynamicRouter<K>>>,
+    probe_key: &str,
+) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+
+    loop {
+        let txn = client.begin();
+        txn.put(probe_key.to_string(), Some("probe".to_string()));
+        if txn.commit().await.is_some() {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timeout waiting for shard to accept writes (probe key: {probe_key})"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
