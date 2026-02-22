@@ -86,6 +86,17 @@ pub trait DiskIo: Clone + Send + 'static {
         file.sync_all()?;
         Ok(())
     }
+
+    /// Block on a future to completion using this IO backend's executor.
+    ///
+    /// Default: `futures::executor::block_on`. Works for synchronous backends
+    /// (BufferedIo, SyncDirectIo, MemoryIo) whose futures resolve immediately.
+    ///
+    /// UringDirectIo overrides this to drive the io_uring ring (submit SQEs,
+    /// wait for CQEs) so io_uring futures can complete.
+    fn block_on<F: Future>(fut: F) -> F::Output {
+        futures::executor::block_on(fut)
+    }
 }
 
 /// Synchronous O_DIRECT I/O (Phase 1 implementation).

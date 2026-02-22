@@ -114,7 +114,7 @@ impl<K, V, TS, IO: DiskIo> Serialize for DiskStore<K, V, TS, IO> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         // Sync to ensure all data is durable before serializing the path.
         // Ignore errors — the data may already be sync'd.
-        let _ = futures::executor::block_on(self.vlog.sync());
+        let _ = IO::block_on(self.vlog.sync());
         self.base_dir.serialize(serializer)
     }
 }
@@ -229,7 +229,7 @@ where
         // that survived in the vlog — they are durable (vlog fsync'd by
         // a prior sync() call) but not yet covered by SSTs.
         let mut memtable = Memtable::new();
-        let recovered_entries = futures::executor::block_on(
+        let recovered_entries = IO::block_on(
             vlog.recover_entries::<K, V, TS>(manifest.vlog_write_offset)
         )?;
 
@@ -301,7 +301,7 @@ where
         }
 
         // Check LSM tree.
-        let result = futures::executor::block_on(
+        let result = IO::block_on(
             self.lsm.get_at::<K, TS>(key, &TS::max_value()),
         )?;
 
@@ -322,7 +322,7 @@ where
         }
 
         // Check LSM tree.
-        let result = futures::executor::block_on(
+        let result = IO::block_on(
             self.lsm.get_at::<K, TS>(key, &timestamp),
         )?;
 
@@ -374,7 +374,7 @@ where
         match &entry.value_ptr {
             Some(ptr) => {
                 let vlog_entry: VlogEntry<K, V, TS> =
-                    futures::executor::block_on(self.vlog.read_verified(ptr, key))?;
+                    IO::block_on(self.vlog.read_verified(ptr, key))?;
                 Ok(vlog_entry.value)
             }
             None => Ok(None),
@@ -394,7 +394,7 @@ where
             timestamp,
             value,
         };
-        let ptr = futures::executor::block_on(self.vlog.append(&entry))?;
+        let ptr = IO::block_on(self.vlog.append(&entry))?;
 
         // Insert into memtable.
         self.memtable.insert(
@@ -428,7 +428,7 @@ where
             return self.decode_last_read_ts(entry.last_read_ts);
         }
 
-        let result = futures::executor::block_on(
+        let result = IO::block_on(
             self.lsm.get_at::<K, TS>(key, &TS::max_value()),
         )?;
         if let Some((_, entry)) = result {
@@ -448,7 +448,7 @@ where
             return self.decode_last_read_ts(entry.last_read_ts);
         }
 
-        let result = futures::executor::block_on(
+        let result = IO::block_on(
             self.lsm.get_at::<K, TS>(key, &timestamp),
         )?;
         if let Some((_, entry)) = result {
@@ -493,12 +493,12 @@ where
             .rev()
             .chain(self.lsm.l1_metas().iter())
         {
-            let reader = futures::executor::block_on(SSTableReader::<IO>::open(
+            let reader = IO::block_on(SSTableReader::<IO>::open(
                 meta.path.clone(),
                 self.io_flags,
             ))?;
 
-            let all_entries = futures::executor::block_on(reader.read_all::<K, TS>())?;
+            let all_entries = IO::block_on(reader.read_all::<K, TS>())?;
 
             for (ck, _) in all_entries {
                 if ck.key == *key && ck.timestamp.0 > after_ts {
@@ -539,11 +539,11 @@ where
         if self.memtable.approx_bytes() >= FLUSH_THRESHOLD {
             // 1. Fsync the vlog first — ensures all vlog entries that will
             //    be referenced by the new SST are durable on disk.
-            futures::executor::block_on(self.vlog.sync())?;
+            IO::block_on(self.vlog.sync())?;
 
             // 2. Flush memtable to SST (SST is fsync'd internally by
             //    SSTableWriter::write).
-            futures::executor::block_on(
+            IO::block_on(
                 self.lsm.flush_memtable(&mut self.memtable),
             )?;
 
@@ -555,7 +555,7 @@ where
 
             // Compact if needed, get list of old files to delete.
             let old_files = if self.lsm.needs_compaction() {
-                futures::executor::block_on(self.lsm.compact::<K, TS>())?
+                IO::block_on(self.lsm.compact::<K, TS>())?
             } else {
                 Vec::new()
             };
@@ -625,12 +625,12 @@ where
             .rev()
             .chain(self.lsm.l1_metas().iter())
         {
-            let reader = futures::executor::block_on(SSTableReader::<IO>::open(
+            let reader = IO::block_on(SSTableReader::<IO>::open(
                 meta.path.clone(),
                 self.io_flags,
             ))?;
 
-            let all_entries = futures::executor::block_on(reader.read_all::<K, TS>())?;
+            let all_entries = IO::block_on(reader.read_all::<K, TS>())?;
 
             for (ck, _) in all_entries {
                 if ck.key < *start {
@@ -668,12 +668,12 @@ where
             .rev()
             .chain(self.lsm.l1_metas().iter())
         {
-            let reader = futures::executor::block_on(SSTableReader::<IO>::open(
+            let reader = IO::block_on(SSTableReader::<IO>::open(
                 meta.path.clone(),
                 self.io_flags,
             ))?;
 
-            let all_entries = futures::executor::block_on(reader.read_all::<K, TS>())?;
+            let all_entries = IO::block_on(reader.read_all::<K, TS>())?;
 
             for (ck, entry) in all_entries {
                 // Filter: key in range, timestamp <= query ts, not in memtable
@@ -718,7 +718,7 @@ where
     /// vlog replay starting from `replay_start_offset` (the SST coverage
     /// boundary set by the last `maybe_flush()`).
     pub fn sync(&self) -> Result<(), StorageError> {
-        futures::executor::block_on(self.vlog.sync())
+        IO::block_on(self.vlog.sync())
     }
 
     pub fn base_dir(&self) -> &PathBuf {
@@ -806,7 +806,7 @@ where
                 })
                 .collect();
 
-            let ptrs = futures::executor::block_on(self.vlog.append_batch(&vlog_entries))?;
+            let ptrs = IO::block_on(self.vlog.append_batch(&vlog_entries))?;
 
             for (i, (key, _)) in writes.iter().enumerate() {
                 self.memtable.insert(

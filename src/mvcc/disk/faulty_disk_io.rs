@@ -328,6 +328,10 @@ impl<IO: DiskIo> DiskIo for FaultyDiskIo<IO> {
     fn sync_path(path: &Path) -> Result<(), StorageError> {
         IO::sync_path(path)
     }
+
+    fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+        IO::block_on(fut)
+    }
 }
 
 impl<IO: DiskIo> FaultyDiskIo<IO> {
