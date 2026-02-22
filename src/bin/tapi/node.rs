@@ -191,12 +191,9 @@ impl Node {
             .as_ref()
             .ok_or_else(|| "no shard-manager-url configured".to_string())?;
 
-        let addr_str = url
+        let host_port = url
             .strip_prefix("http://")
             .unwrap_or(url);
-        let addr: SocketAddr = addr_str
-            .parse()
-            .map_err(|e| format!("invalid shard-manager-url '{url}': {e}"))?;
 
         let body = serde_json::to_string(&serde_json::json!({
             "shard": shard.0,
@@ -205,13 +202,14 @@ impl Node {
         .map_err(|e| format!("serialize join request: {e}"))?;
 
         let request = format!(
-            "POST /v1/join HTTP/1.1\r\nHost: {addr_str}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            "POST /v1/join HTTP/1.1\r\nHost: {host_port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len(),
         );
 
-        let mut stream = tokio::net::TcpStream::connect(addr)
+        // Use string-based connect to support both IP:port and hostname:port.
+        let mut stream = tokio::net::TcpStream::connect(host_port)
             .await
-            .map_err(|e| format!("connect to shard-manager at {addr}: {e}"))?;
+            .map_err(|e| format!("connect to shard-manager at {host_port}: {e}"))?;
 
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         stream
@@ -287,10 +285,7 @@ impl Node {
             .as_ref()
             .ok_or_else(|| "no shard-manager-url configured".to_string())?;
 
-        let addr_str = url.strip_prefix("http://").unwrap_or(url);
-        let addr: SocketAddr = addr_str
-            .parse()
-            .map_err(|e| format!("invalid shard-manager-url '{url}': {e}"))?;
+        let host_port = url.strip_prefix("http://").unwrap_or(url);
 
         let body = serde_json::to_string(&serde_json::json!({
             "shard": shard.0,
@@ -299,13 +294,14 @@ impl Node {
         .map_err(|e| format!("serialize leave request: {e}"))?;
 
         let request = format!(
-            "POST /v1/leave HTTP/1.1\r\nHost: {addr_str}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            "POST /v1/leave HTTP/1.1\r\nHost: {host_port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len(),
         );
 
-        let mut stream = tokio::net::TcpStream::connect(addr)
+        // Use string-based connect to support both IP:port and hostname:port.
+        let mut stream = tokio::net::TcpStream::connect(host_port)
             .await
-            .map_err(|e| format!("connect to shard-manager at {addr}: {e}"))?;
+            .map_err(|e| format!("connect to shard-manager at {host_port}: {e}"))?;
 
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         stream

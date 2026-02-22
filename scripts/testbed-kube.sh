@@ -590,7 +590,7 @@ smoke_test() {
     info "Writing key 'hello' with value 'world'..."
     kube run tapir-smoke-write --rm -i --restart=Never \
         --image="${TAPIR_IMAGE}" --image-pull-policy=IfNotPresent -- \
-        tapi client \
+        client \
             --discovery-tapir-endpoint "${disc_endpoint}" \
             -e "begin; put hello world; commit" \
         2>/dev/null || true
@@ -599,7 +599,7 @@ smoke_test() {
     local output
     output=$(kube run tapir-smoke-read --rm -i --restart=Never \
         --image="${TAPIR_IMAGE}" --image-pull-policy=IfNotPresent -- \
-        tapi client \
+        client \
             --discovery-tapir-endpoint "${disc_endpoint}" \
             -e "begin ro; get hello; abort" \
         2>/dev/null) || true
@@ -631,7 +631,7 @@ ${BOLD}1. INTERACTIVE REPL${RESET}
 
      kubectl run -n ${NS} tapir-client -it --rm --restart=Never \\
        --image=${TAPIR_IMAGE} --image-pull-policy=IfNotPresent -- \\
-       tapi client --discovery-tapir-endpoint ${disc_endpoint}
+       client --discovery-tapir-endpoint ${disc_endpoint}
 
    Then at the tapi> prompt:
 
@@ -652,12 +652,12 @@ ${BOLD}2. SCRIPTED TRANSACTIONS${RESET}
 
      kubectl run -n ${NS} tapir-txn -i --rm --restart=Never \\
        --image=${TAPIR_IMAGE} --image-pull-policy=IfNotPresent -- \\
-       tapi client --discovery-tapir-endpoint ${disc_endpoint} \\
+       client --discovery-tapir-endpoint ${disc_endpoint} \\
        -e "begin; put counter 42; commit"
 
      kubectl run -n ${NS} tapir-txn -i --rm --restart=Never \\
        --image=${TAPIR_IMAGE} --image-pull-policy=IfNotPresent -- \\
-       tapi client --discovery-tapir-endpoint ${disc_endpoint} \\
+       client --discovery-tapir-endpoint ${disc_endpoint} \\
        -e "begin ro; get counter; abort"
 
 ${BOLD}3. LOCAL CLIENT (port-forward)${RESET}
@@ -748,7 +748,8 @@ cmd_up() {
 
     # Phase 1: Discovery store
     apply_discovery
-    wait_pods_ready "app=tapir-discovery" "120s"
+    info "Waiting for all discovery pods to be ready..."
+    kube rollout status statefulset/tapir-discovery --timeout=120s
     bootstrap_discovery
 
     # Brief pause for discovery cluster to stabilize.
@@ -758,7 +759,8 @@ cmd_up() {
     # Phase 2: Shard-manager + data nodes
     apply_shard_manager_and_nodes
     wait_pods_ready "app=tapir-shard-manager" "120s"
-    wait_pods_ready "app=tapir-node" "120s"
+    info "Waiting for all data node pods to be ready..."
+    kube rollout status statefulset/tapir-node --timeout=120s
 
     # Phase 3: Bootstrap
     bootstrap_data_nodes
