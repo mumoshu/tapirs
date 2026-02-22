@@ -463,33 +463,56 @@ bootstrap_discovery() {
 }
 
 # ---------------------------------------------------------------------------
-# Bootstrap data nodes
+# Bootstrap data nodes (static membership — initial bootstrap)
 # ---------------------------------------------------------------------------
+# All pod IPs are known upfront. Each replica is started with the full
+# membership list via --membership. No shard-manager coordination needed.
+# TAPIR is leaderless — replicas sharing the same view number (0) and
+# membership form an operational shard immediately.
+#
+# Matches tapiadm's proven approach (docker.rs:278-313).
 bootstrap_data_nodes() {
-    step "Bootstrapping data node replicas..."
+    step "Bootstrapping data node replicas (static membership)..."
 
     local nodes="${TAPIR_NODES}"
     local shards="${TAPIR_SHARDS}"
 
-    # For each shard, add a replica on each node.
-    # First replica of each shard bootstraps; subsequent replicas join via shard-manager.
+    # Collect all pod IPs upfront.
+    local node_ips=()
+    for (( n=0; n<nodes; n++ )); do
+        local pod="tapir-node-${n}"
+        local ip
+        ip=$(pod_ip "${pod}")
+        if [[ -z "${ip}" ]]; then
+            fail "Could not get IP for ${pod}"
+        fi
+        node_ips+=("${ip}")
+        info "${pod} -> ${ip}"
+    done
+
+    # For each shard: compute full membership, then start all replicas.
     for (( s=0; s<shards; s++ )); do
         local port=$(( REPLICA_BASE_PORT + s ))
-        info "Shard ${s}: creating replicas on ${nodes} nodes (port ${port})..."
+
+        # Build membership string: all nodes' IP:port for this shard.
+        local membership=""
+        for ip in "${node_ips[@]}"; do
+            if [[ -n "${membership}" ]]; then membership="${membership},"; fi
+            membership="${membership}${ip}:${port}"
+        done
+
+        info "Shard ${s}: membership=${membership}"
 
         for (( n=0; n<nodes; n++ )); do
             local pod="tapir-node-${n}"
-            local ip
-            ip=$(pod_ip "${pod}")
+            local ip="${node_ips[$n]}"
 
             info "  ${pod} (${ip}:${port}) -> shard ${s}..."
             exec_tapi "${pod}" admin add-replica \
                 --admin-listen-addr "127.0.0.1:${ADMIN_PORT}" \
                 --shard "${s}" \
-                --listen-addr "${ip}:${port}"
-
-            # Brief pause between replicas to let shard-manager settle.
-            sleep 1
+                --listen-addr "${ip}:${port}" \
+                --membership "${membership}"
         done
         ok "Shard ${s}: ${nodes} replicas created."
     done
@@ -498,25 +521,46 @@ bootstrap_data_nodes() {
 }
 
 # ---------------------------------------------------------------------------
-# Register shard layout
+# Register shard layout (explicit replicas — initial bootstrap)
 # ---------------------------------------------------------------------------
+# Passes --replicas so the shard-manager uses addresses directly instead
+# of querying the discovery cluster (which may not have membership yet
+# because CachingShardDirectory pushes every 10 seconds).
+#
+# Matches tapiadm's proven approach (docker.rs:326-330).
 register_shards() {
     step "Registering shard layout with shard-manager..."
 
     local sm_pod
     sm_pod=$(kube get pods -l app=tapir-shard-manager -o jsonpath='{.items[0].metadata.name}')
 
+    local nodes="${TAPIR_NODES}"
     local shards="${TAPIR_SHARDS}"
 
+    # Collect pod IPs for --replicas computation.
+    local node_ips=()
+    for (( n=0; n<nodes; n++ )); do
+        node_ips+=("$(pod_ip "tapir-node-${n}")")
+    done
+
     for (( s=0; s<shards; s++ )); do
+        local port=$(( REPLICA_BASE_PORT + s ))
         local key_end
         key_end=$(shard_key_range_end "${s}" "${shards}")
         local key_start
         key_start=$(shard_key_range_start "${s}" "${shards}")
 
+        # Build replicas string: all nodes' IP:port for this shard.
+        local replicas=""
+        for ip in "${node_ips[@]}"; do
+            if [[ -n "${replicas}" ]]; then replicas="${replicas},"; fi
+            replicas="${replicas}${ip}:${port}"
+        done
+
         local args=(create shard
             --shard-manager-url "http://127.0.0.1:${SHARD_MANAGER_PORT}"
-            --shard "${s}")
+            --shard "${s}"
+            --replicas "${replicas}")
 
         if [[ -n "${key_start}" ]]; then
             args+=(--key-range-start "${key_start}")
@@ -525,7 +569,7 @@ register_shards() {
             args+=(--key-range-end "${key_end}")
         fi
 
-        info "Shard ${s}: key_range=[${key_start:-<min>}, ${key_end:-<max>})"
+        info "Shard ${s}: key_range=[${key_start:-<min>}, ${key_end:-<max>}) replicas=${replicas}"
         exec_tapictl "${sm_pod}" "${args[@]}"
     done
 
@@ -741,14 +785,76 @@ cmd_down() {
 }
 
 # ---------------------------------------------------------------------------
+# add-node (dynamic shard-manager — runtime operation)
+# ---------------------------------------------------------------------------
+# Scales the tapir-node StatefulSet by 1 and uses the dynamic shard-manager
+# path (no --membership) to join each shard. This works because discovery
+# already has shard memberships from the initial bootstrap's
+# CachingShardDirectory push.
+#
+# Flow: tapi admin add-replica (no --membership) → Node::create_replica()
+# → shard_manager_join() → POST /v1/join → discovery found → manager.join()
+# → AddMember view change on existing replicas.
+cmd_add_node() {
+    step "Adding a new data node..."
+
+    local current_count
+    current_count=$(kube get statefulset tapir-node -o jsonpath='{.spec.replicas}')
+    local new_count=$(( current_count + 1 ))
+    local new_idx=$(( current_count ))
+    local new_pod="tapir-node-${new_idx}"
+
+    info "Scaling tapir-node StatefulSet: ${current_count} -> ${new_count}..."
+    kube scale statefulset tapir-node --replicas="${new_count}"
+
+    info "Waiting for ${new_pod} to be ready..."
+    # Wait specifically for the new pod (label selector matches all, but
+    # wait --for=condition=Ready covers newly created pods too).
+    local retries=0
+    while ! kube get pod "${new_pod}" &>/dev/null; do
+        retries=$((retries + 1))
+        if (( retries > 30 )); then
+            fail "Timed out waiting for ${new_pod} to appear"
+        fi
+        sleep 2
+    done
+    kube wait --for=condition=Ready pod "${new_pod}" --timeout=120s
+
+    local new_ip
+    new_ip=$(pod_ip "${new_pod}")
+    info "${new_pod} ready at ${new_ip}"
+
+    # Add replicas for each shard via the dynamic shard-manager path.
+    # Discovery already has shard membership from the initial bootstrap,
+    # so create_replica → shard_manager_join → /v1/join finds the shard
+    # and coordinates AddMember with existing replicas.
+    local shards="${TAPIR_SHARDS}"
+    for (( s=0; s<shards; s++ )); do
+        local port=$(( REPLICA_BASE_PORT + s ))
+        info "Joining shard ${s} on ${new_pod} (${new_ip}:${port})..."
+        exec_tapi "${new_pod}" admin add-replica \
+            --admin-listen-addr "127.0.0.1:${ADMIN_PORT}" \
+            --shard "${s}" \
+            --listen-addr "${new_ip}:${port}"
+
+        # Wait for AddMember view change to propagate.
+        sleep 3
+    done
+
+    ok "Node ${new_pod} added to all ${shards} shard(s)."
+    info "Run 'scripts/testbed-kube.sh status' to verify."
+}
+
+# ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
 usage() {
     printf "Usage: %s <command>\n\n" "$(basename "$0")"
     printf "Commands:\n"
-    printf "  up      Deploy cluster, bootstrap, smoke test, print guide\n"
-    printf "  down    Tear down all testbed resources\n"
-    printf "  status  Show cluster health\n"
+    printf "  up        Deploy cluster, bootstrap, smoke test, print guide\n"
+    printf "  down      Tear down all testbed resources\n"
+    printf "  status    Show cluster health\n"
+    printf "  add-node  Add a new data node (dynamic shard-manager join)\n"
     printf "\nEnvironment variables:\n"
     printf "  TAPIR_KIND=1          Auto-create/destroy Kind cluster\n"
     printf "  TAPIR_KIND_CLUSTER    Kind cluster name (default: tapir)\n"
@@ -761,8 +867,9 @@ usage() {
 }
 
 case "${1:-}" in
-    up)     cmd_up     ;;
-    down)   cmd_down   ;;
-    status) cmd_status ;;
-    *)      usage      ;;
+    up)       cmd_up       ;;
+    down)     cmd_down     ;;
+    status)   cmd_status   ;;
+    add-node) cmd_add_node ;;
+    *)        usage        ;;
 esac

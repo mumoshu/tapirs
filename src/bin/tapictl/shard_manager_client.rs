@@ -93,13 +93,17 @@ impl HttpShardManagerClient {
         shard: u32,
         key_range_start: Option<&str>,
         key_range_end: Option<&str>,
+        replicas: Option<&[String]>,
     ) -> Result<(), String> {
-        let body = serde_json::json!({
+        let mut json = serde_json::json!({
             "shard": shard,
             "key_range_start": key_range_start,
             "key_range_end": key_range_end,
-        })
-        .to_string();
+        });
+        if let Some(addrs) = replicas {
+            json["replicas"] = serde_json::json!(addrs);
+        }
+        let body = json.to_string();
         let resp = self.http_post("/v1/register", &body)?;
         self.parse_response(&resp)
     }

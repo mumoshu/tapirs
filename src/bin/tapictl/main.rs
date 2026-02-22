@@ -153,6 +153,10 @@ enum CreateResource {
         /// End of the key range (exclusive). Omit for unbounded end.
         #[arg(long)]
         key_range_end: Option<String>,
+        /// Comma-separated replica addresses. When provided, the server
+        /// uses these directly instead of querying the discovery cluster.
+        #[arg(long)]
+        replicas: Option<String>,
     },
 }
 
@@ -275,11 +279,20 @@ fn main() {
                     shard,
                     key_range_start,
                     key_range_end,
+                    replicas,
                 },
         } => {
             let client = HttpShardManagerClient::new(&shard_manager_url);
+            let replica_addrs: Option<Vec<String>> = replicas.map(|r| {
+                r.split(',').map(|s| s.trim().to_string()).collect()
+            });
             client
-                .register(shard, key_range_start.as_deref(), key_range_end.as_deref())
+                .register(
+                    shard,
+                    key_range_start.as_deref(),
+                    key_range_end.as_deref(),
+                    replica_addrs.as_deref(),
+                )
                 .map(|()| println!("Registered shard {shard}"))
         }
         Command::Get {
