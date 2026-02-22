@@ -192,6 +192,45 @@ pub(crate) fn try_with_reactor<R>(f: impl FnOnce(&mut Reactor) -> R) -> Option<R
     })
 }
 
+/// Ensure the thread-local reactor is initialized, creating one if needed.
+/// Idempotent: no-op if already initialized.
+pub(crate) fn ensure_reactor(ring_size: u32) {
+    REACTOR.with(|cell| {
+        let mut borrow = cell.borrow_mut();
+        if borrow.is_none() {
+            *borrow = Some(Reactor::new(ring_size));
+        }
+    });
+}
+
+/// Block on a future by driving the io_uring ring inline.
+///
+/// Polls the future, then submits SQEs and reaps CQEs in a loop until
+/// the future completes. Used by `UringDirectIo::block_on` as the
+/// replacement for `futures::executor::block_on`.
+///
+/// Lazy-initializes the thread-local reactor if not yet present (ring
+/// size 256, matching `CoreConfig::default()`).
+pub(crate) fn uring_block_on<F: std::future::Future>(fut: F) -> F::Output {
+    ensure_reactor(256);
+
+    let mut fut = std::pin::pin!(fut);
+    let waker = std::task::Waker::noop();
+    let mut cx = std::task::Context::from_waker(&waker);
+
+    loop {
+        match fut.as_mut().poll(&mut cx) {
+            std::task::Poll::Ready(output) => return output,
+            std::task::Poll::Pending => {}
+        }
+
+        with_reactor(|r| {
+            let _ = r.ring.submit_and_wait(1);
+            r.reap_cqes();
+        });
+    }
+}
+
 /// Current time in nanoseconds since epoch.
 pub(crate) fn now_nanos() -> u64 {
     SystemTime::now()

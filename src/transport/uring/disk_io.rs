@@ -72,6 +72,10 @@ impl DiskIo for UringDirectIo {
         }
         Ok(stat.st_size as u64)
     }
+
+    fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+        super::reactor::uring_block_on(fut)
+    }
 }
 
 // SAFETY: UringDirectIo is only used within a single thread-per-core
