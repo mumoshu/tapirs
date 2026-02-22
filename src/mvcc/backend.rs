@@ -2,8 +2,7 @@ use std::fmt::Debug;
 
 /// Abstract MVCC storage backend.
 ///
-/// `MemoryStore` implements this with `Error = Infallible`.
-/// `DiskStore` (Phase 1) implements this with `Error = StorageError`.
+/// `DiskStore` implements this with `Error = StorageError`.
 pub trait MvccBackend<K, V, TS>: Send {
     type Error: Debug + Send;
 

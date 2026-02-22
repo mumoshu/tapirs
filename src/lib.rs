@@ -19,8 +19,9 @@ pub use ir::{
     ReplicaUpcalls as IrReplicaUpcalls, SharedView as IrSharedView,
     View as IrView, ViewNumber as IrViewNumber,
 };
-pub use mvcc::{MemoryStore as MvccMemoryStore, MvccBackend, Store as MvccStore};
+pub use mvcc::MvccBackend;
 pub use mvcc::disk::{DiskStore as MvccDiskStore, StorageError};
+pub use mvcc::disk::disk_io::BufferedIo;
 pub use occ::{
     PrepareResult as OccPrepareResult, ScanEntry as OccScanEntry, Store as OccStore,
     Timestamp as OccTimestamp, SharedTransaction as OccSharedTransaction,

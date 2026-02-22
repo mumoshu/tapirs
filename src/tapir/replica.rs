@@ -4,8 +4,8 @@ use crate::ir::ReplyUnlogged;
 use crate::tapir::ShardClient;
 use crate::util::vectorize_btree;
 use crate::{
-    IrClientId, IrMembership, IrMembershipSize, IrOpId, IrRecord, IrReplicaUpcalls,
-    MvccBackend, MvccMemoryStore,
+    BufferedIo, IrClientId, IrMembership, IrMembershipSize, IrOpId, IrRecord, IrReplicaUpcalls,
+    MvccBackend, MvccDiskStore,
     OccPrepareResult, OccSharedTransaction, OccStore, OccTransactionId, TapirTransport,
 };
 use futures::future::join_all;
@@ -50,7 +50,7 @@ pub(crate) struct ShardConfig<K> {
 /// view change to syncronize each participant shard's prepare result and then
 /// let one or more of many possible backup coordinators take them at face-value.
 #[derive(Serialize, Deserialize)]
-pub struct Replica<K, V, M = MvccMemoryStore<K, V, Timestamp>> {
+pub struct Replica<K, V, M = MvccDiskStore<K, V, Timestamp, BufferedIo>> {
     #[serde(bound(
         serialize = "K: Serialize + Ord + Hash, V: Serialize, M: Serialize",
         deserialize = "K: Deserialize<'de> + Ord + Hash + Eq, V: Deserialize<'de>, M: Deserialize<'de>"
@@ -875,7 +875,9 @@ impl<K: Key, V: Value, M: 'static> Replica<K, V, M> {
 mod tests {
     use super::*;
     use crate::ir::ReplicaUpcalls;
+    use crate::mvcc::disk::{DiskStore, disk_io::BufferedIo};
     use std::sync::Arc;
+    use tempfile::TempDir;
 
     fn make_txn_id(client: u64, num: u64) -> OccTransactionId {
         OccTransactionId {
@@ -899,9 +901,15 @@ mod tests {
         })
     }
 
+    fn new_replica(shard: ShardNumber, linearizable: bool) -> (TempDir, Replica<i64, i64>) {
+        let dir = TempDir::new().unwrap();
+        let backend = DiskStore::<i64, i64, Timestamp, BufferedIo>::open(dir.path().to_path_buf()).unwrap();
+        (dir, Replica::new_with_backend(shard, linearizable, backend))
+    }
+
     #[test]
     fn abort_none_does_not_overwrite_committed() {
-        let mut replica = Replica::<i64, i64>::new(ShardNumber(0), false);
+        let (_dir, mut replica) = new_replica(ShardNumber(0), false);
         let txn_id = make_txn_id(1, 1);
         let ts = make_ts(10, 1);
         let txn = empty_txn();
@@ -928,7 +936,7 @@ mod tests {
 
     #[test]
     fn abort_with_timestamp_skips_different_prepare() {
-        let mut replica = Replica::<i64, i64>::new(ShardNumber(0), false);
+        let (_dir, mut replica) = new_replica(ShardNumber(0), false);
         let txn_id = make_txn_id(1, 1);
         let ts1 = make_ts(10, 1);
         let ts2 = make_ts(20, 1);
@@ -959,7 +967,7 @@ mod tests {
 
     #[test]
     fn abort_with_timestamp_removes_matching_prepare() {
-        let mut replica = Replica::<i64, i64>::new(ShardNumber(0), false);
+        let (_dir, mut replica) = new_replica(ShardNumber(0), false);
         let txn_id = make_txn_id(1, 1);
         let ts1 = make_ts(10, 1);
         let txn = empty_txn();
@@ -989,7 +997,7 @@ mod tests {
 
     #[test]
     fn gc_stale_state_does_not_remove_prepared_entries() {
-        let mut replica = Replica::<i64, i64>::new(ShardNumber(0), false);
+        let (_dir, mut replica) = new_replica(ShardNumber(0), false);
         let txn_id = make_txn_id(1, 1);
         let ts = make_ts(5, 1);
         let txn = empty_txn();

@@ -39,7 +39,11 @@ fn build_shard_faulty(
                         .channel(move |from, message| weak.upgrade()?.receive(from, message), dir);
                     let transport = FaultyChannelTransport::new(channel, config, node_seed);
                     transport.set_shard(shard);
-                    let upcalls = TapirReplica::new(shard, linearizable);
+                    let upcalls = TapirReplica::new_with_backend(shard, linearizable,
+                        DiskStore::<K, V, Timestamp, BufferedIo>::open(
+                            tempfile::tempdir().unwrap().into_path(),
+                        ).unwrap(),
+                    );
                     IrReplica::new(replica_rng, membership, upcalls, transport, Some(TapirReplica::tick))
                 },
             )
@@ -172,7 +176,11 @@ fn build_discovery_shard(
                     let channel = registry
                         .channel(move |from, message| weak.upgrade()?.receive(from, message), dir);
                     channel.set_shard(shard);
-                    let upcalls = TapirReplica::new(shard, false);
+                    let upcalls = TapirReplica::new_with_backend(shard, false,
+                        crate::mvcc::disk::DiskStore::<String, String, Timestamp, BufferedIo>::open(
+                            tempfile::tempdir().unwrap().into_path(),
+                        ).unwrap(),
+                    );
                     IrReplica::new(replica_rng, m, upcalls, channel, Some(TapirReplica::tick))
                 },
             )
