@@ -665,97 +665,37 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::discovery::{InMemoryShardDirectory, ShardDirectory as _};
-    use crate::{ChannelRegistry, ChannelTransport, IrMembership, IrReplica, TapirReplica};
-    use std::sync::Arc;
+    use crate::testing::{test_rng, discovery::build_test_discovery};
+    use crate::IrMembership;
+    use crate::discovery::RemoteShardDirectory;
 
-    type DiscoveryReplica = TapirReplica<String, String>;
-    type DiscoveryTransport = ChannelTransport<DiscoveryReplica>;
-
-    fn test_rng(seed: u64) -> crate::Rng {
-        crate::Rng::from_seed(seed)
+    // Helpers to bind K=() for the blanket RemoteShardDirectory impl.
+    async fn put(dir: &(impl RemoteShardDirectory<usize, ()>), shard: ShardNumber, membership: IrMembership<usize>, view: u64) -> Result<(), DiscoveryError> {
+        dir.put(shard, membership, view).await
     }
-
-    fn build_discovery_cluster(
-        rng: &mut crate::Rng,
-        num_replicas: usize,
-    ) -> (
-        Vec<Arc<IrReplica<DiscoveryReplica, DiscoveryTransport>>>,
-        Arc<InMemoryShardDirectory<usize>>,
-        ChannelRegistry<DiscoveryReplica>,
-    ) {
-        let registry = ChannelRegistry::<DiscoveryReplica>::default();
-        let directory = Arc::new(InMemoryShardDirectory::new());
-        let membership = IrMembership::new(
-            (0..num_replicas).collect::<Vec<_>>(),
-        );
-
-        let replicas: Vec<_> = (0..num_replicas)
-            .map(|_| {
-                Arc::new_cyclic(
-                    |weak: &std::sync::Weak<
-                        IrReplica<DiscoveryReplica, DiscoveryTransport>,
-                    >| {
-                        let weak = weak.clone();
-                        let channel = registry.channel(
-                            move |from, message| weak.upgrade()?.receive(from, message),
-                            Arc::clone(&directory),
-                        );
-                        channel.set_shard(DISCOVERY_SHARD);
-                        let upcalls =
-                            TapirReplica::<String, String>::new(DISCOVERY_SHARD, false);
-                        IrReplica::new(
-                            rng.fork(),
-                            membership.clone(),
-                            upcalls,
-                            channel,
-                            Some(TapirReplica::<String, String>::tick),
-                        )
-                    },
-                )
-            })
-            .collect();
-
-        directory.put(DISCOVERY_SHARD, membership, 0);
-
-        (replicas, directory, registry)
+    async fn get(dir: &(impl RemoteShardDirectory<usize, ()>), shard: ShardNumber) -> Result<Option<(IrMembership<usize>, u64)>, DiscoveryError> {
+        dir.get(shard).await
     }
-
-    fn create_dir(
-        rng: &mut crate::Rng,
-        registry: &ChannelRegistry<DiscoveryReplica>,
-        directory: &Arc<InMemoryShardDirectory<usize>>,
-        mode: ReadMode,
-    ) -> impl RemoteShardDirectory<usize, ()> {
-        let membership = directory
-            .get(DISCOVERY_SHARD)
-            .map(|(m, _)| m)
-            .expect("discovery shard not in directory");
-        let channel = registry.channel(move |_, _| unreachable!(), Arc::clone(directory));
-        match mode {
-            ReadMode::Strong => TapirRemoteShardDirectory::with_strong_consistent_read(
-                rng.fork(),
-                membership,
-                channel,
-            ),
-            ReadMode::Eventual => TapirRemoteShardDirectory::with_eventual_consistent_read(
-                rng.fork(),
-                membership,
-                channel,
-            ),
-        }
+    async fn remove(dir: &(impl RemoteShardDirectory<usize, ()>), shard: ShardNumber) -> Result<(), DiscoveryError> {
+        dir.remove(shard).await
+    }
+    async fn replace(dir: &(impl RemoteShardDirectory<usize, ()>), old: ShardNumber, new: ShardNumber, membership: IrMembership<usize>, view: u64) -> Result<(), DiscoveryError> {
+        dir.replace(old, new, membership, view).await
+    }
+    async fn all(dir: &(impl RemoteShardDirectory<usize, ()>)) -> Result<Vec<(ShardNumber, IrMembership<usize>, u64)>, DiscoveryError> {
+        dir.all().await
     }
 
     #[tokio::test(start_paused = true)]
     async fn put_get_strong() {
         let mut rng = test_rng(42);
-        let (_replicas, directory, registry) = build_discovery_cluster(&mut rng, 3);
-        let dir = create_dir(&mut rng, &registry, &directory, ReadMode::Strong);
+        let disc = build_test_discovery(&mut rng, 3);
+        let dir = disc.create_remote_strong(&mut rng);
 
         let membership = IrMembership::new(vec![10usize, 11, 12]);
-        dir.put(ShardNumber(1), membership, 5).await.unwrap();
+        put(&*dir, ShardNumber(1), membership, 5).await.unwrap();
 
-        let (got, view) = dir.get(ShardNumber(1)).await.unwrap().unwrap();
+        let (got, view) = get(&*dir, ShardNumber(1)).await.unwrap().unwrap();
         assert_eq!(view, 5);
         assert_eq!(got.len(), 3);
         let addrs: Vec<usize> = got.iter().collect();
@@ -765,13 +705,13 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn put_get_eventual() {
         let mut rng = test_rng(43);
-        let (_replicas, directory, registry) = build_discovery_cluster(&mut rng, 3);
-        let dir = create_dir(&mut rng, &registry, &directory, ReadMode::Eventual);
+        let disc = build_test_discovery(&mut rng, 3);
+        let dir = disc.create_remote(&mut rng);
 
         let membership = IrMembership::new(vec![20usize, 21, 22]);
-        dir.put(ShardNumber(2), membership, 3).await.unwrap();
+        put(&*dir, ShardNumber(2), membership, 3).await.unwrap();
 
-        let (got, view) = dir.get(ShardNumber(2)).await.unwrap().unwrap();
+        let (got, view) = get(&*dir, ShardNumber(2)).await.unwrap().unwrap();
         assert_eq!(view, 3);
         let addrs: Vec<usize> = got.iter().collect();
         assert_eq!(addrs, vec![20, 21, 22]);
@@ -780,86 +720,82 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn get_nonexistent() {
         let mut rng = test_rng(44);
-        let (_replicas, directory, registry) = build_discovery_cluster(&mut rng, 3);
-        let dir = create_dir(&mut rng, &registry, &directory, ReadMode::Strong);
+        let disc = build_test_discovery(&mut rng, 3);
+        let dir = disc.create_remote_strong(&mut rng);
 
-        assert!(dir.get(ShardNumber(99)).await.unwrap().is_none());
+        assert!(get(&*dir, ShardNumber(99)).await.unwrap().is_none());
     }
 
     #[tokio::test(start_paused = true)]
     async fn remove_tombstone() {
         let mut rng = test_rng(45);
-        let (_replicas, directory, registry) = build_discovery_cluster(&mut rng, 3);
-        let dir = create_dir(&mut rng, &registry, &directory, ReadMode::Strong);
+        let disc = build_test_discovery(&mut rng, 3);
+        let dir = disc.create_remote_strong(&mut rng);
 
         let membership = IrMembership::new(vec![10usize, 11, 12]);
-        dir.put(ShardNumber(1), membership, 1).await.unwrap();
+        put(&*dir, ShardNumber(1), membership, 1).await.unwrap();
 
-        dir.remove(ShardNumber(1)).await.unwrap();
+        remove(&*dir, ShardNumber(1)).await.unwrap();
 
         // get returns None for tombstoned shards.
-        assert!(dir.get(ShardNumber(1)).await.unwrap().is_none());
+        assert!(get(&*dir, ShardNumber(1)).await.unwrap().is_none());
     }
 
     #[tokio::test(start_paused = true)]
     async fn put_on_tombstoned_rejected() {
         let mut rng = test_rng(46);
-        let (_replicas, directory, registry) = build_discovery_cluster(&mut rng, 3);
-        let dir = create_dir(&mut rng, &registry, &directory, ReadMode::Strong);
+        let disc = build_test_discovery(&mut rng, 3);
+        let dir = disc.create_remote_strong(&mut rng);
 
         let membership = IrMembership::new(vec![10usize, 11, 12]);
-        dir.put(ShardNumber(1), membership.clone(), 1)
-            .await
-            .unwrap();
-        dir.remove(ShardNumber(1)).await.unwrap();
+        put(&*dir, ShardNumber(1), membership.clone(), 1).await.unwrap();
+        remove(&*dir, ShardNumber(1)).await.unwrap();
 
-        let result = dir.put(ShardNumber(1), membership, 2).await;
+        let result = put(&*dir, ShardNumber(1), membership, 2).await;
         assert!(matches!(result, Err(DiscoveryError::Tombstoned)));
     }
 
     #[tokio::test(start_paused = true)]
     async fn remove_nonexistent() {
         let mut rng = test_rng(47);
-        let (_replicas, directory, registry) = build_discovery_cluster(&mut rng, 3);
-        let dir = create_dir(&mut rng, &registry, &directory, ReadMode::Strong);
+        let disc = build_test_discovery(&mut rng, 3);
+        let dir = disc.create_remote_strong(&mut rng);
 
-        let result = dir.remove(ShardNumber(99)).await;
+        let result = remove(&*dir, ShardNumber(99)).await;
         assert!(matches!(result, Err(DiscoveryError::NotFound)));
     }
 
     #[tokio::test(start_paused = true)]
     async fn remove_already_tombstoned() {
         let mut rng = test_rng(48);
-        let (_replicas, directory, registry) = build_discovery_cluster(&mut rng, 3);
-        let dir = create_dir(&mut rng, &registry, &directory, ReadMode::Strong);
+        let disc = build_test_discovery(&mut rng, 3);
+        let dir = disc.create_remote_strong(&mut rng);
 
         let membership = IrMembership::new(vec![10usize, 11, 12]);
-        dir.put(ShardNumber(1), membership, 1).await.unwrap();
-        dir.remove(ShardNumber(1)).await.unwrap();
+        put(&*dir, ShardNumber(1), membership, 1).await.unwrap();
+        remove(&*dir, ShardNumber(1)).await.unwrap();
 
-        let result = dir.remove(ShardNumber(1)).await;
+        let result = remove(&*dir, ShardNumber(1)).await;
         assert!(matches!(result, Err(DiscoveryError::NotFound)));
     }
 
     #[tokio::test(start_paused = true)]
     async fn replace_atomic() {
         let mut rng = test_rng(49);
-        let (_replicas, directory, registry) = build_discovery_cluster(&mut rng, 3);
-        let dir = create_dir(&mut rng, &registry, &directory, ReadMode::Strong);
+        let disc = build_test_discovery(&mut rng, 3);
+        let dir = disc.create_remote_strong(&mut rng);
 
         let old_membership = IrMembership::new(vec![10usize, 11, 12]);
-        dir.put(ShardNumber(1), old_membership, 1).await.unwrap();
+        put(&*dir, ShardNumber(1), old_membership, 1).await.unwrap();
 
         let new_membership = IrMembership::new(vec![20usize, 21, 22]);
-        dir.replace(ShardNumber(1), ShardNumber(2), new_membership, 2)
-            .await
-            .unwrap();
+        replace(&*dir, ShardNumber(1), ShardNumber(2), new_membership, 2).await.unwrap();
 
         // Old shard tombstoned.
-        assert!(dir.get(ShardNumber(1)).await.unwrap().is_none());
+        assert!(get(&*dir, ShardNumber(1)).await.unwrap().is_none());
 
         // New shard active.
-        let (got, view) = dir.get(ShardNumber(2)).await.unwrap().unwrap();
+        let (got, view) = get(&*dir, ShardNumber(2)).await.unwrap().unwrap();
         assert_eq!(view, 2);
         let addrs: Vec<usize> = got.iter().collect();
         assert_eq!(addrs, vec![20, 21, 22]);
@@ -868,22 +804,16 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn all_omits_tombstoned() {
         let mut rng = test_rng(50);
-        let (_replicas, directory, registry) = build_discovery_cluster(&mut rng, 3);
-        let dir = create_dir(&mut rng, &registry, &directory, ReadMode::Strong);
+        let disc = build_test_discovery(&mut rng, 3);
+        let dir = disc.create_remote_strong(&mut rng);
 
-        dir.put(ShardNumber(1), IrMembership::new(vec![10usize, 11, 12]), 1)
-            .await
-            .unwrap();
-        dir.put(ShardNumber(2), IrMembership::new(vec![20usize, 21, 22]), 1)
-            .await
-            .unwrap();
-        dir.put(ShardNumber(3), IrMembership::new(vec![30usize, 31, 32]), 1)
-            .await
-            .unwrap();
+        put(&*dir, ShardNumber(1), IrMembership::new(vec![10usize, 11, 12]), 1).await.unwrap();
+        put(&*dir, ShardNumber(2), IrMembership::new(vec![20usize, 21, 22]), 1).await.unwrap();
+        put(&*dir, ShardNumber(3), IrMembership::new(vec![30usize, 31, 32]), 1).await.unwrap();
 
-        dir.remove(ShardNumber(2)).await.unwrap();
+        remove(&*dir, ShardNumber(2)).await.unwrap();
 
-        let entries = dir.all().await.unwrap();
+        let entries = all(&*dir).await.unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].0, ShardNumber(1));
         assert_eq!(entries[1].0, ShardNumber(3));
@@ -892,20 +822,18 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn monotonic_view() {
         let mut rng = test_rng(51);
-        let (_replicas, directory, registry) = build_discovery_cluster(&mut rng, 3);
-        let dir = create_dir(&mut rng, &registry, &directory, ReadMode::Strong);
+        let disc = build_test_discovery(&mut rng, 3);
+        let dir = disc.create_remote_strong(&mut rng);
 
         let membership = IrMembership::new(vec![10usize, 11, 12]);
-        dir.put(ShardNumber(1), membership.clone(), 5)
-            .await
-            .unwrap();
+        put(&*dir, ShardNumber(1), membership.clone(), 5).await.unwrap();
 
         // Put with lower view is silently accepted (idempotent).
         let membership_new = IrMembership::new(vec![20usize, 21, 22]);
-        dir.put(ShardNumber(1), membership_new, 3).await.unwrap();
+        put(&*dir, ShardNumber(1), membership_new, 3).await.unwrap();
 
         // View stays at 5, membership unchanged.
-        let (got, view) = dir.get(ShardNumber(1)).await.unwrap().unwrap();
+        let (got, view) = get(&*dir, ShardNumber(1)).await.unwrap().unwrap();
         assert_eq!(view, 5);
         let addrs: Vec<usize> = got.iter().collect();
         assert_eq!(addrs, vec![10, 11, 12]);
@@ -914,17 +842,13 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn all_eventual_mode() {
         let mut rng = test_rng(52);
-        let (_replicas, directory, registry) = build_discovery_cluster(&mut rng, 3);
-        let dir = create_dir(&mut rng, &registry, &directory, ReadMode::Eventual);
+        let disc = build_test_discovery(&mut rng, 3);
+        let dir = disc.create_remote(&mut rng);
 
-        dir.put(ShardNumber(1), IrMembership::new(vec![10usize, 11, 12]), 1)
-            .await
-            .unwrap();
-        dir.put(ShardNumber(2), IrMembership::new(vec![20usize, 21, 22]), 2)
-            .await
-            .unwrap();
+        put(&*dir, ShardNumber(1), IrMembership::new(vec![10usize, 11, 12]), 1).await.unwrap();
+        put(&*dir, ShardNumber(2), IrMembership::new(vec![20usize, 21, 22]), 2).await.unwrap();
 
-        let entries = dir.all().await.unwrap();
+        let entries = all(&*dir).await.unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].0, ShardNumber(1));
         assert_eq!(entries[0].2, 1);

@@ -1,4 +1,3 @@
-use crate::discovery::HttpDiscoveryClient;
 use crate::discovery_backend::DiscoveryBackend;
 use rand::{thread_rng, Rng as _};
 use serde::Deserialize;
@@ -420,7 +419,6 @@ pub(crate) async fn serve(listener: TcpListener, remote: Arc<DiscoveryBackend>) 
 
 pub async fn run(
     listen_addr: String,
-    discovery_url: Option<String>,
     discovery_tapir_endpoint: Option<String>,
 ) {
     let backend = if let Some(endpoint) = discovery_tapir_endpoint {
@@ -448,10 +446,8 @@ pub async fn run(
             std::process::exit(1);
         });
         DiscoveryBackend::Tapir(dir)
-    } else if let Some(url) = discovery_url {
-        DiscoveryBackend::Http(HttpDiscoveryClient::new(&url))
     } else {
-        eprintln!("error: either --discovery-url or --discovery-tapir-endpoint is required");
+        eprintln!("error: --discovery-tapir-endpoint is required");
         std::process::exit(1);
     };
 

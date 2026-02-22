@@ -2,6 +2,7 @@ use super::*;
 
 use crate::tapir::shard_manager::ShardManager;
 use crate::tapir::ShardClient;
+use crate::testing::discovery::build_single_node_discovery;
 use crate::IrClientId;
 use crate::OccPrepareResult;
 
@@ -44,8 +45,9 @@ async fn test_compact_new_shard_rejects_old_prepare_after_range_scan_on_old_shar
     let _replicas_1 = build_shard(&mut rng, ShardNumber(1), true, 3, &registry, &dir);
 
     // Set up ShardManager, register shard 0, compact to shard 1.
+    let disc = build_single_node_discovery(&mut rng);
     let manager_channel = registry.channel(move |_, _| None, Arc::clone(&dir));
-    let mut manager = ShardManager::new(rng.fork(), manager_channel, Arc::new(InMemoryRemoteDirectory::new()));
+    let mut manager = ShardManager::new(rng.fork(), manager_channel, disc.create_remote(&mut rng));
     manager.register_shard(
         ShardNumber(0),
         IrMembership::new(vec![0, 1, 2]),
@@ -135,8 +137,9 @@ async fn test_compact_new_shard_rejects_old_prepare_after_quorum_read_on_old_sha
     let _replicas_1 = build_shard(&mut rng, ShardNumber(1), true, 3, &registry, &dir);
 
     // Set up ShardManager, register shard 0, compact to shard 1.
+    let disc = build_single_node_discovery(&mut rng);
     let manager_channel = registry.channel(move |_, _| None, Arc::clone(&dir));
-    let mut manager = ShardManager::new(rng.fork(), manager_channel, Arc::new(InMemoryRemoteDirectory::new()));
+    let mut manager = ShardManager::new(rng.fork(), manager_channel, disc.create_remote(&mut rng));
     manager.register_shard(
         ShardNumber(0),
         IrMembership::new(vec![0, 1, 2]),

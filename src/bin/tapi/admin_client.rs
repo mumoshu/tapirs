@@ -151,7 +151,6 @@ async fn restore_cluster(
     admin_addrs: Vec<String>,
     backup_dir: &str,
     base_port: u16,
-    discovery_url: Option<&str>,
 ) -> Result<(), String> {
     // 1. Read cluster metadata.
     let meta_path = format!("{backup_dir}/cluster.json");
@@ -243,24 +242,6 @@ async fn restore_cluster(
             );
         }
 
-        // Register with discovery if configured.
-        if let Some(disc_url) = discovery_url {
-            let disc_client = crate::discovery::HttpDiscoveryClient::new(disc_url);
-            use tapirs::discovery::RemoteShardDirectory;
-            let membership = tapirs::discovery::strings_to_membership::<tapirs::TcpAddress>(
-                &new_membership,
-            )
-            .map_err(|e| format!("parse membership for shard {shard_id}: {e}"))?;
-            <crate::discovery::HttpDiscoveryClient as RemoteShardDirectory<tapirs::TcpAddress, ()>>::put(
-                &disc_client,
-                tapirs::ShardNumber(shard_id),
-                membership,
-                0,
-            )
-            .await
-                .map_err(|e| format!("register shard {shard_id} with discovery: {e}"))?;
-            println!("  Registered shard {shard_id} with discovery");
-        }
     }
 
     println!("Cluster restore complete.");
@@ -286,12 +267,11 @@ pub async fn run(action: AdminAction) {
             backup_dir,
             admin_addrs,
             base_port,
-            discovery_url,
         } => {
             let addrs: Vec<String> =
                 admin_addrs.split(',').map(|s| s.trim().to_string()).collect();
             if let Err(e) =
-                restore_cluster(addrs, backup_dir, *base_port, discovery_url.as_deref()).await
+                restore_cluster(addrs, backup_dir, *base_port).await
             {
                 eprintln!("Restore failed: {e}");
                 std::process::exit(1);

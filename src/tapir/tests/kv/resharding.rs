@@ -1,6 +1,7 @@
 use super::*;
 
 use crate::tapir::shard_manager::ShardManager;
+use crate::testing::discovery::build_single_node_discovery;
 
 #[tokio::test(start_paused = true)]
 async fn test_merge_two_shards() {
@@ -32,8 +33,9 @@ async fn test_merge_two_shards() {
     tokio::time::sleep(Duration::from_secs(5)).await;
 
     // Set up ShardManager.
+    let disc = build_single_node_discovery(&mut rng);
     let manager_channel = registry.channel(move |_, _| None, Arc::clone(&dir));
-    let mut manager = ShardManager::new(rng.fork(), manager_channel, Arc::new(InMemoryRemoteDirectory::new()));
+    let mut manager = ShardManager::new(rng.fork(), manager_channel, disc.create_remote(&mut rng));
     manager.register_shard(
         ShardNumber(0),
         IrMembership::new(vec![0, 1, 2]),
@@ -107,8 +109,9 @@ async fn test_split_merge_two_shards() {
     tokio::time::sleep(Duration::from_secs(5)).await;
 
     // Set up ShardManager.
+    let disc = build_single_node_discovery(&mut rng);
     let manager_channel = registry.channel(move |_, _| None, Arc::clone(&dir));
-    let mut manager = ShardManager::new(rng.fork(), manager_channel, Arc::new(InMemoryRemoteDirectory::new()));
+    let mut manager = ShardManager::new(rng.fork(), manager_channel, disc.create_remote(&mut rng));
     manager.register_shard(
         ShardNumber(0),
         IrMembership::new(vec![0, 1, 2]),

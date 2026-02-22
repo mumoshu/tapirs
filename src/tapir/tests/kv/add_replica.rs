@@ -1,6 +1,7 @@
 use super::*;
 
 use crate::tapir::shard_manager::ShardManager;
+use crate::testing::discovery::build_single_node_discovery;
 
 #[tokio::test(start_paused = true)]
 async fn test_add_replica_with_preload() {
@@ -57,10 +58,11 @@ async fn test_add_replica_with_preload() {
     );
 
     // Set up ShardManager with the original 3-replica membership.
+    let disc = build_single_node_discovery(&mut rng);
     let manager_channel = registry.channel(move |_, _| None, Arc::clone(&dir));
     let original_membership =
         IrMembership::new((0..3).collect::<Vec<_>>());
-    let mut manager = ShardManager::new(rng.fork(), manager_channel, Arc::new(InMemoryRemoteDirectory::new()));
+    let mut manager = ShardManager::new(rng.fork(), manager_channel, disc.create_remote(&mut rng));
     manager.register_shard(shard, original_membership, KeyRange {
         start: None,
         end: None,

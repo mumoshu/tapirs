@@ -10,6 +10,9 @@ mod tapir;
 mod transport;
 pub mod util;
 
+#[cfg(test)]
+pub mod testing;
+
 pub use rng::Rng;
 
 pub use ir::{
