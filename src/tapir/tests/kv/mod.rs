@@ -8,6 +8,7 @@ mod increment;
 mod read_only;
 mod resharding;
 mod rwr;
+mod single_replica;
 mod throughput;
 
 use super::fuzz_event_log::{FuzzEvent, FuzzEventLog};

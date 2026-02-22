@@ -286,18 +286,11 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                 if sync.changed_view_recently {
                     trace!("{:?} skipping view change", inner.transport.address());
                     sync.changed_view_recently = false;
-                }
-                /* else if sync
-                    .peer_liveness
-                    .get(&Index(
-                        ((sync.view.number.0 + 1) % sync.view.membership.len() as u64) as usize,
-                    ))
-                    .map(|t| t.elapsed() > Duration::from_secs(3))
-                    .unwrap_or(false)
-                {
-                    // skip this view change.
-                } */
-                else {
+                } else if sync.view.membership.len() == 1 {
+                    // Single-replica: skip periodic view change. No peers exist to
+                    // exchange DoViewChange messages with, so the view change would
+                    // never complete, leaving the replica stuck in ViewChanging state.
+                } else {
                     if sync.status.is_normal() {
                         sync.status = Status::ViewChanging;
                     }
@@ -515,10 +508,30 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                             sync.status = Status::ViewChanging;
                         }
                         self.persist_view_info(&*sync);
+                        info!(
+                            "{:?} received DoViewChange for view {}, broadcasting to peers",
+                            self.inner.transport.address(),
+                            sync.view.number.0,
+                        );
                         Self::broadcast_do_view_change(
                             &self.inner.transport,
                             &mut *sync,
                         );
+
+                        // Single-replica: no peers to exchange DoViewChange messages with,
+                        // so the view change can never complete via quorum. Snap directly
+                        // back to Normal with the new view number.
+                        if sync.view.membership.len() == 1 {
+                            info!(
+                                "{:?} single-replica fast-completing view change to view {}",
+                                self.inner.transport.address(),
+                                sync.view.number.0,
+                            );
+                            sync.status = Status::Normal;
+                            sync.latest_normal_view = sync.view.clone();
+                            sync.changed_view_recently = true;
+                            return None;
+                        }
                     }
 
                     if self.inner.transport.address() == sync.view.leader() && msg.addendum.is_some() {
@@ -969,11 +982,23 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                 if sync.status.is_normal() {
                     info!("reconfiguring with {} bytes", config.len());
                     sync.view.make_mut().app_config = Some(config);
-                    sync.status = Status::ViewChanging;
-                    sync.view.make_mut().number.0 += 3;
-                    self.persist_view_info(&*sync);
+                    if sync.view.membership.len() == 1 {
+                        // Single-replica: apply config directly without view change.
+                        // No peers to synchronize with, so the DoViewChange exchange
+                        // would hang. Bump view number and apply immediately.
+                        sync.view.make_mut().number.0 += 3;
+                        if let Some(config) = sync.view.app_config.as_ref() {
+                            sync.upcalls.apply_config(config);
+                        }
+                        sync.latest_normal_view = sync.view.clone();
+                        sync.changed_view_recently = true;
+                    } else {
+                        sync.status = Status::ViewChanging;
+                        sync.view.make_mut().number.0 += 3;
+                        self.persist_view_info(&*sync);
 
-                    Self::broadcast_do_view_change(&self.inner.transport, sync);
+                        Self::broadcast_do_view_change(&self.inner.transport, sync);
+                    }
                 }
             }
             Message::<U, T>::FetchLeaderRecord(_) => {
@@ -1023,6 +1048,13 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
     /// NOT as the initiator.
     pub fn force_view_change(&self) {
         let mut sync = self.inner.sync.lock().unwrap();
+        if sync.view.membership.len() == 1 {
+            // Single-replica: view change without membership change would hang
+            // because there are no peers to exchange DoViewChange messages with.
+            warn!("{:?} force_view_change skipped: single-replica cluster has no peers",
+                self.inner.transport.address());
+            return;
+        }
         if sync.status.is_normal() {
             sync.status = Status::ViewChanging;
         }
