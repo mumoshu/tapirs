@@ -232,7 +232,7 @@ impl<IO: DiskIo> SSTableReader<IO> {
         let io = IO::open(&path, flags)?;
 
         // Read file size to locate footer (last BLOCK_SIZE bytes).
-        let file_size = std::fs::metadata(&path)?.len();
+        let file_size = io.file_len()?;
         if file_size < BLOCK_SIZE as u64 {
             return Err(StorageError::Corruption {
                 file: path.display().to_string(),

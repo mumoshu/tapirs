@@ -511,7 +511,7 @@ impl<IO: DiskIo> VlogSegment<IO> {
         TS: for<'de> Deserialize<'de>,
     {
         let mut recovered = Vec::new();
-        let file_size = std::fs::metadata(&self.path)?.len();
+        let file_size = self.io.file_len()?;
         let mut current_offset = from_offset;
 
         while current_offset + HEADER_SIZE as u64 <= file_size {
@@ -579,7 +579,7 @@ impl<IO: DiskIo> VlogSegment<IO> {
         from_offset: u64,
     ) -> Result<Vec<ValuePointer>, StorageError> {
         let mut recovered = Vec::new();
-        let file_size = std::fs::metadata(&self.path)?.len();
+        let file_size = self.io.file_len()?;
         let mut current_offset = from_offset;
 
         while current_offset + HEADER_SIZE as u64 <= file_size {

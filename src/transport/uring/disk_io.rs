@@ -63,6 +63,15 @@ impl DiskIo for UringDirectIo {
         // OwnedFd drops and closes automatically via Arc.
         drop(self);
     }
+
+    fn file_len(&self) -> Result<u64, StorageError> {
+        let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+        let ret = unsafe { libc::fstat(self.fd.as_raw_fd(), &mut stat) };
+        if ret < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(stat.st_size as u64)
+    }
 }
 
 // SAFETY: UringDirectIo is only used within a single thread-per-core

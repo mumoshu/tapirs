@@ -1,3 +1,4 @@
+use super::disk_io::DiskIo;
 use super::error::StorageError;
 use super::lsm::SSTableMeta;
 use serde::{Deserialize, Serialize};
@@ -41,7 +42,8 @@ impl Manifest {
     /// Write the manifest atomically to disk.
     ///
     /// Strategy: write to temp file, fsync, rename over the real file.
-    pub fn save(&self, dir: &Path) -> Result<(), StorageError> {
+    /// All filesystem access goes through `IO` so it can be abstracted.
+    pub fn save<IO: DiskIo>(&self, dir: &Path) -> Result<(), StorageError> {
         let manifest_path = dir.join("MANIFEST");
         let tmp_path = dir.join("MANIFEST.tmp");
 
@@ -55,30 +57,28 @@ impl Manifest {
         let final_bytes =
             bitcode::serialize(&m).map_err(|e| StorageError::Codec(e.to_string()))?;
 
-        std::fs::write(&tmp_path, &final_bytes)?;
+        IO::write_file(&tmp_path, &final_bytes)?;
         // fsync the temp file.
-        let file = std::fs::File::open(&tmp_path)?;
-        file.sync_all()?;
-        drop(file);
+        IO::sync_path(&tmp_path)?;
 
         // Atomic rename.
-        std::fs::rename(&tmp_path, &manifest_path)?;
+        IO::rename(&tmp_path, &manifest_path)?;
 
         // fsync the directory to persist the rename.
-        let dir_file = std::fs::File::open(dir)?;
-        dir_file.sync_all()?;
+        IO::sync_path(dir)?;
 
         Ok(())
     }
 
     /// Load the manifest from disk. Returns None if no manifest exists.
-    pub fn load(dir: &Path) -> Result<Option<Self>, StorageError> {
+    /// All filesystem access goes through `IO` so it can be abstracted.
+    pub fn load<IO: DiskIo>(dir: &Path) -> Result<Option<Self>, StorageError> {
         let manifest_path = dir.join("MANIFEST");
-        if !manifest_path.exists() {
+        if !IO::exists(&manifest_path) {
             return Ok(None);
         }
 
-        let bytes = std::fs::read(&manifest_path)?;
+        let bytes = IO::read_file(&manifest_path)?;
         let manifest: Manifest =
             bitcode::deserialize(&bytes).map_err(|e| StorageError::Codec(e.to_string()))?;
 
@@ -111,6 +111,7 @@ impl Manifest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::disk_io::BufferedIo;
     use tempfile::TempDir;
 
     #[test]
@@ -131,9 +132,9 @@ mod tests {
             checksum: 0,
         };
 
-        m.save(dir.path()).unwrap();
+        m.save::<BufferedIo>(dir.path()).unwrap();
 
-        let loaded = Manifest::load(dir.path()).unwrap().unwrap();
+        let loaded = Manifest::load::<BufferedIo>(dir.path()).unwrap().unwrap();
         assert_eq!(loaded.l0_sstables.len(), 1);
         assert_eq!(loaded.vlog_write_offset, 4096);
         assert_eq!(loaded.next_sst_id, 1);
@@ -142,7 +143,7 @@ mod tests {
     #[test]
     fn load_nonexistent_returns_none() {
         let dir = TempDir::new().unwrap();
-        let loaded = Manifest::load(dir.path()).unwrap();
+        let loaded = Manifest::load::<BufferedIo>(dir.path()).unwrap();
         assert!(loaded.is_none());
     }
 
@@ -150,7 +151,7 @@ mod tests {
     fn corruption_detected() {
         let dir = TempDir::new().unwrap();
         let m = Manifest::new();
-        m.save(dir.path()).unwrap();
+        m.save::<BufferedIo>(dir.path()).unwrap();
 
         // Corrupt the manifest file.
         let path = Manifest::path(dir.path());
@@ -160,7 +161,7 @@ mod tests {
         }
         std::fs::write(&path, &bytes).unwrap();
 
-        let result = Manifest::load(dir.path());
+        let result = Manifest::load::<BufferedIo>(dir.path());
         assert!(result.is_err() || matches!(result, Ok(None)));
     }
 }

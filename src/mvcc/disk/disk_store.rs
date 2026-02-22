@@ -172,9 +172,9 @@ where
         base_dir: PathBuf,
         io_flags: OpenFlags,
     ) -> Result<Self, StorageError> {
-        std::fs::create_dir_all(&base_dir)?;
+        IO::create_dir_all(&base_dir)?;
 
-        if let Some(manifest) = Manifest::load(&base_dir)? {
+        if let Some(manifest) = Manifest::load::<IO>(&base_dir)? {
             return Self::recover(base_dir, manifest, io_flags);
         }
 
@@ -289,7 +289,7 @@ where
             next_segment_id: self.next_segment_id,
             checksum: 0,
         };
-        manifest.save(&self.base_dir)
+        manifest.save::<IO>(&self.base_dir)
     }
 
     /// Get the latest version of a key.
@@ -565,7 +565,7 @@ where
 
             // Now safe to delete old compacted files.
             for f in old_files {
-                let _ = std::fs::remove_file(&f);
+                let _ = IO::remove_file(&f);
             }
         }
         Ok(())
