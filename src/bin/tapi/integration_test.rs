@@ -132,87 +132,53 @@ async fn bootstrap_cluster(
         temp_dirs.push(td);
     }
 
-    // === Phase 1: first replica per shard ===
-    // Ports are allocated just-in-time and retried on "already in use"
-    // to avoid TOCTOU races between parallel test processes.
+    // === Static membership bootstrap ===
+    // Pre-allocate all replica addresses, then start all replicas with
+    // the full membership. TAPIR is leaderless — replicas sharing the
+    // same view number and membership form an operational shard at view 0
+    // without any view change ceremony. Matches the operator workflow:
+    //   `tapi admin add-replica --membership addr1,addr2,addr3`
     let disc_client = disc(create_disc_remote(&disc_endpoint, tapir::ReadMode::Eventual).await);
-    let mut replica_addrs: Vec<Vec<SocketAddr>> = Vec::new();
+    let mut replica_addrs: Vec<Vec<SocketAddr>> = vec![Vec::new(); num_shards as usize];
     for shard_idx in 0..num_shards {
-        let shard = ShardNumber(shard_idx);
-        let addr = loop {
-            let candidate = alloc_addr();
-            match nodes[0].create_replica(shard, candidate, "memory").await {
-                Ok(()) => break candidate,
-                Err(e) if e.contains("already in use") => continue,
-                Err(e) => panic!("create_replica failed: {e}"),
-            }
-        };
-        let registered = vec![addr.to_string()];
-        let membership = tapirs::discovery::strings_to_membership::<TcpAddress>(&registered)
-            .expect("parse membership");
-        disc_client
-            .put(ShardNumber(shard_idx), membership, 0)
-            .await
-            .unwrap();
-        replica_addrs.push(vec![addr]);
-    }
-
-    // === Create client (after first replicas are registered in discovery) ===
-    let (client, client_temp_dir, discovery_dir) =
-        create_test_client(&disc_endpoint, num_shards).await;
-
-    // === Phase 2: remaining replicas with view-change-aware polling ===
-    for shard_idx in 0..num_shards {
-        let shard = ShardNumber(shard_idx);
-        for replica_idx in 1..replicas_per_shard {
-            let node_idx = replica_idx as usize % num_nodes as usize;
-
-            // Record view number before AddMember.
-            let shard_nodes: Vec<&Arc<Node>> = nodes
-                .iter()
-                .filter(|n| n.shard_view_number(shard).is_some())
-                .collect();
-            let old_view = quorum_view_number(&shard_nodes, shard);
-
-            let addr = loop {
-                let candidate = alloc_addr();
-                match nodes[node_idx].create_replica(shard, candidate, "memory").await {
-                    Ok(()) => break candidate,
-                    Err(e) if e.contains("already in use") => continue,
-                    Err(e) => panic!("create_replica failed: {e}"),
-                }
-            };
-
-            replica_addrs[shard_idx as usize].push(addr);
-
-            // Wait for view change including new replica.
-            let all_shard_nodes: Vec<&Arc<Node>> = nodes
-                .iter()
-                .filter(|n| n.shard_view_number(shard).is_some())
-                .collect();
-            wait_for_view_change(
-                &client,
-                &all_shard_nodes,
-                shard,
-                old_view,
-                &format!("bootstrap_s{shard_idx}_r{replica_idx}"),
-            )
-            .await;
-
-            // Update discovery with the actual IR view after the view change.
-            let new_view = quorum_view_number(&all_shard_nodes, shard);
-            let registered: Vec<String> = replica_addrs[shard_idx as usize]
-                .iter()
-                .map(|a| a.to_string())
-                .collect();
-            let membership = tapirs::discovery::strings_to_membership::<TcpAddress>(&registered)
-                .expect("parse membership");
-            disc_client
-                .put(ShardNumber(shard_idx), membership, new_view)
-                .await
-                .unwrap();
+        for _ in 0..replicas_per_shard {
+            replica_addrs[shard_idx as usize].push(alloc_addr());
         }
     }
+
+    for shard_idx in 0..num_shards {
+        let membership: Vec<String> = replica_addrs[shard_idx as usize]
+            .iter()
+            .map(|a| a.to_string())
+            .collect();
+        for replica_idx in 0..replicas_per_shard as usize {
+            let node_idx = replica_idx % num_nodes as usize;
+            let addr = replica_addrs[shard_idx as usize][replica_idx];
+            let cfg = ReplicaConfig {
+                shard: shard_idx,
+                listen_addr: addr.to_string(),
+                membership: membership.clone(),
+            };
+            nodes[node_idx]
+                .add_replica(&cfg)
+                .await
+                .unwrap_or_else(|e| {
+                    panic!("add_replica shard {shard_idx} replica {replica_idx}: {e}")
+                });
+        }
+
+        // Register shard membership in discovery.
+        let m = tapirs::discovery::strings_to_membership::<TcpAddress>(&membership)
+            .expect("parse membership");
+        disc_client
+            .put(ShardNumber(shard_idx), m, 0)
+            .await
+            .unwrap();
+    }
+
+    // === Create client (after all replicas registered in discovery) ===
+    let (client, client_temp_dir, discovery_dir) =
+        create_test_client(&disc_endpoint, num_shards).await;
 
     TestCluster {
         disc_endpoint,
@@ -486,6 +452,27 @@ async fn test_rolling_membership_replacement() {
     let mut live_addrs: Vec<SocketAddr> = original_addrs.clone();
 
     let shard_manager_url = format!("http://{}", cluster.shard_manager_addr);
+
+    // Force a view change to establish leader_record. Static-membership
+    // bootstrap starts at view 0 without a leader_record, but the
+    // shard-manager's join() path (used below for runtime AddMember)
+    // needs to fetch_leader_record from existing replicas.
+    let shard_nodes: Vec<&Arc<Node>> = cluster
+        .nodes
+        .iter()
+        .filter(|n| n.shard_view_number(shard).is_some())
+        .collect();
+    let old_view = quorum_view_number(&shard_nodes, shard);
+    cluster.nodes[0].force_view_change(shard);
+    wait_for_view_change(client, &shard_nodes, shard, old_view, "rolling_vc_setup").await;
+
+    // Update discovery with the actual view after the view change.
+    let new_view = quorum_view_number(&shard_nodes, shard);
+    let addrs: Vec<TcpAddress> = live_addrs.iter().map(|a| TcpAddress(*a)).collect();
+    disc_client
+        .put(ShardNumber(0), tapirs::IrMembership::new(addrs), new_view)
+        .await
+        .unwrap();
 
     // Keep new nodes and temp dirs alive for the duration of the test.
     let mut new_nodes: Vec<Arc<Node>> = Vec::new();

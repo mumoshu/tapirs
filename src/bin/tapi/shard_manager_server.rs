@@ -102,9 +102,14 @@ async fn handle_request(
                 }
             }
         } else {
-            // First replica — bootstrap via BootstrapRecord → StartView.
-            state.manager.lock().await.bootstrap(shard, new_addr);
-            (200, r#"{"ok":true}"#.to_string())
+            // Shard not found in discovery — refuse to auto-bootstrap.
+            // Initial shard creation must use static membership (--membership
+            // flag in add-replica). The /v1/join path is only for adding a
+            // replica to an existing shard already visible in discovery.
+            (
+                400,
+                format!(r#"{{"error":"shard {} not found in discovery"}}"#, req.shard),
+            )
         }
     } else if method == "POST" && path == "/v1/leave" {
         let req: JoinRequest = match serde_json::from_str(body) {
