@@ -353,7 +353,7 @@ mod tests {
 
         // Stage 2: Verify all SSTables exist on disk
         {
-            let manifest = Manifest::load(&path).unwrap().expect("manifest should exist");
+            let manifest = Manifest::load::<BufferedIo>(&path).unwrap().expect("manifest should exist");
 
             // Check L0 files exist
             for meta in &manifest.l0_sstables {
@@ -379,7 +379,7 @@ mod tests {
         // Stage 3: Verify SSTables are readable after recovery
         {
             let store = TestStore::open(path.clone()).unwrap();
-            let manifest = Manifest::load(&path).unwrap().unwrap();
+            let manifest = Manifest::load::<BufferedIo>(&path).unwrap().unwrap();
 
             // Read all SSTables and verify no CRC errors
             for meta in manifest.l0_sstables.iter().chain(manifest.l1_sstables.iter()) {

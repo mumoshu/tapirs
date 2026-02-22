@@ -296,6 +296,38 @@ impl<IO: DiskIo> DiskIo for FaultyDiskIo<IO> {
     fn close(self) {
         self.inner.close();
     }
+
+    fn file_len(&self) -> Result<u64, StorageError> {
+        self.inner.file_len()
+    }
+
+    fn create_dir_all(path: &Path) -> Result<(), StorageError> {
+        IO::create_dir_all(path)
+    }
+
+    fn remove_file(path: &Path) -> Result<(), StorageError> {
+        IO::remove_file(path)
+    }
+
+    fn exists(path: &Path) -> bool {
+        IO::exists(path)
+    }
+
+    fn read_file(path: &Path) -> Result<Vec<u8>, StorageError> {
+        IO::read_file(path)
+    }
+
+    fn write_file(path: &Path, data: &[u8]) -> Result<(), StorageError> {
+        IO::write_file(path, data)
+    }
+
+    fn rename(from: &Path, to: &Path) -> Result<(), StorageError> {
+        IO::rename(from, to)
+    }
+
+    fn sync_path(path: &Path) -> Result<(), StorageError> {
+        IO::sync_path(path)
+    }
 }
 
 impl<IO: DiskIo> FaultyDiskIo<IO> {

@@ -24,7 +24,13 @@ impl Default for OpenFlags {
 
 /// Abstract disk I/O trait.
 ///
-/// All operations require 4 KiB-aligned buffers, offsets, and sizes.
+/// All pread/pwrite operations require 4 KiB-aligned buffers, offsets, and sizes.
+///
+/// In addition to per-file-handle operations (open, pread, pwrite, fsync, close,
+/// file_len), this trait provides filesystem-level associated functions
+/// (create_dir_all, remove_file, etc.) with default implementations that
+/// delegate to `std::fs`. Implementations can override these to abstract
+/// away filesystem access (e.g., for in-memory or remote storage).
 pub trait DiskIo: Clone + Send + 'static {
     type ReadFuture: Future<Output = Result<(), StorageError>> + Send;
     type WriteFuture: Future<Output = Result<(), StorageError>> + Send;
@@ -34,6 +40,52 @@ pub trait DiskIo: Clone + Send + 'static {
     fn pwrite(&self, buf: &AlignedBuf, offset: u64) -> Self::WriteFuture;
     fn fsync(&self) -> impl Future<Output = Result<(), StorageError>> + Send;
     fn close(self);
+
+    /// Return the size of the open file in bytes (via fstat on the fd).
+    fn file_len(&self) -> Result<u64, StorageError>;
+
+    // -- Filesystem-level operations (default to std::fs) --
+
+    /// Create a directory and all parent directories.
+    fn create_dir_all(path: &Path) -> Result<(), StorageError> {
+        std::fs::create_dir_all(path)?;
+        Ok(())
+    }
+
+    /// Remove a file.
+    fn remove_file(path: &Path) -> Result<(), StorageError> {
+        std::fs::remove_file(path)?;
+        Ok(())
+    }
+
+    /// Check whether a path exists.
+    fn exists(path: &Path) -> bool {
+        path.exists()
+    }
+
+    /// Read an entire file into a byte vector.
+    fn read_file(path: &Path) -> Result<Vec<u8>, StorageError> {
+        Ok(std::fs::read(path)?)
+    }
+
+    /// Write `data` to a file, creating or truncating it.
+    fn write_file(path: &Path, data: &[u8]) -> Result<(), StorageError> {
+        std::fs::write(path, data)?;
+        Ok(())
+    }
+
+    /// Atomically rename `from` to `to`.
+    fn rename(from: &Path, to: &Path) -> Result<(), StorageError> {
+        std::fs::rename(from, to)?;
+        Ok(())
+    }
+
+    /// Open a path and fsync it (useful for files or directories).
+    fn sync_path(path: &Path) -> Result<(), StorageError> {
+        let file = std::fs::File::open(path)?;
+        file.sync_all()?;
+        Ok(())
+    }
 }
 
 /// Synchronous O_DIRECT I/O (Phase 1 implementation).
@@ -105,6 +157,15 @@ impl DiskIo for SyncDirectIo {
         // OwnedFd drops and closes automatically.
         drop(self);
     }
+
+    fn file_len(&self) -> Result<u64, StorageError> {
+        let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+        let ret = unsafe { libc::fstat(self.fd.as_raw_fd(), &mut stat) };
+        if ret < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(stat.st_size as u64)
+    }
 }
 
 /// Non-direct I/O for testing (no O_DIRECT alignment requirements).
@@ -169,5 +230,14 @@ impl DiskIo for BufferedIo {
 
     fn close(self) {
         drop(self);
+    }
+
+    fn file_len(&self) -> Result<u64, StorageError> {
+        let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+        let ret = unsafe { libc::fstat(self.fd.as_raw_fd(), &mut stat) };
+        if ret < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(stat.st_size as u64)
     }
 }
