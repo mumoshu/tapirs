@@ -73,10 +73,6 @@ pub trait Upcalls: Sized + Send + Serialize + DeserializeOwned + 'static {
     /// Default: no-op (static setups ignore config).
     fn apply_config(&mut self, _config: &[u8]) {}
 
-    /// Called after the coordinator merge to compact resolved entries from the
-    /// merged record before it becomes the new base. Default: no-op.
-    fn compact_merged_record(&self, _record: &mut Record<Self>) {}
-
     /// Called during a view change with the delta record — the IR ops that
     /// changed during `base_view` (the view preceding the new view).
     /// `new_view` is the view the shard is transitioning to.
@@ -765,9 +761,6 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                                         );
                                     }
                                 }
-
-                                // Compact resolved entries before storing as new base.
-                                sync.upcalls.compact_merged_record(&mut R);
 
                                 // Store R as new base with empty overlay.
                                 sync.record = VersionedRecord::from_full(R, msg_view_number.0);

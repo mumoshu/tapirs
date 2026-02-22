@@ -694,7 +694,6 @@ where
 
             self.exec_inconsistent(&entry.op);
         }
-
         self.gc_stale_state();
     }
 
@@ -788,32 +787,6 @@ where
         } else if let Ok(range) = serde_json::from_slice::<KeyRange<K>>(config) {
             self.key_range = Some(range);
         }
-    }
-
-    fn compact_merged_record(&self, record: &mut IrRecord<Self>) {
-        // Collect transaction IDs with finalized IO::Commit or IO::Abort.
-        let resolved: std::collections::HashSet<OccTransactionId> = record
-            .inconsistent
-            .values()
-            .filter(|e| e.state.is_finalized())
-            .filter_map(|e| match &e.op {
-                IO::Commit {
-                    transaction_id, ..
-                }
-                | IO::Abort {
-                    transaction_id, ..
-                } => Some(*transaction_id),
-                _ => None,
-            })
-            .collect();
-
-        // Remove CO::Prepare entries for resolved transactions.
-        record.consensus.retain(|_, e| match &e.op {
-            CO::Prepare {
-                transaction_id, ..
-            } => !resolved.contains(transaction_id),
-            _ => true,
-        });
     }
 
     fn on_install_leader_record_delta(
