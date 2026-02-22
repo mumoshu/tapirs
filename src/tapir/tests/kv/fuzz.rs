@@ -555,11 +555,37 @@ async fn fuzz_tapir_transactions() {
             tokio::time::sleep(sync_interval).await;
             let ranges = route_poll_caching.key_ranges();
             if !ranges.is_empty() {
-                let entries: Vec<ShardEntry<i64>> = ranges
+                let dir_arc = route_poll_router.directory();
+                let mut dir = dir_arc.write().unwrap();
+                // Merge changelog entries into the existing directory rather
+                // than replacing it.  key_ranges() only contains shards that
+                // had route changes published — replacing the directory would
+                // drop all unchanged initial shards, making their keys
+                // unroutable and causing spurious OutOfRange failures.
+                let mut merged: std::collections::HashMap<ShardNumber, KeyRange<i64>> =
+                    dir.entries()
+                        .iter()
+                        .map(|e| (e.shard, e.range.clone()))
+                        .collect();
+                for (shard, range) in &ranges {
+                    merged.insert(*shard, range.clone());
+                }
+                // Remove stale entries whose range overlaps with a changed
+                // entry — these are shards absorbed during merge/compact
+                // (the changelog contained RemoveRange for them, so they are
+                // absent from key_ranges, but their old directory entry would
+                // create an overlap with the surviving shard's expanded range).
+                merged.retain(|shard, range| {
+                    if ranges.contains_key(shard) {
+                        return true;
+                    }
+                    !ranges.values().any(|changed| range.overlaps(changed))
+                });
+                let entries: Vec<ShardEntry<i64>> = merged
                     .into_iter()
                     .map(|(shard, range)| ShardEntry { shard, range })
                     .collect();
-                route_poll_router.directory().write().unwrap().update(entries);
+                dir.update(entries);
             }
             if route_poll_stop.load(Ordering::Relaxed) {
                 break;
