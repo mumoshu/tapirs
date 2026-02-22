@@ -48,6 +48,7 @@
 | How transactions achieve consensus | `src/ir/replica.rs` (~700 lines, the most complex file) | [Protocol](protocol-tapir.md) |
 | How the paper's extensions work (RO txns, coordinator recovery) | `src/tapir/client.rs` | [Paper Extensions](protocol-tapir-paper-extensions.md) |
 | How range scan + phantom protection work | `src/occ/store.rs` | [Custom Extensions](protocol-tapir-custom-extensions.md) |
+| How IR records are compacted without losing consistency | `src/ir/replica.rs`, `src/tapir/replica.rs` | [IR Custom Extensions](protocol-ir-custom-extensions.md) |
 | How data is persisted to disk | `src/mvcc/disk/` | [Storage](storage.md) |
 | How shards split, merge, and compact online | `src/tapir/shard_manager_cdc.rs` | [Resharding](resharding.md) |
 | How nodes discover each other | `src/discovery/mod.rs`, `src/discovery/tapir.rs` | [Discovery](discovery.md) |
