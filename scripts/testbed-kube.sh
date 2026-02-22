@@ -584,6 +584,9 @@ smoke_test() {
 
     local disc_endpoint="srv://tapir-discovery.${NS}.svc.cluster.local:${DISCOVERY_TAPIR_PORT}"
 
+    # Delete stale smoke test pods from failed previous runs.
+    kube delete pod tapir-smoke-write tapir-smoke-read 2>/dev/null || true
+
     info "Writing key 'hello' with value 'world'..."
     kube run tapir-smoke-write --rm -i --restart=Never \
         --image="${TAPIR_IMAGE}" --image-pull-policy=IfNotPresent -- \

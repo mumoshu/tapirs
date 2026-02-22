@@ -189,6 +189,7 @@ async fn get_topology(endpoint: &str) -> Result<(), String> {
     };
     let disc_dir = std::sync::Arc::new(tapirs::discovery::InMemoryShardDirectory::new());
     let persist_dir = format!("/tmp/tapictl_topology_{}", std::process::id());
+    let persist_dir_path = persist_dir.clone();
     let disc_transport: TcpTransport<TapirReplica<String, String>> =
         TcpTransport::with_directory(ephemeral_addr, persist_dir, disc_dir);
 
@@ -216,6 +217,10 @@ async fn get_topology(endpoint: &str) -> Result<(), String> {
             println!("{:<8} {:<8} {}", shard.0, view, addrs.join(", "));
         }
     }
+
+    // Clean up temporary persist directory.
+    let _ = std::fs::remove_dir_all(&persist_dir_path);
+
     Ok(())
 }
 
