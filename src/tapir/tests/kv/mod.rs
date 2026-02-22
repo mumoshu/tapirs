@@ -27,7 +27,7 @@ use crate::{
     TapirClient, TapirReplica, TapirTimestamp, Transport as _,
 };
 use futures::future::join_all;
-use rand::{rngs::StdRng, seq::SliceRandom, thread_rng, Rng, SeedableRng};
+use rand::{rngs::StdRng, seq::SliceRandom, Rng, SeedableRng};
 use std::{
     collections::BTreeMap,
     sync::{

@@ -220,14 +220,23 @@ fn build_shard_entries(num_shards: u32, num_keys: i64) -> Vec<ShardEntry<i64>> {
 // Deterministic simulation fuzz test: concurrent transactions, fault
 // injection (view changes, partitions), and resharding (split/merge).
 //
-// Run once:
+// By default this test uses a fixed seed (0) so that `cargo test` runs are
+// deterministic.  Set TAPI_TEST_SEED to override, e.g. with a random value.
+//
+// To fuzz many iterations with randomly chosen seeds, use the make targets
+// and scripts instead of running this test directly:
+//
+//   make fuzz          – run 20 random seeds sequentially
+//   make fuzz100       – run 100 random seeds, 4 in parallel
+//   ./scripts/fuzz-multi-seed.sh              (configurable via env vars)
+//
+// Other useful invocations:
+//
+// Run once with a specific seed:
 //   TAPI_TEST_SEED=<seed> cargo test --lib fuzz_tapir_transactions -- --nocapture
 //
 // Run with structured event timeline (auto-dumps on failure):
 //   FUZZ_VERBOSE=1 TAPI_TEST_SEED=<seed> cargo test --lib fuzz_tapir_transactions -- --nocapture
-//
-// Run many seeds with summary report:
-//   ./scripts/fuzz-multi-seed.sh              (or: make fuzz)
 //
 // Detect indeterminism (same seed, many runs):
 //   ./scripts/detect-fuzz-indeterminism.sh
@@ -236,7 +245,7 @@ async fn fuzz_tapir_transactions() {
     let seed: u64 = std::env::var("TAPI_TEST_SEED")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or_else(|| thread_rng().r#gen());
+        .unwrap_or(0);
 
     eprintln!("fuzz_tapir_transactions seed={seed}");
     let _ = std::fs::write("/tmp/tapi-fuzz-seed.txt", seed.to_string());
