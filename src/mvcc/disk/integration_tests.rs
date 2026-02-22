@@ -1,29 +1,27 @@
 #[cfg(test)]
 mod tests {
     use crate::mvcc::backend::MvccBackend;
-    use crate::mvcc::disk::disk_io::{BufferedIo, OpenFlags};
+    use crate::mvcc::disk::disk_io::{DiskIo, OpenFlags};
     use crate::mvcc::disk::disk_store::DiskStore;
     use crate::mvcc::disk::faulty_disk_io::{DiskFaultConfig, FaultyDiskIo};
     use crate::mvcc::disk::manifest::Manifest;
+    use crate::mvcc::disk::memory_io::MemoryIo;
     use crate::mvcc::disk::sstable::SSTableReader;
     use rand::{Rng, SeedableRng};
     use rand::rngs::StdRng;
     use std::collections::{BTreeMap, HashSet};
     use std::env;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use tempfile::TempDir;
 
-    type TestStore = DiskStore<String, String, u64, BufferedIo>;
+    type TestStore = DiskStore<String, String, u64, MemoryIo>;
 
-    fn open_store() -> (TempDir, TestStore) {
-        let dir = TempDir::new().unwrap();
-        let store = TestStore::open(dir.path().to_path_buf()).unwrap();
-        (dir, store)
+    fn open_store() -> TestStore {
+        TestStore::open(MemoryIo::temp_path()).unwrap()
     }
 
     #[test]
     fn get_nonexistent_key() {
-        let (_dir, store) = open_store();
+        let store = open_store();
         let (v, ts): (Option<String>, u64) = MvccBackend::get(&store, &"missing".into()).unwrap();
         assert_eq!(v, None);
         assert_eq!(ts, 0);
@@ -31,7 +29,7 @@ mod tests {
 
     #[test]
     fn put_and_get() {
-        let (_dir, mut store) = open_store();
+        let mut store = open_store();
         MvccBackend::put(&mut store, "k1".into(), Some("v1".into()), 10).unwrap();
 
         let (v, ts) = MvccBackend::get(&store, &"k1".into()).unwrap();
@@ -41,7 +39,7 @@ mod tests {
 
     #[test]
     fn multiple_keys() {
-        let (_dir, mut store) = open_store();
+        let mut store = open_store();
         MvccBackend::put(&mut store, "a".into(), Some("1".into()), 5).unwrap();
         MvccBackend::put(&mut store, "b".into(), Some("2".into()), 6).unwrap();
         MvccBackend::put(&mut store, "c".into(), Some("3".into()), 7).unwrap();
@@ -53,7 +51,7 @@ mod tests {
 
     #[test]
     fn get_at_returns_correct_version() {
-        let (_dir, mut store) = open_store();
+        let mut store = open_store();
         MvccBackend::put(&mut store, "k".into(), Some("v1".into()), 10).unwrap();
         MvccBackend::put(&mut store, "k".into(), Some("v2".into()), 20).unwrap();
         MvccBackend::put(&mut store, "k".into(), Some("v3".into()), 30).unwrap();
@@ -85,7 +83,7 @@ mod tests {
 
     #[test]
     fn tombstone_deletes_key() {
-        let (_dir, mut store) = open_store();
+        let mut store = open_store();
         MvccBackend::put(&mut store, "k".into(), Some("v1".into()), 10).unwrap();
         MvccBackend::put(&mut store, "k".into(), None, 20).unwrap();
 
@@ -102,7 +100,7 @@ mod tests {
 
     #[test]
     fn get_range_basic() {
-        let (_dir, mut store) = open_store();
+        let mut store = open_store();
         MvccBackend::put(&mut store, "k".into(), Some("v1".into()), 10).unwrap();
         MvccBackend::put(&mut store, "k".into(), Some("v2".into()), 20).unwrap();
 
@@ -113,7 +111,7 @@ mod tests {
 
     #[test]
     fn commit_get_and_last_read() {
-        let (_dir, mut store) = open_store();
+        let mut store = open_store();
         MvccBackend::put(&mut store, "k".into(), Some("v1".into()), 10).unwrap();
 
         // Initially no last-read.
@@ -129,7 +127,7 @@ mod tests {
 
     #[test]
     fn many_puts_triggers_flush() {
-        let (_dir, mut store) = open_store();
+        let mut store = open_store();
 
         // Write enough data to trigger memtable flush (64KiB threshold).
         for i in 0u64..2000 {
@@ -150,7 +148,7 @@ mod tests {
 
     #[test]
     fn scan_basic() {
-        let (_dir, mut store) = open_store();
+        let mut store = open_store();
         MvccBackend::put(&mut store, "a".into(), Some("1".into()), 5).unwrap();
         MvccBackend::put(&mut store, "b".into(), Some("2".into()), 5).unwrap();
         MvccBackend::put(&mut store, "c".into(), Some("3".into()), 5).unwrap();
@@ -164,7 +162,7 @@ mod tests {
 
     #[test]
     fn has_writes_in_range_check() {
-        let (_dir, mut store) = open_store();
+        let mut store = open_store();
         MvccBackend::put(&mut store, "a".into(), Some("1".into()), 10).unwrap();
         MvccBackend::put(&mut store, "b".into(), Some("2".into()), 20).unwrap();
 
@@ -185,8 +183,7 @@ mod tests {
 
     #[test]
     fn reopen_after_flush() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().to_path_buf();
+        let path = MemoryIo::temp_path();
 
         // Write enough to flush, then save manifest.
         {
@@ -220,7 +217,7 @@ mod tests {
 
     #[test]
     fn test_large_value_exactly_4kib() {
-        let (_dir, mut store) = open_store();
+        let mut store = open_store();
 
         // Generate a value that should fit in exactly one 4 KiB block.
         // Account for bitcode overhead (~50-100 bytes) and 4-byte CRC.
@@ -236,7 +233,7 @@ mod tests {
 
     #[test]
     fn test_large_value_4kib_plus_1() {
-        let (_dir, mut store) = open_store();
+        let mut store = open_store();
 
         // Generate a value that will overflow to 2 blocks (8 KiB).
         // With bitcode overhead + CRC, a 4096-byte value should require 2 blocks.
@@ -252,7 +249,7 @@ mod tests {
 
     #[test]
     fn test_large_value_1mb() {
-        let (_dir, mut store) = open_store();
+        let mut store = open_store();
 
         // Generate a 1 MB value to test offset arithmetic.
         let value = generate_large_value(1_000_000, 1_000_000);
@@ -268,7 +265,7 @@ mod tests {
 
     #[test]
     fn test_many_large_values_verify_flush() {
-        let (_dir, mut store) = open_store();
+        let mut store = open_store();
 
         // Write many large values totaling 100 MB.
         // Use 1000 values of ~100 KB each to trigger many flushes.
@@ -298,8 +295,7 @@ mod tests {
 
     #[test]
     fn test_recovery_manifest_crc_valid() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().to_path_buf();
+        let path = MemoryIo::temp_path();
 
         // Stage 1: Write data, flush, save manifest
         {
@@ -334,8 +330,7 @@ mod tests {
 
     #[test]
     fn test_recovery_all_sstables_exist_and_readable() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().to_path_buf();
+        let path = MemoryIo::temp_path();
 
         // Stage 1: Write data to create multiple SSTables
         {
@@ -351,26 +346,34 @@ mod tests {
             store.save_manifest().unwrap();
         }
 
-        // Stage 2: Verify all SSTables exist on disk
+        // Stage 2: Verify all SSTables exist in the in-memory filesystem
         {
-            let manifest = Manifest::load::<BufferedIo>(&path).unwrap().expect("manifest should exist");
+            let manifest = Manifest::load::<MemoryIo>(&path).unwrap().expect("manifest should exist");
 
-            // Check L0 files exist
+            // Check L0 files exist and have adequate size
             for meta in &manifest.l0_sstables {
-                let metadata = std::fs::metadata(&meta.path)
-                    .expect("SSTable file should exist");
                 assert!(
-                    metadata.len() >= 4096,
+                    MemoryIo::exists(&meta.path),
+                    "SSTable file should exist: {}",
+                    meta.path.display()
+                );
+                let handle = MemoryIo::open(&meta.path, OpenFlags { create: false, direct: false }).unwrap();
+                assert!(
+                    handle.file_len().unwrap() >= 4096,
                     "SSTable file too small for footer"
                 );
             }
 
-            // Check L1 files exist
+            // Check L1 files exist and have adequate size
             for meta in &manifest.l1_sstables {
-                let metadata = std::fs::metadata(&meta.path)
-                    .expect("SSTable file should exist");
                 assert!(
-                    metadata.len() >= 4096,
+                    MemoryIo::exists(&meta.path),
+                    "SSTable file should exist: {}",
+                    meta.path.display()
+                );
+                let handle = MemoryIo::open(&meta.path, OpenFlags { create: false, direct: false }).unwrap();
+                assert!(
+                    handle.file_len().unwrap() >= 4096,
                     "SSTable file too small for footer"
                 );
             }
@@ -379,12 +382,12 @@ mod tests {
         // Stage 3: Verify SSTables are readable after recovery
         {
             let store = TestStore::open(path.clone()).unwrap();
-            let manifest = Manifest::load::<BufferedIo>(&path).unwrap().unwrap();
+            let manifest = Manifest::load::<MemoryIo>(&path).unwrap().unwrap();
 
             // Read all SSTables and verify no CRC errors
             for meta in manifest.l0_sstables.iter().chain(manifest.l1_sstables.iter()) {
                 let reader = futures::executor::block_on(
-                    SSTableReader::<BufferedIo>::open(
+                    SSTableReader::<MemoryIo>::open(
                         meta.path.clone(),
                         OpenFlags::default()
                     )
@@ -405,8 +408,7 @@ mod tests {
 
     #[test]
     fn test_recovery_all_vlog_pointers_valid() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().to_path_buf();
+        let path = MemoryIo::temp_path();
 
         // Stage 1: Write keys with various value sizes
         {
@@ -486,8 +488,7 @@ mod tests {
 
     #[test]
     fn test_recovery_no_duplicate_versions() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().to_path_buf();
+        let path = MemoryIo::temp_path();
 
         // Stage 1: Write data and trigger flush
         {
@@ -532,7 +533,7 @@ mod tests {
 
     #[test]
     fn test_key_empty() {
-        let (_dir, mut store) = open_store();
+        let mut store = open_store();
 
         // Write with empty key
         MvccBackend::put(&mut store, "".into(), Some("value".into()), 10).unwrap();
@@ -558,7 +559,7 @@ mod tests {
 
     #[test]
     fn test_key_very_long() {
-        let (_dir, mut store) = open_store();
+        let mut store = open_store();
 
         // Generate 1 MB key deterministically
         let long_key = "k".repeat(1_000_000);
@@ -584,7 +585,7 @@ mod tests {
 
     #[test]
     fn test_key_null_bytes() {
-        let (_dir, mut store) = open_store();
+        let mut store = open_store();
 
         // Keys with null bytes in different positions
         let keys = vec![
@@ -615,7 +616,7 @@ mod tests {
 
     #[test]
     fn test_key_unicode() {
-        let (_dir, mut store) = open_store();
+        let mut store = open_store();
 
         // Various Unicode keys
         let keys = vec![
@@ -660,7 +661,7 @@ mod tests {
 
     #[test]
     fn test_level_l0_exceeds_threshold_writes_not_blocked() {
-        let (_dir, mut store) = open_store();
+        let mut store = open_store();
 
         // Write 5 batches of data, each triggers a flush.
         // First 4 batches: L0 grows to 4 files.
@@ -696,7 +697,7 @@ mod tests {
 
     #[test]
     fn test_level_l0_can_grow_during_heavy_writes() {
-        let (_dir, mut store) = open_store();
+        let mut store = open_store();
 
         // Write many batches rapidly.
         // Each batch triggers flush, some may trigger compaction.
@@ -740,8 +741,8 @@ mod tests {
 
         let mut rng = StdRng::seed_from_u64(seed);
 
-        // 2. Setup temp directory and fault state
-        let dir = TempDir::new().unwrap();
+        // 2. Setup in-memory path and fault state
+        let path = MemoryIo::temp_path();
 
         let initial_config = DiskFaultConfig {
             fsync_fail_rate: 0.2,
@@ -750,12 +751,12 @@ mod tests {
             slow_io_latency: None,
         };
 
-        FaultyDiskIo::<BufferedIo>::enable_shared_fault_state(initial_config.clone(), seed);
-        let fault_handle = FaultyDiskIo::<BufferedIo>::get_shared_fault_state().unwrap();
+        FaultyDiskIo::<MemoryIo>::enable_shared_fault_state(initial_config.clone(), seed);
+        let fault_handle = FaultyDiskIo::<MemoryIo>::get_shared_fault_state().unwrap();
 
         // 3. Open store with FaultyDiskIo
-        type TestStore = DiskStore<String, String, u64, FaultyDiskIo<BufferedIo>>;
-        let mut store = TestStore::open(dir.path().to_path_buf()).unwrap();
+        type FaultyTestStore = DiskStore<String, String, u64, FaultyDiskIo<MemoryIo>>;
+        let mut store = FaultyTestStore::open(path.clone()).unwrap();
 
         // 4. State tracking
         let mut committed_data: BTreeMap<(String, u64), String> = BTreeMap::new();
@@ -875,7 +876,7 @@ mod tests {
         println!("simulating crash recovery...");
 
         // 9. Recovery
-        let recovered_store = TestStore::open(dir.path().to_path_buf()).unwrap();
+        let recovered_store = FaultyTestStore::open(path).unwrap();
 
         // 10. Verification
         println!("verifying {} committed writes", committed_data.len());
@@ -906,6 +907,6 @@ mod tests {
         );
 
         // 11. Cleanup
-        FaultyDiskIo::<BufferedIo>::disable_shared_fault_state();
+        FaultyDiskIo::<MemoryIo>::disable_shared_fault_state();
     }
 }

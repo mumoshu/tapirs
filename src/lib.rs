@@ -22,6 +22,10 @@ pub use ir::{
 pub use mvcc::MvccBackend;
 pub use mvcc::disk::{DiskStore as MvccDiskStore, StorageError};
 pub use mvcc::disk::disk_io::BufferedIo;
+#[cfg(test)]
+pub use mvcc::disk::memory_io::MemoryIo as DefaultDiskIo;
+#[cfg(not(test))]
+pub use mvcc::disk::disk_io::BufferedIo as DefaultDiskIo;
 pub use occ::{
     PrepareResult as OccPrepareResult, ScanEntry as OccScanEntry, Store as OccStore,
     Timestamp as OccTimestamp, SharedTransaction as OccSharedTransaction,

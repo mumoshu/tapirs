@@ -714,11 +714,11 @@ mod tests {
     async fn fuzz_storage_simulator() {
         use crate::mvcc::backend::MvccBackend;
         use crate::mvcc::disk::disk_store::DiskStore;
+        use crate::mvcc::disk::memory_io::MemoryIo;
         use rand::Rng;
         use std::collections::BTreeMap;
         use std::env;
         use std::time::{SystemTime, UNIX_EPOCH};
-        use tempfile::TempDir;
 
         // Use TAPI_TEST_SEED for deterministic reproduction, otherwise random seed
         let seed = env::var("TAPI_TEST_SEED")
@@ -733,7 +733,7 @@ mod tests {
         println!("seed={}", seed);
 
         let mut rng = StdRng::seed_from_u64(seed);
-        let dir = TempDir::new().unwrap();
+        let path = MemoryIo::temp_path();
 
         // Generate random fault config
         let config = DiskFaultConfig {
@@ -753,12 +753,12 @@ mod tests {
         );
 
         // Enable shared fault state for all FaultyDiskIo instances
-        FaultyDiskIo::<BufferedIo>::enable_shared_fault_state(config.clone(), seed);
-        let fault_handle = FaultyDiskIo::<BufferedIo>::get_shared_fault_state().unwrap();
+        FaultyDiskIo::<MemoryIo>::enable_shared_fault_state(config.clone(), seed);
+        let fault_handle = FaultyDiskIo::<MemoryIo>::get_shared_fault_state().unwrap();
 
         // Create DiskStore with FaultyDiskIo
-        type TestStore = DiskStore<String, String, u64, FaultyDiskIo<BufferedIo>>;
-        let mut store = TestStore::open(dir.path().to_path_buf()).unwrap();
+        type FaultyTestStore = DiskStore<String, String, u64, FaultyDiskIo<MemoryIo>>;
+        let mut store = FaultyTestStore::open(path.clone()).unwrap();
 
         // Track what should be persisted (writes followed by successful fsync)
         let mut committed_data: BTreeMap<(String, u64), String> = BTreeMap::new();
@@ -890,7 +890,7 @@ mod tests {
         println!("simulating crash and recovery...");
 
         // Recovery: reopen store
-        let recovered_store = TestStore::open(dir.path().to_path_buf()).unwrap();
+        let recovered_store = FaultyTestStore::open(path).unwrap();
 
         println!("verifying {} committed writes after recovery", committed_data.len());
 
@@ -916,6 +916,6 @@ mod tests {
         println!("all invariants verified successfully!");
 
         // Clean up
-        FaultyDiskIo::<BufferedIo>::disable_shared_fault_state();
+        FaultyDiskIo::<MemoryIo>::disable_shared_fault_state();
     }
 }

@@ -667,7 +667,7 @@ mod tests {
     use super::*;
     use crate::discovery::{InMemoryShardDirectory, ShardDirectory as _};
     use crate::{ChannelRegistry, ChannelTransport, IrMembership, IrReplica, TapirReplica};
-    use crate::mvcc::disk::{DiskStore, disk_io::BufferedIo};
+    use crate::mvcc::disk::{DiskStore, memory_io::MemoryIo};
     use crate::tapir::Timestamp;
     use std::sync::Arc;
 
@@ -706,8 +706,8 @@ mod tests {
                         channel.set_shard(DISCOVERY_SHARD);
                         let upcalls =
                             TapirReplica::<String, String>::new_with_backend(DISCOVERY_SHARD, false,
-                                DiskStore::<String, String, Timestamp, BufferedIo>::open(
-                                    tempfile::tempdir().unwrap().into_path(),
+                                DiskStore::<String, String, Timestamp, MemoryIo>::open(
+                                    MemoryIo::temp_path(),
                                 ).unwrap(),
                             );
                         IrReplica::new(

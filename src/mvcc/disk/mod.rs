@@ -8,6 +8,8 @@ pub mod faulty_disk_io;
 pub mod gc;
 #[cfg(test)]
 mod integration_tests;
+#[cfg(test)]
+pub mod memory_io;
 pub mod lsm;
 pub mod manifest;
 pub mod memtable;

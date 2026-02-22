@@ -17,7 +17,7 @@ use crate::{
         CachingShardDirectory, InMemoryRemoteDirectory, InMemoryShardDirectory,
         RemoteShardDirectory as _, ShardDirectory as _,
     },
-    mvcc::disk::{DiskStore, disk_io::BufferedIo},
+    mvcc::disk::{DiskStore, memory_io::MemoryIo},
     tapir::dynamic_router::{DynamicRouter, ShardDirectory, ShardEntry},
     tapir::key_range::KeyRange,
     tapir::Sharded,
@@ -78,8 +78,8 @@ fn build_shard(
         membership: &IrMembership<usize>,
         linearizable: bool,
     ) -> Arc<IrReplica<TapirReplica<K, V>, ChannelTransport<TapirReplica<K, V>>>> {
-        let backend = DiskStore::<K, V, Timestamp, BufferedIo>::open(
-            tempfile::tempdir().unwrap().into_path(),
+        let backend = DiskStore::<K, V, Timestamp, MemoryIo>::open(
+            MemoryIo::temp_path(),
         ).unwrap();
         Arc::new_cyclic(
             |weak: &std::sync::Weak<
