@@ -1,7 +1,6 @@
 use super::{SharedTransaction, Timestamp, Transaction, TransactionId};
 use crate::{
     mvcc::backend::MvccBackend,
-    mvcc::MemoryStore,
     tapir::{Key, ShardNumber, Value},
     util::vectorize_btree,
 };
@@ -14,7 +13,7 @@ use std::{
 use tracing::trace;
 
 #[derive(Serialize, Deserialize)]
-pub struct Store<K, V, TS, M = MemoryStore<K, V, TS>> {
+pub struct Store<K, V, TS, M> {
     shard: ShardNumber,
     linearizable: bool,
     #[serde(bound(
@@ -537,13 +536,15 @@ impl<K: Key, V: Value, TS: Timestamp + Send, M: MvccBackend<K, V, TS>> Store<K, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mvcc::disk::{DiskStore, disk_io::BufferedIo};
     use crate::occ::ScanEntry;
     use crate::tapir::{ShardNumber, Sharded, Timestamp as TapirTimestamp};
     use crate::IrClientId;
     use std::sync::Arc;
+    use tempfile::TempDir;
 
     type TS = TapirTimestamp;
-    type TestStore = Store<String, String, TS>;
+    type TestStore = Store<String, String, TS, DiskStore<String, String, TS, BufferedIo>>;
 
     fn ts(time: u64, client_id: u64) -> TS {
         TapirTimestamp {
@@ -566,8 +567,10 @@ mod tests {
         }
     }
 
-    fn new_store(linearizable: bool) -> TestStore {
-        Store::new(ShardNumber(0), linearizable)
+    fn new_store(linearizable: bool) -> (TempDir, TestStore) {
+        let dir = TempDir::new().unwrap();
+        let backend = DiskStore::open(dir.path().to_path_buf()).unwrap();
+        (dir, Store::new_with_backend(ShardNumber(0), linearizable, backend))
     }
 
     fn make_txn(
@@ -590,7 +593,7 @@ mod tests {
 
     #[test]
     fn prepare_ok_no_conflicts() {
-        let mut store = new_store(true);
+        let (_dir, mut store) = new_store(true);
         // T1 writes "x", T2 writes "y" — no overlap.
         let t1 = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
         let t2 = make_txn(vec![], vec![("y", Some("v2"))], vec![]);
@@ -601,7 +604,7 @@ mod tests {
 
     #[test]
     fn prepare_ok_already_prepared_same_ts() {
-        let mut store = new_store(true);
+        let (_dir, mut store) = new_store(true);
         let t1 = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
 
         assert_eq!(store.prepare(txn_id(1, 1), t1.clone(), ts(10, 1), false), PrepareResult::Ok);
@@ -611,7 +614,7 @@ mod tests {
 
     #[test]
     fn prepare_read_write_conflict_committed() {
-        let mut store = new_store(false);
+        let (_dir, mut store) = new_store(false);
 
         // Commit a write of "x" at ts(5,1).
         let t1 = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
@@ -634,7 +637,7 @@ mod tests {
 
     #[test]
     fn prepare_read_write_conflict_prepared() {
-        let mut store = new_store(false);
+        let (_dir, mut store) = new_store(false);
 
         // Commit initial write of "x" at ts(5,1) so reads can reference it.
         let t_init = make_txn(vec![], vec![("x", Some("v0"))], vec![]);
@@ -655,7 +658,7 @@ mod tests {
 
     #[test]
     fn prepare_write_write_conflict_linearizable() {
-        let mut store = new_store(true);
+        let (_dir, mut store) = new_store(true);
 
         // Commit a write of "x" at ts(10,1).
         let t1 = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
@@ -672,7 +675,7 @@ mod tests {
 
     #[test]
     fn prepare_write_read_conflict() {
-        let mut store = new_store(true);
+        let (_dir, mut store) = new_store(true);
 
         // Commit initial value so reads and commit_get track properly.
         let t_init = make_txn(vec![], vec![("x", Some("v0"))], vec![]);
@@ -695,7 +698,7 @@ mod tests {
 
     #[test]
     fn prepare_write_prepared_read_conflict() {
-        let mut store = new_store(false);
+        let (_dir, mut store) = new_store(false);
 
         // Commit initial value.
         let t_init = make_txn(vec![], vec![("x", Some("v0"))], vec![]);
@@ -716,7 +719,7 @@ mod tests {
 
     #[test]
     fn prepare_write_prepared_write_conflict_linearizable() {
-        let mut store = new_store(true);
+        let (_dir, mut store) = new_store(true);
 
         // T1 prepares a write of "x" at ts(10,1).
         let t1 = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
@@ -735,7 +738,7 @@ mod tests {
 
     #[test]
     fn prepare_scan_committed_phantom() {
-        let mut store = new_store(false);
+        let (_dir, mut store) = new_store(false);
 
         // Commit a write of "b" at ts(8,1) — this is the phantom.
         let t1 = make_txn(vec![], vec![("b", Some("v1"))], vec![]);
@@ -761,7 +764,7 @@ mod tests {
 
     #[test]
     fn prepare_scan_prepared_phantom() {
-        let mut store = new_store(false);
+        let (_dir, mut store) = new_store(false);
 
         // T1 prepares a write of "b" at ts(8,1).
         let t1 = make_txn(vec![], vec![("b", Some("v1"))], vec![]);
@@ -787,7 +790,7 @@ mod tests {
 
     #[test]
     fn prepare_scan_no_phantom() {
-        let mut store = new_store(false);
+        let (_dir, mut store) = new_store(false);
 
         // Commit a write of "z" (outside scan range) at ts(8,1).
         let t1 = make_txn(vec![], vec![("z", Some("v1"))], vec![]);
@@ -815,7 +818,7 @@ mod tests {
 
     #[test]
     fn commit_applies_writes_and_reads() {
-        let mut store = new_store(true);
+        let (_dir, mut store) = new_store(true);
 
         let txn = make_txn(vec![], vec![("x", Some("hello"))], vec![]);
         let id = txn_id(1, 1);
@@ -828,7 +831,7 @@ mod tests {
 
     #[test]
     fn abort_removes_prepared() {
-        let mut store = new_store(true);
+        let (_dir, mut store) = new_store(true);
 
         let txn = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
         let id = txn_id(1, 1);
@@ -844,7 +847,7 @@ mod tests {
 
     #[test]
     fn commit_unprepared_transaction() {
-        let mut store = new_store(true);
+        let (_dir, mut store) = new_store(true);
 
         // Commit without prior prepare — should work (per code comment).
         let txn = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
@@ -859,7 +862,7 @@ mod tests {
 
     #[test]
     fn eventual_allows_old_write() {
-        let mut store = new_store(false);
+        let (_dir, mut store) = new_store(false);
 
         // Commit a write of "x" at ts(10,1).
         let t1 = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
@@ -876,7 +879,7 @@ mod tests {
 
     #[test]
     fn linearizable_rejects_old_write() {
-        let mut store = new_store(true);
+        let (_dir, mut store) = new_store(true);
 
         // Commit a write of "x" at ts(10,1).
         let t1 = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
@@ -894,7 +897,7 @@ mod tests {
 
     #[test]
     fn prepare_dry_run_no_side_effects() {
-        let mut store = new_store(true);
+        let (_dir, mut store) = new_store(true);
 
         let txn = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
         let id = txn_id(1, 1);
@@ -910,7 +913,7 @@ mod tests {
 
     #[test]
     fn prepare_read_write_conflict_committed_linearizable() {
-        let mut store = new_store(true);
+        let (_dir, mut store) = new_store(true);
 
         // Commit "x" at ts(5,1), then overwrite at ts(10,1).
         let t1 = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
@@ -929,7 +932,7 @@ mod tests {
 
     #[test]
     fn prepare_read_write_conflict_prepared_linearizable() {
-        let mut store = new_store(true);
+        let (_dir, mut store) = new_store(true);
 
         // Commit initial version at ts(2,1).
         let t_init = make_txn(vec![], vec![("x", Some("v0"))], vec![]);
@@ -960,7 +963,7 @@ mod tests {
 
     #[test]
     fn serializable_write_between_versions_no_read_conflict() {
-        let mut store = new_store(false);
+        let (_dir, mut store) = new_store(false);
 
         // Commit "x" at ts(3,1) — version A (never read).
         let t_a = make_txn(vec![], vec![("x", Some("v0"))], vec![]);
@@ -989,7 +992,7 @@ mod tests {
 
     #[test]
     fn serializable_write_between_versions_read_conflict() {
-        let mut store = new_store(false);
+        let (_dir, mut store) = new_store(false);
 
         // Commit "x" at ts(3,1) — version A.
         let t_a = make_txn(vec![], vec![("x", Some("v0"))], vec![]);
@@ -1018,7 +1021,7 @@ mod tests {
 
     #[test]
     fn serializable_no_prepared_write_write_conflict() {
-        let mut store = new_store(false);
+        let (_dir, mut store) = new_store(false);
 
         // T1 prepares a write of "x" at ts(10,1).
         let t1 = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
@@ -1037,7 +1040,7 @@ mod tests {
 
     #[test]
     fn prepare_scan_multiple_entries_one_conflict() {
-        let mut store = new_store(false);
+        let (_dir, mut store) = new_store(false);
 
         // Commit a write of "m" at ts(8,1) — inside second scan range only.
         let t1 = make_txn(vec![], vec![("m", Some("v1"))], vec![]);
@@ -1073,7 +1076,7 @@ mod tests {
 
     #[test]
     fn add_prepared_replaces_at_new_timestamp() {
-        let mut store = new_store(true);
+        let (_dir, mut store) = new_store(true);
 
         let txn = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
         let id = txn_id(1, 1);
@@ -1094,7 +1097,7 @@ mod tests {
 
     #[test]
     fn dry_run_preserves_existing_prepare() {
-        let mut store = new_store(true);
+        let (_dir, mut store) = new_store(true);
 
         let txn = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
         let id = txn_id(1, 1);
@@ -1116,14 +1119,14 @@ mod tests {
 
     #[test]
     fn get_validated_returns_none_when_no_read_ts() {
-        let store = new_store(false);
+        let (_dir, store) = new_store(false);
         // No data and no reads → get_validated returns None.
         assert_eq!(store.get_validated(&"x".to_string(), ts(5, 1)), None);
     }
 
     #[test]
     fn get_validated_returns_none_when_unread() {
-        let mut store = new_store(false);
+        let (_dir, mut store) = new_store(false);
         // Write a value but never read it.
         let t1 = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
         store.commit(txn_id(1, 1), &t1, ts(3, 1));
@@ -1134,7 +1137,7 @@ mod tests {
 
     #[test]
     fn get_validated_returns_some_when_read_ts_sufficient() {
-        let mut store = new_store(false);
+        let (_dir, mut store) = new_store(false);
 
         // Write "x" at ts(3,1).
         let t1 = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
@@ -1160,7 +1163,7 @@ mod tests {
 
     #[test]
     fn scan_validated_no_range_coverage() {
-        let mut store = new_store(false);
+        let (_dir, mut store) = new_store(false);
         // Write a key.
         let t1 = make_txn(vec![], vec![("b", Some("v1"))], vec![]);
         store.commit(txn_id(1, 1), &t1, ts(3, 1));
@@ -1174,7 +1177,7 @@ mod tests {
 
     #[test]
     fn scan_validated_with_coverage() {
-        let mut store = new_store(false);
+        let (_dir, mut store) = new_store(false);
         // Write a key.
         let t1 = make_txn(vec![], vec![("b", Some("v1"))], vec![]);
         store.commit(txn_id(1, 1), &t1, ts(3, 1));
@@ -1199,7 +1202,7 @@ mod tests {
 
     #[test]
     fn commit_scan_blocks_overwrite() {
-        let mut store = new_store(false);
+        let (_dir, mut store) = new_store(false);
         // Write a key.
         let t1 = make_txn(vec![], vec![("b", Some("v1"))], vec![]);
         store.commit(txn_id(1, 1), &t1, ts(3, 1));
@@ -1217,7 +1220,7 @@ mod tests {
 
     #[test]
     fn quorum_scan_range_read_blocks_phantom() {
-        let mut store = new_store(false);
+        let (_dir, mut store) = new_store(false);
         // quorum_scan [a,z] at snapshot_ts(10,1).
         let _results = store.quorum_scan("a".to_string(), "z".to_string(), ts(10, 1));
 
@@ -1231,7 +1234,7 @@ mod tests {
 
     #[test]
     fn quorum_scan_range_read_allows_later_write() {
-        let mut store = new_store(false);
+        let (_dir, mut store) = new_store(false);
         // quorum_scan [a,z] at snapshot_ts(10,1).
         let _results = store.quorum_scan("a".to_string(), "z".to_string(), ts(10, 1));
 
@@ -1245,7 +1248,7 @@ mod tests {
 
     #[test]
     fn quorum_scan_range_read_outside_range() {
-        let mut store = new_store(false);
+        let (_dir, mut store) = new_store(false);
         // quorum_scan [a,c] at snapshot_ts(10,1).
         let _results = store.quorum_scan("a".to_string(), "c".to_string(), ts(10, 1));
 
@@ -1259,7 +1262,7 @@ mod tests {
 
     #[test]
     fn quorum_read_updates_read_ts_and_blocks_writes() {
-        let mut store = new_store(false);
+        let (_dir, mut store) = new_store(false);
 
         // Write "x" at ts(3,1).
         let t1 = make_txn(vec![], vec![("x", Some("v1"))], vec![]);

@@ -1,4 +1,5 @@
 use crate::{IrClientId, OccTimestamp};
+use crate::mvcc::disk::memtable::MaxValue;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 
@@ -28,5 +29,21 @@ impl OccTimestamp for Timestamp {
 
     fn time(&self) -> Self::Time {
         self.time
+    }
+
+    fn from_time(time: Self::Time) -> Self {
+        Self {
+            time,
+            client_id: IrClientId(u64::MAX),
+        }
+    }
+}
+
+impl MaxValue for Timestamp {
+    fn max_value() -> Self {
+        Self {
+            time: u64::MAX,
+            client_id: IrClientId(u64::MAX),
+        }
     }
 }

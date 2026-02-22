@@ -4,11 +4,11 @@ use super::error::StorageError;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Bitcode-serialized u64 is always 8 bytes.
-const TS_SIZE: usize = 8;
+/// Fixed overhead per vlog entry: key_len(4) + value_len(4) + ts_len(4) + crc_kts(4) + crc_val(4).
+const ENTRY_OVERHEAD: usize = 20;
 
-/// Fixed overhead per vlog entry: key_len(4) + value_len(4) + ts_bytes(8) + crc_kts(4) + crc_val(4).
-const ENTRY_OVERHEAD: usize = 24;
+/// Header size: key_len(4) + value_len(4) + ts_len(4).
+const HEADER_SIZE: usize = 12;
 
 /// Pointer into the value log, stored in the LSM index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,10 +84,10 @@ impl<IO: DiskIo> VlogSegment<IO> {
     ///
     /// On-disk entry layout (per WiscKey, Lu et al., FAST'16, Section 3.3.2, Figure 5):
     ///
-    /// [key_len(4) | value_len(4) | key_bytes | ts_bytes(8) | crc_kts(4) | value_bytes | crc_val(4)]
+    /// [key_len(4) | value_len(4) | ts_len(4) | key_bytes | ts_bytes(ts_len) | crc_kts(4) | value_bytes | crc_val(4)]
     ///
     /// The paper specifies `(key size, value size, key, value)` — per-field sizes enabling
-    /// field-addressable reads. We add a fixed-size timestamp (u64 = 8 bytes, always)
+    /// field-addressable reads. We add a variable-size timestamp (serialized via bitcode)
     /// between key and value, plus two CRCs for independent verification:
     ///
     /// - crc_kts covers key_bytes | ts_bytes: enables GC to verify key integrity
@@ -121,7 +121,7 @@ impl<IO: DiskIo> VlogSegment<IO> {
     ///   `VLogKeyMismatch`) instead of the paper's blanket "not found" — see
     ///   `read_verified()` comment for the quorum-safety rationale.
     ///
-    /// - `read_key_ts()`: Reads only `8 + key_len + 8 + 4` bytes (header + key +
+    /// - `read_key_ts()`: Reads only `12 + key_len + ts_len + 4` bytes (header + key +
     ///   ts + crc_kts), skipping value bytes entirely. Used by GC to check if an
     ///   entry is still live in the LSM without I/O for the value.
     ///
@@ -145,10 +145,9 @@ impl<IO: DiskIo> VlogSegment<IO> {
         let value_bytes = bitcode::serialize(&entry.value)
             .map_err(|e| StorageError::Codec(e.to_string()))?;
 
-        debug_assert_eq!(ts_bytes.len(), TS_SIZE);
-
         let key_len = key_bytes.len() as u32;
         let value_len = value_bytes.len() as u32;
+        let ts_len = ts_bytes.len() as u32;
 
         // CRC over key+ts region (for GC key-only verification).
         let mut kts_hasher = crc32fast::Hasher::new();
@@ -159,23 +158,25 @@ impl<IO: DiskIo> VlogSegment<IO> {
         // CRC over value region.
         let crc_val = crc32fast::hash(&value_bytes);
 
-        let total_len = ENTRY_OVERHEAD + key_bytes.len() + value_bytes.len();
+        let total_len = ENTRY_OVERHEAD + key_bytes.len() + ts_bytes.len() + value_bytes.len();
 
         let mut buf = AlignedBuf::new(total_len);
         let slice = buf.as_full_slice_mut();
         let mut pos = 0;
 
-        // Header: key_len(4) | value_len(4)
+        // Header: key_len(4) | value_len(4) | ts_len(4)
         slice[pos..pos + 4].copy_from_slice(&key_len.to_le_bytes());
         pos += 4;
         slice[pos..pos + 4].copy_from_slice(&value_len.to_le_bytes());
+        pos += 4;
+        slice[pos..pos + 4].copy_from_slice(&ts_len.to_le_bytes());
         pos += 4;
 
         // Key + timestamp + crc_kts
         slice[pos..pos + key_bytes.len()].copy_from_slice(&key_bytes);
         pos += key_bytes.len();
-        slice[pos..pos + TS_SIZE].copy_from_slice(&ts_bytes);
-        pos += TS_SIZE;
+        slice[pos..pos + ts_bytes.len()].copy_from_slice(&ts_bytes);
+        pos += ts_bytes.len();
         slice[pos..pos + 4].copy_from_slice(&crc_kts.to_le_bytes());
         pos += 4;
 
@@ -230,8 +231,9 @@ impl<IO: DiskIo> VlogSegment<IO> {
         // Parse header
         let key_len = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;
         let value_len = u32::from_le_bytes([raw[4], raw[5], raw[6], raw[7]]) as usize;
+        let ts_len = u32::from_le_bytes([raw[8], raw[9], raw[10], raw[11]]) as usize;
 
-        let expected_total = ENTRY_OVERHEAD + key_len + value_len;
+        let expected_total = ENTRY_OVERHEAD + key_len + ts_len + value_len;
         if expected_total != total {
             return Err(StorageError::Corruption {
                 file: self.path.display().to_string(),
@@ -242,10 +244,10 @@ impl<IO: DiskIo> VlogSegment<IO> {
         }
 
         // Extract regions
-        let key_start = 8;
+        let key_start = HEADER_SIZE;
         let key_end = key_start + key_len;
         let ts_start = key_end;
-        let ts_end = ts_start + TS_SIZE;
+        let ts_end = ts_start + ts_len;
         let crc_kts_start = ts_end;
         let val_start = crc_kts_start + 4;
         let val_end = val_start + value_len;
@@ -325,24 +327,25 @@ impl<IO: DiskIo> VlogSegment<IO> {
         K: for<'de> Deserialize<'de>,
         TS: for<'de> Deserialize<'de>,
     {
-        // Read the 8-byte header to get key_len
-        let header_size = round_up(8);
-        let mut header_buf = AlignedBuf::new(header_size);
+        // Read the 12-byte header to get key_len and ts_len
+        let header_read_size = round_up(HEADER_SIZE);
+        let mut header_buf = AlignedBuf::new(header_read_size);
         self.io.pread(&mut header_buf, ptr.offset).await?;
         let header = header_buf.as_full_slice();
         let key_len = u32::from_le_bytes([header[0], header[1], header[2], header[3]]) as usize;
+        let ts_len = u32::from_le_bytes([header[8], header[9], header[10], header[11]]) as usize;
 
         // Read header + key + ts + crc_kts
-        let kts_size = 8 + key_len + TS_SIZE + 4;
+        let kts_size = HEADER_SIZE + key_len + ts_len + 4;
         let read_size = round_up(kts_size);
         let mut buf = AlignedBuf::new(read_size);
         self.io.pread(&mut buf, ptr.offset).await?;
         let raw = buf.as_full_slice();
 
-        let key_start = 8;
+        let key_start = HEADER_SIZE;
         let key_end = key_start + key_len;
         let ts_start = key_end;
-        let ts_end = ts_start + TS_SIZE;
+        let ts_end = ts_start + ts_len;
         let crc_kts_start = ts_end;
 
         let key_bytes = &raw[key_start..key_end];
@@ -511,9 +514,9 @@ impl<IO: DiskIo> VlogSegment<IO> {
         let file_size = std::fs::metadata(&self.path)?.len();
         let mut current_offset = from_offset;
 
-        while current_offset + 8 <= file_size {
-            // Read header (8 bytes) to get key_len and value_len.
-            let header_read_size = round_up(8);
+        while current_offset + HEADER_SIZE as u64 <= file_size {
+            // Read header (12 bytes) to get key_len, value_len, ts_len.
+            let header_read_size = round_up(HEADER_SIZE);
             let mut header_buf = AlignedBuf::new(header_read_size);
             self.io.pread(&mut header_buf, current_offset).await?;
             let header = header_buf.as_full_slice();
@@ -522,8 +525,15 @@ impl<IO: DiskIo> VlogSegment<IO> {
                 u32::from_le_bytes([header[0], header[1], header[2], header[3]]) as usize;
             let value_len =
                 u32::from_le_bytes([header[4], header[5], header[6], header[7]]) as usize;
+            let ts_len =
+                u32::from_le_bytes([header[8], header[9], header[10], header[11]]) as usize;
 
-            let total_len = ENTRY_OVERHEAD + key_len + value_len;
+            // Zero-filled padding: every real entry has at least 1 byte of key.
+            if key_len == 0 {
+                break;
+            }
+
+            let total_len = ENTRY_OVERHEAD + key_len + ts_len + value_len;
 
             // Partial write: not enough data for the full entry.
             if current_offset + total_len as u64 > file_size {
@@ -572,9 +582,9 @@ impl<IO: DiskIo> VlogSegment<IO> {
         let file_size = std::fs::metadata(&self.path)?.len();
         let mut current_offset = from_offset;
 
-        while current_offset + 8 <= file_size {
-            // Read header (8 bytes) to get key_len and value_len.
-            let header_read_size = round_up(8);
+        while current_offset + HEADER_SIZE as u64 <= file_size {
+            // Read header (12 bytes) to get key_len, value_len, ts_len.
+            let header_read_size = round_up(HEADER_SIZE);
             let mut header_buf = AlignedBuf::new(header_read_size);
             self.io.pread(&mut header_buf, current_offset).await?;
             let header = header_buf.as_full_slice();
@@ -583,8 +593,17 @@ impl<IO: DiskIo> VlogSegment<IO> {
                 u32::from_le_bytes([header[0], header[1], header[2], header[3]]) as usize;
             let value_len =
                 u32::from_le_bytes([header[4], header[5], header[6], header[7]]) as usize;
+            let ts_len =
+                u32::from_le_bytes([header[8], header[9], header[10], header[11]]) as usize;
 
-            let total_len = ENTRY_OVERHEAD + key_len + value_len;
+            // Zero-filled padding at the end of the file (from 4 KiB-aligned
+            // pwrite) can look like a valid header with key_len=0, ts_len=0.
+            // Every real entry has at least 1 byte of key data — stop here.
+            if key_len == 0 {
+                break;
+            }
+
+            let total_len = ENTRY_OVERHEAD + key_len + ts_len + value_len;
 
             // Partial write: not enough data for the full entry.
             if current_offset + total_len as u64 > file_size {
@@ -598,9 +617,9 @@ impl<IO: DiskIo> VlogSegment<IO> {
             let raw = buf.as_full_slice();
 
             // Verify crc_kts over key_bytes | ts_bytes.
-            let key_start = 8;
+            let key_start = HEADER_SIZE;
             let key_end = key_start + key_len;
-            let ts_end = key_end + TS_SIZE;
+            let ts_end = key_end + ts_len;
             let crc_kts_start = ts_end;
 
             let key_bytes = &raw[key_start..key_end];
@@ -692,15 +711,13 @@ impl<IO: DiskIo> VlogSegment<IO> {
             let value_bytes = bitcode::serialize(&entry.value)
                 .map_err(|e| StorageError::Codec(e.to_string()))?;
 
-            debug_assert_eq!(ts_bytes.len(), TS_SIZE);
-
             let mut kts_hasher = crc32fast::Hasher::new();
             kts_hasher.update(&key_bytes);
             kts_hasher.update(&ts_bytes);
             let crc_kts = kts_hasher.finalize();
             let crc_val = crc32fast::hash(&value_bytes);
 
-            let total_len = ENTRY_OVERHEAD + key_bytes.len() + value_bytes.len();
+            let total_len = ENTRY_OVERHEAD + key_bytes.len() + ts_bytes.len() + value_bytes.len();
             total_buf_size += total_len;
 
             serialized.push(SerializedEntry {
@@ -725,17 +742,21 @@ impl<IO: DiskIo> VlogSegment<IO> {
             let key_len = se.key_bytes.len() as u32;
             let value_len = se.value_bytes.len() as u32;
 
-            // Header: key_len(4) | value_len(4)
+            let ts_len = se.ts_bytes.len() as u32;
+
+            // Header: key_len(4) | value_len(4) | ts_len(4)
             slice[pos..pos + 4].copy_from_slice(&key_len.to_le_bytes());
             pos += 4;
             slice[pos..pos + 4].copy_from_slice(&value_len.to_le_bytes());
+            pos += 4;
+            slice[pos..pos + 4].copy_from_slice(&ts_len.to_le_bytes());
             pos += 4;
 
             // Key + timestamp + crc_kts
             slice[pos..pos + se.key_bytes.len()].copy_from_slice(&se.key_bytes);
             pos += se.key_bytes.len();
-            slice[pos..pos + TS_SIZE].copy_from_slice(&se.ts_bytes);
-            pos += TS_SIZE;
+            slice[pos..pos + se.ts_bytes.len()].copy_from_slice(&se.ts_bytes);
+            pos += se.ts_bytes.len();
             slice[pos..pos + 4].copy_from_slice(&se.crc_kts.to_le_bytes());
             pos += 4;
 

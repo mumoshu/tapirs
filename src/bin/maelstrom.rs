@@ -15,7 +15,8 @@ use std::sync::atomic::Ordering::SeqCst;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tapirs::{
-    IrMembership, IrMessage, IrReplica, TapirClient, TapirReplica, TapirTransport, Transport,
+    BufferedIo, IrMembership, IrMessage, IrReplica, MvccDiskStore, TapirClient, TapirReplica,
+    TapirTimestamp, TapirTransport, Transport,
 };
 use tokio::spawn;
 use tracing::{info, trace, warn};
@@ -233,13 +234,17 @@ impl Process<LinKv, Wrapper> for KvNode {
         self.inner = Some((
             transport.clone(),
             match id {
-                IdEnum::Replica(_) => KvNodeInner::Replica(Arc::new(IrReplica::new(
-                    tapirs::Rng::from_seed(thread_rng().r#gen()),
-                    membership,
-                    TapirReplica::new(tapirs::ShardNumber(0), true),
-                    transport,
-                    Some(TapirReplica::tick),
-                ))),
+                IdEnum::Replica(_) => {
+                    let mvcc_dir = std::env::temp_dir().join(format!("maelstrom-tapir-{}", std::process::id()));
+                    let backend = MvccDiskStore::<String, String, TapirTimestamp, BufferedIo>::open(mvcc_dir).expect("open DiskStore");
+                    KvNodeInner::Replica(Arc::new(IrReplica::new(
+                        tapirs::Rng::from_seed(thread_rng().r#gen()),
+                        membership,
+                        TapirReplica::new_with_backend(tapirs::ShardNumber(0), true, backend),
+                        transport,
+                        Some(TapirReplica::tick),
+                    )))
+                }
                 IdEnum::App(_) => KvNodeInner::App(Arc::new(TapirClient::new(tapirs::Rng::from_seed(thread_rng().r#gen()), transport))),
                 id => panic!("{id}"),
             },

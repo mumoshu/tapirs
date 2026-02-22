@@ -6,6 +6,7 @@ use super::memtable::{CompositeKey, LsmEntry, MaxValue, Memtable};
 use super::sstable::SSTableReader;
 use super::vlog::{VlogEntry, VlogSegment};
 use crate::mvcc::backend::MvccBackend;
+use crate::occ::Timestamp as OccTimestamp;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::Debug;
@@ -103,6 +104,41 @@ pub struct DiskStore<K, V, TS, IO: DiskIo> {
     _v: std::marker::PhantomData<V>,
 }
 
+/// Serialize DiskStore by syncing to disk and saving just the base_dir path.
+///
+/// On deserialization, `DiskStore::open(base_dir)` recovers full state from
+/// the manifest and vlog. This is sound because `sync()` ensures all data is
+/// durable on disk before we serialize, and the recovery path replays any
+/// sync'd-but-not-flushed entries from the vlog.
+impl<K, V, TS, IO: DiskIo> Serialize for DiskStore<K, V, TS, IO> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // Sync to ensure all data is durable before serializing the path.
+        // Ignore errors — the data may already be sync'd.
+        let _ = futures::executor::block_on(self.vlog.sync());
+        self.base_dir.serialize(serializer)
+    }
+}
+
+impl<'de, K, V, TS, IO: DiskIo> Deserialize<'de> for DiskStore<K, V, TS, IO>
+where
+    K: Serialize + for<'de2> Deserialize<'de2> + Ord + Clone + Send + Debug + std::hash::Hash,
+    V: Serialize + for<'de2> Deserialize<'de2> + Clone + Send + Debug,
+    TS: Serialize
+        + for<'de2> Deserialize<'de2>
+        + Ord
+        + Copy
+        + Default
+        + MaxValue
+        + Send
+        + Debug
+        + OccTimestamp<Time = u64>,
+{
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let base_dir = PathBuf::deserialize(deserializer)?;
+        Self::open(base_dir).map_err(serde::de::Error::custom)
+    }
+}
+
 impl<K, V, TS, IO: DiskIo> DiskStore<K, V, TS, IO>
 where
     K: Serialize + for<'de> Deserialize<'de> + Ord + Clone + Send + Debug + std::hash::Hash,
@@ -114,7 +150,8 @@ where
         + Default
         + MaxValue
         + Send
-        + Debug,
+        + Debug
+        + OccTimestamp<Time = u64>,
 {
     /// Open or create a DiskStore at the given directory.
     ///
@@ -379,18 +416,8 @@ where
         read: TS,
         commit: TS,
     ) -> Result<(), StorageError> {
-        // Convert commit TS to u64 for storage.
-        // We store as the raw bits of the serialized timestamp.
-        let commit_bytes =
-            bitcode::serialize(&commit).map_err(|e| StorageError::Codec(e.to_string()))?;
-        let commit_u64 = if commit_bytes.len() >= 8 {
-            u64::from_le_bytes(commit_bytes[..8].try_into().unwrap())
-        } else {
-            let mut buf = [0u8; 8];
-            buf[..commit_bytes.len()].copy_from_slice(&commit_bytes);
-            u64::from_le_bytes(buf)
-        };
-
+        // Store the time component as u64 directly.
+        let commit_u64 = commit.time();
         self.memtable.update_last_read(&key, &read, commit_u64);
         Ok(())
     }
@@ -489,12 +516,7 @@ where
     fn decode_last_read_ts(&self, raw: Option<u64>) -> Result<Option<TS>, StorageError> {
         match raw {
             None => Ok(None),
-            Some(val) => {
-                let bytes = val.to_le_bytes();
-                let ts: TS = bitcode::deserialize(&bytes)
-                    .map_err(|e| StorageError::Codec(e.to_string()))?;
-                Ok(Some(ts))
-            }
+            Some(val) => Ok(Some(TS::from_time(val))),
         }
     }
 
@@ -715,7 +737,8 @@ where
         + Default
         + MaxValue
         + Send
-        + Debug,
+        + Debug
+        + OccTimestamp<Time = u64>,
 {
     type Error = StorageError;
 
@@ -1110,7 +1133,8 @@ mod tests {
             .put_impl("key1".to_string(), Some("value1".to_string()), 10)
             .unwrap();
 
-        // Corrupt key bytes in the vlog (offset 8 is start of key_bytes).
+        // Corrupt key bytes in the vlog (offset 12 is start of key_bytes).
+        // Header is [key_len(4) | value_len(4) | ts_len(4)] = 12 bytes.
         let vlog_path = path.join("vlog-000000.log");
         {
             use std::io::{Seek, Write, SeekFrom};
@@ -1118,7 +1142,7 @@ mod tests {
                 .write(true)
                 .open(&vlog_path)
                 .unwrap();
-            file.seek(SeekFrom::Start(8)).unwrap();
+            file.seek(SeekFrom::Start(12)).unwrap();
             file.write_all(&[0xFF, 0xFF, 0xFF]).unwrap();
             file.flush().unwrap();
         }
@@ -1141,14 +1165,16 @@ mod tests {
             .put_impl("key1".to_string(), Some("value1".to_string()), 10)
             .unwrap();
 
-        // Find the value bytes offset: 8 (header) + key_len + 8 (ts) + 4 (crc_kts)
-        // We need the actual key_len to compute this.
+        // Find the value bytes offset: 12 (header) + key_len + ts_len + 4 (crc_kts)
+        // Header is [key_len(4) | value_len(4) | ts_len(4)] = 12 bytes.
         let vlog_path = path.join("vlog-000000.log");
-        let key_len = {
+        let (key_len, ts_len) = {
             let data = std::fs::read(&vlog_path).unwrap();
-            u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize
+            let kl = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+            let tl = u32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize;
+            (kl, tl)
         };
-        let val_start = 8 + key_len + 8 + 4; // header + key + ts + crc_kts
+        let val_start = 12 + key_len + ts_len + 4; // header + key + ts + crc_kts
 
         {
             use std::io::{Seek, Write, SeekFrom};

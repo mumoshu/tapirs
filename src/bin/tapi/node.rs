@@ -10,7 +10,7 @@ use tapirs::discovery::{CachingShardDirectory, InMemoryShardDirectory};
 pub use tapirs::node::ShardBackup;
 use tapirs::{
     IrClient, IrMembership, IrReplica, IrSharedView, IrView, IrViewNumber,
-    ShardNumber, TapirReplica, TcpAddress, TcpTransport,
+    MvccDiskStore, BufferedIo, ShardNumber, TapirReplica, TapirTimestamp, TcpAddress, TcpTransport,
 };
 
 fn production_rng() -> tapirs::Rng {
@@ -110,12 +110,17 @@ impl Node {
             .map_err(|e| format!("failed to listen on {listen_addr}: {e}"))?;
 
         let transport_for_replica = transport.clone();
+        let mvcc_dir = format!("{}/shard_{}/mvcc", self.persist_dir, cfg.shard);
+        let backend = MvccDiskStore::<String, String, TapirTimestamp, BufferedIo>::open(
+            std::path::PathBuf::from(&mvcc_dir),
+        )
+        .map_err(|e| format!("failed to open DiskStore at {mvcc_dir}: {e}"))?;
         let replica = Arc::new_cyclic(|weak: &std::sync::Weak<TapirIrReplica>| {
             let weak = weak.clone();
             transport_for_replica.set_receive_callback(move |from, message| {
                 weak.upgrade()?.receive(from, message)
             });
-            let upcalls = TapirReplica::new(shard, false);
+            let upcalls = TapirReplica::new_with_backend(shard, false, backend);
             IrReplica::with_view_change_interval(
                 production_rng(),
                 membership,

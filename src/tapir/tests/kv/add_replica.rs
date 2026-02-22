@@ -44,7 +44,11 @@ async fn test_add_replica_with_preload() {
             let channel =
                 registry.channel(move |from, message| weak.upgrade()?.receive(from, message), Arc::clone(&dir));
             channel.set_shard(shard);
-            let upcalls = TapirReplica::new(shard, true);
+            let upcalls = TapirReplica::new_with_backend(shard, true,
+                DiskStore::<K, V, Timestamp, BufferedIo>::open(
+                    tempfile::tempdir().unwrap().into_path(),
+                ).unwrap(),
+            );
             // Start with membership=[self] only — the real membership comes via AddMember.
             IrReplica::new(
                 rng.fork(),

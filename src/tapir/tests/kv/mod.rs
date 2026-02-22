@@ -17,9 +17,11 @@ use crate::{
         CachingShardDirectory, InMemoryRemoteDirectory, InMemoryShardDirectory,
         RemoteShardDirectory as _, ShardDirectory as _,
     },
+    mvcc::disk::{DiskStore, disk_io::BufferedIo},
     tapir::dynamic_router::{DynamicRouter, ShardDirectory, ShardEntry},
     tapir::key_range::KeyRange,
     tapir::Sharded,
+    tapir::Timestamp,
     transport::{FaultyChannelTransport, LatencyConfig, NetworkFaultConfig},
     ChannelRegistry, ChannelTransport, IrMembership, IrReplica, RoutingClient, ShardNumber,
     TapirClient, TapirReplica, TapirTimestamp, Transport as _,
@@ -76,6 +78,9 @@ fn build_shard(
         membership: &IrMembership<usize>,
         linearizable: bool,
     ) -> Arc<IrReplica<TapirReplica<K, V>, ChannelTransport<TapirReplica<K, V>>>> {
+        let backend = DiskStore::<K, V, Timestamp, BufferedIo>::open(
+            tempfile::tempdir().unwrap().into_path(),
+        ).unwrap();
         Arc::new_cyclic(
             |weak: &std::sync::Weak<
                 IrReplica<TapirReplica<K, V>, ChannelTransport<TapirReplica<K, V>>>,
@@ -84,7 +89,7 @@ fn build_shard(
                 let channel =
                     registry.channel(move |from, message| weak.upgrade()?.receive(from, message), Arc::clone(directory));
                 channel.set_shard(shard);
-                let upcalls = TapirReplica::new(shard, linearizable);
+                let upcalls = TapirReplica::new_with_backend(shard, linearizable, backend);
                 IrReplica::new(
                     rng.fork(),
                     membership.clone(),
