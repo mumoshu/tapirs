@@ -1,4 +1,4 @@
-# IR Custom Extensions
+# Record Compaction
 
 ```
 IR Record Growth (beyond the paper)
@@ -64,7 +64,7 @@ and R0+R1 participate in the next view change:
 
 **Shard replacement (the only safe compaction):** For compaction (removing all resolved entries, transaction_log, ancient MVCC versions), the CDC-based shard replacement in `shard_manager_cdc.rs` starts a fresh shard with only committed state -- no IR record history needed. This is the only safe mechanism because it rebuilds from scratch rather than selectively removing entries from a live record.
 
-**Related docs:** See [Protocol](protocol-tapir.md) for the base view change flow, [Resharding](resharding.md) for CDC-based shard replacement, and [IR concepts](../concepts/ir.md) for record terminology. Key files: `src/tapir/shard_manager_cdc.rs` (shard replacement).
+**Related docs:** Back to [IR Custom Extensions](ir-custom-extensions.md). See [Protocol](protocol-tapir.md) for the base view change flow, [Resharding](resharding.md) for CDC-based shard replacement, and [IR concepts](../concepts/ir.md) for record terminology. Key files: `src/tapir/shard_manager_cdc.rs` (shard replacement).
 
 | Topic | Summary | Key file |
 |-------|---------|----------|

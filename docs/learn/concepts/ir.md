@@ -36,6 +36,6 @@
 | View Change | Leader merges f+1 records (highest-view entry per OpId), calls Merge then Sync (§3.2.2) | `ir/replica.rs` — `handle_do_view_change()` |
 | Merge | Application upcall to reconcile inconsistent replicas into master record (§3.1.1, §3.2.2) | `ir/replica.rs` — TAPIR's `merge()` |
 | Sync | Application upcall at each replica to reconcile with master record (§3.1.1, §3.2.2) | `ir/replica.rs` — TAPIR's `sync()` |
-| Record | Unordered set of operations — not an ordered log. Each entry: (OpId, op, result, state). Grows unboundedly; compacted only via shard replacement ([why](../internals/protocol-ir-custom-extensions.md)) (§3.1) | `ir/record.rs` |
+| Record | Unordered set of operations — not an ordered log. Each entry: (OpId, op, result, state). Grows unboundedly; compacted only via shard replacement ([why](../internals/ir-custom-extensions-compaction.md)) (§3.1) | `ir/record.rs` |
 | Quorum | f+1 out of 2f+1 replicas. Fast quorum: ⌈3f/2⌉+1. Quorum intersection guarantees visibility (§3.1.2) | `ir/membership.rs` |
 | Client Recovery | Recovering client polls majority for latest OpId, increments counter. View change finalizes tentative ops (§3.2.3) | `ir/client.rs` |
