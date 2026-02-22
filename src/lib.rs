@@ -24,10 +24,12 @@ pub use ir::{
 };
 pub use mvcc::MvccBackend;
 pub use mvcc::disk::{DiskStore as MvccDiskStore, StorageError};
-pub use mvcc::disk::disk_io::BufferedIo;
+pub use mvcc::disk::disk_io::{BufferedIo, OpenFlags as DiskOpenFlags};
 #[cfg(test)]
 pub use mvcc::disk::memory_io::MemoryIo as DefaultDiskIo;
-#[cfg(not(test))]
+#[cfg(all(not(test), target_os = "linux", feature = "io-uring"))]
+pub use transport::uring::UringDirectIo as DefaultDiskIo;
+#[cfg(all(not(test), not(all(target_os = "linux", feature = "io-uring"))))]
 pub use mvcc::disk::disk_io::BufferedIo as DefaultDiskIo;
 pub use occ::{
     PrepareResult as OccPrepareResult, ScanEntry as OccScanEntry, Store as OccStore,

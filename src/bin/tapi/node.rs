@@ -8,8 +8,8 @@ use std::time::Duration;
 use tapirs::discovery::{CachingShardDirectory, InMemoryShardDirectory};
 pub use tapirs::node::ShardBackup;
 use tapirs::{
-    BufferedIo, IrClient, IrMembership, IrReplica, IrReplicaMetrics, IrSharedView, IrView,
-    IrViewNumber, MvccDiskStore, ShardNumber, TapirReplica, TapirTimestamp, TcpAddress, TcpTransport,
+    IrClient, IrMembership, IrReplica, IrReplicaMetrics, IrSharedView, IrView,
+    IrViewNumber, MvccDiskStore, ShardNumber, TapirReplica, TcpAddress, TcpTransport,
 };
 
 fn production_rng() -> tapirs::Rng {
@@ -105,7 +105,15 @@ impl Node {
 
         let transport_for_replica = transport.clone();
         let mvcc_dir = format!("{}/shard_{}/mvcc", self.persist_dir, cfg.shard);
-        let backend = MvccDiskStore::<String, String, TapirTimestamp, BufferedIo>::open(
+        #[cfg(all(target_os = "linux", feature = "io-uring"))]
+        let backend = MvccDiskStore::open_with_flags(
+            std::path::PathBuf::from(&mvcc_dir),
+            tapirs::DiskOpenFlags { create: true, direct: true },
+        )
+        .map_err(|e| format!("failed to open DiskStore at {mvcc_dir}: {e}"))?;
+
+        #[cfg(not(all(target_os = "linux", feature = "io-uring")))]
+        let backend = MvccDiskStore::open(
             std::path::PathBuf::from(&mvcc_dir),
         )
         .map_err(|e| format!("failed to open DiskStore at {mvcc_dir}: {e}"))?;

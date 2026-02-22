@@ -15,8 +15,8 @@ use std::sync::atomic::Ordering::SeqCst;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tapirs::{
-    BufferedIo, IrMembership, IrMessage, IrReplica, MvccDiskStore, TapirClient, TapirReplica,
-    TapirTimestamp, TapirTransport, Transport,
+    IrMembership, IrMessage, IrReplica, MvccDiskStore, TapirClient, TapirReplica,
+    TapirTransport, Transport,
 };
 use tokio::spawn;
 use tracing::{info, trace, warn};
@@ -236,7 +236,7 @@ impl Process<LinKv, Wrapper> for KvNode {
             match id {
                 IdEnum::Replica(_) => {
                     let mvcc_dir = std::env::temp_dir().join(format!("maelstrom-tapir-{}", std::process::id()));
-                    let backend = MvccDiskStore::<String, String, TapirTimestamp, BufferedIo>::open(mvcc_dir).expect("open DiskStore");
+                    let backend = MvccDiskStore::open(mvcc_dir).expect("open DiskStore");
                     KvNodeInner::Replica(Arc::new(IrReplica::new(
                         tapirs::Rng::from_seed(thread_rng().r#gen()),
                         membership,
