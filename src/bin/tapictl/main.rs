@@ -27,6 +27,16 @@ enum Command {
         #[command(subcommand)]
         resource: CompactResource,
     },
+    /// Create a cluster resource.
+    Create {
+        #[command(subcommand)]
+        resource: CreateResource,
+    },
+    /// Get cluster information.
+    Get {
+        #[command(subcommand)]
+        resource: GetResource,
+    },
     /// Operations via direct node access (no ShardManager required).
     ///
     /// These commands communicate directly with node admin APIs to discover
@@ -123,6 +133,88 @@ enum CompactResource {
     },
 }
 
+#[derive(Subcommand)]
+enum CreateResource {
+    /// Register a shard with the shard-manager.
+    ///
+    /// Tells the shard-manager about a shard's key range so it can manage
+    /// routing. The shard's replicas must already exist (created via
+    /// `tapi admin add-replica`).
+    Shard {
+        /// Shard-manager URL.
+        #[arg(long, default_value = "http://127.0.0.1:9001")]
+        shard_manager_url: String,
+        /// Shard number to register.
+        #[arg(long)]
+        shard: u32,
+        /// Start of the key range (inclusive). Omit for unbounded start.
+        #[arg(long)]
+        key_range_start: Option<String>,
+        /// End of the key range (exclusive). Omit for unbounded end.
+        #[arg(long)]
+        key_range_end: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum GetResource {
+    /// Show cluster topology from the TAPIR discovery cluster.
+    ///
+    /// Queries the discovery cluster for all registered shards and
+    /// their replica membership.
+    Topology {
+        /// TAPIR discovery cluster endpoint.
+        ///
+        /// Static: comma-separated replica addresses (e.g. "10.0.0.1:6000,10.0.0.2:6000").
+        /// DNS: "srv://hostname:port" for DNS resolution.
+        #[arg(long)]
+        discovery_tapir_endpoint: String,
+    },
+}
+
+async fn get_topology(endpoint: &str) -> Result<(), String> {
+    use rand::{thread_rng, Rng as _};
+    use tapirs::discovery::{tapir, RemoteShardDirectory};
+    use tapirs::{TcpAddress, TcpTransport, TapirReplica};
+
+    let ephemeral_addr = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let a = l.local_addr().unwrap();
+        drop(l);
+        TcpAddress(a)
+    };
+    let disc_dir = std::sync::Arc::new(tapirs::discovery::InMemoryShardDirectory::new());
+    let persist_dir = format!("/tmp/tapictl_topology_{}", std::process::id());
+    let disc_transport: TcpTransport<TapirReplica<String, String>> =
+        TcpTransport::with_directory(ephemeral_addr, persist_dir, disc_dir);
+
+    let rng = tapirs::Rng::from_seed(thread_rng().r#gen());
+    let dir = tapir::parse_tapir_endpoint::<TcpAddress, _>(
+        endpoint,
+        tapir::ReadMode::Eventual,
+        disc_transport,
+        rng,
+    )
+    .await
+    .map_err(|e| format!("failed to connect to discovery: {e}"))?;
+
+    let entries =
+        <_ as RemoteShardDirectory<TcpAddress, ()>>::all(&dir)
+            .await
+            .map_err(|e| format!("failed to fetch topology: {e}"))?;
+
+    if entries.is_empty() {
+        println!("No shards registered in discovery.");
+    } else {
+        println!("{:<8} {:<8} {}", "SHARD", "VIEW", "REPLICAS");
+        for (shard, membership, view) in entries {
+            let addrs = tapirs::discovery::membership_to_strings(&membership);
+            println!("{:<8} {:<8} {}", shard.0, view, addrs.join(", "));
+        }
+    }
+    Ok(())
+}
+
 fn main() {
     let cli = Cli::parse();
     let result: Result<(), String> = match cli.command {
@@ -175,6 +267,31 @@ fn main() {
             client
                 .compact(source, new_shard, &replicas)
                 .map(|()| println!("Compacted shard {source} -> new shard {new_shard}"))
+        }
+        Command::Create {
+            resource:
+                CreateResource::Shard {
+                    shard_manager_url,
+                    shard,
+                    key_range_start,
+                    key_range_end,
+                },
+        } => {
+            let client = HttpShardManagerClient::new(&shard_manager_url);
+            client
+                .register(shard, key_range_start.as_deref(), key_range_end.as_deref())
+                .map(|()| println!("Registered shard {shard}"))
+        }
+        Command::Get {
+            resource:
+                GetResource::Topology {
+                    discovery_tapir_endpoint,
+                },
+        } => {
+            let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");
+            rt.block_on(async {
+                get_topology(&discovery_tapir_endpoint).await
+            })
         }
         Command::Solo {
             command:

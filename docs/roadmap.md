@@ -19,8 +19,8 @@
 
 | Item | Description | Status |
 |------|-------------|--------|
-| Kubernetes Testbed | Deploy a tapirs cluster on Kubernetes using Helm or raw manifests. Extends Docker testbed with DNS-based discovery for headless services | Planned |
-| Kind (Kubernetes) Testbed | Bootstrap a local tapirs cluster on Kind (Kubernetes-in-Docker). Zero-dependency local Kubernetes experience | Planned |
+| Kubernetes Testbed | Deploy a tapirs cluster on Kubernetes using raw manifests. Extends Docker testbed with DNS-based discovery for headless services. See `scripts/testbed-kube.sh` | Done |
+| Kind (Kubernetes) Testbed | Bootstrap a local tapirs cluster on Kind (Kubernetes-in-Docker). Zero-dependency local Kubernetes experience. Set `TAPIR_KIND=1` with `scripts/testbed-kube.sh` | Done |
 | Observability | Prometheus metrics endpoint, Grafana dashboard templates, structured logging, health checks. See [Monitoring](operate/monitoring.md) for what to track | Planned |
 | Kubernetes Operator | Custom Resource Definitions for TapirsCluster, automated scaling, resharding triggers, self-healing. Manages the full cluster lifecycle declaratively | Planned |
 | Benchmark | Reproducible performance benchmarks: ops/sec, p50/p99/p999 latency, scalability curves. Comparison with etcd, FoundationDB, CockroachDB, TiKV. See [Comparison](evaluate/comparison.md) | Planned |

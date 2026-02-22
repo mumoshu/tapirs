@@ -158,6 +158,11 @@ enum AdminAction {
         /// "disk" uses a WiscKey LSM+VLog store (not yet available).
         #[arg(long, value_enum, default_value = "memory")]
         storage: StorageBackend,
+        /// Static membership addresses (comma-separated). When provided,
+        /// creates the replica with explicit membership (no shard-manager).
+        /// Example: --membership 10.0.0.1:6000,10.0.0.2:6000,10.0.0.3:6000
+        #[arg(long, value_delimiter = ',')]
+        membership: Vec<String>,
     },
     /// Remove a replica for a shard.
     RemoveReplica {
@@ -179,6 +184,14 @@ enum AdminAction {
         admin_listen_addr: String,
         #[arg(long)]
         shard: u32,
+    },
+    /// Wait for a node's admin server to become reachable.
+    WaitReady {
+        #[arg(long, default_value = "127.0.0.1:9000")]
+        admin_listen_addr: String,
+        /// Timeout in seconds.
+        #[arg(long, default_value = "60")]
+        timeout: u64,
     },
     /// Take a full cluster backup.
     Backup {
