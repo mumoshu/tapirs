@@ -14,7 +14,7 @@ use super::fuzz_event_log::{FuzzEvent, FuzzEventLog};
 use super::invariant_checker::{InvariantChecker, TxnOutcome, TxnRecord};
 use crate::{
     discovery::{
-        CachingShardDirectory, InMemoryRemoteDirectory, InMemoryShardDirectory,
+        CachingShardDirectory, InMemoryShardDirectory,
         RemoteShardDirectory as _, ShardDirectory as _,
     },
     mvcc::disk::{DiskStore, memory_io::MemoryIo},
@@ -22,6 +22,7 @@ use crate::{
     tapir::key_range::KeyRange,
     tapir::Sharded,
     tapir::Timestamp,
+    testing::{self, cluster},
     transport::{FaultyChannelTransport, LatencyConfig, NetworkFaultConfig},
     ChannelRegistry, ChannelTransport, IrMembership, IrReplica, RoutingClient, ShardNumber,
     TapirClient, TapirReplica, TapirTimestamp, Transport as _,
@@ -43,16 +44,10 @@ type V = i64;
 type Transport = ChannelTransport<TapirReplica<K, V>>;
 type FaultyTransport = FaultyChannelTransport<TapirReplica<K, V>>;
 
-fn test_rng(seed: u64) -> crate::Rng {
-    crate::Rng::from_seed(seed)
-}
+use testing::test_rng;
 
 fn init_tracing() {
-    let _ = tracing::subscriber::set_global_default(
-        tracing_subscriber::fmt()
-            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-            .finish(),
-    );
+    testing::init_tracing();
 }
 
 fn build_shard(
@@ -63,51 +58,7 @@ fn build_shard(
     registry: &ChannelRegistry<TapirReplica<K, V>>,
     directory: &Arc<InMemoryShardDirectory<usize>>,
 ) -> Vec<Arc<IrReplica<TapirReplica<K, V>, ChannelTransport<TapirReplica<K, V>>>>> {
-    let initial_address = registry.len();
-    let membership = IrMembership::new(
-        (0..num_replicas)
-            .map(|n| n + initial_address)
-            .collect::<Vec<_>>(),
-    );
-
-    fn create_replica(
-        rng: &mut crate::Rng,
-        registry: &ChannelRegistry<TapirReplica<K, V>>,
-        directory: &Arc<InMemoryShardDirectory<usize>>,
-        shard: ShardNumber,
-        membership: &IrMembership<usize>,
-        linearizable: bool,
-    ) -> Arc<IrReplica<TapirReplica<K, V>, ChannelTransport<TapirReplica<K, V>>>> {
-        let backend = DiskStore::<K, V, Timestamp, MemoryIo>::open(
-            MemoryIo::temp_path(),
-        ).unwrap();
-        Arc::new_cyclic(
-            |weak: &std::sync::Weak<
-                IrReplica<TapirReplica<K, V>, ChannelTransport<TapirReplica<K, V>>>,
-            >| {
-                let weak = weak.clone();
-                let channel =
-                    registry.channel(move |from, message| weak.upgrade()?.receive(from, message), Arc::clone(directory));
-                channel.set_shard(shard);
-                let upcalls = TapirReplica::new_with_backend(shard, linearizable, backend);
-                IrReplica::new(
-                    rng.fork(),
-                    membership.clone(),
-                    upcalls,
-                    channel,
-                    Some(TapirReplica::tick),
-                )
-            },
-        )
-    }
-
-    let replicas = (0..num_replicas)
-        .map(|_| create_replica(rng, &registry, directory, shard, &membership, linearizable))
-        .collect::<Vec<_>>();
-
-    directory.put(shard, membership.clone(), 0);
-
-    replicas
+    cluster::build_shard(rng, shard, linearizable, num_replicas, registry, directory)
 }
 
 fn build_clients(
@@ -116,20 +67,7 @@ fn build_clients(
     registry: &ChannelRegistry<TapirReplica<K, V>>,
     directory: &Arc<InMemoryShardDirectory<usize>>,
 ) -> Vec<Arc<TapirClient<K, V, ChannelTransport<TapirReplica<K, V>>>>> {
-    fn create_client(
-        rng: &mut crate::Rng,
-        registry: &ChannelRegistry<TapirReplica<K, V>>,
-        directory: &Arc<InMemoryShardDirectory<usize>>,
-    ) -> Arc<TapirClient<K, V, ChannelTransport<TapirReplica<K, V>>>> {
-        let channel = registry.channel(move |_, _| unreachable!(), Arc::clone(directory));
-        Arc::new(TapirClient::new(rng.fork(), channel))
-    }
-
-    let clients = (0..num_clients)
-        .map(|_| create_client(rng, &registry, directory))
-        .collect::<Vec<_>>();
-
-    clients
+    cluster::build_clients(rng, num_clients, registry, directory)
 }
 
 fn build_kv(

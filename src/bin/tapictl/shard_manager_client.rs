@@ -4,8 +4,7 @@ use std::net::TcpStream;
 
 /// HTTP client for the tapi shard-manager service.
 ///
-/// Follows the same raw-TCP HTTP/1.1 pattern as `HttpDiscoveryClient`
-/// in `src/bin/tapi/discovery.rs`. No external HTTP libraries.
+/// Uses raw-TCP HTTP/1.1 (no external HTTP libraries).
 pub struct HttpShardManagerClient {
     addr: std::net::SocketAddr,
 }

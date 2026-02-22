@@ -2,6 +2,7 @@ use super::*;
 
 use crate::tapir::shard_manager::ShardManager;
 use crate::tapir::ShardClient;
+use crate::testing::discovery::build_single_node_discovery;
 use crate::IrClientId;
 use crate::OccPrepareResult;
 
@@ -14,10 +15,12 @@ async fn test_compact_new_shard_rejects_old_prepare_after_range_scan_on_old_shar
     let dir = Arc::new(InMemoryShardDirectory::new());
 
     // Build shard 0 (3 replicas, linearizable).
+    eprintln!("[compact-test] building shard 0");
     let _replicas_0 = build_shard(&mut rng, ShardNumber(0), true, 3, &registry, &dir);
     let clients = build_clients(&mut rng, 1, &registry, &dir);
 
     // Commit a key so there's data.
+    eprintln!("[compact-test] committing initial write");
     let txn = clients[0].begin();
     txn.put(Sharded { shard: ShardNumber(0), key: 10 }, Some(100));
     assert!(txn.commit().await.is_some(), "initial write should succeed");
@@ -25,6 +28,7 @@ async fn test_compact_new_shard_rejects_old_prepare_after_range_scan_on_old_shar
 
     // Do IO::QuorumScan at a known timestamp via ShardClient.
     // This creates a range_reads entry on shard 0 replicas.
+    eprintln!("[compact-test] doing quorum_scan");
     let scan_ts = TapirTimestamp { time: 500, client_id: IrClientId(999) };
     let membership_0 = IrMembership::new(vec![0, 1, 2]);
     let shard_client_0: ShardClient<K, V, Transport> = ShardClient::new(
@@ -37,28 +41,37 @@ async fn test_compact_new_shard_rejects_old_prepare_after_range_scan_on_old_shar
     let _scan_results = shard_client_0.quorum_scan(0, 100, scan_ts).await;
 
     // Force view change so CDC deltas are captured.
+    eprintln!("[compact-test] forcing view change");
     _replicas_0[0].force_view_change();
     tokio::time::sleep(Duration::from_secs(5)).await;
 
     // Build new shard replicas for shard 1 (compact target).
+    eprintln!("[compact-test] building shard 1");
     let _replicas_1 = build_shard(&mut rng, ShardNumber(1), true, 3, &registry, &dir);
 
     // Set up ShardManager, register shard 0, compact to shard 1.
+    eprintln!("[compact-test] building discovery cluster");
+    let disc = build_single_node_discovery(&mut rng);
+    eprintln!("[compact-test] creating ShardManager");
     let manager_channel = registry.channel(move |_, _| None, Arc::clone(&dir));
-    let mut manager = ShardManager::new(rng.fork(), manager_channel, Arc::new(InMemoryRemoteDirectory::new()));
+    let mut manager = ShardManager::new(rng.fork(), manager_channel, disc.create_remote(&mut rng));
+    eprintln!("[compact-test] registering shard 0");
     manager.register_shard(
         ShardNumber(0),
         IrMembership::new(vec![0, 1, 2]),
         KeyRange { start: None, end: None },
     ).await;
+    eprintln!("[compact-test] register_shard done");
 
     // Addresses assigned: shard 0 = [0,1,2], clients = [3], shard_client_0 = [4],
     // shard 1 = [5,6,7].
+    eprintln!("[compact-test] calling compact()");
     let new_membership = IrMembership::new(vec![5, 6, 7]);
     manager
         .compact(ShardNumber(0), ShardNumber(1), new_membership)
         .await
         .unwrap();
+    eprintln!("[compact-test] compact() done");
 
     // After compact: prepare a write to key=10 on the new shard (shard 1)
     // with commit_ts.time < scan_ts.time (500). This MUST be rejected as TooLate.
@@ -91,6 +104,8 @@ async fn test_compact_new_shard_rejects_old_prepare_after_range_scan_on_old_shar
         old_ts.time, scan_ts.time, result
     );
 
+    eprintln!("[compact-test] shutting down discovery");
+    disc.shutdown().await;
     drop(_replicas_0);
     drop(_replicas_1);
 }
@@ -135,8 +150,9 @@ async fn test_compact_new_shard_rejects_old_prepare_after_quorum_read_on_old_sha
     let _replicas_1 = build_shard(&mut rng, ShardNumber(1), true, 3, &registry, &dir);
 
     // Set up ShardManager, register shard 0, compact to shard 1.
+    let disc = build_single_node_discovery(&mut rng);
     let manager_channel = registry.channel(move |_, _| None, Arc::clone(&dir));
-    let mut manager = ShardManager::new(rng.fork(), manager_channel, Arc::new(InMemoryRemoteDirectory::new()));
+    let mut manager = ShardManager::new(rng.fork(), manager_channel, disc.create_remote(&mut rng));
     manager.register_shard(
         ShardNumber(0),
         IrMembership::new(vec![0, 1, 2]),
@@ -182,6 +198,7 @@ async fn test_compact_new_shard_rejects_old_prepare_after_quorum_read_on_old_sha
         old_ts.time, read_ts.time, result
     );
 
+    disc.shutdown().await;
     drop(_replicas_0);
     drop(_replicas_1);
 }

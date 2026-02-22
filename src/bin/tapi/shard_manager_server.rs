@@ -1,4 +1,3 @@
-use crate::discovery::HttpDiscoveryClient;
 use crate::discovery_backend::DiscoveryBackend;
 use rand::{thread_rng, Rng as _};
 use serde::Deserialize;
@@ -123,6 +122,7 @@ async fn handle_request(
         };
 
         // Query discovery for existing membership.
+        eprintln!("[leave-handler] querying discovery for shard={shard:?} to remove addr={addr:?}");
         let existing = state
             .remote
             .all()
@@ -133,14 +133,17 @@ async fn handle_request(
             .filter(|(m, _)| m.len() > 0);
 
         let Some((membership, view)) = existing else {
+            eprintln!("[leave-handler] shard {shard:?} not found in discovery");
             return (
                 400,
                 format!(r#"{{"error":"shard {} not found in discovery"}}"#, req.shard),
             );
         };
+        eprintln!("[leave-handler] discovery returned membership len={} view={view} for shard={shard:?}", membership.len());
 
         // Verify the address is part of the shard.
         if !membership.contains(addr) {
+            eprintln!("[leave-handler] addr={addr:?} not in membership for shard={shard:?}");
             return (
                 400,
                 format!(
@@ -155,6 +158,7 @@ async fn handle_request(
             .directory
             .put(shard, membership, view);
 
+        eprintln!("[leave-handler] calling manager.leave(shard={shard:?}, addr={addr:?})");
         match state.manager.lock().await.leave(shard, addr).await {
             Ok(()) => (200, r#"{"ok":true}"#.to_string()),
             Err(e) => (500, format!(r#"{{"error":"leave failed: {e}"}}"#)),
@@ -420,7 +424,6 @@ pub(crate) async fn serve(listener: TcpListener, remote: Arc<DiscoveryBackend>) 
 
 pub async fn run(
     listen_addr: String,
-    discovery_url: Option<String>,
     discovery_tapir_endpoint: Option<String>,
 ) {
     let backend = if let Some(endpoint) = discovery_tapir_endpoint {
@@ -448,10 +451,8 @@ pub async fn run(
             std::process::exit(1);
         });
         DiscoveryBackend::Tapir(dir)
-    } else if let Some(url) = discovery_url {
-        DiscoveryBackend::Http(HttpDiscoveryClient::new(&url))
     } else {
-        eprintln!("error: either --discovery-url or --discovery-tapir-endpoint is required");
+        eprintln!("error: --discovery-tapir-endpoint is required");
         std::process::exit(1);
     };
 

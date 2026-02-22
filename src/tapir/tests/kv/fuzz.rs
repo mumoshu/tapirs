@@ -145,53 +145,6 @@ fn build_sharded_kv_faulty(
     (shards, clients, client_transports, registry, node_shard_sets)
 }
 
-/// Build a 3-replica discovery shard (K=String, V=String) on a separate
-/// ChannelRegistry for the TAPIR-backed discovery cluster.
-///
-/// Returns (replicas, registry, directory) for fault injection and
-/// ShardClient construction.
-fn build_discovery_shard(
-    rng: &mut crate::Rng,
-) -> (
-    Vec<Arc<IrReplica<TapirReplica<String, String>, ChannelTransport<TapirReplica<String, String>>>>>,
-    ChannelRegistry<TapirReplica<String, String>>,
-    Arc<InMemoryShardDirectory<usize>>,
-) {
-    let registry = ChannelRegistry::default();
-    let directory = Arc::new(InMemoryShardDirectory::new());
-    let shard = ShardNumber(0);
-    let num_replicas = 3;
-
-    let membership = IrMembership::new((0..num_replicas).collect::<Vec<_>>());
-    let replicas: Vec<_> = (0..num_replicas)
-        .map(|_| {
-            let replica_rng = rng.fork();
-            let dir = Arc::clone(&directory);
-            let m = membership.clone();
-            Arc::new_cyclic(
-                |weak: &std::sync::Weak<
-                    IrReplica<TapirReplica<String, String>, ChannelTransport<TapirReplica<String, String>>>,
-                >| {
-                    let weak = weak.clone();
-                    let channel = registry
-                        .channel(move |from, message| weak.upgrade()?.receive(from, message), dir);
-                    channel.set_shard(shard);
-                    let upcalls = TapirReplica::new_with_backend(shard, false,
-                        crate::mvcc::disk::DiskStore::<String, String, Timestamp, MemoryIo>::open(
-                            MemoryIo::temp_path(),
-                        ).unwrap(),
-                    );
-                    IrReplica::new(replica_rng, m, upcalls, channel, Some(TapirReplica::tick))
-                },
-            )
-        })
-        .collect();
-
-    directory.put(shard, membership, 0);
-
-    (replicas, registry, directory)
-}
-
 /// Build non-overlapping key ranges covering `[0, num_keys)` across shards.
 ///
 /// Keys are distributed as evenly as possible. With num_shards=3, num_keys=5:
@@ -294,21 +247,8 @@ async fn fuzz_tapir_transactions() {
     let sync_interval = Duration::from_millis(200);
 
     // Build TAPIR discovery cluster (separate 3-replica String,String cluster).
-    let (discovery_replicas, discovery_registry, discovery_directory) =
-        build_discovery_shard(&mut lib_rng);
-    // Create a ShardClient for discovery shard 0 and build TapirRemoteShardDirectory.
-    let disc_channel: ChannelTransport<TapirReplica<String, String>> = discovery_registry.channel(
-        move |_, _| None,
-        Arc::clone(&discovery_directory),
-    );
-    let disc_membership = IrMembership::new((0..3usize).collect());
-    let cluster_remote = Arc::new(
-        crate::discovery::tapir::TapirRemoteShardDirectory::<usize, _>::with_eventual_consistent_read(
-            lib_rng.fork(),
-            disc_membership,
-            disc_channel,
-        ),
-    );
+    let disc = crate::testing::discovery::build_test_discovery(&mut lib_rng, 3);
+    let cluster_remote = disc.create_remote(&mut lib_rng);
 
     // Create simulated nodes: num_nodes = max replica count across all shards
     // (guarantees no 2 replicas of same shard on same node).
@@ -473,7 +413,7 @@ async fn fuzz_tapir_transactions() {
     let fault_shards = shards.clone();
     let fault_clients = clients.clone();
     let fault_client_transports = client_transports.clone();
-    let fault_discovery_replicas = discovery_replicas.clone();
+    let fault_discovery_replicas = disc.replicas.clone();
     let fault_event_log = event_log.clone();
     let fault_handle = tokio::spawn(async move {
         let mut rng = StdRng::seed_from_u64(fault_seed);

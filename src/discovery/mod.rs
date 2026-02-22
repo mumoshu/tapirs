@@ -146,184 +146,6 @@ pub trait RemoteShardDirectory<A: Clone + Send + Sync + 'static, K: Clone + Send
     }
 }
 
-// ---- InMemoryRemoteDirectory ----
-
-struct RemoteDirectoryState<A, K> {
-    shards: HashMap<ShardNumber, (IrMembership<A>, u64)>,
-    tombstones: HashSet<ShardNumber>,
-    /// Per-shard typed key range, set by `publish_route_changes()` during resharding.
-    /// Separate from `shards` because `put()` (replica membership updates)
-    /// does not carry key ranges.
-    key_ranges: HashMap<ShardNumber, KeyRange<K>>,
-    /// Append-only route changelog. Index 0 = changeset at index 1 (1-based).
-    route_changelog: Vec<ShardDirectoryChangeSet<K, A>>,
-}
-
-/// In-process remote directory for tests.
-///
-/// Supports tombstones: removed/replaced shards are tombstoned and future
-/// `put()` calls for those shards are rejected with [`DiscoveryError::Tombstoned`].
-/// `all()` omits tombstoned entries.
-#[derive(Clone)]
-pub struct InMemoryRemoteDirectory<A, K = ()> {
-    state: Arc<RwLock<RemoteDirectoryState<A, K>>>,
-}
-
-impl<A, K> Default for InMemoryRemoteDirectory<A, K> {
-    fn default() -> Self {
-        Self {
-            state: Arc::new(RwLock::new(RemoteDirectoryState {
-                shards: HashMap::new(),
-                tombstones: HashSet::new(),
-                key_ranges: HashMap::new(),
-                route_changelog: Vec::new(),
-            })),
-        }
-    }
-}
-
-impl<A, K> InMemoryRemoteDirectory<A, K> {
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-impl<A: Clone, K> InMemoryRemoteDirectory<A, K> {
-    /// Create with initial shard entries (for test setup).
-    pub fn with_shards(entries: Vec<(ShardNumber, IrMembership<A>, u64)>) -> Self {
-        let mut map = HashMap::new();
-        for (shard, membership, view) in entries {
-            map.insert(shard, (membership, view));
-        }
-        Self {
-            state: Arc::new(RwLock::new(RemoteDirectoryState {
-                shards: map,
-                tombstones: HashSet::new(),
-                key_ranges: HashMap::new(),
-                route_changelog: Vec::new(),
-            })),
-        }
-    }
-}
-
-impl<A: Clone + Send + Sync + 'static, K: Clone + Send + Sync + 'static> RemoteShardDirectory<A, K> for InMemoryRemoteDirectory<A, K> {
-    async fn get(
-        &self,
-        shard: ShardNumber,
-    ) -> Result<Option<(IrMembership<A>, u64)>, DiscoveryError> {
-        let state = self.state.read().unwrap();
-        if state.tombstones.contains(&shard) {
-            return Ok(None);
-        }
-        Ok(state.shards.get(&shard).cloned())
-    }
-
-    async fn put(
-        &self,
-        shard: ShardNumber,
-        membership: IrMembership<A>,
-        view: u64,
-    ) -> Result<(), DiscoveryError> {
-        let mut state = self.state.write().unwrap();
-        if state.tombstones.contains(&shard) {
-            return Err(DiscoveryError::Tombstoned);
-        }
-        match state.shards.get(&shard) {
-            Some((_, current_view)) if *current_view > view => return Ok(()), // reject stale
-            _ => { state.shards.insert(shard, (membership, view)); }
-        }
-        Ok(())
-    }
-
-    async fn remove(&self, shard: ShardNumber) -> Result<(), DiscoveryError> {
-        let mut state = self.state.write().unwrap();
-        if state.tombstones.contains(&shard) {
-            return Err(DiscoveryError::NotFound);
-        }
-        match state.shards.remove(&shard) {
-            Some(_) => {
-                state.key_ranges.remove(&shard);
-                state.tombstones.insert(shard);
-                Ok(())
-            }
-            None => Err(DiscoveryError::NotFound),
-        }
-    }
-
-    #[allow(clippy::disallowed_methods)] // values() iteration order is irrelevant — sorted immediately after
-    async fn all(
-        &self,
-    ) -> Result<Vec<(ShardNumber, IrMembership<A>, u64)>, DiscoveryError> {
-        let state = self.state.read().unwrap();
-        let mut entries: Vec<_> = state.shards.iter().map(|(k, (m, v))| (*k, m.clone(), *v)).collect();
-        entries.sort_by_key(|(s, _, _)| *s);
-        Ok(entries)
-    }
-
-    async fn replace(
-        &self,
-        old: ShardNumber,
-        new: ShardNumber,
-        membership: IrMembership<A>,
-        view: u64,
-    ) -> Result<(), DiscoveryError> {
-        let mut state = self.state.write().unwrap();
-        // Tombstone old shard.
-        state.shards.remove(&old);
-        state.key_ranges.remove(&old);
-        state.tombstones.insert(old);
-        // Insert new shard with monotonic check.
-        match state.shards.get(&new) {
-            Some((_, current_view)) if *current_view > view => {}
-            _ => { state.shards.insert(new, (membership, view)); }
-        }
-        Ok(())
-    }
-
-    async fn publish_route_changes(
-        &self,
-        changes: Vec<ShardDirectoryChange<K, A>>,
-    ) -> Result<(), DiscoveryError> {
-        let mut state = self.state.write().unwrap();
-        // Atomically update key_ranges, shard entries, and changelog.
-        for change in &changes {
-            match change {
-                ShardDirectoryChange::SetRange { shard, range, membership, view } => {
-                    state.key_ranges.insert(*shard, range.clone());
-                    // Monotonic view check for membership.
-                    match state.shards.get(shard) {
-                        Some((_, current_view)) if *current_view > *view => {}
-                        _ => { state.shards.insert(*shard, (membership.clone(), *view)); }
-                    }
-                }
-                ShardDirectoryChange::RemoveRange { shard } => {
-                    state.key_ranges.remove(shard);
-                    state.shards.remove(shard);
-                    state.tombstones.insert(*shard);
-                }
-            }
-        }
-        state.route_changelog.push(changes);
-        Ok(())
-    }
-
-    async fn route_changes_since(
-        &self,
-        after_index: u64,
-    ) -> Result<Vec<(u64, ShardDirectoryChangeSet<K, A>)>, DiscoveryError> {
-        let state = self.state.read().unwrap();
-        let start = after_index as usize; // changelog[0] = index 1
-        if start >= state.route_changelog.len() {
-            return Ok(vec![]);
-        }
-        Ok(state.route_changelog[start..]
-            .iter()
-            .enumerate()
-            .map(|(i, cs)| ((start + i + 1) as u64, cs.clone()))
-            .collect())
-    }
-}
-
 // ---- ShardDirectory trait ----
 
 /// Unified shard-to-membership directory for cross-shard address resolution.
@@ -749,149 +571,6 @@ mod tests {
         assert!(dir.get(ShardNumber(2)).is_some());
     }
 
-    // ---- InMemoryRemoteDirectory tests ----
-
-    #[tokio::test(flavor = "current_thread", start_paused = true)]
-    async fn in_memory_remote_put_and_get() {
-        let remote = InMemoryRemoteDirectory::<usize>::new();
-        remote
-            .put(ShardNumber(1), IrMembership::new(vec![10, 20]), 0)
-            .await
-            .unwrap();
-
-        let (got, view) = remote.get(ShardNumber(1)).await.unwrap().unwrap();
-        assert_eq!(got.len(), 2);
-        assert!(got.contains(10));
-        assert!(got.contains(20));
-        assert_eq!(view, 0);
-    }
-
-    #[tokio::test(flavor = "current_thread", start_paused = true)]
-    async fn in_memory_remote_remove() {
-        let remote = InMemoryRemoteDirectory::<usize>::new();
-        remote
-            .put(ShardNumber(1), IrMembership::new(vec![10]), 0)
-            .await
-            .unwrap();
-        remote.remove(ShardNumber(1)).await.unwrap();
-        assert!(remote.get(ShardNumber(1)).await.unwrap().is_none());
-    }
-
-    #[tokio::test(flavor = "current_thread", start_paused = true)]
-    async fn in_memory_remote_remove_nonexistent() {
-        let remote = InMemoryRemoteDirectory::<usize>::new();
-        assert!(remote.remove(ShardNumber(99)).await.is_err());
-    }
-
-    #[tokio::test(flavor = "current_thread", start_paused = true)]
-    async fn in_memory_remote_all_sorted() {
-        let remote = InMemoryRemoteDirectory::<usize>::new();
-        remote
-            .put(ShardNumber(3), IrMembership::new(vec![30]), 0)
-            .await
-            .unwrap();
-        remote
-            .put(ShardNumber(1), IrMembership::new(vec![10]), 0)
-            .await
-            .unwrap();
-
-        let entries = remote.all().await.unwrap();
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].0, ShardNumber(1));
-        assert_eq!(entries[1].0, ShardNumber(3));
-    }
-
-    #[tokio::test(flavor = "current_thread", start_paused = true)]
-    async fn in_memory_remote_put_rejects_stale() {
-        let remote = InMemoryRemoteDirectory::<usize>::new();
-        remote
-            .put(ShardNumber(1), IrMembership::new(vec![10, 20]), 5)
-            .await
-            .unwrap();
-        remote
-            .put(ShardNumber(1), IrMembership::new(vec![99]), 3)
-            .await
-            .unwrap();
-
-        let (got, view) = remote.get(ShardNumber(1)).await.unwrap().unwrap();
-        assert_eq!(got.len(), 2); // still the original
-        assert_eq!(view, 5);
-    }
-
-    #[tokio::test(flavor = "current_thread", start_paused = true)]
-    async fn in_memory_remote_replace() {
-        let remote = InMemoryRemoteDirectory::<usize>::new();
-        remote
-            .put(ShardNumber(1), IrMembership::new(vec![10, 20]), 0)
-            .await
-            .unwrap();
-        remote
-            .put(ShardNumber(2), IrMembership::new(vec![30]), 0)
-            .await
-            .unwrap();
-
-        // Replace shard 1 with shard 3.
-        remote
-            .replace(
-                ShardNumber(1),
-                ShardNumber(3),
-                IrMembership::new(vec![40, 50]),
-                0,
-            )
-            .await
-            .unwrap();
-
-        // Old shard gone, new shard present, unrelated shard untouched.
-        assert!(remote.get(ShardNumber(1)).await.unwrap().is_none());
-        let (got, _) = remote.get(ShardNumber(3)).await.unwrap().unwrap();
-        assert_eq!(got.len(), 2);
-        assert!(got.contains(40));
-        assert!(remote.get(ShardNumber(2)).await.unwrap().is_some());
-    }
-
-    #[tokio::test(flavor = "current_thread", start_paused = true)]
-    async fn in_memory_remote_tombstone_rejects_put() {
-        let remote = InMemoryRemoteDirectory::<usize>::new();
-        remote
-            .put(ShardNumber(1), IrMembership::new(vec![10, 20]), 0)
-            .await
-            .unwrap();
-
-        // Remove creates a tombstone.
-        remote.remove(ShardNumber(1)).await.unwrap();
-        assert!(remote.get(ShardNumber(1)).await.unwrap().is_none());
-
-        // Put to tombstoned shard is rejected.
-        let result = remote
-            .put(ShardNumber(1), IrMembership::new(vec![99]), 5)
-            .await;
-        assert!(matches!(result, Err(DiscoveryError::Tombstoned)));
-
-        // Replace also tombstones the old shard.
-        remote
-            .put(ShardNumber(2), IrMembership::new(vec![30]), 0)
-            .await
-            .unwrap();
-        remote
-            .replace(ShardNumber(2), ShardNumber(3), IrMembership::new(vec![40]), 0)
-            .await
-            .unwrap();
-
-        // Old shard (2) is tombstoned — put rejected.
-        let result = remote
-            .put(ShardNumber(2), IrMembership::new(vec![99]), 5)
-            .await;
-        assert!(matches!(result, Err(DiscoveryError::Tombstoned)));
-
-        // New shard (3) is alive — put succeeds.
-        remote
-            .put(ShardNumber(3), IrMembership::new(vec![50]), 1)
-            .await
-            .unwrap();
-        let (got, _) = remote.get(ShardNumber(3)).await.unwrap().unwrap();
-        assert!(got.contains(50));
-    }
-
     // ---- Address conversion tests ----
 
     #[test]
@@ -959,11 +638,44 @@ mod tests {
 
     // ---- CachingShardDirectory tests ----
 
+    use crate::testing::{
+        discovery::build_single_node_discovery,
+        test_rng,
+    };
+
+    async fn remote_put(
+        r: &(impl RemoteShardDirectory<usize, ()> + Send + Sync),
+        shard: ShardNumber,
+        membership: IrMembership<usize>,
+        view: u64,
+    ) {
+        r.put(shard, membership, view).await.unwrap();
+    }
+
+    async fn remote_get(
+        r: &(impl RemoteShardDirectory<usize, ()> + Send + Sync),
+        shard: ShardNumber,
+    ) -> Option<(IrMembership<usize>, u64)> {
+        r.get(shard).await.unwrap()
+    }
+
+    async fn remote_replace(
+        r: &(impl RemoteShardDirectory<usize, ()> + Send + Sync),
+        old: ShardNumber,
+        new: ShardNumber,
+        membership: IrMembership<usize>,
+        view: u64,
+    ) {
+        r.replace(old, new, membership, view).await.unwrap();
+    }
+
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn caching_directory_local_operations() {
-        let remote = Arc::new(InMemoryRemoteDirectory::<usize>::new());
+        let mut rng = test_rng(42);
+        let disc = build_single_node_discovery(&mut rng);
+        let remote = disc.create_remote(&mut rng);
         let local = Arc::new(InMemoryShardDirectory::new());
-        let dir = CachingShardDirectory::new(local, remote, Duration::from_secs(60));
+        let dir = CachingShardDirectory::<usize, (), _>::new(local, remote, Duration::from_secs(60));
 
         // Local put/get work immediately.
         let shard = ShardNumber(1);
@@ -975,10 +687,13 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn caching_directory_push_to_remote() {
-        let remote = Arc::new(InMemoryRemoteDirectory::<usize>::new());
+        let mut rng = test_rng(43);
+        let disc = build_single_node_discovery(&mut rng);
+        let remote = disc.create_remote(&mut rng);
+        let remote_check = disc.create_remote_strong(&mut rng);
         let local = Arc::new(InMemoryShardDirectory::new());
         let dir =
-            CachingShardDirectory::new(local, Arc::clone(&remote), Duration::from_millis(100));
+            CachingShardDirectory::<usize, (), _>::new(local, remote, Duration::from_millis(100));
 
         let shard = ShardNumber(1);
         dir.add_own_shard(shard);
@@ -989,7 +704,7 @@ mod tests {
         // Yield to let the background task run.
         tokio::task::yield_now().await;
 
-        let (pushed, _) = remote.get(ShardNumber(1)).await.unwrap().unwrap();
+        let (pushed, _) = remote_get(&*remote_check, ShardNumber(1)).await.unwrap();
         assert_eq!(pushed.len(), 3);
         assert!(pushed.contains(10));
         assert!(pushed.contains(20));
@@ -998,16 +713,17 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn caching_directory_pull_from_remote() {
-        let remote = Arc::new(InMemoryRemoteDirectory::<usize>::new());
+        let mut rng = test_rng(44);
+        let disc = build_single_node_discovery(&mut rng);
+        let remote_setup = disc.create_remote(&mut rng);
+        let remote = disc.create_remote(&mut rng);
+
         // Another node registered shard 2 directly.
-        remote
-            .put(ShardNumber(2), IrMembership::new(vec![40, 50]), 0)
-            .await
-            .unwrap();
+        remote_put(&*remote_setup, ShardNumber(2), IrMembership::new(vec![40, 50]), 0).await;
 
         let local = Arc::new(InMemoryShardDirectory::new());
         let dir =
-            CachingShardDirectory::new(local, Arc::clone(&remote), Duration::from_millis(100));
+            CachingShardDirectory::<usize, (), _>::new(local, remote, Duration::from_millis(100));
 
         // Initially local doesn't have shard 2.
         assert!(dir.get(ShardNumber(2)).is_none());
@@ -1024,13 +740,15 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn caching_directory_replace_and_sync() {
-        // Test tombstone flow: remote.replace() tombstones old shard,
-        // CachingShardDirectory's PULL picks up the new shard, and PUSH
-        // of stale old shard is rejected by tombstone.
-        let remote = Arc::new(InMemoryRemoteDirectory::<usize>::new());
+        // Test replace flow: remote.replace() removes old shard,
+        // CachingShardDirectory's PULL picks up the new shard.
+        let mut rng = test_rng(45);
+        let disc = build_single_node_discovery(&mut rng);
+        let remote = disc.create_remote(&mut rng);
+        let remote_check = disc.create_remote_strong(&mut rng);
         let local = Arc::new(InMemoryShardDirectory::new());
         let dir =
-            CachingShardDirectory::new(local, Arc::clone(&remote), Duration::from_millis(100));
+            CachingShardDirectory::<usize, (), _>::new(local, Arc::clone(&remote), Duration::from_millis(100));
 
         // Node hosts shard 1.
         dir.add_own_shard(ShardNumber(1));
@@ -1039,24 +757,22 @@ mod tests {
         // Let it sync — shard 1 pushed to remote.
         tokio::time::sleep(Duration::from_millis(150)).await;
         tokio::task::yield_now().await;
-        assert!(remote.get(ShardNumber(1)).await.unwrap().is_some());
+        assert!(remote_get(&*remote_check, ShardNumber(1)).await.is_some());
 
-        // Simulate ShardManager's replace: tombstone old shard in remote directly.
-        remote
-            .replace(
-                ShardNumber(1),
-                ShardNumber(2),
-                IrMembership::new(vec![40, 50]),
-                0,
-            )
-            .await
-            .unwrap();
+        // Simulate ShardManager's replace: remove old shard and add new shard in remote.
+        remote_replace(
+            &*remote_check,
+            ShardNumber(1),
+            ShardNumber(2),
+            IrMembership::new(vec![40, 50]),
+            0,
+        ).await;
 
-        // Remote: shard 1 tombstoned, shard 2 present.
-        assert!(remote.get(ShardNumber(1)).await.unwrap().is_none());
-        assert!(remote.get(ShardNumber(2)).await.unwrap().is_some());
+        // Remote: shard 1 gone, shard 2 present.
+        assert!(remote_get(&*remote_check, ShardNumber(1)).await.is_none());
+        assert!(remote_get(&*remote_check, ShardNumber(2)).await.is_some());
 
-        // Next sync cycle: PULL picks up shard 2, PUSH of shard 1 is rejected (tombstoned).
+        // Next sync cycle: PULL picks up shard 2.
         tokio::time::sleep(Duration::from_millis(150)).await;
         tokio::task::yield_now().await;
 
@@ -1064,26 +780,23 @@ mod tests {
         let (pulled, _) = dir.get(ShardNumber(2)).unwrap();
         assert_eq!(pulled.len(), 2);
         assert!(pulled.contains(40));
-
-        // Remote shard 1 remains tombstoned — PUSH didn't overwrite.
-        assert!(remote.get(ShardNumber(1)).await.unwrap().is_none());
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn caching_directory_monotonic_pull_rejects_stale() {
-        let remote = Arc::new(InMemoryRemoteDirectory::<usize>::new());
+        let mut rng = test_rng(46);
+        let disc = build_single_node_discovery(&mut rng);
+        let remote_setup = disc.create_remote(&mut rng);
+        let remote = disc.create_remote(&mut rng);
         let local = Arc::new(InMemoryShardDirectory::new());
         let dir =
-            CachingShardDirectory::new(local, Arc::clone(&remote), Duration::from_millis(100));
+            CachingShardDirectory::<usize, (), _>::new(local, remote, Duration::from_millis(100));
 
         // Register shard 1 locally at view 5 (simulates alive replica after view change).
         dir.put(ShardNumber(1), IrMembership::new(vec![10, 20]), 5);
 
         // Simulate stale remote state for the same shard at view 3.
-        remote
-            .put(ShardNumber(1), IrMembership::new(vec![99]), 3)
-            .await
-            .unwrap();
+        remote_put(&*remote_setup, ShardNumber(1), IrMembership::new(vec![99]), 3).await;
 
         // After sync, PULL writes remote entry but put() rejects it (3 < 5).
         tokio::time::sleep(Duration::from_millis(150)).await;

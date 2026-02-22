@@ -88,6 +88,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
     async fn transfer_read_protection(&self, source: ShardNumber, target: ShardNumber) {
         // Freeze ALL operations on source — blocks IO::QuorumScan and
         // IO::QuorumRead to freeze range_reads and last_read_commit_ts.
+        eprintln!("[transfer_rp] reconfigure source={source:?} to Decommissioning");
         let decommission = serde_json::to_vec(&ShardConfig::<K> {
             key_range: None,
             phase: ShardPhase::Decommissioning,
@@ -96,20 +97,26 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         self.shards[&source].client.reconfigure(decommission);
 
         // Wait for in-flight reads to complete after freeze propagates.
+        eprintln!("[transfer_rp] sleeping 3s");
         T::sleep(Duration::from_secs(3)).await;
+        eprintln!("[transfer_rp] sleep done, querying min_prepare_baseline");
 
         // Query min_prepare_baseline from source (f+1 replicas).
         let (max_range_read_time, max_read_commit_time) =
             self.shards[&source].client.min_prepare_baseline().await;
+        eprintln!("[transfer_rp] baseline: rr={max_range_read_time}, rc={max_read_commit_time}");
 
         // Raise min_prepare_time on target shard.
         let barrier = max_range_read_time.max(max_read_commit_time) + 1;
         if barrier > 1 {
+            eprintln!("[transfer_rp] raising barrier={barrier} on target={target:?}");
             self.shards[&target]
                 .client
                 .raise_min_prepare_time(barrier)
                 .await;
+            eprintln!("[transfer_rp] raise done");
         }
+        eprintln!("[transfer_rp] complete");
     }
 
     /// Split a shard at `split_key`: keys < split_key stay on `source`,
@@ -771,29 +778,40 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
 
         // Phase 1: Bulk copy — ship all changes from source to new shard.
         self.report_progress("compact:bulk-copy");
+        eprintln!("[compact] phase 1: scan_changes(0) on source={source:?}");
         let r = self.shards[&source].client.scan_changes(0).await;
+        eprintln!("[compact] phase 1: scan_changes done, {} deltas", r.deltas.len());
         let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
+        eprintln!("[compact] phase 1: shipping {} changes to {new_shard:?}", changes.len());
         ship_changes(&self.shards[&new_shard].client, new_shard, &changes, &mut self.rng).await;
+        eprintln!("[compact] phase 1: ship_changes done");
         cursor.advance(r.effective_end_view);
 
         // Phase 2: Catch-up tailing.
         self.report_progress("compact:catch-up");
         for _catchup_iter in 0..30u32 {
+            eprintln!("[compact] phase 2: catch-up iter={_catchup_iter}, scan_changes({})", cursor.next_from());
             let r = self.shards[&source]
                 .client
                 .scan_changes(cursor.next_from())
                 .await;
+            eprintln!("[compact] phase 2: scan_changes done");
             let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
+            eprintln!("[compact] phase 2: {} changes, effective_end_view={:?}, stabilized={}", changes.len(), r.effective_end_view, cursor.stabilized(r.effective_end_view));
             if !changes.is_empty() {
+                eprintln!("[compact] phase 2: shipping changes");
                 ship_changes(&self.shards[&new_shard].client, new_shard, &changes, &mut self.rng).await;
+                eprintln!("[compact] phase 2: ship done");
             }
             if changes.is_empty() && cursor.stabilized(r.effective_end_view) {
+                eprintln!("[compact] phase 2: stabilized, breaking");
                 break;
             }
             cursor.advance(r.effective_end_view);
         }
 
         // Phase 3a: Freeze source — reject all Prepare with Fail.
+        eprintln!("[compact] phase 3a: freeze source");
         self.report_progress("compact:freeze-source");
         let freeze = serde_json::to_vec(&ShardConfig::<K> {
             key_range: None,
@@ -801,15 +819,19 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         })
         .expect("serialize freeze config");
         self.shards[&source].client.reconfigure(freeze);
+        eprintln!("[compact] phase 3a: freeze done");
 
         // Phase 3b: Drain — wait for pending_prepares == 0 + final seal.
+        eprintln!("[compact] phase 3b: drain");
         self.report_progress("compact:drain-prepared");
         for drain_iter in 0..60u32 {
+            eprintln!("[compact] phase 3b: drain iter={drain_iter}");
             T::sleep(Duration::from_secs(1)).await;
             let r = self.shards[&source]
                 .client
                 .scan_changes(cursor.next_from())
                 .await;
+            eprintln!("[compact] phase 3b: scan done, pending_prepares={}", r.pending_prepares);
             let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
             if !changes.is_empty() {
                 ship_changes(&self.shards[&new_shard].client, new_shard, &changes, &mut self.rng).await;
@@ -817,6 +839,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
             cursor.advance(r.effective_end_view);
 
             if r.pending_prepares == 0 && changes.is_empty() && cursor.stabilized(r.effective_end_view) {
+                eprintln!("[compact] phase 3b: drain stabilized, breaking");
                 break;
             }
             if drain_iter == 59 {
@@ -824,6 +847,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
             }
         }
         // One final poll after all prepares resolved to capture sealed commits.
+        eprintln!("[compact] phase 3b: final poll");
         T::sleep(Duration::from_secs(3)).await;
         let r = self.shards[&source]
             .client
@@ -834,6 +858,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
             ship_changes(&self.shards[&new_shard].client, new_shard, &changes, &mut self.rng).await;
         }
 
+        eprintln!("[compact] phase 3c: transfer read protection");
         // Transfer read protection from the old shard to the compacted one.
         //
         // Write safety: the new shard starts with min_prepare_time = 0 and
@@ -855,6 +880,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         // directories simultaneously. Single publish_route_changes atomically
         // tombstones the source shard and registers the new shard with its
         // membership, key range, and changelog entry.
+        eprintln!("[compact] phase 3c: decommission (publish_route_changes)");
         self.report_progress("compact:decommission");
         let source_range = self.shards[&new_shard].key_range.clone();
         let _ = self.remote.publish_route_changes(vec![
@@ -866,6 +892,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
                 view: 0,
             },
         ]).await;
+        eprintln!("[compact] phase 3c: decommission done");
         self.shards.remove(&source);
         // Compact complete.
         Ok(())

@@ -1,10 +1,7 @@
 use crate::config::{ClientConfig, ShardConfig};
-use crate::discovery::HttpDiscoveryClient;
 use rand::{thread_rng, Rng as _};
 use std::sync::Arc;
-use tapirs::discovery::{
-    CachingShardDirectory, InMemoryShardDirectory, RemoteShardDirectory,
-};
+use tapirs::discovery::InMemoryShardDirectory;
 use tapirs::{
     DynamicRouter, IrMembership, KeyRange, ShardDirectory, ShardEntry, ShardNumber,
     TapirClient, TcpAddress, TcpTransport, TapirReplica,
@@ -43,25 +40,8 @@ pub async fn run(
     } else if let Some(ref endpoint) = discovery_tapir_endpoint {
         load_tapir_discovery(endpoint).await
     } else if cfg.shards.is_empty() {
-        if let Some(ref url) = cfg.discovery_url {
-            let client = HttpDiscoveryClient::new(url);
-            let entries =
-                <HttpDiscoveryClient as RemoteShardDirectory<TcpAddress, ()>>::all(&client)
-                    .await
-                .unwrap_or_else(|e| panic!("failed to fetch topology from discovery: {e}"));
-            entries
-                .into_iter()
-                .map(|(shard, membership, _view)| ShardConfig {
-                    id: shard.0,
-                    replicas: tapirs::discovery::membership_to_strings(&membership),
-                    key_range_start: None,
-                    key_range_end: None,
-                })
-                .collect()
-        } else {
-            eprintln!("error: no shards configured. Use --config, --discovery-url, --discovery-json, or --discovery-tapir-endpoint.");
-            std::process::exit(1);
-        }
+        eprintln!("error: no shards configured. Use --config, --discovery-json, or --discovery-tapir-endpoint.");
+        std::process::exit(1);
     } else {
         cfg.shards
     };
@@ -75,17 +55,6 @@ pub async fn run(
     let persist_dir = format!("/tmp/tapi_client_{}", std::process::id());
 
     let address_directory = Arc::new(InMemoryShardDirectory::new());
-
-    // If discovery is configured, create CachingShardDirectory for continuous
-    // updates (learns about new shards and membership changes from other nodes).
-    let _discovery_dir = cfg.discovery_url.as_ref().map(|url| {
-        let client = Arc::new(HttpDiscoveryClient::new(url));
-        CachingShardDirectory::<TcpAddress, (), _>::new(
-            Arc::clone(&address_directory),
-            client,
-            std::time::Duration::from_secs(10),
-        )
-    });
 
     let transport: TcpTransport<TapirReplica<String, String>> =
         TcpTransport::with_directory(address, persist_dir, Arc::clone(&address_directory));

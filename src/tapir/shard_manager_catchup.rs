@@ -131,12 +131,14 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         shard: ShardNumber,
         address: T::Address,
     ) -> Result<(), String> {
+        eprintln!("[sm.leave] shard={shard:?} address={address:?}");
         let (membership, _view) = self
             .remote
             .get(shard)
             .await
             .map_err(|e| format!("failed to get shard {shard:?}: {e:?}"))?
             .ok_or_else(|| format!("shard {shard:?} not found in remote directory"))?;
+        eprintln!("[sm.leave] remote.get returned membership len={} view={_view}", membership.len());
 
         let client = ShardClient::<K, V, T>::new(
             self.rng.fork(),
@@ -145,7 +147,9 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
             membership,
             self.transport.clone(),
         );
+        eprintln!("[sm.leave] broadcasting RemoveMember({address:?})");
         client.remove_member(address);
+        eprintln!("[sm.leave] RemoveMember broadcast done");
         Ok(())
     }
 }

@@ -1,5 +1,4 @@
 use crate::config::{NodeConfig, ReplicaConfig};
-use crate::discovery::HttpDiscoveryClient;
 use crate::discovery_backend::DiscoveryBackend;
 use rand::{thread_rng, Rng as _};
 use std::collections::HashMap;
@@ -46,11 +45,6 @@ impl Node {
         }
     }
 
-    pub(crate) fn with_discovery(persist_dir: String, discovery_url: &str) -> Self {
-        let backend = DiscoveryBackend::Http(HttpDiscoveryClient::new(discovery_url));
-        Self::with_discovery_backend(persist_dir, backend)
-    }
-
     pub(crate) fn with_discovery_backend(persist_dir: String, backend: DiscoveryBackend) -> Self {
         let directory = Arc::new(InMemoryShardDirectory::new());
         let discovery_dir = CachingShardDirectory::new(
@@ -67,12 +61,12 @@ impl Node {
         }
     }
 
-    pub(crate) fn with_discovery_and_shard_manager(
+    pub(crate) fn with_discovery_backend_and_shard_manager(
         persist_dir: String,
-        discovery_url: &str,
+        backend: DiscoveryBackend,
         shard_manager_url: &str,
     ) -> Self {
-        let mut node = Self::with_discovery(persist_dir, discovery_url);
+        let mut node = Self::with_discovery_backend(persist_dir, backend);
         node.shard_manager_url = Some(shard_manager_url.to_string());
         node
     }
@@ -508,13 +502,7 @@ pub async fn run(
         }
         Arc::new(node)
     } else {
-        match (&cfg.discovery_url, &cfg.shard_manager_url) {
-            (Some(disc), Some(mgr)) => {
-                Arc::new(Node::with_discovery_and_shard_manager(persist_dir, disc, mgr))
-            }
-            (Some(disc), None) => Arc::new(Node::with_discovery(persist_dir, disc)),
-            _ => Arc::new(Node::new(persist_dir)),
-        }
+        Arc::new(Node::new(persist_dir))
     };
 
     for replica_cfg in &cfg.replicas {

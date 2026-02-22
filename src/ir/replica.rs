@@ -941,7 +941,11 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                 }
             }
             Message::<U, T>::RemoveMember(RemoveMember{address}) => {
-                if sync.status.is_normal() && sync.view.membership.get_index(address).is_some() && sync.view.membership.len() > 1 && address != self.inner.transport.address() {
+                let dominated_by_self = address == self.inner.transport.address();
+                let is_normal = sync.status.is_normal();
+                let in_membership = sync.view.membership.get_index(address).is_some();
+                eprintln!("[ir.remove_member] me={:?} removing={address:?} is_normal={is_normal} in_membership={in_membership} self_skip={dominated_by_self} view={}", self.inner.transport.address(), sync.view.number.0);
+                if is_normal && in_membership && sync.view.membership.len() > 1 && !dominated_by_self {
                     if !sync.view.membership.contains(self.inner.transport.address()) {
                         return None;
                     }
@@ -1048,8 +1052,8 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
         Some(ReplicaMetrics {
             status,
             view_number: sync.view.number.0,
-            record_inconsistent_len: sync.record.inconsistent.len(),
-            record_consensus_len: sync.record.consensus.len(),
+            record_inconsistent_len: sync.record.inconsistent_len(),
+            record_consensus_len: sync.record.consensus_len(),
             membership_size: sync.view.membership.len(),
             view_change_count: self.inner.view_change_count.load(Ordering::Relaxed),
             app_metrics,

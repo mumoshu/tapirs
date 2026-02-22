@@ -2,7 +2,6 @@ mod admin_client;
 mod admin_server;
 mod client;
 mod config;
-mod discovery;
 mod discovery_backend;
 mod metrics_server;
 mod node;
@@ -45,8 +44,6 @@ enum Command {
         metrics_listen_addr: Option<String>,
         #[arg(long)]
         persist_dir: Option<String>,
-        #[arg(long)]
-        discovery_url: Option<String>,
         /// Path to a JSON file describing shard topology for discovery.
         ///
         /// Same format as `tapi client --discovery-json`. Used as
@@ -76,10 +73,6 @@ enum Command {
         /// Path to client configuration file (TOML).
         #[arg(long)]
         config: Option<String>,
-
-        /// Discovery service URL (overrides config file).
-        #[arg(long)]
-        discovery_url: Option<String>,
 
         /// Path to a JSON file describing shard topology.
         ///
@@ -115,20 +108,11 @@ enum Command {
         #[arg(short = 's', long = "script")]
         script: Option<String>,
     },
-    /// Run the cluster discovery service.
-    Discovery {
-        /// Address to listen on.
-        #[arg(long, default_value = "127.0.0.1:8080")]
-        listen_addr: String,
-    },
     /// Run a standalone shard manager server.
     ShardManager {
         /// Address to listen on.
         #[arg(long, default_value = "127.0.0.1:9001")]
         listen_addr: String,
-        /// Discovery service URL (HTTP).
-        #[arg(long)]
-        discovery_url: Option<String>,
         /// TAPIR discovery cluster endpoint.
         ///
         /// Static: comma-separated replica addresses (e.g. "10.0.0.1:6000,10.0.0.2:6000").
@@ -213,9 +197,6 @@ enum AdminAction {
         /// Base port for restored shard replicas (each node allocates ports sequentially from here).
         #[arg(long)]
         base_port: u16,
-        /// Optional discovery URL to register restored shards.
-        #[arg(long)]
-        discovery_url: Option<String>,
     },
 }
 
@@ -236,7 +217,6 @@ async fn main() {
             admin_listen_addr,
             metrics_listen_addr,
             persist_dir,
-            discovery_url,
             discovery_json,
             discovery_tapir_endpoint,
             shard_manager_url,
@@ -254,9 +234,6 @@ async fn main() {
             if let Some(dir) = persist_dir {
                 cfg.persist_dir = Some(dir);
             }
-            if let Some(url) = discovery_url {
-                cfg.discovery_url = Some(url);
-            }
             if let Some(url) = shard_manager_url {
                 cfg.shard_manager_url = Some(url);
             }
@@ -267,19 +244,15 @@ async fn main() {
         }
         Command::Client {
             config: config_path,
-            discovery_url,
             discovery_json,
             discovery_tapir_endpoint,
             execute,
             script,
         } => {
-            let mut cfg = config_path
+            let cfg = config_path
                 .as_deref()
                 .map(ClientConfig::from_file)
                 .unwrap_or_default();
-            if let Some(url) = discovery_url {
-                cfg.discovery_url = Some(url);
-            }
 
             let input_source = if !execute.is_empty() {
                 repl::InputSource::Commands(execute)
@@ -293,15 +266,11 @@ async fn main() {
                 client::run(cfg, discovery_json, discovery_tapir_endpoint, input_source).await;
             std::process::exit(exit_code);
         }
-        Command::Discovery { listen_addr } => {
-            discovery::run(listen_addr).await;
-        }
         Command::ShardManager {
             listen_addr,
-            discovery_url,
             discovery_tapir_endpoint,
         } => {
-            shard_manager_server::run(listen_addr, discovery_url, discovery_tapir_endpoint).await;
+            shard_manager_server::run(listen_addr, discovery_tapir_endpoint).await;
         }
     }
 }

@@ -9,8 +9,6 @@ pub struct NodeConfig {
     #[serde(default)]
     pub persist_dir: Option<String>,
     #[serde(default)]
-    pub discovery_url: Option<String>,
-    #[serde(default)]
     pub shard_manager_url: Option<String>,
     #[serde(default)]
     pub replicas: Vec<ReplicaConfig>,
@@ -25,8 +23,6 @@ pub struct ReplicaConfig {
 
 #[derive(Default, Deserialize)]
 pub struct ClientConfig {
-    #[serde(default)]
-    pub discovery_url: Option<String>,
     #[serde(default)]
     pub shards: Vec<ShardConfig>,
 }

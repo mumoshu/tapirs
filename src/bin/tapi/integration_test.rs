@@ -1,10 +1,11 @@
-use crate::discovery::HttpDiscoveryClient;
+use crate::config::ReplicaConfig;
+use crate::discovery_backend::DiscoveryBackend;
 use crate::helpers::{quorum_view_number, wait_for_operational, wait_for_view_change};
 use crate::node::Node;
 use rand::{thread_rng, Rng as _};
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
-use tapirs::discovery::{InMemoryShardDirectory, RemoteShardDirectory};
+use tapirs::discovery::{tapir, InMemoryShardDirectory, RemoteShardDirectory};
 use tapirs::{
     DynamicRouter, KeyRange, RoutingClient, ShardDirectory, ShardEntry, ShardNumber, TapirClient,
     TapirReplica, TcpAddress, TcpTransport,
@@ -13,9 +14,12 @@ use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tokio::time::Duration;
 
-/// Pin K=() so method calls are unambiguous (HttpDiscoveryClient
+type DiscTapirDir =
+    tapir::TapirRemoteShardDirectory<TcpAddress, TcpTransport<TapirReplica<String, String>>>;
+
+/// Pin K=() so method calls are unambiguous (TapirRemoteShardDirectory
 /// implements RemoteShardDirectory for all K).
-fn disc(c: HttpDiscoveryClient) -> impl RemoteShardDirectory<TcpAddress, ()> {
+fn disc(c: DiscTapirDir) -> impl RemoteShardDirectory<TcpAddress, ()> {
     c
 }
 
@@ -33,15 +37,34 @@ fn env_or(var: &str, default: u32) -> u32 {
         .unwrap_or(default)
 }
 
+/// Create a standalone TapirRemoteShardDirectory client for direct discovery access.
+async fn create_disc_remote(endpoint: &str, mode: tapir::ReadMode) -> DiscTapirDir {
+    let addr = TcpAddress(alloc_addr());
+    let dir = Arc::new(InMemoryShardDirectory::new());
+    let persist_dir = format!("/tmp/tapi_test_disc_{}", thread_rng().r#gen::<u32>());
+    let transport = TcpTransport::with_directory(addr, persist_dir, dir);
+    let rng = tapirs::Rng::from_seed(thread_rng().r#gen());
+    tapir::parse_tapir_endpoint::<TcpAddress, _>(endpoint, mode, transport, rng)
+        .await
+        .expect("create discovery client")
+}
+
+/// Create a DiscoveryBackend::Tapir from an endpoint string.
+async fn create_disc_backend(endpoint: &str, mode: tapir::ReadMode) -> DiscoveryBackend {
+    DiscoveryBackend::Tapir(create_disc_remote(endpoint, mode).await)
+}
+
 struct TestCluster {
-    discovery_addr: SocketAddr,
+    disc_endpoint: String,
     shard_manager_addr: SocketAddr,
     nodes: Vec<Arc<Node>>,
     replica_addrs: Vec<Vec<SocketAddr>>, // [shard][replica_idx]
     client: Arc<RoutingClient<K, V, TestTransport, DynamicRouter<K>>>,
     _temp_dirs: Vec<TempDir>,
     _client_temp_dir: TempDir,
-    _discovery_dir: Arc<tapirs::discovery::CachingShardDirectory<TcpAddress, (), HttpDiscoveryClient>>,
+    _discovery_dir: Arc<tapirs::discovery::CachingShardDirectory<TcpAddress, String, DiscoveryBackend>>,
+    _disc_nodes: Vec<Arc<Node>>,
+    _disc_temp_dirs: Vec<TempDir>,
 }
 
 type K = String;
@@ -49,36 +72,60 @@ type V = String;
 type TestTransport = TcpTransport<TapirReplica<K, V>>;
 
 /// Mirrors the operator workflow:
-///   tapi discovery -> tapi shard-manager -> tapi node -> tapi admin add-replica
+///   tapi discovery-tier -> tapi shard-manager -> tapi node -> tapi admin add-replica
 async fn bootstrap_cluster(
     num_shards: u32,
     replicas_per_shard: u32,
     num_nodes: u32,
 ) -> TestCluster {
-    // === tapi discovery ===
-    let disc_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let discovery_addr = disc_listener.local_addr().unwrap();
-    tokio::spawn(crate::discovery::serve(disc_listener));
+    // === Discovery tier: 3-node Tapir cluster for shard metadata ===
+    let mut disc_nodes = Vec::new();
+    let mut disc_temp_dirs = Vec::new();
+    let mut disc_addrs: Vec<SocketAddr> = Vec::new();
 
-    // === tapi shard-manager ===
+    for _ in 0..3 {
+        disc_addrs.push(alloc_addr());
+    }
+    let disc_membership: Vec<String> = disc_addrs.iter().map(|a| a.to_string()).collect();
+    let disc_endpoint = disc_membership.join(",");
+
+    for i in 0..3 {
+        let td = TempDir::new().unwrap();
+        let node = Arc::new(Node::new(td.path().to_str().unwrap().to_string()));
+        node.add_replica(&ReplicaConfig {
+            shard: 0,
+            listen_addr: disc_addrs[i].to_string(),
+            membership: disc_membership.clone(),
+        })
+        .await
+        .unwrap();
+        disc_nodes.push(node);
+        disc_temp_dirs.push(td);
+    }
+
+    // Trigger initial view change so the discovery cluster enters Normal mode.
+    disc_nodes[0].force_view_change(ShardNumber(0));
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // === Shard manager ===
     let mgr_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mgr_addr = mgr_listener.local_addr().unwrap();
-    let discovery_url = format!("http://{discovery_addr}");
-    let disc_client = HttpDiscoveryClient::new(&discovery_url);
+    let sm_backend = create_disc_backend(&disc_endpoint, tapir::ReadMode::Strong).await;
     tokio::spawn(crate::shard_manager_server::serve(
         mgr_listener,
-        Arc::new(crate::discovery_backend::DiscoveryBackend::Http(disc_client)),
+        Arc::new(sm_backend),
     ));
 
-    // === tapi node (one per num_nodes) ===
+    // === Data nodes (one per num_nodes) ===
     let shard_manager_url = format!("http://{mgr_addr}");
     let mut nodes = Vec::new();
     let mut temp_dirs = Vec::new();
     for _ in 0..num_nodes {
         let td = TempDir::new().unwrap();
-        let node = Arc::new(Node::with_discovery_and_shard_manager(
+        let backend = create_disc_backend(&disc_endpoint, tapir::ReadMode::Eventual).await;
+        let node = Arc::new(Node::with_discovery_backend_and_shard_manager(
             td.path().to_str().unwrap().to_string(),
-            &discovery_url,
+            backend,
             &shard_manager_url,
         ));
         nodes.push(node);
@@ -88,7 +135,7 @@ async fn bootstrap_cluster(
     // === Phase 1: first replica per shard ===
     // Ports are allocated just-in-time and retried on "already in use"
     // to avoid TOCTOU races between parallel test processes.
-    let disc_client = disc(HttpDiscoveryClient::new(&discovery_addr.to_string()));
+    let disc_client = disc(create_disc_remote(&disc_endpoint, tapir::ReadMode::Eventual).await);
     let mut replica_addrs: Vec<Vec<SocketAddr>> = Vec::new();
     for shard_idx in 0..num_shards {
         let shard = ShardNumber(shard_idx);
@@ -112,7 +159,7 @@ async fn bootstrap_cluster(
 
     // === Create client (after first replicas are registered in discovery) ===
     let (client, client_temp_dir, discovery_dir) =
-        create_test_client(discovery_addr, num_shards).await;
+        create_test_client(&disc_endpoint, num_shards).await;
 
     // === Phase 2: remaining replicas with view-change-aware polling ===
     for shard_idx in 0..num_shards {
@@ -136,18 +183,7 @@ async fn bootstrap_cluster(
                 }
             };
 
-            // Register with discovery.
             replica_addrs[shard_idx as usize].push(addr);
-            let registered: Vec<String> = replica_addrs[shard_idx as usize]
-                .iter()
-                .map(|a| a.to_string())
-                .collect();
-            let membership = tapirs::discovery::strings_to_membership::<TcpAddress>(&registered)
-                .expect("parse membership");
-            disc_client
-                .put(ShardNumber(shard_idx), membership, 0)
-                .await
-                .unwrap();
 
             // Wait for view change including new replica.
             let all_shard_nodes: Vec<&Arc<Node>> = nodes
@@ -162,11 +198,24 @@ async fn bootstrap_cluster(
                 &format!("bootstrap_s{shard_idx}_r{replica_idx}"),
             )
             .await;
+
+            // Update discovery with the actual IR view after the view change.
+            let new_view = quorum_view_number(&all_shard_nodes, shard);
+            let registered: Vec<String> = replica_addrs[shard_idx as usize]
+                .iter()
+                .map(|a| a.to_string())
+                .collect();
+            let membership = tapirs::discovery::strings_to_membership::<TcpAddress>(&registered)
+                .expect("parse membership");
+            disc_client
+                .put(ShardNumber(shard_idx), membership, new_view)
+                .await
+                .unwrap();
         }
     }
 
     TestCluster {
-        discovery_addr,
+        disc_endpoint,
         shard_manager_addr: mgr_addr,
         nodes,
         replica_addrs,
@@ -174,6 +223,8 @@ async fn bootstrap_cluster(
         _temp_dirs: temp_dirs,
         _client_temp_dir: client_temp_dir,
         _discovery_dir: discovery_dir,
+        _disc_nodes: disc_nodes,
+        _disc_temp_dirs: disc_temp_dirs,
     }
 }
 
@@ -181,23 +232,21 @@ async fn bootstrap_cluster(
 /// Uses CachingShardDirectory for address resolution, NOT manual
 /// transport.set_shard_addresses().
 async fn create_test_client(
-    discovery_addr: SocketAddr,
+    disc_endpoint: &str,
     num_shards: u32,
 ) -> (
     Arc<RoutingClient<K, V, TestTransport, DynamicRouter<K>>>,
     TempDir,
-    Arc<tapirs::discovery::CachingShardDirectory<TcpAddress, (), HttpDiscoveryClient>>,
+    Arc<tapirs::discovery::CachingShardDirectory<TcpAddress, String, DiscoveryBackend>>,
 ) {
     let local_addr = alloc_addr();
     let td = TempDir::new().unwrap();
     let dir = Arc::new(InMemoryShardDirectory::new());
 
-    // Same as client.rs: CachingShardDirectory auto-syncs shard->membership
-    // from discovery, populating dir.
-    let disc_client = Arc::new(HttpDiscoveryClient::new(
-        &discovery_addr.to_string(),
-    ));
-    let discovery_dir = tapirs::discovery::CachingShardDirectory::<TcpAddress, (), _>::new(
+    // CachingShardDirectory auto-syncs shard->membership from discovery, populating dir.
+    let backend = create_disc_backend(disc_endpoint, tapir::ReadMode::Eventual).await;
+    let disc_client = Arc::new(backend);
+    let discovery_dir = tapirs::discovery::CachingShardDirectory::<TcpAddress, String, _>::new(
         Arc::clone(&dir),
         disc_client,
         std::time::Duration::from_millis(50), // fast sync for tests
@@ -422,7 +471,7 @@ async fn test_rolling_membership_replacement() {
 
     let cluster = bootstrap_cluster(1, 3, 3).await;
     let client = &cluster.client;
-    let disc_client = disc(HttpDiscoveryClient::new(&cluster.discovery_addr.to_string()));
+    let disc_client = disc(create_disc_remote(&cluster.disc_endpoint, tapir::ReadMode::Eventual).await);
     let shard = ShardNumber(0);
 
     // Write initial data and verify R/W.
@@ -436,7 +485,6 @@ async fn test_rolling_membership_replacement() {
     let original_addrs = cluster.replica_addrs[0].clone();
     let mut live_addrs: Vec<SocketAddr> = original_addrs.clone();
 
-    let discovery_url = format!("http://{}", cluster.discovery_addr);
     let shard_manager_url = format!("http://{}", cluster.shard_manager_addr);
 
     // Keep new nodes and temp dirs alive for the duration of the test.
@@ -450,9 +498,10 @@ async fn test_rolling_membership_replacement() {
 
         // === ADD new replica ===
         let td = TempDir::new().unwrap();
-        let new_node = Arc::new(Node::with_discovery_and_shard_manager(
+        let backend = create_disc_backend(&cluster.disc_endpoint, tapir::ReadMode::Eventual).await;
+        let new_node = Arc::new(Node::with_discovery_backend_and_shard_manager(
             td.path().to_str().unwrap().to_string(),
-            &discovery_url,
+            backend,
             &shard_manager_url,
         ));
 
@@ -474,13 +523,7 @@ async fn test_rolling_membership_replacement() {
             }
         };
 
-        // Register new address in discovery.
         live_addrs.push(new_addr);
-        let addrs: Vec<TcpAddress> = live_addrs.iter().map(|a| TcpAddress(*a)).collect();
-        disc_client
-            .put(ShardNumber(0), tapirs::IrMembership::new(addrs), 0)
-            .await
-            .unwrap();
 
         // Wait for AddMember view change — includes new node.
         new_nodes.push(new_node);
@@ -494,6 +537,14 @@ async fn test_rolling_membership_replacement() {
             .collect();
         wait_for_view_change(client, &all_nodes, shard, old_view, &format!("probe_add_{i}"))
             .await;
+
+        // Update discovery with actual IR view after the view change.
+        let new_view = quorum_view_number(&all_nodes, shard);
+        let addrs: Vec<TcpAddress> = live_addrs.iter().map(|a| TcpAddress(*a)).collect();
+        disc_client
+            .put(ShardNumber(0), tapirs::IrMembership::new(addrs), new_view)
+            .await
+            .unwrap();
 
         // Verify R/W after add.
         let txn = client.begin();
@@ -541,19 +592,20 @@ async fn test_rolling_membership_replacement() {
         )
         .await;
 
+        // Update discovery with actual IR view after the view change.
+        let new_view = quorum_view_number(&remaining_nodes, shard);
+        live_addrs.retain(|a| *a != original_addrs[i]);
+        let addrs: Vec<TcpAddress> = live_addrs.iter().map(|a| TcpAddress(*a)).collect();
+        disc_client
+            .put(ShardNumber(0), tapirs::IrMembership::new(addrs), new_view)
+            .await
+            .unwrap();
+
         // Drop the local handle.
         assert!(
             cluster.nodes[i].remove_replica(shard),
             "remove_replica should succeed in round {i}"
         );
-
-        // Update discovery: remove old address.
-        live_addrs.retain(|a| *a != original_addrs[i]);
-        let addrs: Vec<TcpAddress> = live_addrs.iter().map(|a| TcpAddress(*a)).collect();
-        disc_client
-            .put(ShardNumber(0), tapirs::IrMembership::new(addrs), 0)
-            .await
-            .unwrap();
 
         // Verify R/W after remove.
         let txn = client.begin();
@@ -632,7 +684,7 @@ async fn test_disaster_recovery_backup_restore() {
     // 1. Bootstrap cluster: 1 shard, 3 replicas, 3 nodes.
     let cluster = bootstrap_cluster(1, 3, 3).await;
     let client = &cluster.client;
-    let disc_client = disc(HttpDiscoveryClient::new(&cluster.discovery_addr.to_string()));
+    let disc_client = disc(create_disc_remote(&cluster.disc_endpoint, tapir::ReadMode::Eventual).await);
     let shard = ShardNumber(0);
 
     // 2. Write test data.
@@ -685,7 +737,6 @@ async fn test_disaster_recovery_backup_restore() {
     }
 
     // 7. Create new nodes and allocate addresses.
-    let discovery_url = format!("http://{}", cluster.discovery_addr);
     let shard_manager_url = format!("http://{}", cluster.shard_manager_addr);
 
     let mut new_nodes: Vec<Arc<Node>> = Vec::new();
@@ -695,9 +746,10 @@ async fn test_disaster_recovery_backup_restore() {
     for _ in 0..3 {
         new_addrs.push(alloc_addr());
         let td = TempDir::new().unwrap();
-        let node = Arc::new(Node::with_discovery_and_shard_manager(
+        let backend = create_disc_backend(&cluster.disc_endpoint, tapir::ReadMode::Eventual).await;
+        let node = Arc::new(Node::with_discovery_backend_and_shard_manager(
             td.path().to_str().unwrap().to_string(),
-            &discovery_url,
+            backend,
             &shard_manager_url,
         ));
         new_nodes.push(node);
@@ -726,17 +778,6 @@ async fn test_disaster_recovery_backup_restore() {
     //    Use the restore view number (backup.view + 10, same as restore_shard)
     //    so the monotonic-write check accepts the put — the discovery server
     //    already has a higher view from the original replicas' PUSH.
-    //
-    //    In a real deployment, the discovery server is part of the cluster
-    //    state. If you destroy all replicas and restore from backup, you'd
-    //    ideally restore the discovery server state too (so view numbers are
-    //    consistent). Today the discovery server is stateless (in-memory
-    //    only), so a restore scenario inherits whatever stale state the
-    //    discovery server accumulated from the old cluster. Using the
-    //    restore view number (backup.view + 10) works as a workaround
-    //    because it's strictly higher than anything the old cluster used.
-    //    If the discovery server later gains a persistent metadata store,
-    //    backup/restore should snapshot and restore the discovery state too.
     let restore_view = backup.view.number.0 + 10;
     let addrs: Vec<TcpAddress> = new_addrs.iter().map(|a| TcpAddress(*a)).collect();
     disc_client
@@ -746,7 +787,7 @@ async fn test_disaster_recovery_backup_restore() {
 
     // 10. Create a fresh client (discovery sync runs in parallel with
     //     replica bootstrap) and wait for restored shard to accept writes.
-    let (client2, _td2, _disc_dir2) = create_test_client(cluster.discovery_addr, 1).await;
+    let (client2, _td2, _disc_dir2) = create_test_client(&cluster.disc_endpoint, 1).await;
     wait_for_operational(&client2, "dr_restore_probe").await;
 
     // 11. Verify ALL data is readable from restored shard.
@@ -807,7 +848,7 @@ async fn test_cluster_backup_restore_via_admin() {
     // 1. Bootstrap cluster: 2 shards, 3 replicas, 3 nodes.
     let cluster = bootstrap_cluster(2, 3, 3).await;
     let client = &cluster.client;
-    let disc_client = disc(HttpDiscoveryClient::new(&cluster.discovery_addr.to_string()));
+    let disc_client = disc(create_disc_remote(&cluster.disc_endpoint, tapir::ReadMode::Eventual).await);
 
     // 2. Write test data -- keys distributed across both shards.
     //    With 2 shards: shard 0 = [a..n), shard 1 = [n..z).
@@ -917,7 +958,6 @@ async fn test_cluster_backup_restore_via_admin() {
     }
 
     // 6. Create new nodes and restore via admin protocol.
-    let discovery_url = format!("http://{}", cluster.discovery_addr);
     let shard_manager_url = format!("http://{}", cluster.shard_manager_addr);
 
     let mut new_nodes: Vec<Arc<Node>> = Vec::new();
@@ -926,9 +966,10 @@ async fn test_cluster_backup_restore_via_admin() {
 
     for _ in 0..3 {
         let td = TempDir::new().unwrap();
-        let node = Arc::new(Node::with_discovery_and_shard_manager(
+        let backend = create_disc_backend(&cluster.disc_endpoint, tapir::ReadMode::Eventual).await;
+        let node = Arc::new(Node::with_discovery_backend_and_shard_manager(
             td.path().to_str().unwrap().to_string(),
-            &discovery_url,
+            backend,
             &shard_manager_url,
         ));
         let admin_addr = alloc_addr();
@@ -983,15 +1024,6 @@ async fn test_cluster_backup_restore_via_admin() {
         }
 
         // Register restored shard with discovery.
-        //
-        //   Use restore view (backup.view + 10, same as Node::restore_shard)
-        //   so the monotonic-write check accepts the put — the discovery server
-        //   already has a higher view from the original replicas' PUSH.
-        //
-        //   See comment in test_disaster_recovery_backup_restore for the full
-        //   rationale: discovery is part of cluster state and ideally should be
-        //   restored alongside replicas. Today the discovery server is stateless
-        //   (in-memory only), so we use the restore view as a workaround.
         let restore_view = backup_value["view"]["number"].as_u64().unwrap_or(0) + 10;
         let addrs: Vec<TcpAddress> = new_addrs.iter().map(|a| TcpAddress(*a)).collect();
         disc_client
@@ -1002,7 +1034,7 @@ async fn test_cluster_backup_restore_via_admin() {
 
     // 7. Create fresh client (discovery sync runs in parallel with
     //    replica bootstrap) and wait for restored shards to accept writes.
-    let (client2, _td2, _disc_dir2) = create_test_client(cluster.discovery_addr, 2).await;
+    let (client2, _td2, _disc_dir2) = create_test_client(&cluster.disc_endpoint, 2).await;
     // Probe shard 0 (key < "n") and shard 1 (key >= "n").
     wait_for_operational(&client2, "admin_restore_probe").await;
     wait_for_operational(&client2, "restore_probe_s1").await;

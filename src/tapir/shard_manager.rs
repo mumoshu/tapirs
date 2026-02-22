@@ -41,7 +41,7 @@ use std::sync::Arc;
 ///   deregister_shard/replace_shard tombstone old shards in remote directly
 ///
 /// Remote Discovery (cluster-wide):
-///   InMemoryRemoteDirectory / HttpDiscoveryServer
+///   TapirRemoteShardDirectory / JsonRemoteShardDirectory
 ///     - Stores (shard, membership, view) entries
 ///     - Tombstones removed/replaced shards (rejects future puts)
 ///     - all() omits tombstoned entries
