@@ -12,11 +12,11 @@
   +--------+       sync        +-----------+                +--------+
 ```
 
-**P1 -- Central registry:** `tapi discovery` runs the cluster discovery service -- the central registry where nodes register their shard replicas and clients look up where to send transactions. In production with TAPIR-backed discovery, this service itself runs on a tapirs cluster, providing linearizable writes for shard registration and eventually consistent reads for directory queries. For simpler setups, the discovery service can serve from a static JSON file or DNS resolution.
+**Central registry:** `tapi discovery` runs the cluster discovery service -- the central registry where nodes register their shard replicas and clients look up where to send transactions. In production with TAPIR-backed discovery, this service itself runs on a tapirs cluster, providing linearizable writes for shard registration and eventually consistent reads for directory queries. For simpler setups, the discovery service can serve from a static JSON file or DNS resolution.
 
-**P2 -- Key flags:** Key flags: `--address` sets the listen address, `--backend` selects the discovery backend type (static, dns, or tapir), and `--sync-interval` controls how often the caching layer refreshes from the remote backend. The discovery service is typically the first component started in a cluster -- nodes and clients need it to find each other.
+**Key flags:** Key flags: `--address` sets the listen address, `--backend` selects the discovery backend type (static, dns, or tapir), and `--sync-interval` controls how often the caching layer refreshes from the remote backend. The discovery service is typically the first component started in a cluster -- nodes and clients need it to find each other.
 
-**P3 -- Related docs:** For the full discovery architecture, see [Discovery internals](../learn/internals/discovery.md). For the eventual consistency model, see [Consistency](../learn/concepts/consistency.md). Back to [tapi](cli-tapi.md).
+**Related docs:** For the full discovery architecture, see [Discovery internals](../learn/internals/discovery.md). For the eventual consistency model, see [Consistency](../learn/concepts/consistency.md). Back to [tapi](cli-tapi.md).
 
 | Flag | Default | Description |
 |------|---------|-------------|

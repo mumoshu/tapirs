@@ -25,11 +25,11 @@
     start_paused=true + seeded StdRng + FaultyChannel + FaultyDiskIo
 ```
 
-**P1 -- Deterministic by default:** Every test in tapirs is deterministic -- `start_paused = true` decouples simulated time from the wall clock, and all randomness uses seeded RNG (`StdRng`). This means test failures are 100% reproducible: same seed, same execution, same result. FaultyChannel (network) and FaultyDiskIo (disk) inject failures at the transport and storage layers independently, without modifying protocol logic.
+**Deterministic by default:** Every test in tapirs is deterministic -- `start_paused = true` decouples simulated time from the wall clock, and all randomness uses seeded RNG (`StdRng`). This means test failures are 100% reproducible: same seed, same execution, same result. FaultyChannel (network) and FaultyDiskIo (disk) inject failures at the transport and storage layers independently, without modifying protocol logic.
 
-**P2 -- Fuzz and Jepsen:** The custom fuzz harness (`fuzz_tapir_transactions`) generates random transaction workloads with concurrent view changes injected at random points, running thousands of iterations to find subtle ordering bugs. Maelstrom/Jepsen integration provides external linearizability verification. The test suite covers unit (OCC store, MVCC store), integration (multi-shard transactions, resharding), and stress (lock server contention, coordinator recovery under failures).
+**Fuzz and Jepsen:** The custom fuzz harness (`fuzz_tapir_transactions`) generates random transaction workloads with concurrent view changes injected at random points, running thousands of iterations to find subtle ordering bugs. Maelstrom/Jepsen integration provides external linearizability verification. The test suite covers unit (OCC store, MVCC store), integration (multi-shard transactions, resharding), and stress (lock server contention, coordinator recovery under failures).
 
-**P3 -- Related docs:** See [Testing concepts](../concepts/ir.md) for how view changes interact with consensus, [Architecture Decisions](architecture-decisions.md) for why deterministic simulation, and [Storage](storage.md) for FaultyDiskIo. Key files: `tests/`, `src/transport/faulty_channel.rs`, `src/mvcc/disk/faulty_disk_io.rs`.
+**Related docs:** See [Testing concepts](../concepts/ir.md) for how view changes interact with consensus, [Architecture Decisions](architecture-decisions.md) for why deterministic simulation, and [Storage](storage.md) for FaultyDiskIo. Key files: `tests/`, `src/transport/faulty_channel.rs`, `src/mvcc/disk/faulty_disk_io.rs`.
 
 | Layer | What it tests | Key tool |
 |-------|--------------|----------|

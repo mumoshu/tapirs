@@ -18,11 +18,11 @@
   +------------------+
 ```
 
-**P1 -- Three-tier precedence:** tapirs uses a three-tier configuration system: CLI flags take highest priority, then TOML configuration files, then embedded defaults. This means you can run tapirs with zero configuration for development (defaults handle everything), add a TOML file for reproducible cluster setups, and override specific values with CLI flags for one-off testing. All three tiers use the same option names, so switching between them is straightforward.
+**Three-tier precedence:** tapirs uses a three-tier configuration system: CLI flags take highest priority, then TOML configuration files, then embedded defaults. This means you can run tapirs with zero configuration for development (defaults handle everything), add a TOML file for reproducible cluster setups, and override specific values with CLI flags for one-off testing. All three tiers use the same option names, so switching between them is straightforward.
 
-**P2 -- Per-component options:** Configuration is organized by component. Node configuration covers the listen address, data directory path, replication factor, and transport selection. Client configuration specifies the discovery URL (how to find the cluster), connection timeout, and retry policy for transient failures. Discovery configuration selects the backend type (`file://` for static JSON, `dns://` for Kubernetes headless services, `tapirs://` for TAPIR-backed self-discovery) and the sync interval that controls how often the caching layer refreshes. All paths and URLs follow standard scheme conventions.
+**Per-component options:** Configuration is organized by component. Node configuration covers the listen address, data directory path, replication factor, and transport selection. Client configuration specifies the discovery URL (how to find the cluster), connection timeout, and retry policy for transient failures. Discovery configuration selects the backend type (`file://` for static JSON, `dns://` for Kubernetes headless services, `tapirs://` for TAPIR-backed self-discovery) and the sync interval that controls how often the caching layer refreshes. All paths and URLs follow standard scheme conventions.
 
-**P3 -- Related docs:** For how the discovery backends work under the hood, see [Discovery internals](../learn/internals/discovery.md). For per-binary flag documentation, see [tapi](cli-tapi.md), [tapictl](cli-tapictl.md), and [tapiadm](cli-tapiadm.md). Back to [CLI Reference](cli-reference.md). Key file: `src/bin/tapi/config.rs`
+**Related docs:** For how the discovery backends work under the hood, see [Discovery internals](../learn/internals/discovery.md). For per-binary flag documentation, see [tapi](cli-tapi.md), [tapictl](cli-tapictl.md), and [tapiadm](cli-tapiadm.md). Back to [CLI Reference](cli-reference.md). Key file: `src/bin/tapi/config.rs`
 
 ```toml
 # tapirs.toml — example configuration

@@ -12,11 +12,11 @@
     query     membership ops     consensus   data
 ```
 
-**P1 -- Cluster management:** `tapi admin` provides operational commands for managing a running tapirs cluster. These commands connect to a node's admin endpoint and issue control-plane operations. Status commands show node health and replica state. Membership commands (`add-replica`, `remove-replica`, `leave`) manage which replicas participate in a shard's consensus group. `view-change` triggers a manual view change for debugging or recovery scenarios.
+**Cluster management:** `tapi admin` provides operational commands for managing a running tapirs cluster. These commands connect to a node's admin endpoint and issue control-plane operations. Status commands show node health and replica state. Membership commands (`add-replica`, `remove-replica`, `leave`) manage which replicas participate in a shard's consensus group. `view-change` triggers a manual view change for debugging or recovery scenarios.
 
-**P2 -- Backup and restore:** Backup and restore operate at the cluster level: `tapi admin backup` takes a consistent snapshot of all shards by coordinating with the shard manager, and `tapi admin restore` rebuilds a cluster from a backup. Both are designed to be safe to run against a live cluster -- backup doesn't block transactions, and restore is a full cluster replacement (not a selective merge).
+**Backup and restore:** Backup and restore operate at the cluster level: `tapi admin backup` takes a consistent snapshot of all shards by coordinating with the shard manager, and `tapi admin restore` rebuilds a cluster from a backup. Both are designed to be safe to run against a live cluster -- backup doesn't block transactions, and restore is a full cluster replacement (not a selective merge).
 
-**P3 -- Related docs:** For how membership changes interact with IR consensus, see [Protocol](../learn/internals/protocol-tapir.md). For how view changes work, see [IR concepts](../learn/concepts/ir.md). Back to [tapi](cli-tapi.md).
+**Related docs:** For how membership changes interact with IR consensus, see [Protocol](../learn/internals/protocol-tapir.md). For how view changes work, see [IR concepts](../learn/concepts/ir.md). Back to [tapi](cli-tapi.md).
 
 | Subcommand | Args | Description |
 |------------|------|-------------|

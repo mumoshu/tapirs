@@ -10,11 +10,11 @@
   +-----------+                      +---------------------------+
 ```
 
-**P1 — What this is:** This document maps each section of the [TAPIR paper](https://syslab.cs.washington.edu/papers/tapir-tr-v2.pdf) to the corresponding tapirs source files and documentation pages. If you're reading the paper and want to see how a specific algorithm or protocol step is implemented, this is your index. If you're reading the code and want to understand the theoretical justification, follow the paper references back to the original proofs.
+**What this is:** This document maps each section of the [TAPIR paper](https://syslab.cs.washington.edu/papers/tapir-tr-v2.pdf) to the corresponding tapirs source files and documentation pages. If you're reading the paper and want to see how a specific algorithm or protocol step is implemented, this is your index. If you're reading the code and want to understand the theoretical justification, follow the paper references back to the original proofs.
 
-**P2 — Paper structure:** The TAPIR paper has six main sections: &sect;3 (IR protocol), &sect;4 (TAPIR transaction protocol), &sect;5 (implementation details including coordinator recovery), &sect;6 (extensions: read-only transactions, retry timestamps), and &sect;7 (evaluation). tapirs implements all of &sect;3&ndash;&sect;6, plus custom extensions beyond the paper (range scan with phantom-write protection, online resharding). The table below covers every paper section with its implementation location.
+**Paper structure:** The TAPIR paper has six main sections: &sect;3 (IR protocol), &sect;4 (TAPIR transaction protocol), &sect;5 (implementation details including coordinator recovery), &sect;6 (extensions: read-only transactions, retry timestamps), and &sect;7 (evaluation). tapirs implements all of &sect;3&ndash;&sect;6, plus custom extensions beyond the paper (range scan with phantom-write protection, online resharding). The table below covers every paper section with its implementation location.
 
-**P3 — Related docs:** For a guided reading order through the source code itself (independent of the paper), see [Code Tour](code-tour.md). For concept definitions, see [Concepts](concepts/). For architecture deep-dives, see [Internals](internals/). Back to [Learn](README.md).
+**Related docs:** For a guided reading order through the source code itself (independent of the paper), see [Code Tour](code-tour.md). For concept definitions, see [Concepts](concepts/). For architecture deep-dives, see [Internals](internals/). Back to [Learn](README.md).
 
 | Paper &sect; | Title | Source file(s) | Doc page |
 |---------|-------|---------------|----------|

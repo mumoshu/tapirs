@@ -22,11 +22,11 @@
         +----------+
 ```
 
-**P1 -- No cluster required:** You don't need a multi-node cluster to use tapirs. Single-node mode runs hundreds of shard replicas in a single process, providing the full transaction API with strict serializability -- no Docker, no network, no external dependencies. This is ideal for local development, integration testing, or workloads that need strong transactional guarantees but don't yet require horizontal distribution. Because tapirs uses a single-threaded state machine per replica with sharding for parallelism, running many replicas in one process naturally utilizes multiple cores.
+**No cluster required:** You don't need a multi-node cluster to use tapirs. Single-node mode runs hundreds of shard replicas in a single process, providing the full transaction API with strict serializability -- no Docker, no network, no external dependencies. This is ideal for local development, integration testing, or workloads that need strong transactional guarantees but don't yet require horizontal distribution. Because tapirs uses a single-threaded state machine per replica with sharding for parallelism, running many replicas in one process naturally utilizes multiple cores.
 
-**P2 -- Launch and connect:** Launch with `tapi node --solo` (or the equivalent TOML configuration). Once running, connect with the same REPL (`tapi client --repl`) or client API that you'd use against a multi-node cluster -- the interface is identical. When your workload outgrows a single node, switch to the [multi-node Docker testbed](getting-started-testbed.md) or a production deployment without changing application code.
+**Launch and connect:** Launch with `tapi node --solo` (or the equivalent TOML configuration). Once running, connect with the same REPL (`tapi client --repl`) or client API that you'd use against a multi-node cluster -- the interface is identical. When your workload outgrows a single node, switch to the [multi-node Docker testbed](getting-started-testbed.md) or a production deployment without changing application code.
 
-**P3 -- Configuration and architecture:** For a full list of configuration options (shard count, replication factor, data directory, discovery backend), see the [CLI Reference](cli-reference.md) and [Configuration](cli-config.md). For understanding how the single-threaded-per-replica architecture enables this single-node mode, see [Architecture Decisions](../learn/internals/architecture-decisions.md).
+**Configuration and architecture:** For a full list of configuration options (shard count, replication factor, data directory, discovery backend), see the [CLI Reference](cli-reference.md) and [Configuration](cli-config.md). For understanding how the single-threaded-per-replica architecture enables this single-node mode, see [Architecture Decisions](../learn/internals/architecture-decisions.md).
 
 ```
 $ tapi node --solo --shards 2 --replication-factor 3
