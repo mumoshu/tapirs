@@ -5,6 +5,8 @@ pub struct NodeConfig {
     #[serde(default)]
     pub admin_listen_addr: Option<String>,
     #[serde(default)]
+    pub metrics_listen_addr: Option<String>,
+    #[serde(default)]
     pub persist_dir: Option<String>,
     #[serde(default)]
     pub discovery_url: Option<String>,

@@ -4,6 +4,7 @@ mod client;
 mod config;
 mod discovery;
 mod discovery_backend;
+mod metrics_server;
 mod node;
 mod repl;
 mod shard_manager_server;
@@ -39,6 +40,9 @@ enum Command {
         config: Option<String>,
         #[arg(long)]
         admin_listen_addr: Option<String>,
+        /// Address for the Prometheus metrics endpoint (/metrics).
+        #[arg(long)]
+        metrics_listen_addr: Option<String>,
         #[arg(long)]
         persist_dir: Option<String>,
         #[arg(long)]
@@ -217,6 +221,7 @@ async fn main() {
         Command::Node {
             config: config_path,
             admin_listen_addr,
+            metrics_listen_addr,
             persist_dir,
             discovery_url,
             discovery_json,
@@ -229,6 +234,9 @@ async fn main() {
                 .unwrap_or_default();
             if let Some(addr) = admin_listen_addr {
                 cfg.admin_listen_addr = Some(addr);
+            }
+            if let Some(addr) = metrics_listen_addr {
+                cfg.metrics_listen_addr = Some(addr);
             }
             if let Some(dir) = persist_dir {
                 cfg.persist_dir = Some(dir);

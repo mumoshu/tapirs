@@ -16,8 +16,8 @@ pub use ir::{
     Client as IrClient, ClientId as IrClientId, Membership as IrMembership,
     MembershipSize as IrMembershipSize, Message as IrMessage, OpId as IrOpId, Record as IrRecord,
     RecordConsensusEntry as IrRecordConsensusEntry, Replica as IrReplica,
-    ReplicaUpcalls as IrReplicaUpcalls, SharedView as IrSharedView,
-    View as IrView, ViewNumber as IrViewNumber,
+    ReplicaMetrics as IrReplicaMetrics, ReplicaUpcalls as IrReplicaUpcalls,
+    SharedView as IrSharedView, View as IrView, ViewNumber as IrViewNumber,
 };
 pub use mvcc::MvccBackend;
 pub use mvcc::disk::{DiskStore as MvccDiskStore, StorageError};

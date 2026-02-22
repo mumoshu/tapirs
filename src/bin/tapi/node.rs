@@ -9,8 +9,8 @@ use std::time::Duration;
 use tapirs::discovery::{CachingShardDirectory, InMemoryShardDirectory};
 pub use tapirs::node::ShardBackup;
 use tapirs::{
-    IrClient, IrMembership, IrReplica, IrSharedView, IrView, IrViewNumber,
-    MvccDiskStore, BufferedIo, ShardNumber, TapirReplica, TapirTimestamp, TcpAddress, TcpTransport,
+    BufferedIo, IrClient, IrMembership, IrReplica, IrReplicaMetrics, IrSharedView, IrView,
+    IrViewNumber, MvccDiskStore, ShardNumber, TapirReplica, TapirTimestamp, TcpAddress, TcpTransport,
 };
 
 fn production_rng() -> tapirs::Rng {
@@ -389,6 +389,19 @@ impl Node {
             .collect()
     }
 
+    /// Collect metrics from all replicas on this node for Prometheus exposition.
+    #[allow(clippy::disallowed_methods)] // iteration order unimportant for metrics
+    pub fn collect_metrics(&self) -> Vec<(ShardNumber, IrReplicaMetrics)> {
+        self.replicas
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|(shard, handle)| {
+                handle.replica.collect_metrics().map(|m| (*shard, m))
+            })
+            .collect()
+    }
+
     /// Take a backup of a shard by fetching the leader_record from
     /// the local replica.
     ///
@@ -513,6 +526,13 @@ pub async fn run(
         .unwrap_or_else(|e| panic!("invalid admin_listen_addr '{admin_listen_addr}': {e}"));
 
     crate::admin_server::start(admin_addr, Arc::clone(&node)).await;
+
+    if let Some(metrics_addr_str) = cfg.metrics_listen_addr {
+        let metrics_addr: SocketAddr = metrics_addr_str
+            .parse()
+            .unwrap_or_else(|e| panic!("invalid metrics_listen_addr '{metrics_addr_str}': {e}"));
+        crate::metrics_server::start(metrics_addr, Arc::clone(&node)).await;
+    }
 
     tracing::info!(%admin_listen_addr, "node ready, press Ctrl-C to stop");
 

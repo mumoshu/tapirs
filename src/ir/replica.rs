@@ -12,7 +12,7 @@ use std::{
     collections::{btree_map::Entry, hash_map, BTreeMap, BTreeSet, HashMap, HashSet},
     fmt::Debug,
     hash::Hash,
-    sync::{Arc, Mutex},
+    sync::{atomic::{AtomicU64, Ordering}, Arc, Mutex},
     time::{Duration, Instant},
 };
 use tracing::{info, trace, trace_span, warn};
@@ -84,6 +84,12 @@ pub trait Upcalls: Sized + Send + Serialize + DeserializeOwned + 'static {
         _delta: &Record<Self>,
     ) {
     }
+
+    /// Returns application-level metrics as key-value pairs for Prometheus
+    /// exposition. Default: empty (no app metrics).
+    fn metrics(&self) -> Vec<(&'static str, f64)> {
+        Vec::new()
+    }
 }
 
 pub struct Replica<U: Upcalls, T: Transport<U>> {
@@ -110,6 +116,8 @@ struct Inner<U: Upcalls, T: Transport<U>> {
     view_info_key: String,
     view_change_interval: Duration,
     rng: Mutex<crate::Rng>,
+    /// Number of completed view changes (status transitioned to Normal).
+    view_change_count: AtomicU64,
     // Single Mutex for all state — faithfully implements the TLA+ single-threaded
     // state machine model. A RwLock<Upcalls> + Mutex<ProtocolState> split was
     // considered to make RequestUnlogged (exec_unlogged(&self)) concurrently
@@ -179,6 +187,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                 view_info_key,
                 view_change_interval: interval,
                 rng: Mutex::new(rng),
+                view_change_count: AtomicU64::new(0),
                 sync: Mutex::new(SyncInner {
                     status: Status::Normal,
                     latest_normal_view: view.clone(),
@@ -769,6 +778,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                             sync.record_base_view = Some(sync.view.clone());
                             sync.changed_view_recently = true;
                             sync.status = Status::Normal;
+                            self.inner.view_change_count.fetch_add(1, Ordering::Relaxed);
                             sync.view.make_mut().number = msg_view_number;
                             if let Some(config) = sync.view.app_config.as_ref() {
                                 sync.upcalls.apply_config(config);
@@ -896,6 +906,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                     sync.record = VersionedRecord::from_full(new_record, view.number.0);
                     sync.record_base_view = Some(view.clone());
                     sync.status = Status::Normal;
+                    self.inner.view_change_count.fetch_add(1, Ordering::Relaxed);
                     sync.view = view.clone();
                     sync.latest_normal_view = view;
                     if let Some(config) = sync.view.app_config.as_ref() {
@@ -1021,4 +1032,45 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
     pub fn view_number(&self) -> u64 {
         self.inner.sync.lock().unwrap().view.number.0
     }
+
+    /// Snapshot IR-level and application-level metrics for Prometheus exposition.
+    ///
+    /// Briefly acquires the sync mutex. Returns `None` if the lock is contended
+    /// (try_lock fails), which the caller can treat as a scrape miss.
+    pub fn collect_metrics(&self) -> Option<ReplicaMetrics> {
+        let sync = self.inner.sync.try_lock().ok()?;
+        let status = match sync.status {
+            Status::Normal => 0,
+            Status::ViewChanging => 1,
+            Status::Recovering => 2,
+        };
+        let app_metrics = sync.upcalls.metrics();
+        Some(ReplicaMetrics {
+            status,
+            view_number: sync.view.number.0,
+            record_inconsistent_len: sync.record.inconsistent.len(),
+            record_consensus_len: sync.record.consensus.len(),
+            membership_size: sync.view.membership.len(),
+            view_change_count: self.inner.view_change_count.load(Ordering::Relaxed),
+            app_metrics,
+        })
+    }
+}
+
+/// Point-in-time snapshot of IR replica metrics.
+pub struct ReplicaMetrics {
+    /// Replica status: 0=Normal, 1=ViewChanging, 2=Recovering.
+    pub status: u8,
+    /// Current view number.
+    pub view_number: u64,
+    /// Number of inconsistent entries in the IR record.
+    pub record_inconsistent_len: usize,
+    /// Number of consensus entries in the IR record.
+    pub record_consensus_len: usize,
+    /// Number of replicas in the current membership.
+    pub membership_size: usize,
+    /// Total completed view changes since process start.
+    pub view_change_count: u64,
+    /// Application-level metrics from `Upcalls::metrics()`.
+    pub app_metrics: Vec<(&'static str, f64)>,
 }

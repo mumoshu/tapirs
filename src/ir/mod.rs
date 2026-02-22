@@ -24,6 +24,6 @@ pub use record::{
     InconsistentEntry as RecordInconsistentEntry, Record, State as RecordEntryState,
     VersionedEntry, VersionedRecord,
 };
-pub use replica::{Replica, Upcalls as ReplicaUpcalls};
+pub use replica::{Replica, ReplicaMetrics, Upcalls as ReplicaUpcalls};
 pub use shared_view::SharedView;
 pub use view::{Number as ViewNumber, View};

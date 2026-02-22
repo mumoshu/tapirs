@@ -11,6 +11,7 @@ use crate::{
 use futures::future::join_all;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::Context;
 use std::time::Duration;
 use std::{future::Future, hash::Hash};
@@ -87,6 +88,20 @@ pub struct Replica<K, V, M = MvccDiskStore<K, V, Timestamp, DefaultDiskIo>> {
     key_range: Option<KeyRange<K>>,
     #[serde(skip_serializing, skip_deserializing, default, bound(deserialize = ""))]
     phase: ShardPhase,
+    /// Runtime metrics counters (not persisted).
+    #[serde(skip_serializing, skip_deserializing, default, bound(deserialize = ""))]
+    counters: ReplicaCounters,
+}
+
+/// Atomic counters for TAPIR transaction metrics, tracked at runtime.
+#[derive(Default)]
+pub(crate) struct ReplicaCounters {
+    pub commit_count: AtomicU64,
+    pub abort_count: AtomicU64,
+    pub prepare_ok_count: AtomicU64,
+    pub prepare_fail_count: AtomicU64,
+    pub prepare_retry_count: AtomicU64,
+    pub prepare_too_late_count: AtomicU64,
 }
 
 impl<K: Key, V: Value, M> Replica<K, V, M> {
@@ -102,6 +117,7 @@ impl<K: Key, V: Value, M> Replica<K, V, M> {
             record_delta_during_view: BTreeMap::new(),
             key_range: None,
             phase: ShardPhase::default(),
+            counters: ReplicaCounters::default(),
         }
     }
 
@@ -114,6 +130,7 @@ impl<K: Key, V: Value, M> Replica<K, V, M> {
             record_delta_during_view: BTreeMap::new(),
             key_range: None,
             phase: ShardPhase::default(),
+            counters: ReplicaCounters::default(),
         }
     }
 
@@ -431,6 +448,7 @@ where
                     );
                 }
                 self.inner.commit(*transaction_id, transaction, *commit);
+                self.counters.commit_count.fetch_add(1, Ordering::Relaxed);
                 None
             }
             IO::Abort {
@@ -479,6 +497,7 @@ where
                 {
                     self.inner.remove_prepared(*transaction_id);
                 }
+                self.counters.abort_count.fetch_add(1, Ordering::Relaxed);
                 None
             }
             IO::QuorumRead { .. } | IO::QuorumScan { .. }
@@ -532,9 +551,10 @@ where
                     }
                 }
                 if self.phase != ShardPhase::ReadWrite {
+                    self.counters.prepare_fail_count.fetch_add(1, Ordering::Relaxed);
                     return CR::Prepare(OccPrepareResult::Fail);
                 }
-                CR::Prepare(if let Some((ts, c)) = self.transaction_log.get(transaction_id) {
+                let result = if let Some((ts, c)) = self.transaction_log.get(transaction_id) {
                 if *c {
                     if ts == commit {
                         // Already committed at this timestamp.
@@ -569,7 +589,15 @@ where
             } else {
                 self.inner
                     .prepare(*transaction_id, transaction.clone(), *commit, false)
-            })
+            };
+                match &result {
+                    OccPrepareResult::Ok => { self.counters.prepare_ok_count.fetch_add(1, Ordering::Relaxed); }
+                    OccPrepareResult::Fail => { self.counters.prepare_fail_count.fetch_add(1, Ordering::Relaxed); }
+                    OccPrepareResult::Retry { .. } => { self.counters.prepare_retry_count.fetch_add(1, Ordering::Relaxed); }
+                    OccPrepareResult::TooLate => { self.counters.prepare_too_late_count.fetch_add(1, Ordering::Relaxed); }
+                    _ => {}
+                }
+                CR::Prepare(result)
             }
             CO::RaiseMinPrepareTime { time } => {
                 // Want to avoid tentative prepare operations materializing later on...
@@ -824,6 +852,19 @@ where
                 },
             );
         }
+    }
+
+    fn metrics(&self) -> Vec<(&'static str, f64)> {
+        vec![
+            ("tapirs_prepared_transactions", self.inner.prepared.len() as f64),
+            ("tapirs_transaction_log_size", self.transaction_log.len() as f64),
+            ("tapirs_commits_total", self.counters.commit_count.load(Ordering::Relaxed) as f64),
+            ("tapirs_aborts_total", self.counters.abort_count.load(Ordering::Relaxed) as f64),
+            ("tapirs_prepare_ok_total", self.counters.prepare_ok_count.load(Ordering::Relaxed) as f64),
+            ("tapirs_prepare_fail_total", self.counters.prepare_fail_count.load(Ordering::Relaxed) as f64),
+            ("tapirs_prepare_retry_total", self.counters.prepare_retry_count.load(Ordering::Relaxed) as f64),
+            ("tapirs_prepare_too_late_total", self.counters.prepare_too_late_count.load(Ordering::Relaxed) as f64),
+        ]
     }
 }
 
