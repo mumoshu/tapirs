@@ -7,6 +7,8 @@ pub mod node;
 mod occ;
 mod rng;
 mod tapir;
+#[cfg(feature = "tls")]
+pub mod tls;
 mod transport;
 pub mod util;
 
