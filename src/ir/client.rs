@@ -13,7 +13,7 @@ use crate::{
 use futures::{stream::FuturesUnordered, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::BTreeMap,
     fmt::Debug,
     future::Future,
     marker::PhantomData,
@@ -230,7 +230,7 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
             results: &BTreeMap<A, ReplyUnlogged<UR, A>>,
             f_plus_one: usize,
         ) -> bool {
-            let mut counts = HashMap::<ViewNumber, usize>::new();
+            let mut counts = BTreeMap::<ViewNumber, usize>::new();
             for r in results.values() {
                 *counts.entry(r.view.number).or_default() += 1;
             }
@@ -241,7 +241,7 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
             results: &BTreeMap<A, ReplyUnlogged<UR, A>>,
             f_plus_one: usize,
         ) -> Option<ViewNumber> {
-            let mut counts = HashMap::<ViewNumber, usize>::new();
+            let mut counts = BTreeMap::<ViewNumber, usize>::new();
             for r in results.values() {
                 *counts.entry(r.view.number).or_default() += 1;
             }
@@ -564,7 +564,7 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
     }
 
     /// Returns the consensus result, retrying indefinitely.
-    pub fn invoke_consensus<D: Fn(HashMap<U::CR, usize>, MembershipSize) -> U::CR + Send>(
+    pub fn invoke_consensus<D: Fn(BTreeMap<U::CR, usize>, MembershipSize) -> U::CR + Send>(
         &self,
         op: U::CO,
         decide: D,
@@ -707,7 +707,7 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
                                     .into_values()
                                     .filter(|rc| rc.view.number == view.number)
                                     .map(|rc| rc.result_state.unwrap().0);
-                                let mut totals = HashMap::new();
+                                let mut totals = BTreeMap::new();
                                 for result in results {
                                     *totals.entry(result).or_default() += 1;
                                 }

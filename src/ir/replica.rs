@@ -46,7 +46,7 @@ pub trait Upcalls: Sized + Send + Serialize + DeserializeOwned + 'static {
     /// Consensus operation.
     type CO: TransportMessage + Eq;
     /// Consensus result.
-    type CR: TransportMessage + Eq + Hash;
+    type CR: TransportMessage + Eq + Ord + Hash;
 
     fn exec_unlogged(&self, op: Self::UO) -> Self::UR;
     fn exec_inconsistent(&mut self, op: &Self::IO) -> Option<Self::IR>;

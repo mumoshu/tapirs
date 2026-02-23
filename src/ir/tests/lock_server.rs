@@ -11,7 +11,7 @@ fn test_rng(seed: u64) -> crate::Rng {
 }
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashSet},
     sync::Arc,
     time::Duration,
 };
@@ -78,7 +78,7 @@ async fn lock_server(num_replicas: usize) {
     #[derive(Debug, Clone, Eq, PartialEq)]
     struct Unlock(IrClientId);
 
-    #[derive(Debug, Clone, Eq, PartialEq, Hash)]
+    #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
     enum LockResult {
         Ok,
         No,
@@ -210,7 +210,7 @@ async fn lock_server(num_replicas: usize) {
         .map(|_| create_client(&mut lib_rng, &registry, &dir, &membership))
         .collect::<Vec<_>>();
 
-    let decide_lock = |results: HashMap<LockResult, usize>, membership: IrMembershipSize| {
+    let decide_lock = |results: BTreeMap<LockResult, usize>, membership: IrMembershipSize| {
         //println!("deciding {ok} of {} : {results:?}", results.len());
         if results.get(&LockResult::Ok).copied().unwrap_or_default() >= membership.f_plus_one() {
             LockResult::Ok

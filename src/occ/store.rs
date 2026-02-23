@@ -102,7 +102,7 @@ impl<TS> DerefMut for TimestampSet<TS> {
     }
 }
 
-#[derive(Debug, Eq, PartialEq, Hash, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Copy, Serialize, Deserialize)]
 pub enum PrepareResult<TS: Timestamp> {
     /// The transaction is possible.
     Ok,

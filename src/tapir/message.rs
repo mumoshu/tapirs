@@ -311,7 +311,7 @@ impl<K: Ord, V: PartialEq> PartialEq for CO<K, V> {
 
 impl<K: Ord, V: Eq> Eq for CO<K, V> {}
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
 pub enum CR {
     Prepare(OccPrepareResult<Timestamp>),
     RaiseMinPrepareTime { time: u64 },
