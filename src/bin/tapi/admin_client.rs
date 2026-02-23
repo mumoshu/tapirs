@@ -135,7 +135,8 @@ async fn backup_cluster(
     );
 
     // 2. Create output directory.
-    std::fs::create_dir_all(output_dir)
+    tokio::fs::create_dir_all(output_dir)
+        .await
         .map_err(|e| format!("create output dir '{}': {e}", output_dir))?;
 
     // 3. For each shard: force view change, wait, then backup.
@@ -184,7 +185,7 @@ async fn backup_cluster(
         let path = format!("{output_dir}/shard_{shard_id}.json");
         let json = serde_json::to_string_pretty(&backup)
             .map_err(|e| format!("serialize shard {shard_id} backup: {e}"))?;
-        std::fs::write(&path, json).map_err(|e| format!("write {path}: {e}"))?;
+        tokio::fs::write(&path, json).await.map_err(|e| format!("write {path}: {e}"))?;
         println!("Shard {shard_id}: backup written to {path}");
     }
 
@@ -196,7 +197,7 @@ async fn backup_cluster(
     let meta_path = format!("{output_dir}/cluster.json");
     let meta_json = serde_json::to_string_pretty(&metadata)
         .map_err(|e| format!("serialize cluster metadata: {e}"))?;
-    std::fs::write(&meta_path, meta_json).map_err(|e| format!("write {meta_path}: {e}"))?;
+    tokio::fs::write(&meta_path, meta_json).await.map_err(|e| format!("write {meta_path}: {e}"))?;
 
     println!(
         "Cluster backup complete: {} shard(s) written to {output_dir}/",
@@ -246,7 +247,7 @@ async fn restore_cluster(
     // 1. Read cluster metadata.
     let meta_path = format!("{backup_dir}/cluster.json");
     let meta_json =
-        std::fs::read_to_string(&meta_path).map_err(|e| format!("read {meta_path}: {e}"))?;
+        tokio::fs::read_to_string(&meta_path).await.map_err(|e| format!("read {meta_path}: {e}"))?;
     let metadata: ClusterMetadata =
         serde_json::from_str(&meta_json).map_err(|e| format!("parse {meta_path}: {e}"))?;
 
@@ -261,7 +262,7 @@ async fn restore_cluster(
     let mut shard_backups: BTreeMap<u32, ShardBackup> = BTreeMap::new();
     for &shard_id in &metadata.shards {
         let path = format!("{backup_dir}/shard_{shard_id}.json");
-        let json = std::fs::read_to_string(&path).map_err(|e| format!("read {path}: {e}"))?;
+        let json = tokio::fs::read_to_string(&path).await.map_err(|e| format!("read {path}: {e}"))?;
         let backup: ShardBackup =
             serde_json::from_str(&json).map_err(|e| format!("parse {path}: {e}"))?;
         shard_backups.insert(shard_id, backup);
