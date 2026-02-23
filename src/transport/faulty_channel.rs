@@ -3,7 +3,7 @@ use crate::{
     tapir::{Key, Value},
     IrMembership, IrMessage, IrReplicaUpcalls, ShardNumber, TapirReplica,
 };
-use rand::{seq::SliceRandom, Rng, SeedableRng};
+use rand::{seq::SliceRandom, Rng, RngCore, SeedableRng};
 use rand::rngs::StdRng;
 use rand::distributions::{Distribution, Uniform};
 use rand_distr::Normal;
@@ -276,6 +276,57 @@ impl<U: IrReplicaUpcalls> FaultyChannelTransport<U> {
         }
     }
 
+    // Per-message RNG variants: read config from shared state but use a
+    // per-message StdRng for randomness. Each message's RNG is seeded from
+    // the shared RNG at send()/do_send() creation time (deterministic sync
+    // context), not at async poll time (non-deterministic FuturesUnordered
+    // order).
+
+    fn should_drop_rng(state: &Arc<RwLock<FaultState<U>>>, rng: &mut StdRng) -> bool {
+        let rate = state.read().unwrap().config.drop_rate;
+        rng.gen_bool(rate)
+    }
+
+    fn should_duplicate_rng(state: &Arc<RwLock<FaultState<U>>>, rng: &mut StdRng) -> bool {
+        let rate = state.read().unwrap().config.duplicate_rate;
+        rng.gen_bool(rate)
+    }
+
+    fn should_buffer_rng(state: &Arc<RwLock<FaultState<U>>>, rng: &mut StdRng) -> bool {
+        let buffer_size = state.read().unwrap().config.reorder_buffer_size;
+        if buffer_size == 0 {
+            return false;
+        }
+        rng.gen_bool(0.5)
+    }
+
+    fn sample_latency_rng(state: &Arc<RwLock<FaultState<U>>>, rng: &mut StdRng) -> Duration {
+        let s = state.read().unwrap();
+        match &s.config.latency {
+            LatencyConfig::None => Duration::ZERO,
+            LatencyConfig::Fixed(d) => *d,
+            LatencyConfig::Uniform { min, max } => {
+                let min_ms = min.as_millis() as u64;
+                let max_ms = max.as_millis() as u64;
+                if min_ms >= max_ms {
+                    return *min;
+                }
+                let dist = Uniform::new(min_ms, max_ms);
+                Duration::from_millis(dist.sample(rng))
+            }
+            LatencyConfig::Normal { mean, stddev } => {
+                let mean_ms = mean.as_millis() as f64;
+                let stddev_ms = stddev.as_millis() as f64;
+                if let Ok(dist) = Normal::new(mean_ms, stddev_ms) {
+                    let sample = dist.sample(rng).max(0.0);
+                    Duration::from_millis(sample as u64)
+                } else {
+                    *mean
+                }
+            }
+        }
+    }
+
     fn buffer_message(
         state: &Arc<RwLock<FaultState<U>>>,
         from: usize,
@@ -294,6 +345,7 @@ impl<U: IrReplicaUpcalls> FaultyChannelTransport<U> {
         inner: &Channel<U>,
         from: usize,
         to: usize,
+        rng: &mut StdRng,
     ) {
         let should_flush = {
             let s = state.read().unwrap();
@@ -304,7 +356,7 @@ impl<U: IrReplicaUpcalls> FaultyChannelTransport<U> {
         };
 
         if should_flush {
-            Self::flush_buffer(state, inner, from, to).await;
+            Self::flush_buffer(state, inner, from, to, rng).await;
         }
     }
 
@@ -313,6 +365,7 @@ impl<U: IrReplicaUpcalls> FaultyChannelTransport<U> {
         inner: &Channel<U>,
         from: usize,
         to: usize,
+        rng: &mut StdRng,
     ) {
         let mut messages: Vec<IrMessage<U, Channel<U>>> = {
             let mut s = state.write().unwrap();
@@ -323,10 +376,9 @@ impl<U: IrReplicaUpcalls> FaultyChannelTransport<U> {
             }
         };
 
-        // Shuffle outside the lock
+        // Shuffle using per-message RNG (no shared state lock needed)
         if !messages.is_empty() {
-            let mut s = state.write().unwrap();
-            messages.shuffle(&mut s.rng);
+            messages.shuffle(rng);
         }
 
         // Re-check partition state before sending each buffered message
@@ -343,12 +395,14 @@ impl<U: IrReplicaUpcalls> FaultyChannelTransport<U> {
         inner: &Channel<U>,
         _from: usize,
         to: usize,
+        flush_seed: u64,
     ) {
         let state = Arc::clone(state);
         let inner = inner.clone();
         <Self as Transport<U>>::spawn(async move {
+            let mut flush_rng = StdRng::seed_from_u64(flush_seed);
             <Self as Transport<U>>::sleep(Duration::from_millis(10)).await;
-            Self::flush_buffer(&state, &inner, _from, to).await;
+            Self::flush_buffer(&state, &inner, _from, to, &mut flush_rng).await;
         });
     }
 
@@ -468,7 +522,13 @@ impl<U: IrReplicaUpcalls> Transport<U> for FaultyChannelTransport<U> {
 
         let message_inner = Self::convert_to_inner(message.into());
 
+        // Sample per-message seed from shared RNG in deterministic sync context.
+        // send() is called from Membership::iter() loops (Vec index order), so
+        // the sampling order is deterministic regardless of async poll ordering.
+        let msg_seed = state.write().unwrap().rng.next_u64();
+
         async move {
+            let mut msg_rng = StdRng::seed_from_u64(msg_seed);
             loop {
                 // 1. Check partition
                 if Self::is_partitioned(&state, from, address) {
@@ -477,27 +537,30 @@ impl<U: IrReplicaUpcalls> Transport<U> for FaultyChannelTransport<U> {
                 }
 
                 // 2. Apply latency
-                Self::apply_latency(&state).await;
+                let delay = Self::sample_latency_rng(&state, &mut msg_rng);
+                if !delay.is_zero() {
+                    <Self as Transport<U>>::sleep(delay).await;
+                }
 
                 // 3. Check drop
-                if Self::should_drop(&state) {
+                if Self::should_drop_rng(&state, &mut msg_rng) {
                     continue; // Retry
                 }
 
                 // 4. Handle reordering
-                if Self::should_buffer(&state, from, address) {
+                if Self::should_buffer_rng(&state, &mut msg_rng) {
                     Self::buffer_message(&state, from, address, message_inner.clone());
                     continue;
                 }
 
                 // 5. Flush any buffered messages
-                Self::flush_if_ready(&state, &inner, from, address).await;
+                Self::flush_if_ready(&state, &inner, from, address, &mut msg_rng).await;
 
                 // 6. Send to inner channel
                 let reply: IrMessage<U, Channel<U>> = inner.send(address, message_inner.clone()).await;
 
                 // 7. Handle duplication
-                if Self::should_duplicate(&state) {
+                if Self::should_duplicate_rng(&state, &mut msg_rng) {
                     Self::spawn_duplicate(&state, &inner, from, address, message_inner.clone());
                 }
 
@@ -517,24 +580,33 @@ impl<U: IrReplicaUpcalls> Transport<U> for FaultyChannelTransport<U> {
 
         let message_inner = Self::convert_to_inner(message.into());
 
+        // Sample per-message seed from shared RNG in deterministic sync context.
+        let msg_seed = state.write().unwrap().rng.next_u64();
+
         <Self as Transport<U>>::spawn(async move {
+            let mut msg_rng = StdRng::seed_from_u64(msg_seed);
+
             // 1. Check partition
             if Self::is_partitioned(&state, from, address) {
                 return; // Drop silently
             }
 
             // 2. Apply latency
-            Self::apply_latency(&state).await;
+            let delay = Self::sample_latency_rng(&state, &mut msg_rng);
+            if !delay.is_zero() {
+                <Self as Transport<U>>::sleep(delay).await;
+            }
 
             // 3. Check drop
-            if Self::should_drop(&state) {
+            if Self::should_drop_rng(&state, &mut msg_rng) {
                 return;
             }
 
             // 4. Handle reordering
-            if Self::should_buffer(&state, from, address) {
+            if Self::should_buffer_rng(&state, &mut msg_rng) {
                 Self::buffer_message(&state, from, address, message_inner.clone());
-                Self::spawn_flush_task(&state, &inner, from, address);
+                let flush_seed = msg_rng.next_u64();
+                Self::spawn_flush_task(&state, &inner, from, address, flush_seed);
                 return;
             }
 
@@ -542,7 +614,7 @@ impl<U: IrReplicaUpcalls> Transport<U> for FaultyChannelTransport<U> {
             inner.do_send(address, message_inner.clone());
 
             // 6. Handle duplicate
-            if Self::should_duplicate(&state) {
+            if Self::should_duplicate_rng(&state, &mut msg_rng) {
                 Self::spawn_duplicate(&state, &inner, from, address, message_inner);
             }
         });
