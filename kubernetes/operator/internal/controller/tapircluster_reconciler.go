@@ -53,28 +53,23 @@ func (r *TAPIRClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		}
 	}
 
-	// Create or update discovery resources (always — needed from the very first phase).
+	// Create or update all sub-resources (StatefulSets, Deployments, Services).
+	// Resources are always declared regardless of bootstrap phase. The bootstrap
+	// state machine in reconcileBootstrap gates only operational steps (admin API
+	// calls, shard registration) behind the appropriate phases.
 	if err := r.reconcileDiscovery(ctx, &cluster); err != nil {
 		log.Error(err, "Failed to reconcile discovery resources")
 		return ctrl.Result{}, err
 	}
 
-	// Create shard-manager and data-node resources only after discovery is
-	// bootstrapped. The shard-manager connects to the discovery cluster via
-	// TAPIR at startup; creating it before discovery is ready causes the
-	// shard-manager to hang on its first TAPIR operation.
-	if cluster.Status.Phase != tapirv1alpha1.PhaseCreatingDiscovery &&
-		cluster.Status.Phase != tapirv1alpha1.PhaseBootstrappingDiscovery {
+	if err := r.reconcileShardManager(ctx, &cluster); err != nil {
+		log.Error(err, "Failed to reconcile shard-manager resources")
+		return ctrl.Result{}, err
+	}
 
-		if err := r.reconcileShardManager(ctx, &cluster); err != nil {
-			log.Error(err, "Failed to reconcile shard-manager resources")
-			return ctrl.Result{}, err
-		}
-
-		if err := r.reconcileNodePools(ctx, &cluster); err != nil {
-			log.Error(err, "Failed to reconcile node pool resources")
-			return ctrl.Result{}, err
-		}
+	if err := r.reconcileNodePools(ctx, &cluster); err != nil {
+		log.Error(err, "Failed to reconcile node pool resources")
+		return ctrl.Result{}, err
 	}
 
 	// Update status endpoints
