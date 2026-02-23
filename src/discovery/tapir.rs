@@ -191,7 +191,12 @@ where
     async fn read_raw(&self, key: &str) -> Result<Option<String>, DiscoveryError> {
         // Refresh shard client cache (no-op if not DNS mode).
         let sc = self.current_shard_client();
-        match self.read_mode {
+        let mode_str = match self.read_mode {
+            ReadMode::Strong => "strong",
+            ReadMode::Eventual => "eventual",
+        };
+        tracing::debug!(key, mode = mode_str, "discovery read_raw: starting");
+        let result = match self.read_mode {
             ReadMode::Strong => {
                 let ro = self.client.begin_read_only();
                 ro.get(key.to_string())
@@ -203,7 +208,9 @@ where
                 .await
                 .map_err(|e| DiscoveryError::ConnectionFailed(format!("{e:?}")))
                 .map(|(v, _)| v),
-        }
+        };
+        tracing::debug!(key, mode = mode_str, ok = result.is_ok(), "discovery read_raw: completed");
+        result
     }
 }
 
@@ -534,16 +541,19 @@ where
         &self,
         changes: Vec<ShardDirectoryChange<K, A>>,
     ) -> Result<(), DiscoveryError> {
+        tracing::debug!(num_changes = changes.len(), "publish_route_changes: starting");
         let changeset_json = serde_json::to_string(&changes)
             .map_err(|e| DiscoveryError::InvalidResponse(format!("serialize changeset: {e}")))?;
 
         // Consistent pre-read of last index.
+        tracing::debug!("publish_route_changes: reading last index");
         let current_idx: u64 = match self.read_raw(ROUTE_CHANGE_LAST_INDEX).await? {
             Some(s) => s.parse().unwrap_or(0),
             None => 0,
         };
         let new_idx = current_idx + 1;
         let idx_key = route_change_key(new_idx);
+        tracing::debug!(current_idx, new_idx, "publish_route_changes: last index read ok");
 
         // Pre-read shard entries and build JSON for each change.
         let mut shard_writes: Vec<(String, String)> = Vec::new();
@@ -551,6 +561,7 @@ where
             match change {
                 ShardDirectoryChange::SetRange { shard, range, membership, view } => {
                     let key = shard_key(*shard);
+                    tracing::debug!(%key, ?shard, "publish_route_changes: pre-reading shard entry");
                     if let Some(json) = self.read_raw(&key).await? {
                         let record = parse_record::<K>(&json)?;
                         if record.status == ShardStatus::Tombstoned {
@@ -583,15 +594,18 @@ where
         }
 
         for _attempt in 0..5 {
+            tracing::debug!(_attempt, "publish_route_changes: starting txn attempt");
             let txn = self.client.begin();
 
             // OCC-track the last-index key.
+            tracing::debug!("publish_route_changes: txn get(last_index)");
             let _ = txn
                 .get(ROUTE_CHANGE_LAST_INDEX.to_string())
                 .await
                 .map_err(|e| DiscoveryError::ConnectionFailed(format!("{e:?}")))?;
 
             // OCC-track the changeset key.
+            tracing::debug!(%idx_key, "publish_route_changes: txn get(changeset_key)");
             let _ = txn
                 .get(idx_key.clone())
                 .await
@@ -605,6 +619,7 @@ where
 
             // Shard entry writes in the same transaction.
             for (key, json) in &shard_writes {
+                tracing::debug!(%key, "publish_route_changes: txn get(shard_key)");
                 let _ = txn
                     .get(key.clone())
                     .await
@@ -612,11 +627,14 @@ where
                 txn.put(key.clone(), Some(json.clone()));
             }
 
+            tracing::debug!("publish_route_changes: committing txn");
             if txn.commit().await.is_some() {
+                tracing::debug!("publish_route_changes: txn committed successfully");
                 tokio::task::yield_now().await;
                 tokio::time::sleep(std::time::Duration::from_millis(1)).await;
                 return Ok(());
             }
+            tracing::debug!(_attempt, "publish_route_changes: txn commit failed, retrying");
         }
 
         Err(DiscoveryError::ConnectionFailed(

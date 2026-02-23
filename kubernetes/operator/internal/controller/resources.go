@@ -161,7 +161,7 @@ func desiredShardManagerDeployment(cluster *tapirv1alpha1.TAPIRCluster) *appsv1.
 								"--discovery-tapir-endpoint=" + discoveryEndpoint(cluster),
 							},
 							Env: []corev1.EnvVar{
-								{Name: "RUST_LOG", Value: "info"},
+								{Name: "RUST_LOG", Value: "info,tapirs::discovery=debug"},
 							},
 							Ports: []corev1.ContainerPort{
 								{Name: "http", ContainerPort: shardManagerPort},

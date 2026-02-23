@@ -122,6 +122,12 @@ var _ = Describe("TAPIRCluster Controller", func() {
 		})
 
 		It("should create shard-manager Deployment and ClusterIP Service", func() {
+			// Advance phase past discovery bootstrap so shard-manager is created.
+			var cluster tapirv1alpha1.TAPIRCluster
+			Expect(k8sClient.Get(ctx, typeNamespacedName, &cluster)).To(Succeed())
+			cluster.Status.Phase = tapirv1alpha1.PhaseCreatingDataPlane
+			Expect(k8sClient.Status().Update(ctx, &cluster)).To(Succeed())
+
 			controllerReconciler := &TAPIRClusterReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
@@ -157,6 +163,12 @@ var _ = Describe("TAPIRCluster Controller", func() {
 		})
 
 		It("should create node pool StatefulSet and headless Service", func() {
+			// Advance phase past discovery bootstrap so node pools are created.
+			var cluster tapirv1alpha1.TAPIRCluster
+			Expect(k8sClient.Get(ctx, typeNamespacedName, &cluster)).To(Succeed())
+			cluster.Status.Phase = tapirv1alpha1.PhaseCreatingDataPlane
+			Expect(k8sClient.Status().Update(ctx, &cluster)).To(Succeed())
+
 			controllerReconciler := &TAPIRClusterReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
@@ -218,6 +230,12 @@ var _ = Describe("TAPIRCluster Controller", func() {
 		})
 
 		It("should set owner references on created resources", func() {
+			// Advance phase past discovery bootstrap so all resources are created.
+			var clusterObj tapirv1alpha1.TAPIRCluster
+			Expect(k8sClient.Get(ctx, typeNamespacedName, &clusterObj)).To(Succeed())
+			clusterObj.Status.Phase = tapirv1alpha1.PhaseCreatingDataPlane
+			Expect(k8sClient.Status().Update(ctx, &clusterObj)).To(Succeed())
+
 			controllerReconciler := &TAPIRClusterReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),

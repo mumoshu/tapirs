@@ -184,9 +184,11 @@ async fn handle_request(
             }
         };
         let shard = ShardNumber(req.shard);
+        tracing::info!(?shard, "register: received request");
 
         // Use provided replicas or query discovery for shard membership.
         let (membership, view) = if let Some(ref replicas) = req.replicas {
+            tracing::info!(?shard, replicas_count = replicas.len(), "register: using provided replicas");
             match strings_to_membership::<TcpAddress>(replicas) {
                 Ok(m) => (m, 0u64),
                 Err(e) => {
@@ -194,6 +196,7 @@ async fn handle_request(
                 }
             }
         } else {
+            tracing::info!(?shard, "register: querying discovery for membership");
             let existing = state
                 .remote
                 .all()
@@ -223,12 +226,12 @@ async fn handle_request(
             start: req.key_range_start,
             end: req.key_range_end,
         };
-        state
-            .manager
-            .lock()
-            .await
-            .register_shard(shard, membership, key_range)
-            .await;
+        tracing::info!(?shard, ?key_range, "register: acquiring manager lock");
+        let mut manager = state.manager.lock().await;
+        tracing::info!(?shard, "register: calling register_shard (publish_route_changes)");
+        manager.register_shard(shard, membership, key_range).await;
+        drop(manager);
+        tracing::info!(?shard, "register: completed successfully");
         (200, r#"{"ok":true}"#.to_string())
     } else if method == "POST" && path == "/v1/split" {
         #[derive(Deserialize)]
