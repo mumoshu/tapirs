@@ -56,6 +56,27 @@ impl<K: Ord + Clone + Debug> ShardDirectory<K> {
             .collect()
     }
 
+    /// Returns overlapping shards with scan bounds clipped to each shard's
+    /// key range. For a scan(a, z) spanning shards [None, g), [g, n), [n, None):
+    ///   shard 0 → (a, g), shard 2 → (g, n), shard 1 → (n, z)
+    pub fn scan_ranges(&self, start: &K, end: &K) -> Vec<(ShardNumber, K, K)> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.range.overlaps_range(start, end))
+            .map(|entry| {
+                let clipped_start = match &entry.range.start {
+                    Some(s) if s > start => s.clone(),
+                    _ => start.clone(),
+                };
+                let clipped_end = match &entry.range.end {
+                    Some(e) if e < end => e.clone(),
+                    _ => end.clone(),
+                };
+                (entry.shard, clipped_start, clipped_end)
+            })
+            .collect()
+    }
+
     pub fn entries(&self) -> &[ShardEntry<K>] {
         &self.entries
     }
@@ -121,6 +142,10 @@ impl<K: Ord + Clone + Debug + Send + Sync + 'static> ShardRouter<K> for DynamicR
 
     fn shards_for_range(&self, start: &K, end: &K) -> Vec<ShardNumber> {
         self.directory.read().unwrap().shards_for_range(start, end)
+    }
+
+    fn scan_ranges(&self, start: &K, end: &K) -> Vec<(ShardNumber, K, K)> {
+        self.directory.read().unwrap().scan_ranges(start, end)
     }
 
     fn on_out_of_range(&self, _shard: ShardNumber, _key: &K) {

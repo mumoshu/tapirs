@@ -199,6 +199,14 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>, R: ShardRouter<K>> RoutingTransa
     /// If any sub-scan returns `OutOfRange`, the entire scan is retried from
     /// scratch: the routing directory is re-consulted, the range is re-split,
     /// and all sub-scans are re-issued.
+    /// Range scan across one or more shards, with automatic OutOfRange retry.
+    ///
+    /// The scan range is clipped to each shard's key range before sending,
+    /// so a scan(a, z) spanning shards [None, g), [g, n), [n, None) sends
+    /// scan(a, g) to shard 0, scan(g, n) to shard 2, scan(n, z) to shard 1.
+    /// If any sub-scan returns `OutOfRange`, the entire scan is retried from
+    /// scratch: the routing directory is re-consulted, the range is re-split,
+    /// and all sub-scans are re-issued.
     pub fn scan(&self, start: K, end: K) -> impl Future<Output = Result<Vec<(K, V)>, TransactionError>> + use<'_, K, V, T, R> {
         let router = Arc::clone(&self.router);
         let config = self.retry_config.clone();
@@ -206,14 +214,14 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>, R: ShardRouter<K>> RoutingTransa
 
         async move {
             retry_out_of_range(&config, &on_retry, "scan", T::sleep, || {
-                let shards = router.shards_for_range(&start, &end);
+                let ranges = router.scan_ranges(&start, &end);
 
-                let shard_scans: Vec<_> = shards
+                let shard_scans: Vec<_> = ranges
                     .into_iter()
-                    .map(|shard| {
+                    .map(|(shard, clipped_start, clipped_end)| {
                         self.inner.scan(
-                            Sharded { shard, key: start.clone() },
-                            Sharded { shard, key: end.clone() },
+                            Sharded { shard, key: clipped_start },
+                            Sharded { shard, key: clipped_end },
                         )
                     })
                     .collect();
@@ -275,14 +283,14 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>, R: ShardRouter<K>>
 
         async move {
             retry_out_of_range(&config, &on_retry, "scan", T::sleep, || {
-                let shards = router.shards_for_range(&start, &end);
+                let ranges = router.scan_ranges(&start, &end);
 
-                let shard_scans: Vec<_> = shards
+                let shard_scans: Vec<_> = ranges
                     .into_iter()
-                    .map(|shard| {
+                    .map(|(shard, clipped_start, clipped_end)| {
                         self.inner.scan(
-                            Sharded { shard, key: start.clone() },
-                            Sharded { shard, key: end.clone() },
+                            Sharded { shard, key: clipped_start },
+                            Sharded { shard, key: clipped_end },
                         )
                     })
                     .collect();
