@@ -3,27 +3,15 @@
 > A horizontally-scalable transactional key-value store with linearizable transactions — leaderless and no single point of failure.
 
 ```
-                          ┌─────────────────────────────────────────────┐
-                          │              tapirs cluster                 │
-                          │                                             │
-  ┌─────────┐    txn      │  ┌──────────┐  ┌──────────┐  ┌──────────┐  │
-  │ Client A │───────────►│  │ Shard 1  │  │ Shard 2  │  │ Shard 3  │  │
-  └─────────┘             │  │ (a..m)   │  │ (m..t)   │  │ (t..z)   │  │
-                          │  │          │  │          │  │          │  │
-  ┌─────────┐    txn      │  │ replica  │  │ replica  │  │ replica  │  │
-  │ Client B │───────────►│  │ replica  │  │ replica  │  │ replica  │  │
-  └─────────┘             │  │ replica  │  │ replica  │  │ replica  │  │
-                          │  └──────────┘  └──────────┘  └──────────┘  │
-  ┌─────────┐    txn      │         │             │            │       │
-  │ Client C │───────────►│         └─────────────┼────────────┘       │
-  └─────────┘             │                       ▼                    │
-                          │               ┌──────────────┐             │
-                          │               │  Discovery   │             │
-                          │               │  (embedded)  │             │
-                          │               └──────────────┘             │
-                          │                                             │
-                          │       one binary · no external deps         │
-                          └─────────────────────────────────────────────┘
+                       tapirs cluster
+
+  ┌─────────┐   strict serializable txn   ┌────────────────┐
+  │ Clients │        ───────────►         │  Sharded and   │
+  └─────────┘                             │   leaderless   │
+                                          │    replicas    │
+                                          └────────────────┘
+
+            one binary · no external deps
 ```
 
 **What is tapirs:** tapirs is a Rust implementation of the [TAPIR protocol](https://syslab.cs.washington.edu/papers/tapir-tr-v2.pdf) extended with persistent storage, range scan, online resharding, and self-contained discovery. Every replica is symmetric — there is no leader in the transaction hot path, so there is no single point of failure and no failover delay. Read-write transactions provide strict serializability; read-only transactions provide linearizability with a single-replica fast path. See the [full documentation](docs/README.md) for architecture, concepts, and operations guides.
