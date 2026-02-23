@@ -291,8 +291,8 @@ pub async fn run(
         }
     }
 
-    if active_txn.is_some() {
-        println!("Warning: active transaction was aborted on exit.");
+    if matches!(&active_txn, Some(ActiveTxn::ReadWrite(_))) {
+        println!("Warning: active read-write transaction was aborted on exit.");
     }
 
     exit_code
