@@ -1,7 +1,5 @@
 # tapirs
 
-> A horizontally-scalable transactional key-value store with linearizable transactions — leaderless and no single point of failure.
-
 ```
                        tapirs cluster
 
@@ -14,14 +12,39 @@
             one binary · no external deps
 ```
 
-**What is tapirs:** tapirs is a Rust implementation of the [TAPIR protocol](https://syslab.cs.washington.edu/papers/tapir-tr-v2.pdf) extended with persistent storage, range scan, online resharding, and self-contained discovery. Every replica is symmetric — there is no leader in the transaction hot path, so there is no single point of failure and no failover delay. Read-write transactions provide strict serializability; read-only transactions provide linearizability with a single-replica fast path. See the [full documentation](docs/README.md) for architecture, concepts, and operations guides.
+tapirs is a Rust implementation of the [TAPIR protocol](https://syslab.cs.washington.edu/papers/tapir-tr-v2.pdf) — a leaderless transactional key-value store. Read-write transactions provide strict serializability; read-only transactions provide linearizability with a single-replica fast path. No single point of failure, built-in online resharding, and no external dependencies.
 
-**Quick start:** Get started in under a minute: `scripts/testbed.sh up` bootstraps a 3-node Docker cluster with 2 shards, `tapi client --repl` opens a transaction shell, and `scripts/testbed.sh down` tears it all down. See [Getting Started](docs/operate/getting-started-testbed.md) for the full walkthrough, or [single-node mode](docs/operate/getting-started-testbed-solo.md) for local development without Docker. Deciding whether to adopt? See [Evaluate](docs/evaluate/) for benefits and a comparison with etcd, FoundationDB, CockroachDB, and TiKV.
+| | |
+|---|---|
+| **No leader, no failover delay** — symmetric replicas, no SPOF | **One binary, zero dependencies** — embedded discovery, no ZooKeeper/etcd |
+| **Online resharding** — split, merge, compact without downtime | **Deterministic testing** — simulation, fault injection, Jepsen-compatible |
 
-- **Protocol** — leaderless transactions (no single point of failure), strict serializability (strongest consistency guarantee), coordinator recovery (automatic cleanup when a client crashes mid-transaction), read-only fast path (single-replica reads without a prepare phase), range scan with phantom-write protection (detects writes into previously-scanned ranges)
-- **Operations** — online resharding (split hot shards, merge cold shards, compact to reclaim resources — all without downtime), backup/restore, self-contained discovery (no ZooKeeper/etcd required), Docker orchestration, CLI + REPL
-- **Engineering** — deterministic simulation testing (every test is 100% reproducible), fault injection (network + disk failures), fuzz with view-change injection (random workloads + concurrent consensus disruption), Maelstrom/Jepsen verification (external linearizability checker), WiscKey SSD engine (reduced write amplification), optional io_uring transport (kernel-bypass I/O)
+## Quick start
 
-tapirs is in active development. The protocol implementation is complete and verified by deterministic simulation testing and Jepsen-compatible linearizability checks. Production hardening is ongoing. See [Roadmap](docs/roadmap.md) for what's planned next.
+```sh
+scripts/testbed.sh up     # 3-node cluster, 2 shards
+tapi client --repl        # interactive transaction shell
+scripts/testbed.sh down   # teardown
+```
 
-Built by [@mumoshu](https://github.com/mumoshu). Extended from [tapi-rs](https://github.com/finnbear/tapi-rs) by Finn Bear. See [History](docs/history.md) for the full story.
+Full walkthrough: [Docker testbed](docs/operate/getting-started-testbed.md) · [Single-node mode](docs/operate/getting-started-testbed-solo.md)
+
+## Documentation
+
+**Evaluating tapirs for your project?** [Evaluate tapirs](docs/evaluate/) walks you through what makes it different, whether it fits your use case, and how it compares with etcd, FoundationDB, CockroachDB, and TiKV.
+
+**Building an application on tapirs?** [Building on tapirs](docs/integrate/) covers the Rust client SDK, consistency levels, and integration patterns for SQL databases, document stores, and stateful services.
+
+**Running a cluster?** [Operate tapirs](docs/operate/) has everything from a one-minute Docker testbed to CLI reference, monitoring, and troubleshooting.
+
+**Curious how it works?** [Learn how tapirs works](docs/learn/) covers the foundational concepts — TAPIR, IR consensus, OCC — and goes deeper into architecture, protocol internals, and design decisions.
+
+**Contributing or studying the code?** The [Code Tour](docs/learn/code-tour.md) gives a recommended reading order through the source, with a [Paper Map](docs/learn/paper-map.md) connecting each section of the TAPIR paper to the corresponding code.
+
+Full documentation: [docs/](docs/README.md) · [Roadmap](docs/roadmap.md) · [History](docs/history.md)
+
+## Status
+
+Protocol complete and verified by deterministic simulation testing and Jepsen-compatible linearizability checks. Production hardening is ongoing. See [Roadmap](docs/roadmap.md) for what's planned next.
+
+Built by [@mumoshu](https://github.com/mumoshu), extended from [tapi-rs](https://github.com/finnbear/tapi-rs) by Finn Bear. See [History](docs/history.md).
