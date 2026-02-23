@@ -22,3 +22,4 @@ flamegraph.svg
 
 temp/
 .tapiadm/
+.maelstrom/

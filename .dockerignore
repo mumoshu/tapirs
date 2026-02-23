@@ -11,3 +11,4 @@ fuzz/
 .idea/
 .dockerignore
 history.txt
+.maelstrom/
