@@ -28,6 +28,29 @@ where
     Ok(())
 }
 
+/// Accept connections on a pre-bound `std::net::TcpListener`.
+///
+/// Converts the std listener to a tokio `TcpListener` and spawns the
+/// accept loop. Eliminates the TOCTOU gap between port allocation and
+/// listener startup.
+pub(super) fn listen_from_std<U: ReplicaUpcalls>(
+    listener: std::net::TcpListener,
+    inner: Arc<TransportInner<U>>,
+) -> tokio::io::Result<()>
+where
+    U::UO: Serialize + DeserializeOwned,
+    U::UR: Serialize + DeserializeOwned,
+    U::IO: Serialize + DeserializeOwned,
+    U::IR: Serialize + DeserializeOwned,
+    U::CO: Serialize + DeserializeOwned,
+    U::CR: Serialize + DeserializeOwned,
+{
+    listener.set_nonblocking(true)?;
+    let listener = TcpListener::from_std(listener)?;
+    tokio::spawn(accept_loop(listener, inner));
+    Ok(())
+}
+
 /// Accept loop: spawns a handler task per inbound connection.
 async fn accept_loop<U: ReplicaUpcalls>(
     listener: TcpListener,

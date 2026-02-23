@@ -195,4 +195,13 @@ where
     pub async fn listen(&self, addr: std::net::SocketAddr) -> tokio::io::Result<()> {
         super::listener::listen(addr, Arc::clone(&self.inner)).await
     }
+
+    /// Start accepting on a pre-bound `std::net::TcpListener`.
+    ///
+    /// Eliminates the TOCTOU race in port allocation: the caller binds
+    /// port 0, reads the address, and passes the still-open listener
+    /// here instead of dropping it and re-binding.
+    pub fn listen_from_std(&self, listener: std::net::TcpListener) -> tokio::io::Result<()> {
+        super::listener::listen_from_std(listener, Arc::clone(&self.inner))
+    }
 }
