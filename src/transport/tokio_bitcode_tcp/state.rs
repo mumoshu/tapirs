@@ -45,6 +45,12 @@ pub(super) struct TransportInner<U: ReplicaUpcalls> {
     pub shard: RwLock<Option<ShardNumber>>,
     /// Directory for persistent state files.
     pub persist_dir: String,
+    /// Optional TLS acceptor for inbound connections.
+    #[cfg(feature = "tls")]
+    pub tls_acceptor: Option<crate::tls::ReloadableTlsAcceptor>,
+    /// Optional TLS connector for outbound connections.
+    #[cfg(feature = "tls")]
+    pub tls_connector: Option<crate::tls::ReloadableTlsConnector>,
 }
 
 impl<U: ReplicaUpcalls> TcpTransport<U> {
@@ -63,8 +69,43 @@ impl<U: ReplicaUpcalls> TcpTransport<U> {
                 directory,
                 shard: RwLock::new(None),
                 persist_dir,
+                #[cfg(feature = "tls")]
+                tls_acceptor: None,
+                #[cfg(feature = "tls")]
+                tls_connector: None,
             }),
         }
+    }
+
+    /// Configure TLS for both inbound (acceptor) and outbound (connector) connections.
+    #[cfg(feature = "tls")]
+    pub fn with_tls(
+        address: TcpAddress,
+        persist_dir: String,
+        directory: Arc<InMemoryShardDirectory<TcpAddress>>,
+        tls_config: &crate::tls::TlsConfig,
+    ) -> Result<Self, crate::tls::TlsError> {
+        let acceptor = crate::tls::ReloadableTlsAcceptor::new(tls_config)?;
+        let connector = crate::tls::ReloadableTlsConnector::new(tls_config)?;
+        crate::tls::spawn_reload_task(
+            tls_config.clone(),
+            Some(acceptor.swap_target().clone()),
+            Some(connector.swap_target().clone()),
+        );
+        Ok(Self {
+            address,
+            inner: Arc::new(TransportInner {
+                pending_replies: Mutex::new(HashMap::new()),
+                next_request_id: AtomicU64::new(0),
+                connections: Mutex::new(HashMap::new()),
+                receive_callback: Mutex::new(None),
+                directory,
+                shard: RwLock::new(None),
+                persist_dir,
+                tls_acceptor: Some(acceptor),
+                tls_connector: Some(connector),
+            }),
+        })
     }
 
     pub fn directory(&self) -> &Arc<InMemoryShardDirectory<TcpAddress>> {

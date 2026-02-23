@@ -40,10 +40,31 @@ where
     let stream = TcpStream::connect(addr)
         .await
         .unwrap_or_else(|e| panic!("connect to {addr} failed: {e}"));
-    let (read_half, write_half) = stream.into_split();
 
     let (tx, rx) = mpsc::channel::<Vec<u8>>(1024);
 
+    #[cfg(feature = "tls")]
+    if let Some(ref connector) = inner.tls_connector {
+        let tls_connector = connector.connector();
+        let server_name = rustls::pki_types::ServerName::IpAddress(
+            rustls::pki_types::IpAddr::from(addr.ip()),
+        );
+        match tls_connector.connect(server_name, stream).await {
+            Ok(tls_stream) => {
+                let (read_half, write_half) = tokio::io::split(tls_stream);
+                tokio::spawn(write_loop(write_half, rx));
+                tokio::spawn(read_loop_outbound(read_half, Arc::clone(inner)));
+                inner.connections.lock().unwrap().insert(addr, tx.clone());
+                return tx;
+            }
+            Err(e) => {
+                panic!("TLS connect to {addr} failed: {e}");
+            }
+        }
+    }
+
+    // Plain TCP path.
+    let (read_half, write_half) = stream.into_split();
     tokio::spawn(write_loop(write_half, rx));
     tokio::spawn(read_loop_outbound(read_half, Arc::clone(inner)));
 

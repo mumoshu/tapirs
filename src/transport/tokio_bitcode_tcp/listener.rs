@@ -65,14 +65,48 @@ async fn accept_loop<U: ReplicaUpcalls>(
     loop {
         match listener.accept().await {
             Ok((stream, _peer)) => {
-                let (read, write) = stream.into_split();
-                tokio::spawn(read_loop_inbound(read, write, Arc::clone(&inner)));
+                let inner = Arc::clone(&inner);
+                tokio::spawn(async move {
+                    accept_connection(stream, inner).await;
+                });
             }
             Err(e) => {
                 warn!("accept error: {e}");
             }
         }
     }
+}
+
+/// Handle an accepted TCP connection, optionally wrapping with TLS.
+async fn accept_connection<U: ReplicaUpcalls>(
+    stream: tokio::net::TcpStream,
+    inner: Arc<TransportInner<U>>,
+) where
+    U::UO: Serialize + DeserializeOwned,
+    U::UR: Serialize + DeserializeOwned,
+    U::IO: Serialize + DeserializeOwned,
+    U::IR: Serialize + DeserializeOwned,
+    U::CO: Serialize + DeserializeOwned,
+    U::CR: Serialize + DeserializeOwned,
+{
+    #[cfg(feature = "tls")]
+    if let Some(ref acceptor) = inner.tls_acceptor {
+        let tls_acceptor = acceptor.acceptor();
+        match tls_acceptor.accept(stream).await {
+            Ok(tls_stream) => {
+                let (read, write) = tokio::io::split(tls_stream);
+                read_loop_inbound(read, write, inner).await;
+            }
+            Err(e) => {
+                warn!("TLS accept error: {e}");
+            }
+        }
+        return;
+    }
+
+    // Plain TCP path.
+    let (read, write) = stream.into_split();
+    read_loop_inbound(read, write, inner).await;
 }
 
 /// Inbound read loop: dispatches requests to the receive callback,
