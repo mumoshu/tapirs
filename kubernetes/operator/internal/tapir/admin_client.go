@@ -71,6 +71,7 @@ func (c *AdminClient) do(ctx context.Context, req adminRequest) (*AdminResponse,
 		host, _, _ := net.SplitHostPort(c.Addr)
 		tlsConn := tls.Client(rawConn, &tls.Config{
 			ServerName:           host,
+			Certificates:         c.TLSConfig.Certificates,
 			RootCAs:              c.TLSConfig.RootCAs,
 			GetClientCertificate: c.TLSConfig.GetClientCertificate,
 			MinVersion:           c.TLSConfig.MinVersion,
