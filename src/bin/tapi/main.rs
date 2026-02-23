@@ -131,6 +131,44 @@ enum AdminAction {
         admin_listen_addr: String,
     },
     /// Add a replica for a shard.
+    ///
+    /// Two modes:
+    ///
+    /// 1. Without --membership (shard-manager mode): The node registers with
+    ///    the shard-manager via POST /v1/join. The shard-manager looks up the
+    ///    shard's current membership from TAPIR discovery and coordinates
+    ///    adding this replica to the existing group. Use this when adding a
+    ///    replica to an existing shard that is already registered in discovery
+    ///    (e.g. adding a 4th replica to an existing 3-replica shard).
+    ///
+    /// 2. With --membership (static mode): Creates the replica with the exact
+    ///    membership list provided, bypassing the shard-manager entirely. Use
+    ///    this for initial shard bootstrap when the shard doesn't exist in
+    ///    discovery yet (e.g. creating shard 2 replicas before a shard split).
+    ///    All replicas in the group should be created with the same membership
+    ///    list so they form a quorum.
+    //
+    // TODO: Once the shard-manager becomes the authority for strictly
+    // consistent shard membership state, the shard-manager mode should be
+    // able to handle initial bootstrap too — the shard-manager would create
+    // the shard entry in discovery on the first /v1/join for an unknown
+    // shard, then subsequent joins would add to the existing group. This
+    // would eliminate the need for --membership entirely, simplifying the
+    // operator workflow to always use add-replica without flags.
+    //
+    // Current state: create_replica() (no --membership) calls
+    // shard_manager_join() which POSTs /v1/join. The /v1/join handler queries
+    // discovery for the shard's membership — if the shard isn't found, it
+    // returns 400 "shard N not found in discovery".
+    //
+    // Alternative approach: `tapictl create shard --shard N --replicas ...`
+    // can register a shard with the shard-manager (POST /v1/register), which
+    // publishes to discovery. After that, add-replica without --membership
+    // would work. But register_shard requires replicas to already exist
+    // (chicken-and-egg), so the first replica still needs --membership for
+    // static bootstrap. The fix is to have /v1/join auto-register the shard
+    // with a single-member membership on the first call, then use the
+    // existing join path for subsequent replicas.
     AddReplica {
         #[arg(long, default_value = "127.0.0.1:9000")]
         admin_listen_addr: String,
@@ -144,6 +182,7 @@ enum AdminAction {
         storage: StorageBackend,
         /// Static membership addresses (comma-separated). When provided,
         /// creates the replica with explicit membership (no shard-manager).
+        /// Required for initial shard bootstrap (shard not yet in discovery).
         /// Example: --membership 10.0.0.1:6000,10.0.0.2:6000,10.0.0.3:6000
         #[arg(long, value_delimiter = ',')]
         membership: Vec<String>,
