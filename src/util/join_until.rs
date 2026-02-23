@@ -107,21 +107,18 @@ where
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut this = self.project();
-        loop {
-            if !this.until.until(this.output, cx) {
-                match this.active.as_mut().poll_next(cx) {
-                    Poll::Ready(Some((k, x))) => {
-                        this.output.insert(k, x);
-                        continue;
-                    }
-                    Poll::Ready(None) => {
-                        // Done with all futures
-                    }
-                    Poll::Pending => return Poll::Pending,
-                }
-            }
-
+        // Drain all currently-ready futures before checking the until
+        // condition. FuturesUnordered has non-deterministic poll ordering,
+        // but by draining ALL ready futures we always collect the same SET
+        // of results. Combined with the BTreeMap output (sorted by key),
+        // the final result is deterministic regardless of poll order.
+        while let Poll::Ready(Some((k, x))) = this.active.as_mut().poll_next(cx) {
+            this.output.insert(k, x);
+        }
+        // Check until condition (also polls embedded timers via cx).
+        if this.until.until(this.output, cx) || this.active.is_empty() {
             return Poll::Ready(mem::take(this.output));
         }
+        Poll::Pending
     }
 }
