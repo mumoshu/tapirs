@@ -1,0 +1,49 @@
+name: Testbed Solo
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'scripts/testbed-solo.sh'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'Makefile'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'scripts/testbed-solo.sh'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'Makefile'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  testbed-solo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.0
+      - name: Run testbed-solo
+        run: make ci/testbed-solo
+      - name: Collect logs
+        if: failure()
+        run: |
+          mkdir -p /tmp/ci-logs
+          cp /tmp/tapi-solo/*.log /tmp/ci-logs/ 2>/dev/null || true
+          cp /tmp/tapi-solo/*.toml /tmp/ci-logs/ 2>/dev/null || true
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: testbed-solo-logs
+          path: /tmp/ci-logs/
+          retention-days: 14

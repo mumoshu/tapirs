@@ -1,0 +1,46 @@
+name: Fuzz Multi-Seed
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'scripts/fuzz-multi-seed.sh'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'scripts/fuzz-multi-seed.sh'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fuzz-multi-seed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.0
+      - name: Run fuzz-multi-seed
+        run: make ci/fuzz-multi-seed
+      - name: Collect logs
+        if: failure()
+        run: |
+          mkdir -p /tmp/ci-logs
+          cp -r /tmp/fuzz-multi-*/ /tmp/ci-logs/ 2>/dev/null || true
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: fuzz-multi-seed-logs
+          path: /tmp/ci-logs/
+          retention-days: 14

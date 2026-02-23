@@ -1,0 +1,60 @@
+name: Testbed Kubernetes
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'scripts/testbed-kube.sh'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'Makefile'
+      - 'Dockerfile'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'scripts/testbed-kube.sh'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'Makefile'
+      - 'Dockerfile'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  testbed-kube:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.0
+      - name: Install kind
+        run: |
+          make -C kubernetes/operator install-kind
+          echo "${{ github.workspace }}/kubernetes/operator/bin" >> $GITHUB_PATH
+      - name: Run testbed-kube
+        run: make ci/testbed-kube
+      - name: Collect logs
+        if: failure()
+        run: |
+          mkdir -p /tmp/ci-logs
+          kubectl get pods -A -o wide > /tmp/ci-logs/pods.txt 2>&1 || true
+          kubectl get events -n tapir --sort-by=.lastTimestamp > /tmp/ci-logs/events.txt 2>&1 || true
+          kubectl describe pods -n tapir > /tmp/ci-logs/describe-pods.txt 2>&1 || true
+          for pod in $(kubectl get pods -n tapir -o name 2>/dev/null); do
+            name=$(basename "$pod")
+            kubectl logs -n tapir "$name" --all-containers --tail=500 > "/tmp/ci-logs/logs-${name}.txt" 2>&1 || true
+          done
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: testbed-kube-logs
+          path: /tmp/ci-logs/
+          retention-days: 14
