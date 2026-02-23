@@ -27,7 +27,7 @@ tapi client --repl        # interactive transaction shell
 scripts/testbed.sh down   # teardown
 ```
 
-Full walkthrough: [Docker testbed](docs/operate/getting-started-testbed.md) · [Single-node mode](docs/operate/getting-started-testbed-solo.md)
+Full walkthrough: [Getting Started](docs/operate/getting-started.md)
 
 ## Documentation
 

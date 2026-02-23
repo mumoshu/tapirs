@@ -22,7 +22,7 @@
 
 - **[Evaluate](evaluate/)** — deciding whether to adopt? Read [Benefits](evaluate/benefits.md), [Use Cases](evaluate/usecases.md), and the [Comparison](evaluate/comparison.md) with etcd, FDB, CockroachDB, TiKV
 - **[Learn](learn/)** — understanding how tapirs works? Start with [Concepts](learn/concepts/) for foundational terms, then explore [Internals](learn/internals/) for architecture deep-dives
-- **[Operate](operate/)** — running a cluster? See [Getting Started](operate/getting-started-testbed.md) and the [CLI Reference](operate/cli-reference.md)
+- **[Operate](operate/)** — running a cluster? See [Getting Started](operate/getting-started.md) and the [CLI Reference](operate/cli-reference.md)
 - **[Integrate](integrate/)** — building an app or database on tapirs? See [Integration Patterns](integrate/README.md) and the [Rust Client SDK](integrate/rust-client-sdk.md)
 - **[Roadmap](roadmap.md)** — what's planned next: Kubernetes testbed, observability, operator, benchmarks
 - **[History](history.md)** — where tapirs came from and what it took to build
