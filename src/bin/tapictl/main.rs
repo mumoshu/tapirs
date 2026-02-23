@@ -2,10 +2,48 @@ mod shard_manager_client;
 
 use clap::{Parser, Subcommand};
 use shard_manager_client::HttpShardManagerClient;
+use std::path::PathBuf;
+
+/// Shared TLS CLI flags for mTLS certificate configuration.
+#[derive(clap::Args, Clone, Default)]
+pub struct TlsArgs {
+    /// Path to PEM-encoded TLS certificate file.
+    #[arg(long)]
+    pub tls_cert: Option<PathBuf>,
+    /// Path to PEM-encoded TLS private key file.
+    #[arg(long)]
+    pub tls_key: Option<PathBuf>,
+    /// Path to PEM-encoded CA certificate file for peer verification.
+    #[arg(long)]
+    pub tls_ca: Option<PathBuf>,
+}
+
+impl TlsArgs {
+    fn validate(&self) {
+        let count = [&self.tls_cert, &self.tls_key, &self.tls_ca]
+            .iter()
+            .filter(|f| f.is_some())
+            .count();
+        if count > 0 && count < 3 {
+            eprintln!("error: --tls-cert, --tls-key, and --tls-ca must all be specified together");
+            std::process::exit(1);
+        }
+        #[cfg(not(feature = "tls"))]
+        if count > 0 {
+            eprintln!(
+                "error: TLS flags specified but binary was compiled without the 'tls' feature. \
+                 Rebuild with: cargo build --features tls"
+            );
+            std::process::exit(1);
+        }
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "tapictl", about = "TAPIR cluster control CLI")]
 struct Cli {
+    #[command(flatten)]
+    tls: TlsArgs,
     #[command(subcommand)]
     command: Command,
 }
@@ -224,8 +262,24 @@ async fn get_topology(endpoint: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn make_sm_client(url: &str, #[cfg(feature = "tls")] tls: &TlsArgs) -> HttpShardManagerClient {
+    #[cfg(feature = "tls")]
+    if let (Some(cert), Some(key), Some(ca)) = (&tls.tls_cert, &tls.tls_key, &tls.tls_ca) {
+        let tls_config = tapirs::tls::TlsConfig {
+            cert_path: cert.clone(),
+            key_path: key.clone(),
+            ca_path: ca.clone(),
+        };
+        let connector = tapirs::tls::ReloadableTlsConnector::new(&tls_config)
+            .unwrap_or_else(|e| panic!("TLS config error: {e}"));
+        return HttpShardManagerClient::new_with_tls(url, connector);
+    }
+    HttpShardManagerClient::new(url)
+}
+
 fn main() {
     let cli = Cli::parse();
+    cli.tls.validate();
     let result: Result<(), String> = match cli.command {
         Command::Split {
             resource:
@@ -237,7 +291,7 @@ fn main() {
                     new_replicas,
                 },
         } => {
-            let client = HttpShardManagerClient::new(&shard_manager_url);
+            let client = make_sm_client(&shard_manager_url, #[cfg(feature = "tls")] &cli.tls);
             let replicas: Vec<String> =
                 new_replicas.split(',').map(|s| s.trim().to_string()).collect();
             client
@@ -256,7 +310,7 @@ fn main() {
                     surviving,
                 },
         } => {
-            let client = HttpShardManagerClient::new(&shard_manager_url);
+            let client = make_sm_client(&shard_manager_url, #[cfg(feature = "tls")] &cli.tls);
             client
                 .merge(absorbed, surviving)
                 .map(|()| println!("Merged shard {absorbed} into shard {surviving}"))
@@ -270,7 +324,7 @@ fn main() {
                     new_replicas,
                 },
         } => {
-            let client = HttpShardManagerClient::new(&shard_manager_url);
+            let client = make_sm_client(&shard_manager_url, #[cfg(feature = "tls")] &cli.tls);
             let replicas: Vec<String> =
                 new_replicas.split(',').map(|s| s.trim().to_string()).collect();
             client
@@ -287,7 +341,7 @@ fn main() {
                     replicas,
                 },
         } => {
-            let client = HttpShardManagerClient::new(&shard_manager_url);
+            let client = make_sm_client(&shard_manager_url, #[cfg(feature = "tls")] &cli.tls);
             let replica_addrs: Option<Vec<String>> = replicas.map(|r| {
                 r.split(',').map(|s| s.trim().to_string()).collect()
             });

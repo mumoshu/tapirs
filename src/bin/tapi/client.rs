@@ -34,6 +34,7 @@ pub async fn run(
     discovery_json: Option<String>,
     discovery_tapir_endpoint: Option<String>,
     input_source: crate::repl::InputSource,
+    #[cfg(feature = "tls")] tls_config: Option<tapirs::tls::TlsConfig>,
 ) -> i32 {
     let shards = if let Some(json_path) = discovery_json {
         load_discovery_json(&json_path).await
@@ -56,6 +57,15 @@ pub async fn run(
 
     let address_directory = Arc::new(InMemoryShardDirectory::new());
 
+    #[cfg(feature = "tls")]
+    let transport: TcpTransport<TapirReplica<String, String>> = if let Some(ref tls_cfg) = tls_config {
+        TcpTransport::with_tls(address, persist_dir, Arc::clone(&address_directory), tls_cfg)
+            .unwrap_or_else(|e| panic!("client TLS config error: {e}"))
+    } else {
+        TcpTransport::with_directory(address, persist_dir, Arc::clone(&address_directory))
+    };
+
+    #[cfg(not(feature = "tls"))]
     let transport: TcpTransport<TapirReplica<String, String>> =
         TcpTransport::with_directory(address, persist_dir, Arc::clone(&address_directory));
 

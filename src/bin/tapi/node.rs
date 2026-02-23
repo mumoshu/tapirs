@@ -32,6 +32,8 @@ pub struct Node {
     /// Also used to register/unregister own_shards for PUSH filtering.
     discovery_dir: Option<Arc<CachingShardDirectory<TcpAddress, String, DiscoveryBackend>>>,
     shard_manager_url: Option<String>,
+    #[cfg(feature = "tls")]
+    pub(crate) tls_config: Option<tapirs::tls::TlsConfig>,
 }
 
 impl Node {
@@ -42,6 +44,8 @@ impl Node {
             directory: Arc::new(InMemoryShardDirectory::new()),
             discovery_dir: None,
             shard_manager_url: None,
+            #[cfg(feature = "tls")]
+            tls_config: None,
         }
     }
 
@@ -58,6 +62,8 @@ impl Node {
             directory,
             discovery_dir: Some(discovery_dir),
             shard_manager_url: None,
+            #[cfg(feature = "tls")]
+            tls_config: None,
         }
     }
 
@@ -110,6 +116,16 @@ impl Node {
 
         let persist_dir = format!("{}/shard_{}", self.persist_dir, cfg.shard);
         let address = TcpAddress(listen_addr);
+
+        #[cfg(feature = "tls")]
+        let transport = if let Some(ref tls_config) = self.tls_config {
+            TcpTransport::with_tls(address, persist_dir, Arc::clone(&self.directory), tls_config)
+                .map_err(|e| format!("TLS config error: {e}"))?
+        } else {
+            TcpTransport::with_directory(address, persist_dir, Arc::clone(&self.directory))
+        };
+
+        #[cfg(not(feature = "tls"))]
         let transport =
             TcpTransport::with_directory(address, persist_dir, Arc::clone(&self.directory));
 
@@ -535,6 +551,7 @@ pub async fn run(
     cfg: NodeConfig,
     discovery_json: Option<String>,
     discovery_tapir_endpoint: Option<String>,
+    #[cfg(feature = "tls")] tls_config: Option<tapirs::tls::TlsConfig>,
 ) {
     let persist_dir = cfg
         .persist_dir
@@ -549,6 +566,10 @@ pub async fn run(
         if let Some(ref url) = cfg.shard_manager_url {
             node.shard_manager_url = Some(url.clone());
         }
+        #[cfg(feature = "tls")]
+        {
+            node.tls_config = tls_config.clone();
+        }
         Arc::new(node)
     } else if let Some(endpoint) = discovery_tapir_endpoint {
         let backend = load_tapir_discovery_backend(&endpoint).await;
@@ -556,9 +577,19 @@ pub async fn run(
         if let Some(ref url) = cfg.shard_manager_url {
             node.shard_manager_url = Some(url.clone());
         }
+        #[cfg(feature = "tls")]
+        {
+            node.tls_config = tls_config.clone();
+        }
         Arc::new(node)
     } else {
-        Arc::new(Node::new(persist_dir))
+        #[allow(unused_mut)] // mutated only when tls feature is enabled
+        let mut node = Node::new(persist_dir);
+        #[cfg(feature = "tls")]
+        {
+            node.tls_config = tls_config.clone();
+        }
+        Arc::new(node)
     };
 
     for replica_cfg in &cfg.replicas {
@@ -569,11 +600,17 @@ pub async fn run(
         .parse()
         .unwrap_or_else(|e| panic!("invalid admin_listen_addr '{admin_listen_addr}': {e}"));
 
+    #[cfg(feature = "tls")]
+    let tls_acceptor = tls_config.as_ref().map(|c| {
+        tapirs::tls::ReloadableTlsAcceptor::new(c)
+            .unwrap_or_else(|e| panic!("admin server TLS config error: {e}"))
+    });
+
     crate::admin_server::start(
         admin_addr,
         Arc::clone(&node),
         #[cfg(feature = "tls")]
-        None,
+        tls_acceptor,
     )
     .await;
 

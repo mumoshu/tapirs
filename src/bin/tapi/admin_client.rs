@@ -13,6 +13,74 @@ struct ClusterMetadata {
     replicas_per_shard: HashMap<u32, usize>,
 }
 
+/// Send a parsed admin request, using TLS if configured.
+async fn admin_request(
+    addr: &str,
+    request_json: &str,
+    #[cfg(feature = "tls")] tls_connector: &Option<tapirs::tls::ReloadableTlsConnector>,
+) -> Result<tapirs::node::admin_client::AdminStatusResponse, String> {
+    #[cfg(feature = "tls")]
+    if let Some(connector) = tls_connector {
+        return tapirs::node::admin_client::send_admin_request_tls(
+            addr,
+            request_json,
+            connector,
+        )
+        .await;
+    }
+    send_admin_request(addr, request_json).await
+}
+
+/// Exchange a raw admin request, returning the unparsed response line.
+///
+/// Used for WaitReady (graceful connection failure) and the generic
+/// single-node path (raw JSON pretty-printing).
+async fn raw_admin_exchange(
+    addr: &str,
+    request: &str,
+    #[cfg(feature = "tls")] tls_connector: &Option<tapirs::tls::ReloadableTlsConnector>,
+) -> Result<Option<String>, String> {
+    let stream = TcpStream::connect(addr)
+        .await
+        .map_err(|e| format!("connect to {addr}: {e}"))?;
+
+    let mut line = request.to_string();
+    line.push('\n');
+
+    #[cfg(feature = "tls")]
+    if let Some(connector) = tls_connector {
+        let tls_conn = connector.connector();
+        let host = addr.split(':').next().unwrap_or(addr).to_string();
+        let server_name = rustls::pki_types::ServerName::try_from(host)
+            .map_err(|e| format!("invalid server name: {e}"))?;
+        let tls_stream = tls_conn
+            .connect(server_name, stream)
+            .await
+            .map_err(|e| format!("TLS connect to {addr}: {e}"))?;
+        let (reader, mut writer) = tokio::io::split(tls_stream);
+        writer
+            .write_all(line.as_bytes())
+            .await
+            .map_err(|e| format!("send to {addr}: {e}"))?;
+        let mut lines = BufReader::new(reader).lines();
+        return lines
+            .next_line()
+            .await
+            .map_err(|e| format!("read from {addr}: {e}"));
+    }
+
+    let (reader, mut writer) = stream.into_split();
+    writer
+        .write_all(line.as_bytes())
+        .await
+        .map_err(|e| format!("send to {addr}: {e}"))?;
+    let mut lines = BufReader::new(reader).lines();
+    lines
+        .next_line()
+        .await
+        .map_err(|e| format!("read from {addr}: {e}"))
+}
+
 /// Back up all shards in a running cluster to a directory.
 ///
 /// Orchestration flow:
@@ -28,11 +96,21 @@ struct ClusterMetadata {
 ///
 /// The backup directory can later be used with `restore_cluster` to
 /// rebuild the cluster on fresh nodes.
-async fn backup_cluster(admin_addrs: Vec<String>, output_dir: &str) -> Result<(), String> {
+async fn backup_cluster(
+    admin_addrs: Vec<String>,
+    output_dir: &str,
+    #[cfg(feature = "tls")] tls_connector: &Option<tapirs::tls::ReloadableTlsConnector>,
+) -> Result<(), String> {
     // 1. Query each node for status to discover which shards exist.
     let mut shard_to_nodes: BTreeMap<u32, Vec<String>> = BTreeMap::new();
     for addr in &admin_addrs {
-        let resp = send_admin_request(addr, r#"{"command":"status"}"#).await?;
+        let resp = admin_request(
+            addr,
+            r#"{"command":"status"}"#,
+            #[cfg(feature = "tls")]
+            tls_connector,
+        )
+        .await?;
         if !resp.ok {
             return Err(format!("status failed on {addr}: {:?}", resp.message));
         }
@@ -67,7 +145,13 @@ async fn backup_cluster(admin_addrs: Vec<String>, output_dir: &str) -> Result<()
 
         println!("Shard {shard_id}: forcing view change...");
         let vc_req = format!(r#"{{"command":"view_change","shard":{shard_id}}}"#);
-        let resp = send_admin_request(&nodes[0], &vc_req).await?;
+        let resp = admin_request(
+            &nodes[0],
+            &vc_req,
+            #[cfg(feature = "tls")]
+            tls_connector,
+        )
+        .await?;
         if !resp.ok {
             return Err(format!(
                 "view_change for shard {shard_id} failed: {:?}",
@@ -80,7 +164,13 @@ async fn backup_cluster(admin_addrs: Vec<String>, output_dir: &str) -> Result<()
 
         println!("Shard {shard_id}: backing up...");
         let backup_req = format!(r#"{{"command":"backup_shard","shard":{shard_id}}}"#);
-        let resp = send_admin_request(&nodes[0], &backup_req).await?;
+        let resp = admin_request(
+            &nodes[0],
+            &backup_req,
+            #[cfg(feature = "tls")]
+            tls_connector,
+        )
+        .await?;
         if !resp.ok {
             return Err(format!(
                 "backup_shard for shard {shard_id} failed: {:?}",
@@ -151,6 +241,7 @@ async fn restore_cluster(
     admin_addrs: Vec<String>,
     backup_dir: &str,
     base_port: u16,
+    #[cfg(feature = "tls")] tls_connector: &Option<tapirs::tls::ReloadableTlsConnector>,
 ) -> Result<(), String> {
     // 1. Read cluster metadata.
     let meta_path = format!("{backup_dir}/cluster.json");
@@ -229,7 +320,13 @@ async fn restore_cluster(
             let req_str = serde_json::to_string(&req)
                 .map_err(|e| format!("serialize restore request: {e}"))?;
 
-            let resp = send_admin_request(&admin_addrs[*node_idx], &req_str).await?;
+            let resp = admin_request(
+                &admin_addrs[*node_idx],
+                &req_str,
+                #[cfg(feature = "tls")]
+                tls_connector,
+            )
+            .await?;
             if !resp.ok {
                 return Err(format!(
                     "restore_shard for shard {shard_id} on {} failed: {:?}",
@@ -248,7 +345,16 @@ async fn restore_cluster(
     Ok(())
 }
 
-pub async fn run(action: AdminAction) {
+pub async fn run(
+    action: AdminAction,
+    #[cfg(feature = "tls")] tls_config: Option<tapirs::tls::TlsConfig>,
+) {
+    #[cfg(feature = "tls")]
+    let tls_connector = tls_config.as_ref().map(|c| {
+        tapirs::tls::ReloadableTlsConnector::new(c)
+            .unwrap_or_else(|e| panic!("admin TLS config error: {e}"))
+    });
+
     // Multi-node operations with their own orchestration.
     match &action {
         AdminAction::Backup {
@@ -257,7 +363,14 @@ pub async fn run(action: AdminAction) {
         } => {
             let addrs: Vec<String> =
                 admin_addrs.split(',').map(|s| s.trim().to_string()).collect();
-            if let Err(e) = backup_cluster(addrs, output).await {
+            if let Err(e) = backup_cluster(
+                addrs,
+                output,
+                #[cfg(feature = "tls")]
+                &tls_connector,
+            )
+            .await
+            {
                 eprintln!("Backup failed: {e}");
                 std::process::exit(1);
             }
@@ -270,8 +383,14 @@ pub async fn run(action: AdminAction) {
         } => {
             let addrs: Vec<String> =
                 admin_addrs.split(',').map(|s| s.trim().to_string()).collect();
-            if let Err(e) =
-                restore_cluster(addrs, backup_dir, *base_port).await
+            if let Err(e) = restore_cluster(
+                addrs,
+                backup_dir,
+                *base_port,
+                #[cfg(feature = "tls")]
+                &tls_connector,
+            )
+            .await
             {
                 eprintln!("Restore failed: {e}");
                 std::process::exit(1);
@@ -340,18 +459,17 @@ pub async fn run(action: AdminAction) {
             let deadline =
                 std::time::Instant::now() + std::time::Duration::from_secs(timeout);
             loop {
-                if let Ok(stream) = TcpStream::connect(&admin_listen_addr).await {
-                    let (reader, mut writer) = stream.into_split();
-                    let _ = writer
-                        .write_all(b"{\"command\":\"status\"}\n")
-                        .await;
-                    let mut lines = BufReader::new(reader).lines();
-                    if let Ok(Some(resp)) = lines.next_line().await
-                        && serde_json::from_str::<serde_json::Value>(&resp).is_ok()
-                    {
-                        println!("ready");
-                        return;
-                    }
+                if let Ok(Some(resp)) = raw_admin_exchange(
+                    &admin_listen_addr,
+                    r#"{"command":"status"}"#,
+                    #[cfg(feature = "tls")]
+                    &tls_connector,
+                )
+                .await
+                    && serde_json::from_str::<serde_json::Value>(&resp).is_ok()
+                {
+                    println!("ready");
+                    return;
                 }
                 if std::time::Instant::now() >= deadline {
                     eprintln!(
@@ -366,25 +484,28 @@ pub async fn run(action: AdminAction) {
         AdminAction::Backup { .. } | AdminAction::Restore { .. } => unreachable!(),
     };
 
-    let stream = TcpStream::connect(&addr)
-        .await
-        .unwrap_or_else(|e| panic!("failed to connect to admin at {addr}: {e}"));
-    let (reader, mut writer) = stream.into_split();
-
-    let mut line = request;
-    line.push('\n');
-    writer
-        .write_all(line.as_bytes())
-        .await
-        .expect("failed to send request");
-
-    let mut lines = BufReader::new(reader).lines();
-    if let Ok(Some(response)) = lines.next_line().await {
-        // Pretty-print if it's valid JSON, otherwise print raw.
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&response) {
-            println!("{}", serde_json::to_string_pretty(&json).unwrap());
-        } else {
-            println!("{response}");
+    match raw_admin_exchange(
+        &addr,
+        &request,
+        #[cfg(feature = "tls")]
+        &tls_connector,
+    )
+    .await
+    {
+        Ok(Some(response)) => {
+            // Pretty-print if it's valid JSON, otherwise print raw.
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&response) {
+                println!("{}", serde_json::to_string_pretty(&json).unwrap());
+            } else {
+                println!("{response}");
+            }
+        }
+        Ok(None) => {
+            eprintln!("no response from {addr}");
+        }
+        Err(e) => {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
         }
     }
 }

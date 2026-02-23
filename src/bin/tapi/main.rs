@@ -15,6 +15,59 @@ mod integration_test;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use config::{ClientConfig, NodeConfig};
+use std::path::PathBuf;
+
+/// Shared TLS CLI flags for mTLS certificate configuration.
+///
+/// When all three flags are provided, TLS is enabled for both server and
+/// client connections. When absent, connections remain plain TCP.
+#[derive(clap::Args, Clone, Default)]
+pub struct TlsArgs {
+    /// Path to PEM-encoded TLS certificate file (e.g. tls.crt from cert-manager).
+    #[arg(long)]
+    pub tls_cert: Option<PathBuf>,
+    /// Path to PEM-encoded TLS private key file (e.g. tls.key from cert-manager).
+    #[arg(long)]
+    pub tls_key: Option<PathBuf>,
+    /// Path to PEM-encoded CA certificate file for peer verification (e.g. ca.crt).
+    #[arg(long)]
+    pub tls_ca: Option<PathBuf>,
+}
+
+impl TlsArgs {
+    /// Validate that TLS flags are either all set or all unset.
+    pub fn validate(&self) {
+        let count = [&self.tls_cert, &self.tls_key, &self.tls_ca]
+            .iter()
+            .filter(|f| f.is_some())
+            .count();
+        if count > 0 && count < 3 {
+            eprintln!("error: --tls-cert, --tls-key, and --tls-ca must all be specified together");
+            std::process::exit(1);
+        }
+        #[cfg(not(feature = "tls"))]
+        if count > 0 {
+            eprintln!(
+                "error: TLS flags specified but binary was compiled without the 'tls' feature. \
+                 Rebuild with: cargo build --features tls"
+            );
+            std::process::exit(1);
+        }
+    }
+
+    /// Convert to a TlsConfig when all three paths are provided.
+    #[cfg(feature = "tls")]
+    pub fn to_tls_config(&self) -> Option<tapirs::tls::TlsConfig> {
+        match (&self.tls_cert, &self.tls_key, &self.tls_ca) {
+            (Some(cert), Some(key), Some(ca)) => Some(tapirs::tls::TlsConfig {
+                cert_path: cert.clone(),
+                key_path: key.clone(),
+                ca_path: ca.clone(),
+            }),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum StorageBackend {
@@ -59,9 +112,13 @@ enum Command {
         discovery_tapir_endpoint: Option<String>,
         #[arg(long)]
         shard_manager_url: Option<String>,
+        #[command(flatten)]
+        tls: TlsArgs,
     },
     /// Admin operations on a running node.
     Admin {
+        #[command(flatten)]
+        tls: TlsArgs,
         #[command(subcommand)]
         action: AdminAction,
     },
@@ -107,6 +164,9 @@ enum Command {
         /// as the interactive REPL.
         #[arg(short = 's', long = "script")]
         script: Option<String>,
+
+        #[command(flatten)]
+        tls: TlsArgs,
     },
     /// Run a standalone shard manager server.
     ShardManager {
@@ -120,6 +180,9 @@ enum Command {
         /// Uses linearizable reads (RO transactions) for shard authority.
         #[arg(long)]
         discovery_tapir_endpoint: Option<String>,
+
+        #[command(flatten)]
+        tls: TlsArgs,
     },
 }
 
@@ -259,7 +322,9 @@ async fn main() {
             discovery_json,
             discovery_tapir_endpoint,
             shard_manager_url,
+            tls,
         } => {
+            tls.validate();
             let mut cfg = config_path
                 .as_deref()
                 .map(NodeConfig::from_file)
@@ -276,10 +341,23 @@ async fn main() {
             if let Some(url) = shard_manager_url {
                 cfg.shard_manager_url = Some(url);
             }
-            node::run(cfg, discovery_json, discovery_tapir_endpoint).await;
+            node::run(
+                cfg,
+                discovery_json,
+                discovery_tapir_endpoint,
+                #[cfg(feature = "tls")]
+                tls.to_tls_config(),
+            )
+            .await;
         }
-        Command::Admin { action } => {
-            admin_client::run(action).await;
+        Command::Admin { tls, action } => {
+            tls.validate();
+            admin_client::run(
+                action,
+                #[cfg(feature = "tls")]
+                tls.to_tls_config(),
+            )
+            .await;
         }
         Command::Client {
             config: config_path,
@@ -287,7 +365,9 @@ async fn main() {
             discovery_tapir_endpoint,
             execute,
             script,
+            tls,
         } => {
+            tls.validate();
             let cfg = config_path
                 .as_deref()
                 .map(ClientConfig::from_file)
@@ -301,15 +381,30 @@ async fn main() {
                 repl::InputSource::Stdin
             };
 
-            let exit_code =
-                client::run(cfg, discovery_json, discovery_tapir_endpoint, input_source).await;
+            let exit_code = client::run(
+                cfg,
+                discovery_json,
+                discovery_tapir_endpoint,
+                input_source,
+                #[cfg(feature = "tls")]
+                tls.to_tls_config(),
+            )
+            .await;
             std::process::exit(exit_code);
         }
         Command::ShardManager {
             listen_addr,
             discovery_tapir_endpoint,
+            tls,
         } => {
-            shard_manager_server::run(listen_addr, discovery_tapir_endpoint).await;
+            tls.validate();
+            shard_manager_server::run(
+                listen_addr,
+                discovery_tapir_endpoint,
+                #[cfg(feature = "tls")]
+                tls.to_tls_config(),
+            )
+            .await;
         }
     }
 }

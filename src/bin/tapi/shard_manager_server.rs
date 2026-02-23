@@ -464,6 +464,7 @@ where
 pub async fn run(
     listen_addr: String,
     discovery_tapir_endpoint: Option<String>,
+    #[cfg(feature = "tls")] tls_config: Option<tapirs::tls::TlsConfig>,
 ) {
     let backend = if let Some(endpoint) = discovery_tapir_endpoint {
         // Create a separate transport for the discovery cluster.
@@ -511,11 +512,17 @@ pub async fn run(
 
     tracing::info!(%addr, "shard-manager server starting");
 
+    #[cfg(feature = "tls")]
+    let tls_acceptor = tls_config.as_ref().map(|c| {
+        tapirs::tls::ReloadableTlsAcceptor::new(c)
+            .unwrap_or_else(|e| panic!("shard-manager TLS config error: {e}"))
+    });
+
     serve(
         listener,
         Arc::new(backend),
         #[cfg(feature = "tls")]
-        None,
+        tls_acceptor,
     )
     .await;
 }

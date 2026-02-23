@@ -36,7 +36,6 @@ impl HttpShardManagerClient {
     }
 
     #[cfg(feature = "tls")]
-    #[allow(dead_code)]
     pub fn new_with_tls(
         shard_manager_url: &str,
         tls_connector: tapirs::tls::ReloadableTlsConnector,
