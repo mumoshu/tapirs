@@ -2,16 +2,19 @@
 FROM rust:1.93-bookworm AS deps
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
-RUN mkdir -p src/bin/tapi src/bin/tapictl src/bin/tapiadm/docker && \
+RUN mkdir -p src/bin/tapi src/bin/tapictl src/bin/tapiadm/docker crates/maelstrom/src && \
     echo 'fn main(){}' > src/bin/tapi/main.rs && \
     echo 'fn main(){}' > src/bin/tapictl/main.rs && \
     echo 'fn main(){}' > src/bin/tapiadm/main.rs && \
     echo '' > src/lib.rs && \
-    cargo build --release --no-default-features 2>/dev/null || true
+    echo 'fn main(){}' > crates/maelstrom/src/main.rs
+COPY crates/maelstrom/Cargo.toml crates/maelstrom/Cargo.toml
+RUN cargo build --release --no-default-features 2>/dev/null || true
 
 # Stage 2: Build actual binaries
 FROM deps AS build
 COPY src/ src/
+COPY crates/ crates/
 RUN cargo build --release --no-default-features --bin tapi --bin tapictl
 
 # Stage 3: Runtime
