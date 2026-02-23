@@ -195,6 +195,23 @@ fn build_shard_entries(num_shards: u32, num_keys: i64) -> Vec<ShardEntry<i64>> {
 //   ./scripts/detect-fuzz-indeterminism.sh
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn fuzz_tapir_transactions() {
+    if cfg!(debug_assertions) {
+        eprintln!("\n\
+            ╔══════════════════════════════════════════════════════════════════╗\n\
+            ║  WARNING: fuzz_tapir_transactions running in DEBUG mode         ║\n\
+            ║                                                                 ║\n\
+            ║  This test creates 19 replicas with fault injection and         ║\n\
+            ║  resharding. Debug builds are 5-10x slower, so the 8s          ║\n\
+            ║  wall-clock watchdog will likely fire before completion.        ║\n\
+            ║                                                                 ║\n\
+            ║  To run successfully:                                           ║\n\
+            ║    cargo test --release fuzz_tapir_transactions -- --nocapture  ║\n\
+            ║  or:                                                            ║\n\
+            ║    make test   (uses --release)                                 ║\n\
+            ╚══════════════════════════════════════════════════════════════════╝\n\
+        ");
+    }
+
     let seed: u64 = std::env::var("TAPI_TEST_SEED")
         .ok()
         .and_then(|s| s.parse().ok())
