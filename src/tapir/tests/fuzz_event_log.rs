@@ -148,6 +148,25 @@ pub enum FuzzEvent {
     InvariantCheckPassed,
     CounterVerifyPassed,
     WorkloadTimedOut,
+
+    // Verification phase
+    VerifyClusterRemoteShardOk {
+        shard: u32,
+        elapsed_ms: u128,
+    },
+    VerifyCounterKeyStart {
+        key: i64,
+    },
+    VerifyCounterKeyDone {
+        key: i64,
+        expected: i64,
+        actual: i64,
+        elapsed_ms: u128,
+    },
+    VerifyPhaseTimedOut {
+        phase: String,
+        elapsed_ms: u128,
+    },
 }
 
 impl FuzzEvent {
@@ -185,6 +204,10 @@ impl FuzzEvent {
             | FuzzEvent::InvariantCheckPassed
             | FuzzEvent::CounterVerifyPassed
             | FuzzEvent::WorkloadTimedOut => "SYSTEM".to_string(),
+            FuzzEvent::VerifyClusterRemoteShardOk { .. }
+            | FuzzEvent::VerifyCounterKeyStart { .. }
+            | FuzzEvent::VerifyCounterKeyDone { .. }
+            | FuzzEvent::VerifyPhaseTimedOut { .. } => "VERIFY".to_string(),
         }
     }
 }
@@ -265,6 +288,14 @@ impl fmt::Display for FuzzEvent {
                 write!(f, "COUNTER verify-passed"),
             FuzzEvent::WorkloadTimedOut =>
                 write!(f, "WORKLOAD timed-out"),
+            FuzzEvent::VerifyClusterRemoteShardOk { shard, elapsed_ms } =>
+                write!(f, "cluster-remote shard={shard} ok elapsed={elapsed_ms}ms"),
+            FuzzEvent::VerifyCounterKeyStart { key } =>
+                write!(f, "counter key={key} starting"),
+            FuzzEvent::VerifyCounterKeyDone { key, expected, actual, elapsed_ms } =>
+                write!(f, "counter key={key} expected={expected} actual={actual} elapsed={elapsed_ms}ms"),
+            FuzzEvent::VerifyPhaseTimedOut { phase, elapsed_ms } =>
+                write!(f, "TIMED OUT phase={phase} elapsed={elapsed_ms}ms"),
         }
     }
 }
