@@ -159,9 +159,16 @@ uninstall_cert_manager() {
 # ---------------------------------------------------------------------------
 build_and_load_images() {
     if [[ "${TAPIR_BUILD_IMAGES}" == "1" ]]; then
+        local build_args=()
+        if [[ "${TAPIR_TLS}" == "1" ]]; then
+            build_args=(--build-arg "FEATURES=tls")
+            info "Building with TLS feature enabled."
+        fi
+
         step "Building TAPIR image '${TAPIR_IMAGE}'..."
         run_cmd docker build -t "${TAPIR_IMAGE}" \
             -f "${PROJECT_ROOT}/src/bin/tapiadm/docker/Dockerfile" \
+            "${build_args[@]}" \
             "${PROJECT_ROOT}"
         ok "TAPIR image built."
 
