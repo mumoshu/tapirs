@@ -340,21 +340,18 @@ pub async fn run(action: AdminAction) {
             let deadline =
                 std::time::Instant::now() + std::time::Duration::from_secs(timeout);
             loop {
-                match TcpStream::connect(&admin_listen_addr).await {
-                    Ok(stream) => {
-                        let (reader, mut writer) = stream.into_split();
-                        let _ = writer
-                            .write_all(b"{\"command\":\"status\"}\n")
-                            .await;
-                        let mut lines = BufReader::new(reader).lines();
-                        if let Ok(Some(resp)) = lines.next_line().await {
-                            if serde_json::from_str::<serde_json::Value>(&resp).is_ok() {
-                                println!("ready");
-                                return;
-                            }
-                        }
+                if let Ok(stream) = TcpStream::connect(&admin_listen_addr).await {
+                    let (reader, mut writer) = stream.into_split();
+                    let _ = writer
+                        .write_all(b"{\"command\":\"status\"}\n")
+                        .await;
+                    let mut lines = BufReader::new(reader).lines();
+                    if let Ok(Some(resp)) = lines.next_line().await
+                        && serde_json::from_str::<serde_json::Value>(&resp).is_ok()
+                    {
+                        println!("ready");
+                        return;
                     }
-                    Err(_) => {}
                 }
                 if std::time::Instant::now() >= deadline {
                     eprintln!(

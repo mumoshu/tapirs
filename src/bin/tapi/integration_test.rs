@@ -90,12 +90,12 @@ async fn bootstrap_cluster(
     let disc_membership: Vec<String> = disc_addrs.iter().map(|a| a.to_string()).collect();
     let disc_endpoint = disc_membership.join(",");
 
-    for i in 0..3 {
+    for disc_addr in disc_addrs.iter().take(3) {
         let td = TempDir::new().unwrap();
         let node = Arc::new(Node::new(td.path().to_str().unwrap().to_string()));
         node.add_replica(&ReplicaConfig {
             shard: 0,
-            listen_addr: disc_addrs[i].to_string(),
+            listen_addr: disc_addr.to_string(),
             membership: disc_membership.clone(),
         })
         .await
@@ -152,9 +152,8 @@ async fn bootstrap_cluster(
             .iter()
             .map(|a| a.to_string())
             .collect();
-        for replica_idx in 0..replicas_per_shard as usize {
+        for (replica_idx, &addr) in replica_addrs[shard_idx as usize].iter().enumerate() {
             let node_idx = replica_idx % num_nodes as usize;
-            let addr = replica_addrs[shard_idx as usize][replica_idx];
             let cfg = ReplicaConfig {
                 shard: shard_idx,
                 listen_addr: addr.to_string(),
@@ -350,7 +349,7 @@ async fn test_read_write_transactions() {
     // depends on the read (rw dependency), OCC prepare validates the
     // read timestamp across a quorum. If stale, the txn aborts and we
     // retry — same pattern a real application would use.
-    let val = rw_get(&client, "key1", "key1_read").await;
+    let val = rw_get(client, "key1", "key1_read").await;
     assert_eq!(val, Some("value1".to_string()));
 
     // Overwrite + verify via rw dependency.
@@ -358,7 +357,7 @@ async fn test_read_write_transactions() {
     txn.put("key1".to_string(), Some("value2".to_string()));
     assert!(txn.commit().await.is_some(), "overwrite should commit");
 
-    let val = rw_get(&client, "key1", "key1_read2").await;
+    let val = rw_get(client, "key1", "key1_read2").await;
     assert_eq!(val, Some("value2".to_string()));
 }
 
@@ -384,7 +383,7 @@ async fn test_view_change_during_transactions() {
     cluster.nodes[0].force_view_change(shard);
     wait_for_view_change(client, &shard_nodes, shard, old_view, "vc_probe").await;
 
-    let val = rw_get(&client, "survive", "survive_read").await;
+    let val = rw_get(client, "survive", "survive_read").await;
     assert_eq!(val, Some("yes".to_string()));
 }
 
@@ -406,7 +405,7 @@ async fn test_remove_replica() {
     wait_for_operational(client, "remove_probe").await;
 
     // Data should still be readable from remaining 2 replicas.
-    let val = rw_get(&client, "before", "before_read").await;
+    let val = rw_get(client, "before", "before_read").await;
     assert_eq!(val, Some("ok".to_string()));
 }
 
@@ -446,7 +445,7 @@ async fn test_rolling_membership_replacement() {
     txn.put("data".to_string(), Some("initial".to_string()));
     assert!(txn.commit().await.is_some(), "initial put should commit");
 
-    let val = rw_get(&client, "data", "data_check").await;
+    let val = rw_get(client, "data", "data_check").await;
     assert_eq!(val, Some("initial".to_string()));
 
     let original_addrs = cluster.replica_addrs[0].clone();
@@ -481,7 +480,7 @@ async fn test_rolling_membership_replacement() {
 
     // Rolling replacement: for each original replica, add a new one then
     // leave+remove the old one.
-    for i in 0..3 {
+    for (i, original_addr) in original_addrs.iter().enumerate().take(3) {
         tracing::info!("--- round {i}: adding new replica ---");
 
         // === ADD new replica ===
@@ -544,7 +543,7 @@ async fn test_rolling_membership_replacement() {
             txn.commit().await.is_some(),
             "put after add round {i} should commit"
         );
-        let val = rw_get(&client, "data", &format!("data_after_add_{i}")).await;
+        let val = rw_get(client, "data", &format!("data_after_add_{i}")).await;
         assert_eq!(val, Some("initial".to_string()));
 
         // === LEAVE + REMOVE original replica ===
@@ -582,7 +581,7 @@ async fn test_rolling_membership_replacement() {
 
         // Update discovery with actual IR view after the view change.
         let new_view = quorum_view_number(&remaining_nodes, shard);
-        live_addrs.retain(|a| *a != original_addrs[i]);
+        live_addrs.retain(|a| *a != *original_addr);
         let addrs: Vec<TcpAddress> = live_addrs.iter().map(|a| TcpAddress(*a)).collect();
         disc_client
             .put(ShardNumber(0), tapirs::IrMembership::new(addrs), new_view)
@@ -605,7 +604,7 @@ async fn test_rolling_membership_replacement() {
             txn.commit().await.is_some(),
             "put after remove round {i} should commit"
         );
-        let val = rw_get(&client, "data", &format!("data_after_remove_{i}")).await;
+        let val = rw_get(client, "data", &format!("data_after_remove_{i}")).await;
         assert_eq!(val, Some("initial".to_string()));
     }
 
@@ -630,13 +629,13 @@ async fn test_rolling_membership_replacement() {
     }
 
     // Verify all data from all rounds is still readable.
-    let val = rw_get(&client, "data", "data_final").await;
+    let val = rw_get(client, "data", "data_final").await;
     assert_eq!(val, Some("initial".to_string()));
     for i in 0..3 {
-        let val = rw_get(&client, &format!("after_add_{i}"), &format!("final_add_{i}")).await;
+        let val = rw_get(client, &format!("after_add_{i}"), &format!("final_add_{i}")).await;
         assert_eq!(val, Some(format!("added_{i}")));
         let val = rw_get(
-            &client,
+            client,
             &format!("after_remove_{i}"),
             &format!("final_remove_{i}"),
         )
@@ -692,7 +691,7 @@ async fn test_disaster_recovery_backup_restore() {
 
     // Verify data is readable before backup.
     for (key, value) in &test_data {
-        let val = rw_get(&client, key, &format!("{key}_pre")).await;
+        let val = rw_get(client, key, &format!("{key}_pre")).await;
         assert_eq!(val, Some(value.to_string()), "pre-backup read of {key}");
     }
 
@@ -855,7 +854,7 @@ async fn test_cluster_backup_restore_via_admin() {
         );
     }
     for (key, value) in &test_data {
-        let val = rw_get(&client, key, &format!("{key}_pre")).await;
+        let val = rw_get(client, key, &format!("{key}_pre")).await;
         assert_eq!(val, Some(value.to_string()), "pre-backup read of {key}");
     }
 

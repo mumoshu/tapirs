@@ -211,7 +211,7 @@ async fn get_topology(endpoint: &str) -> Result<(), String> {
     if entries.is_empty() {
         println!("No shards registered in discovery.");
     } else {
-        println!("{:<8} {:<8} {}", "SHARD", "VIEW", "REPLICAS");
+        println!("{:<8} {:<8} REPLICAS", "SHARD", "VIEW");
         for (shard, membership, view) in entries {
             let addrs = tapirs::discovery::membership_to_strings(&membership);
             println!("{:<8} {:<8} {}", shard.0, view, addrs.join(", "));

@@ -65,7 +65,7 @@ pub async fn wait_for_view_change(
     loop {
         let advanced = nodes
             .iter()
-            .filter(|n| n.shard_view_number(shard).map_or(false, |v| v > old_view))
+            .filter(|n| n.shard_view_number(shard).is_some_and(|v| v > old_view))
             .count();
         if advanced >= quorum {
             break;

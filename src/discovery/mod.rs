@@ -644,7 +644,7 @@ mod tests {
     };
 
     async fn remote_put(
-        r: &(impl RemoteShardDirectory<usize, ()> + Send + Sync),
+        r: &impl RemoteShardDirectory<usize, ()>,
         shard: ShardNumber,
         membership: IrMembership<usize>,
         view: u64,
@@ -653,14 +653,14 @@ mod tests {
     }
 
     async fn remote_get(
-        r: &(impl RemoteShardDirectory<usize, ()> + Send + Sync),
+        r: &impl RemoteShardDirectory<usize, ()>,
         shard: ShardNumber,
     ) -> Option<(IrMembership<usize>, u64)> {
         r.get(shard).await.unwrap()
     }
 
     async fn remote_replace(
-        r: &(impl RemoteShardDirectory<usize, ()> + Send + Sync),
+        r: &impl RemoteShardDirectory<usize, ()>,
         old: ShardNumber,
         new: ShardNumber,
         membership: IrMembership<usize>,
