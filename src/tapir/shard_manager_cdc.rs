@@ -159,6 +159,13 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         let mut cursor = CdcCursor::new();
 
         // Phase 1: Bulk copy via scan_changes.
+        //
+        // scan_changes queries f+1 replicas for CDC deltas. Each replica records
+        // deltas during view changes (see ir/replica.rs StartView handler). Replicas
+        // that received Full payloads record spanning deltas (e.g., delta(1→3) when
+        // base was at view 1 and the full record arrived at view 3). The
+        // merge_responses algorithm in shard_client.rs merges fine-grained and
+        // spanning deltas into a covering sequence.
         self.report_progress("split:bulk-copy");
         let r = self.shards[&source].client.scan_changes(0).await;
         let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();

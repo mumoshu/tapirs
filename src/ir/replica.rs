@@ -896,18 +896,39 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                             return None;
                         }
                     }
-                    // CDC: notify upcalls of the delta record before resolve consumes payload.
-                    {
-                        let cdc = match &payload {
-                            RecordPayload::Delta { base_view, entries } =>
-                                Some((base_view.0, entries)),
-                            RecordPayload::Full(record) if !sync.record.has_base() =>
-                                Some((0u64, record)),
-                            RecordPayload::Full(_) => None,
-                        };
-                        if let Some((base_view_num, delta)) = cdc {
+                    // CDC: record delta so scan_changes quorum reads can find it
+                    // regardless of which f+1 replicas respond.
+                    //
+                    // When this replica receives a Full payload (because its base view
+                    // didn't match the leader's Delta base), it computes a **spanning
+                    // delta** from its own stale base to the full record. For example,
+                    // if this replica was at view 1 and receives the full record at
+                    // view 3, it records delta(1→3) covering both view transitions.
+                    //
+                    // Spanning deltas may overlap with fine-grained deltas on other
+                    // replicas (e.g., the view-2 leader has delta(1→2)). The
+                    // merge_responses() algorithm in shard_client.rs handles this by
+                    // preferring fine-grained deltas when available and falling back to
+                    // spanning deltas to fill gaps. Duplicate changes from overlap are
+                    // benign — ship_changes creates fresh transaction IDs and the MVCC
+                    // store handles idempotent writes at the same timestamp.
+                    match &payload {
+                        RecordPayload::Delta { base_view, entries } => {
                             sync.upcalls.on_install_leader_record_delta(
-                                base_view_num, view.number.0, delta,
+                                base_view.0, view.number.0, entries,
+                            );
+                        }
+                        RecordPayload::Full(record) if !sync.record.has_base() => {
+                            // First view: entire record is the delta.
+                            sync.upcalls.on_install_leader_record_delta(
+                                0, view.number.0, record,
+                            );
+                        }
+                        RecordPayload::Full(record) => {
+                            // Spanning delta: base is stale, compute diff to full record.
+                            let delta = record.delta_from(sync.record.base());
+                            sync.upcalls.on_install_leader_record_delta(
+                                sync.record.base_view(), view.number.0, &delta,
                             );
                         }
                     }

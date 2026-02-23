@@ -520,9 +520,36 @@ pub struct ScanChangesResult<K, V> {
     pub pending_prepares: usize,
 }
 
-/// Merge leader record deltas from multiple replica responses.
-/// Picks the most granular (smallest span) delta at each view position,
-/// consuming via VecDeque pop_front (moves, no clones).
+/// Merge CDC delta lists from multiple replicas into a single covering sequence.
+///
+/// Each replica may have a different set of deltas depending on which view changes
+/// it participated in. The leader at each view always records a fine-grained delta,
+/// while non-leaders that received `RecordPayload::Full` (because their base view
+/// didn't match the leader's) record **spanning deltas** — a single delta that covers
+/// multiple view transitions (e.g., delta(1→3) when the replica's base was at view 1
+/// and it received the full record at view 3, skipping view 2).
+///
+/// # Spanning delta example
+///
+/// With 3 replicas and views 1→2→3 where each view change uses a different quorum:
+///
+/// ```text
+/// view 1: r1' (leader), r2 in quorum
+/// view 2: r2' (leader), r3 in quorum  (r3 receives Full, base was view 0)
+/// view 3: r3' (leader), r1 in quorum  (r1 receives Full, base was view 1)
+///
+/// r1: delta(0→1), delta(1→3)      ← spanning delta from Full
+/// r2: delta(0→1), delta(1→2)
+/// r3: delta(0→2), delta(2→3)      ← spanning delta from Full
+/// ```
+///
+/// The algorithm prefers fine-grained deltas when available, but falls back to
+/// spanning deltas to fill gaps. Spanning deltas may include duplicate changes
+/// (e.g., delta(1→3) includes view 1→2 changes already covered by delta(1→2)),
+/// but duplicates are benign — `ship_changes` creates fresh transaction IDs and
+/// the MVCC store handles idempotent writes at the same timestamp.
+///
+/// See `ir/replica.rs` StartView handler for where spanning deltas are created.
 fn merge_responses<K, V>(
     response_lists: Vec<(Vec<LeaderRecordDelta<K, V>>, Option<u64>)>,
 ) -> Vec<LeaderRecordDelta<K, V>> {
@@ -535,34 +562,55 @@ fn merge_responses<K, V>(
     let mut pos = 0u64;
 
     loop {
+        // Try fine-grained deltas first: find the minimum from_view >= pos.
         let min_view = cursors
             .iter()
             .filter_map(|(q, _)| q.front().map(|d| d.from_view))
             .filter(|&v| v >= pos)
             .min();
-        let Some(view) = min_view else { break };
 
-        let mut best_idx = None;
-        let mut best_span = u64::MAX;
+        let picked_idx = if let Some(view) = min_view {
+            // Among cursors with a delta starting at `view`, pick the smallest span.
+            let mut best_idx = None;
+            let mut best_span = u64::MAX;
 
-        for (i, (q, eev)) in cursors.iter().enumerate() {
-            if q.front().is_some_and(|d| d.from_view == view) {
-                let inferred_to = q.get(1).map(|d| d.from_view).unwrap_or(*eev + 1);
-                let span = inferred_to.saturating_sub(view);
-                if span < best_span {
-                    best_span = span;
-                    best_idx = Some(i);
+            for (i, (q, eev)) in cursors.iter().enumerate() {
+                if q.front().is_some_and(|d| d.from_view == view) {
+                    let inferred_to = q.get(1).map(|d| d.from_view).unwrap_or(*eev + 1);
+                    let span = inferred_to.saturating_sub(view);
+                    if span < best_span {
+                        best_span = span;
+                        best_idx = Some(i);
+                    }
                 }
             }
-        }
+            best_idx
+        } else {
+            // No fine-grained delta starts at or after pos. Fall back to spanning
+            // deltas that bridge the gap: from_view < pos but to_view > pos.
+            cursors
+                .iter()
+                .enumerate()
+                .filter_map(|(i, (q, _))| {
+                    q.front()
+                        .filter(|d| d.from_view < pos && d.to_view > pos)
+                        .map(|d| (i, d.to_view))
+                })
+                .max_by_key(|&(_, to_view)| to_view)
+                .map(|(i, _)| i)
+        };
 
-        let idx = best_idx.unwrap();
+        let Some(idx) = picked_idx else { break };
+
         let delta = cursors[idx].0.pop_front().unwrap();
         pos = delta.to_view;
 
+        // Skip deltas on other cursors whose entire range is already covered.
+        // Use to_view (not from_view) so that spanning deltas extending past pos
+        // are preserved as potential fallback candidates for later iterations.
         for (i, (q, _)) in cursors.iter_mut().enumerate() {
             if i != idx {
-                while q.front().is_some_and(|d| d.from_view < pos) {
+                while q.front().is_some_and(|d| d.to_view <= pos) {
                     q.pop_front();
                 }
             }
