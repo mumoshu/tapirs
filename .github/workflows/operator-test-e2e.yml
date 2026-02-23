@@ -5,10 +5,18 @@ on:
     branches: [ main ]
     paths:
       - 'kubernetes/operator/**'
+      - 'src/**'
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
   pull_request:
     branches: [ main ]
     paths:
       - 'kubernetes/operator/**'
+      - 'src/**'
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
 
 defaults:
   run:
