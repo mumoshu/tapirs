@@ -220,23 +220,26 @@ cmd_up() {
     info "Shard 0 currently handles keys < 'n'."
     info "After split: shard 0 → keys < 'g', shard 2 → keys ['g', 'n')."
 
+    SHARD2_MEMBERSHIP="172.28.0.11:6002,172.28.0.12:6002,172.28.0.13:6002"
     info "Creating shard 2 replicas on existing nodes (port 6002)..."
+    info "Using --membership for static bootstrap (shard 2 not yet in discovery)."
     run_cmd "${TAPI}" admin add-replica \
         --admin-listen-addr 127.0.0.1:9011 \
-        --shard 2 --listen-addr 172.28.0.11:6002
-    info "Waiting for initial replica (3s)..."
-    sleep 3
+        --shard 2 --listen-addr 172.28.0.11:6002 \
+        --membership "${SHARD2_MEMBERSHIP}"
+    sleep 1
 
     run_cmd "${TAPI}" admin add-replica \
         --admin-listen-addr 127.0.0.1:9012 \
-        --shard 2 --listen-addr 172.28.0.12:6002
-    info "Waiting for view change settlement (5s)..."
-    sleep 5
+        --shard 2 --listen-addr 172.28.0.12:6002 \
+        --membership "${SHARD2_MEMBERSHIP}"
+    sleep 1
 
     run_cmd "${TAPI}" admin add-replica \
         --admin-listen-addr 127.0.0.1:9013 \
-        --shard 2 --listen-addr 172.28.0.13:6002
-    info "Waiting for view change settlement (5s)..."
+        --shard 2 --listen-addr 172.28.0.13:6002 \
+        --membership "${SHARD2_MEMBERSHIP}"
+    info "Waiting for shard 2 replicas to form quorum (5s)..."
     sleep 5
 
     info "Executing shard split via shard-manager..."
@@ -435,6 +438,21 @@ ${BOLD}5. VIEW CHANGES${RESET}
 ${BOLD}6. SHARD OPERATIONS${RESET}
 
    Split shard 0 at key 'g' into new shard 2:
+
+   First, create the target replicas with static membership (shard 2 is new,
+   so it doesn't exist in discovery yet — --membership is required):
+
+     ${rel_bin}/tapi admin add-replica --admin-listen-addr 127.0.0.1:9011 \\
+       --shard 2 --listen-addr 172.28.0.11:6002 \\
+       --membership 172.28.0.11:6002,172.28.0.12:6002,172.28.0.13:6002
+     ${rel_bin}/tapi admin add-replica --admin-listen-addr 127.0.0.1:9012 \\
+       --shard 2 --listen-addr 172.28.0.12:6002 \\
+       --membership 172.28.0.11:6002,172.28.0.12:6002,172.28.0.13:6002
+     ${rel_bin}/tapi admin add-replica --admin-listen-addr 127.0.0.1:9013 \\
+       --shard 2 --listen-addr 172.28.0.13:6002 \\
+       --membership 172.28.0.11:6002,172.28.0.12:6002,172.28.0.13:6002
+
+   Then execute the split:
 
      ${rel_bin}/tapictl split shard --source 0 --split-key g --new-shard 2 \\
        --new-replicas 172.28.0.11:6002,172.28.0.12:6002,172.28.0.13:6002
