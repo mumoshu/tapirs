@@ -7,6 +7,8 @@ use std::net::TcpStream;
 /// Uses raw-TCP HTTP/1.1 (no external HTTP libraries).
 pub struct HttpShardManagerClient {
     addr: std::net::SocketAddr,
+    #[cfg(feature = "tls")]
+    tls_connector: Option<tapirs::tls::ReloadableTlsConnector>,
 }
 
 #[derive(Deserialize)]
@@ -21,35 +23,74 @@ impl HttpShardManagerClient {
     pub fn new(shard_manager_url: &str) -> Self {
         let addr_str = shard_manager_url
             .strip_prefix("http://")
+            .or_else(|| shard_manager_url.strip_prefix("https://"))
             .unwrap_or(shard_manager_url);
         let addr: std::net::SocketAddr = addr_str
             .parse()
             .unwrap_or_else(|e| panic!("invalid shard_manager_url '{shard_manager_url}': {e}"));
-        Self { addr }
+        Self {
+            addr,
+            #[cfg(feature = "tls")]
+            tls_connector: None,
+        }
+    }
+
+    #[cfg(feature = "tls")]
+    #[allow(dead_code)]
+    pub fn new_with_tls(
+        shard_manager_url: &str,
+        tls_connector: tapirs::tls::ReloadableTlsConnector,
+    ) -> Self {
+        let mut client = Self::new(shard_manager_url);
+        client.tls_connector = Some(tls_connector);
+        client
     }
 
     /// Send an HTTP POST and return the response body.
     fn http_post(&self, path: &str, body: &str) -> Result<String, String> {
-        let mut stream = TcpStream::connect(self.addr)
+        let stream = TcpStream::connect(self.addr)
             .map_err(|e| format!("connect to {}: {e}", self.addr))?;
+
+        #[cfg(feature = "tls")]
+        if let Some(ref connector) = self.tls_connector {
+            let config = connector.client_config();
+            let server_name = rustls::pki_types::ServerName::IpAddress(
+                rustls::pki_types::IpAddr::from(self.addr.ip()),
+            );
+            let conn = rustls::ClientConnection::new(config, server_name)
+                .map_err(|e| format!("TLS connect to {}: {e}", self.addr))?;
+            let mut tls_stream = rustls::StreamOwned::new(conn, stream);
+            return Self::http_exchange(&mut tls_stream, self.addr, path, body);
+        }
+
+        let mut stream = stream;
+        Self::http_exchange(&mut stream, self.addr, path, body)
+    }
+
+    /// Perform the HTTP request/response exchange over a stream.
+    fn http_exchange(
+        stream: &mut (impl Read + Write),
+        addr: std::net::SocketAddr,
+        path: &str,
+        body: &str,
+    ) -> Result<String, String> {
         let request = format!(
-            "POST {path} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            self.addr,
+            "POST {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len(),
         );
         stream
             .write_all(request.as_bytes())
-            .map_err(|e| format!("send to {}: {e}", self.addr))?;
+            .map_err(|e| format!("send to {addr}: {e}"))?;
         let mut response = Vec::new();
         stream
             .read_to_end(&mut response)
-            .map_err(|e| format!("read from {}: {e}", self.addr))?;
+            .map_err(|e| format!("read from {addr}: {e}"))?;
         let resp_str = String::from_utf8_lossy(&response).to_string();
-        let body = resp_str
+        let resp_body = resp_str
             .split_once("\r\n\r\n")
             .map(|(_, b)| b.to_string())
             .unwrap_or_default();
-        Ok(body)
+        Ok(resp_body)
     }
 
     /// Parse a standard `{"ok":true}` / `{"error":"..."}` response.

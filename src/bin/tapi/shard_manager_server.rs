@@ -353,74 +353,39 @@ fn status_text(code: u16) -> &'static str {
     }
 }
 
-pub(crate) async fn serve(listener: TcpListener, remote: Arc<DiscoveryBackend>) {
+pub(crate) async fn serve(
+    listener: TcpListener,
+    remote: Arc<DiscoveryBackend>,
+    #[cfg(feature = "tls")] tls_acceptor: Option<tapirs::tls::ReloadableTlsAcceptor>,
+) {
     let state = Arc::new(ShardManagerState::new(remote));
 
     loop {
         match listener.accept().await {
             Ok((stream, _)) => {
                 let state = Arc::clone(&state);
+
+                #[cfg(feature = "tls")]
+                let tls_acceptor = tls_acceptor.clone();
+
                 tokio::spawn(async move {
-                    let (reader, mut writer) = stream.into_split();
-                    let mut buf_reader = BufReader::new(reader);
-
-                    // Read request line.
-                    let mut request_line = String::new();
-                    if buf_reader.read_line(&mut request_line).await.is_err() {
+                    #[cfg(feature = "tls")]
+                    if let Some(ref acceptor) = tls_acceptor {
+                        let tls_acceptor = acceptor.acceptor();
+                        match tls_acceptor.accept(stream).await {
+                            Ok(tls_stream) => {
+                                let (reader, writer) = tokio::io::split(tls_stream);
+                                handle_connection(reader, writer, &state).await;
+                            }
+                            Err(e) => {
+                                tracing::warn!("shard-manager TLS accept error: {e}");
+                            }
+                        }
                         return;
                     }
-                    let parts: Vec<&str> = request_line.trim().splitn(3, ' ').collect();
-                    if parts.len() < 2 {
-                        return;
-                    }
-                    let method = parts[0];
-                    let path = parts[1];
 
-                    // Read headers to find Content-Length.
-                    let mut content_length: usize = 0;
-                    loop {
-                        let mut header_line = String::new();
-                        if buf_reader.read_line(&mut header_line).await.is_err() {
-                            return;
-                        }
-                        let trimmed = header_line.trim();
-                        if trimmed.is_empty() {
-                            break;
-                        }
-                        if let Some(val) = trimmed.strip_prefix("Content-Length:")
-                            && let Ok(len) = val.trim().parse::<usize>()
-                        {
-                            content_length = len;
-                        }
-                        if let Some(val) = trimmed.strip_prefix("content-length:")
-                            && let Ok(len) = val.trim().parse::<usize>()
-                        {
-                            content_length = len;
-                        }
-                    }
-
-                    // Read body if present.
-                    let body = if content_length > 0 {
-                        let mut buf = vec![0u8; content_length];
-                        if buf_reader.read_exact(&mut buf).await.is_err() {
-                            return;
-                        }
-                        String::from_utf8_lossy(&buf).to_string()
-                    } else {
-                        String::new()
-                    };
-
-                    let (status, response_body) =
-                        handle_request(&state, method, path, &body).await;
-
-                    let response = format!(
-                        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                        status,
-                        status_text(status),
-                        response_body.len(),
-                        response_body,
-                    );
-                    let _ = writer.write_all(response.as_bytes()).await;
+                    let (reader, writer) = stream.into_split();
+                    handle_connection(reader, writer, &state).await;
                 });
             }
             Err(e) => {
@@ -428,6 +393,72 @@ pub(crate) async fn serve(listener: TcpListener, remote: Arc<DiscoveryBackend>) 
             }
         }
     }
+}
+
+async fn handle_connection<R, W>(reader: R, mut writer: W, state: &ShardManagerState)
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let mut buf_reader = BufReader::new(reader);
+
+    // Read request line.
+    let mut request_line = String::new();
+    if buf_reader.read_line(&mut request_line).await.is_err() {
+        return;
+    }
+    let parts: Vec<&str> = request_line.trim().splitn(3, ' ').collect();
+    if parts.len() < 2 {
+        return;
+    }
+    let method = parts[0];
+    let path = parts[1];
+
+    // Read headers to find Content-Length.
+    let mut content_length: usize = 0;
+    loop {
+        let mut header_line = String::new();
+        if buf_reader.read_line(&mut header_line).await.is_err() {
+            return;
+        }
+        let trimmed = header_line.trim();
+        if trimmed.is_empty() {
+            break;
+        }
+        if let Some(val) = trimmed.strip_prefix("Content-Length:")
+            && let Ok(len) = val.trim().parse::<usize>()
+        {
+            content_length = len;
+        }
+        if let Some(val) = trimmed.strip_prefix("content-length:")
+            && let Ok(len) = val.trim().parse::<usize>()
+        {
+            content_length = len;
+        }
+    }
+
+    // Read body if present.
+    let body = if content_length > 0 {
+        let mut buf = vec![0u8; content_length];
+        if buf_reader.read_exact(&mut buf).await.is_err() {
+            return;
+        }
+        String::from_utf8_lossy(&buf).to_string()
+    } else {
+        String::new()
+    };
+
+    let (status, response_body) =
+        handle_request(state, method, path, &body).await;
+
+    let response = format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        status,
+        status_text(status),
+        response_body.len(),
+        response_body,
+    );
+    let _ = writer.write_all(response.as_bytes()).await;
 }
 
 pub async fn run(
@@ -480,5 +511,11 @@ pub async fn run(
 
     tracing::info!(%addr, "shard-manager server starting");
 
-    serve(listener, Arc::new(backend)).await;
+    serve(
+        listener,
+        Arc::new(backend),
+        #[cfg(feature = "tls")]
+        None,
+    )
+    .await;
 }

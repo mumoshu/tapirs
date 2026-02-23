@@ -130,6 +130,8 @@ async fn bootstrap_cluster(
     tokio::spawn(crate::shard_manager_server::serve(
         mgr_listener,
         Arc::new(sm_backend),
+        #[cfg(feature = "tls")]
+        None,
     ));
 
     // === Data nodes (one per num_nodes) ===

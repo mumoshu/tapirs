@@ -74,6 +74,14 @@ impl ReloadableTlsConnector {
         TlsConnector::from(Arc::clone(&*cfg))
     }
 
+    /// Get the current `ClientConfig` for blocking TLS connections.
+    ///
+    /// Used by the shard-manager HTTP client which uses synchronous I/O
+    /// with `rustls::StreamOwned` instead of `tokio_rustls`.
+    pub fn client_config(&self) -> Arc<ClientConfig> {
+        Arc::clone(&*self.inner.load())
+    }
+
     /// Access the inner `ArcSwap` for the reload task.
     pub(crate) fn swap_target(&self) -> &Arc<ArcSwap<ClientConfig>> {
         &self.inner
