@@ -78,6 +78,15 @@ func (r *TAPIRClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	}
 
+	// Drive bootstrap state machine
+	requeue, err := r.reconcileBootstrap(ctx, &cluster)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if requeue {
+		return ctrl.Result{RequeueAfter: requeueDelay}, nil
+	}
+
 	return ctrl.Result{}, nil
 }
 
