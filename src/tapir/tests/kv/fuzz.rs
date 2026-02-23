@@ -201,8 +201,8 @@ async fn fuzz_tapir_transactions() {
             ║  WARNING: fuzz_tapir_transactions running in DEBUG mode         ║\n\
             ║                                                                 ║\n\
             ║  This test creates 19 replicas with fault injection and         ║\n\
-            ║  resharding. Debug builds are 5-10x slower, so the 8s          ║\n\
-            ║  wall-clock watchdog will likely fire before completion.        ║\n\
+            ║  resharding. Debug builds are 5-10x slower, so the wall-clock   ║\n\
+            ║  watchdog (default 30s, TAPI_WATCHDOG_SECS) may fire.          ║\n\
             ║                                                                 ║\n\
             ║  To run successfully:                                           ║\n\
             ║    cargo test --release fuzz_tapir_transactions -- --nocapture  ║\n\
@@ -225,20 +225,27 @@ async fn fuzz_tapir_transactions() {
 
     let event_log = FuzzEventLog::new();
 
-    // Wall-clock watchdog: fires before `timeout 10` safety net.
+    // Wall-clock watchdog: catches hot loops that freeze simulated time.
+    // Default 30s, override with TAPI_WATCHDOG_SECS env var.
     // Under start_paused=true, tokio::time::timeout uses simulated time which
     // doesn't advance during hot loops. This thread uses real wall-clock time.
+    let watchdog_secs: u64 = std::env::var("TAPI_WATCHDOG_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(30);
     let watchdog_log = event_log.clone();
     let (watchdog_cancel_tx, watchdog_cancel_rx) = std::sync::mpsc::channel::<()>();
-    let _watchdog_handle = std::thread::spawn(move || {
-        match watchdog_cancel_rx.recv_timeout(std::time::Duration::from_secs(8)) {
+    let watchdog_handle = std::thread::spawn(move || {
+        match watchdog_cancel_rx.recv_timeout(std::time::Duration::from_secs(watchdog_secs)) {
             Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
         }
-        eprintln!("WATCHDOG: fuzz_tapir_transactions exceeded 8s wall-clock (seed={seed})");
+        eprintln!("WATCHDOG: fuzz_tapir_transactions exceeded {watchdog_secs}s wall-clock (seed={seed})");
         watchdog_log.dump(seed);
-        eprintln!("WATCHDOG: exiting — check event log above for last completed step");
-        std::process::exit(1);
+        eprintln!("WATCHDOG: failing test — check event log above for last completed step");
+        panic!(
+            "WATCHDOG: fuzz_tapir_transactions exceeded {watchdog_secs}s wall-clock timeout (seed={seed})"
+        );
     });
 
     let config = NetworkFaultConfig {
@@ -1315,6 +1322,10 @@ async fn fuzz_tapir_transactions() {
 
     // Cancel wall-clock watchdog — test completed successfully.
     let _ = watchdog_cancel_tx.send(());
+    if let Err(panic_payload) = watchdog_handle.join() {
+        // Watchdog fired just before we cancelled — propagate its panic.
+        std::panic::resume_unwind(panic_payload);
+    }
 
     // Keep pre-built shard replicas alive until end of test.
     drop(new_shard_replicas);

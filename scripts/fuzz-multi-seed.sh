@@ -118,7 +118,7 @@ for (( i=0; i<ITERATIONS; i++ )); do
 
     # Launch in background.
     (
-        TAPI_TEST_SEED="${seed}" FUZZ_VERBOSE="${VERBOSE}" \
+        TAPI_TEST_SEED="${seed}" TAPI_WATCHDOG_SECS=8 FUZZ_VERBOSE="${VERBOSE}" \
             cargo test --lib "${TEST_NAME}" -- --nocapture \
             >"${log}" 2>&1
     ) &

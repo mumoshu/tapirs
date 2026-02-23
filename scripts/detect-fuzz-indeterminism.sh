@@ -78,7 +78,7 @@ for (( i=1; i<=RUNS; i++ )); do
     run_log="${LOGDIR}/run-${i}.log"
 
     set +e
-    TAPI_TEST_SEED="${SEED}" cargo test --lib "${TEST_NAME}" -- --nocapture \
+    TAPI_TEST_SEED="${SEED}" TAPI_WATCHDOG_SECS=8 cargo test --lib "${TEST_NAME}" -- --nocapture \
         >"${run_log}" 2>&1
     exit_code=$?
     set -e
