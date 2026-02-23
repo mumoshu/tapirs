@@ -42,7 +42,11 @@ struct ShardInfo {
     listen_addr: String,
 }
 
-pub async fn start(addr: std::net::SocketAddr, node: Arc<Node>) {
+pub async fn start(
+    addr: std::net::SocketAddr,
+    node: Arc<Node>,
+    #[cfg(feature = "tls")] tls_acceptor: Option<tapirs::tls::ReloadableTlsAcceptor>,
+) {
     let listener = TcpListener::bind(addr)
         .await
         .unwrap_or_else(|e| panic!("admin: failed to bind {addr}: {e}"));
@@ -51,15 +55,28 @@ pub async fn start(addr: std::net::SocketAddr, node: Arc<Node>) {
             match listener.accept().await {
                 Ok((stream, _)) => {
                     let node = Arc::clone(&node);
+
+                    #[cfg(feature = "tls")]
+                    let tls_acceptor = tls_acceptor.clone();
+
                     tokio::spawn(async move {
-                        let (reader, mut writer) = stream.into_split();
-                        let mut lines = BufReader::new(reader).lines();
-                        while let Ok(Some(line)) = lines.next_line().await {
-                            let resp = handle_request(&node, &line).await;
-                            let mut out = serde_json::to_string(&resp).unwrap();
-                            out.push('\n');
-                            let _ = writer.write_all(out.as_bytes()).await;
+                        #[cfg(feature = "tls")]
+                        if let Some(ref acceptor) = tls_acceptor {
+                            let tls_acceptor = acceptor.acceptor();
+                            match tls_acceptor.accept(stream).await {
+                                Ok(tls_stream) => {
+                                    let (reader, writer) = tokio::io::split(tls_stream);
+                                    handle_admin_connection(reader, writer, &node).await;
+                                }
+                                Err(e) => {
+                                    tracing::warn!("admin TLS accept error: {e}");
+                                }
+                            }
+                            return;
                         }
+
+                        let (reader, writer) = stream.into_split();
+                        handle_admin_connection(reader, writer, &node).await;
                     });
                 }
                 Err(e) => {
@@ -68,6 +85,20 @@ pub async fn start(addr: std::net::SocketAddr, node: Arc<Node>) {
             }
         }
     });
+}
+
+async fn handle_admin_connection<R, W>(reader: R, mut writer: W, node: &Node)
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let mut lines = BufReader::new(reader).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        let resp = handle_request(node, &line).await;
+        let mut out = serde_json::to_string(&resp).unwrap();
+        out.push('\n');
+        let _ = writer.write_all(out.as_bytes()).await;
+    }
 }
 
 async fn handle_request(node: &Node, line: &str) -> AdminResponse {

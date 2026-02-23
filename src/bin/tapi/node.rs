@@ -569,7 +569,13 @@ pub async fn run(
         .parse()
         .unwrap_or_else(|e| panic!("invalid admin_listen_addr '{admin_listen_addr}': {e}"));
 
-    crate::admin_server::start(admin_addr, Arc::clone(&node)).await;
+    crate::admin_server::start(
+        admin_addr,
+        Arc::clone(&node),
+        #[cfg(feature = "tls")]
+        None,
+    )
+    .await;
 
     if let Some(metrics_addr_str) = cfg.metrics_listen_addr {
         let metrics_addr: SocketAddr = metrics_addr_str
