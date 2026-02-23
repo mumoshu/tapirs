@@ -15,6 +15,10 @@ RUN cargo build --release --no-default-features 2>/dev/null || true
 FROM deps AS build
 COPY src/ src/
 COPY crates/ crates/
+# Touch source files to invalidate cargo's mtime cache — BuildKit COPY
+# preserves host mtimes, so the deps-stage placeholder binaries may appear
+# newer than the real source files, causing cargo to skip recompilation.
+RUN find src/ crates/ -name '*.rs' -exec touch {} +
 RUN cargo build --release --no-default-features --bin tapi --bin tapictl
 
 # Stage 3: Runtime
