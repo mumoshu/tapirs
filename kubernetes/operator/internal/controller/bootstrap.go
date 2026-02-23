@@ -87,6 +87,16 @@ func (r *TAPIRClusterReconciler) reconcileBootstrap(ctx context.Context, cluster
 		return true, r.setPhase(ctx, cluster, tapirv1alpha1.PhaseRunning)
 
 	case tapirv1alpha1.PhaseRunning:
+		// Handle scale-down first (remove replicas before pods)
+		if err := r.reconcileScaleDown(ctx, cluster); err != nil {
+			log.Error(err, "Failed to reconcile scale-down")
+			return true, nil
+		}
+		// Handle scale-up (add replicas to new/empty pods)
+		if err := r.reconcileScaleUp(ctx, cluster); err != nil {
+			log.Error(err, "Failed to reconcile scale-up")
+			return true, nil
+		}
 		if err := r.updateStatus(ctx, cluster); err != nil {
 			return false, err
 		}
