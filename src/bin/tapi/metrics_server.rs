@@ -216,7 +216,9 @@ mod tests {
 
     #[test]
     fn format_value_floats() {
-        assert_eq!(format_value(3.14), "3.14");
+        #[allow(clippy::approx_constant)]
+        let pi_ish = 3.14;
+        assert_eq!(format_value(pi_ish), "3.14");
         assert_eq!(format_value(0.5), "0.5");
     }
 }
