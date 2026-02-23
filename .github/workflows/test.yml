@@ -21,4 +21,4 @@ jobs:
           toolchain: 1.93.0
           components: rustfmt, clippy
       - name: Test
-        run: cargo test --workspace --release
+        run: make test
