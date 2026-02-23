@@ -912,6 +912,7 @@ async fn fuzz_tapir_transactions_inner(seed: u64) {
                     phase: phase.to_string(),
                 });
             });
+            #[allow(clippy::disallowed_methods)] // Immediately sorted on next line
             let mut shard_keys: Vec<_> = manager.shards.keys().cloned().collect();
             shard_keys.sort();
 
@@ -1112,8 +1113,8 @@ async fn fuzz_tapir_transactions_inner(seed: u64) {
     // Verify cluster_remote has all active shards.
     use crate::discovery::RemoteShardDirectory;
     {
-        let active_shards = final_shards.lock().unwrap();
-        if let Some(ref shard_entries) = *active_shards {
+        let active_shards = final_shards.lock().unwrap().clone();
+        if let Some(ref shard_entries) = active_shards {
             for entry in shard_entries {
                 let shard_wall_start = std::time::Instant::now();
                 let shard_sim_start = tokio::time::Instant::now();

@@ -784,6 +784,7 @@ mod tests {
                 6..=7 => {
                     // GET: 20%
                     if !all_keys.is_empty() {
+                        #[allow(clippy::disallowed_methods)] // Collected into Vec for random access
                         let key_vec: Vec<_> = all_keys.iter().collect();
                         let key = key_vec[rng.r#gen_range(0..key_vec.len())];
                         let _ = MvccBackend::get(&store, key); // May fail with corruption
@@ -792,6 +793,7 @@ mod tests {
                 8 => {
                     // SCAN: 10%
                     if all_keys.len() >= 2 {
+                        #[allow(clippy::disallowed_methods)] // Immediately sorted on next line
                         let mut key_vec: Vec<_> = all_keys.iter().cloned().collect();
                         key_vec.sort();
                         let start_idx = rng.r#gen_range(0..key_vec.len());
