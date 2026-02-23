@@ -1,0 +1,13 @@
+target/
+.git/
+.tapiadm/
+temp/
+*.md
+tests/
+benches/
+fuzz/
+.github/
+.vscode/
+.idea/
+.dockerignore
+history.txt
