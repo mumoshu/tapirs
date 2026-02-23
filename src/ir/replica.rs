@@ -9,7 +9,7 @@ use super::{
 use crate::{Transport, TransportMessage};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
-    collections::{btree_map::Entry, hash_map, BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{btree_map::Entry, BTreeMap, BTreeSet, HashMap, HashSet},
     fmt::Debug,
     hash::Hash,
     sync::{atomic::{AtomicU64, Ordering}, Arc, Mutex},
@@ -139,7 +139,7 @@ struct SyncInner<U: Upcalls, T: Transport<U>> {
     changed_view_recently: bool,
     upcalls: U,
     record: VersionedRecord<U::IO, U::CO, U::CR>,
-    outstanding_do_view_changes: HashMap<T::Address, DoViewChange<U::IO, U::CO, U::CR, T::Address>>,
+    outstanding_do_view_changes: BTreeMap<T::Address, DoViewChange<U::IO, U::CO, U::CR, T::Address>>,
     /// Last time received message from each peer replica.
     peer_liveness: HashMap<T::Address, Instant>,
     /// Latest normal-view number confirmed by each peer via periodic status broadcasts.
@@ -196,7 +196,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                     upcalls,
                     record: VersionedRecord::default(),
                     record_base_view: None,
-                    outstanding_do_view_changes: HashMap::new(),
+                    outstanding_do_view_changes: BTreeMap::new(),
                     peer_liveness: HashMap::new(),
                     peer_normal_views: HashMap::new(),
                 }),
@@ -538,10 +538,10 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                         debug_assert!(!msg.from_client);
                         let msg_view_number = msg.view.number;
                         match sync.outstanding_do_view_changes.entry(address) {
-                            hash_map::Entry::Vacant(vacant) => {
+                            Entry::Vacant(vacant) => {
                                 vacant.insert(msg);
                             }
-                            hash_map::Entry::Occupied(mut occupied) => {
+                            Entry::Occupied(mut occupied) => {
                                 if msg.view.number < occupied.get().view.number {
                                     return None;
                                 }
@@ -565,7 +565,6 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                                 latest_normal_view: sync.latest_normal_view.clone(),
                             }),
                         };
-                        #[allow(clippy::disallowed_methods)] // .filter().count() is order-independent
                         let matching = sync
                             .outstanding_do_view_changes
                             .iter()
@@ -622,7 +621,6 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                                     .collect::<Vec<_>>();
 
                                 if tracing::enabled!(tracing::Level::TRACE) {
-                                    #[allow(clippy::disallowed_methods)] // trace logging only; order irrelevant
                                     let dvc_debug: Vec<_> = sync
                                         .outstanding_do_view_changes
                                         .iter()
