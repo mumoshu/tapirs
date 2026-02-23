@@ -1,4 +1,4 @@
-.PHONY: test lock_server_stress_test coordinator_failure_stress_test_3 coordinator_failure_stress_test_7 bench fuzz fuzz100 maelstrom ci/testbed-kubernetes-operator
+.PHONY: test lock_server_stress_test coordinator_failure_stress_test_3 coordinator_failure_stress_test_7 bench fuzz fuzz100 maelstrom ci ci-full ci/operator-lint ci/operator-test ci/testbed-kubernetes-operator
 
 test:
 	cargo clippy --workspace -- -D clippy::disallowed_methods && timeout -k 10s 120s cargo test --workspace --release
@@ -47,6 +47,18 @@ $(MAELSTROM_BIN):
 maelstrom: $(MAELSTROM_BIN)
 	cargo build --release -p tapi-maelstrom
 	$(MAELSTROM_BIN) test -w lin-kv --bin target/release/maelstrom --latency 0 --rate 10 --time-limit 90 --concurrency 20 --nemesis partition --nemesis-interval 20
+
+ci: test maelstrom ci/operator-lint ci/operator-test
+	@echo "All CI checks passed."
+
+ci-full: ci ci/testbed-kubernetes-operator
+	@echo "All CI checks (including E2E) passed."
+
+ci/operator-lint:
+	$(MAKE) -C kubernetes/operator lint
+
+ci/operator-test:
+	$(MAKE) -C kubernetes/operator test
 
 ci/testbed-kubernetes-operator:
 	TAPIR_KIND=1 scripts/testbed-kube-operator.sh up
