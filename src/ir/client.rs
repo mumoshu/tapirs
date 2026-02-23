@@ -343,6 +343,7 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
         }
 
         async move {
+            let mut retry_backoff = Duration::from_millis(50);
             loop {
                 let (membership_size, future) = {
                     let sync = inner.sync.lock().unwrap();
@@ -384,21 +385,31 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
                     )
                     .await;
 
-                let mut sync = inner.sync.lock().unwrap();
-                Self::update_view(
-                    &inner.transport,
-                    &mut *sync,
-                    results.iter().map(|(i, r)| (*i, &r.view)),
-                );
+                let retry = {
+                    let mut sync = inner.sync.lock().unwrap();
+                    Self::update_view(
+                        &inner.transport,
+                        &mut *sync,
+                        results.iter().map(|(i, r)| (*i, &r.view)),
+                    );
 
-                if has_ancient(&results) || !has_quorum(membership_size, &results, true) {
+                    if has_ancient(&results) || !has_quorum(membership_size, &results, true) {
+                        true
+                    } else {
+                        for address in &sync.view.membership {
+                            inner
+                                .transport
+                                .do_send(address, FinalizeInconsistent { op_id });
+                        }
+                        false
+                    }
+                };
+                if retry {
+                    // Exponential backoff before retrying to prevent a tight async
+                    // loop that freezes simulated time under `start_paused = true`.
+                    T::sleep(retry_backoff).await;
+                    retry_backoff = (retry_backoff * 2).min(Duration::from_secs(1));
                     continue;
-                }
-
-                for address in &sync.view.membership {
-                    inner
-                        .transport
-                        .do_send(address, FinalizeInconsistent { op_id });
                 }
                 return;
             }
@@ -450,6 +461,7 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
         }
 
         async move {
+            let mut retry_backoff = Duration::from_millis(50);
             loop {
                 // Phase 1: Propose (same as invoke_inconsistent)
                 let (membership_size, future) = {
@@ -517,6 +529,10 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
                 };
 
                 let Some((finalize_future, finalize_membership_size)) = phase2 else {
+                    // Exponential backoff before retrying to prevent a tight async
+                    // loop that freezes simulated time under `start_paused = true`.
+                    T::sleep(retry_backoff).await;
+                    retry_backoff = (retry_backoff * 2).min(Duration::from_secs(1));
                     continue;
                 };
 
@@ -595,6 +611,7 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
         let inner = Arc::clone(&self.inner);
 
         async move {
+            let mut retry_backoff = Duration::from_millis(50);
             loop {
                 let (membership_size, op_id, future) = {
                     let mut sync = inner.sync.lock().unwrap();
@@ -661,9 +678,9 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
                     );
 
                     if has_ancient(&results) {
-                        // Our view number was very old.
-                        continue;
-                    }
+                        // Our view number was very old — retry after backoff (below).
+                        None
+                    } else {
 
                     let membership_size = sync.view.membership.size();
                     let finalized = get_finalized(&results);
@@ -716,31 +733,38 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
                     } else {
                         None
                     }
+                    } // else: !has_ancient
                 };
 
-                if let Some((result, reply_consensus_view, future)) = next {
-                    let mut soft_timeout = std::pin::pin!(T::sleep(Duration::from_millis(250)));
-                    let mut hard_timeout = std::pin::pin!(T::sleep(Duration::from_millis(500)));
-                    let results = future
-                        .until(
-                            |results: &BTreeMap<T::Address, Confirm<T::Address>>,
-                             cx: &mut Context<'_>| {
-                                get_quorum_view(results).is_some()
-                                    || (soft_timeout.as_mut().poll(cx).is_ready()
-                                        && results.len() >= membership_size.f_plus_one())
-                                    || hard_timeout.as_mut().poll(cx).is_ready()
-                            },
-                        )
-                        .await;
-                    let mut sync = inner.sync.lock().unwrap();
-                    Self::update_view(
-                        &inner.transport,
-                        &mut *sync,
-                        results.iter().map(|(i, r)| (*i, &r.view)),
-                    );
-                    if let Some(quorum_view) = get_quorum_view(&results) && reply_consensus_view.map(|reply_consensus_view| quorum_view.number == reply_consensus_view).unwrap_or(true) {
-                        return result;
-                    }
+                let Some((result, reply_consensus_view, future)) = next else {
+                    // Exponential backoff before retrying to prevent a tight async
+                    // loop that freezes simulated time under `start_paused = true`.
+                    T::sleep(retry_backoff).await;
+                    retry_backoff = (retry_backoff * 2).min(Duration::from_secs(1));
+                    continue;
+                };
+
+                let mut soft_timeout = std::pin::pin!(T::sleep(Duration::from_millis(250)));
+                let mut hard_timeout = std::pin::pin!(T::sleep(Duration::from_millis(500)));
+                let results = future
+                    .until(
+                        |results: &BTreeMap<T::Address, Confirm<T::Address>>,
+                         cx: &mut Context<'_>| {
+                            get_quorum_view(results).is_some()
+                                || (soft_timeout.as_mut().poll(cx).is_ready()
+                                    && results.len() >= membership_size.f_plus_one())
+                                || hard_timeout.as_mut().poll(cx).is_ready()
+                        },
+                    )
+                    .await;
+                let mut sync = inner.sync.lock().unwrap();
+                Self::update_view(
+                    &inner.transport,
+                    &mut *sync,
+                    results.iter().map(|(i, r)| (*i, &r.view)),
+                );
+                if let Some(quorum_view) = get_quorum_view(&results) && reply_consensus_view.map(|reply_consensus_view| quorum_view.number == reply_consensus_view).unwrap_or(true) {
+                    return result;
                 }
             }
         }
