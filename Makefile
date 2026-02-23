@@ -1,4 +1,4 @@
-.PHONY: test lint lock_server_stress_test coordinator_failure_stress_test_3 coordinator_failure_stress_test_7 bench fuzz fuzz100 maelstrom ci ci-full ci/operator-lint ci/operator-test ci/testbed-kubernetes-operator ci/testbed-kube ci/testbed-solo
+.PHONY: test lint lock_server_stress_test coordinator_failure_stress_test_3 coordinator_failure_stress_test_7 bench fuzz fuzz100 maelstrom ci ci-full ci/operator-lint ci/operator-test ci/testbed-kube-operator ci/testbed-kube-operator-tls ci/testbed-kube ci/testbed-solo ci/testbed ci/fuzz-diagnose ci/fuzz-multi-seed
 
 lint:
 	cargo clippy --workspace --all-targets -- -D warnings -D clippy::iter_over_hash_type && ./scripts/check-determinism.sh
@@ -54,7 +54,7 @@ maelstrom: $(MAELSTROM_BIN)
 ci: test maelstrom ci/operator-lint ci/operator-test
 	@echo "All CI checks passed."
 
-ci-full: ci ci/testbed-kubernetes-operator ci/testbed-kube
+ci-full: ci ci/testbed-kube-operator ci/testbed-kube
 	@echo "All CI checks (including E2E) passed."
 
 ci/operator-lint:
@@ -63,8 +63,12 @@ ci/operator-lint:
 ci/operator-test:
 	$(MAKE) -C kubernetes/operator test
 
-ci/testbed-kubernetes-operator:
+ci/testbed-kube-operator:
 	TAPIR_KIND=1 scripts/testbed-kube-operator.sh up
+	scripts/testbed-kube-operator.sh down
+
+ci/testbed-kube-operator-tls:
+	TAPIR_TLS=1 TAPIR_KIND=1 scripts/testbed-kube-operator.sh up
 	scripts/testbed-kube-operator.sh down
 
 ci/testbed-kube:
@@ -74,3 +78,12 @@ ci/testbed-kube:
 
 ci/testbed-solo:
 	scripts/testbed-solo.sh up && scripts/testbed-solo.sh down || { scripts/testbed-solo.sh down; exit 1; }
+
+ci/testbed: ci/testbed-solo ci/testbed-kube ci/testbed-kube-operator ci/testbed-kube-operator-tls
+	@echo "All testbed checks passed."
+
+ci/fuzz-diagnose:
+	FUZZ_RUNS=10 ./scripts/fuzz-diagnose.sh
+
+ci/fuzz-multi-seed:
+	./scripts/fuzz-multi-seed.sh
