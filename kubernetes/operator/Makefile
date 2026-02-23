@@ -49,6 +49,25 @@ help: ## Display this help.
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
 	"$(CONTROLLER_GEN)" rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
 
+CHART_CRD = ../charts/tapirs-operator/templates/crd.yaml
+CHART_RBAC = ../charts/tapirs-operator/templates/clusterrole.yaml
+
+.PHONY: sync-chart
+sync-chart: manifests ## Sync generated CRD and RBAC into the Helm chart.
+	@echo "Syncing CRD to Helm chart..."
+	@sed '/^  name:/a\  labels:\n    {{- include "tapirs-operator.labels" . | nindent 4 }}' \
+		config/crd/bases/tapir.tapir.dev_tapirclusters.yaml > $(CHART_CRD)
+	@echo "Syncing RBAC to Helm chart..."
+	@{ echo 'apiVersion: rbac.authorization.k8s.io/v1'; \
+	   echo 'kind: ClusterRole'; \
+	   echo 'metadata:'; \
+	   echo '  name: {{ include "tapirs-operator.fullname" . }}-manager'; \
+	   echo '  labels:'; \
+	   echo '    {{- include "tapirs-operator.labels" . | nindent 4 }}'; \
+	   sed -n '/^rules:/,$$p' config/rbac/role.yaml; \
+	} > $(CHART_RBAC)
+	@echo "Chart synced."
+
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
 	"$(CONTROLLER_GEN)" object paths="./..."

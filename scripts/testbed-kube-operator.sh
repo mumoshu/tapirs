@@ -82,6 +82,105 @@ kube_op() {
 }
 
 # ---------------------------------------------------------------------------
+# Pre-flight checks
+# ---------------------------------------------------------------------------
+preflight_check_tools() {
+    step "Pre-flight: checking required tools..."
+    local missing=()
+    for tool in kubectl helm docker; do
+        command -v "${tool}" &>/dev/null || missing+=("${tool}")
+    done
+    if [[ "${TAPIR_KIND}" == "1" ]]; then
+        command -v kind &>/dev/null || missing+=("kind")
+    fi
+    if (( ${#missing[@]} > 0 )); then
+        fail "Missing required tools: ${missing[*]}"
+    fi
+    ok "All required tools found."
+}
+
+preflight_check_sysctl() {
+    step "Pre-flight: checking kernel inotify limits..."
+
+    local max_instances max_watches
+    max_instances=$(cat /proc/sys/fs/inotify/max_user_instances 2>/dev/null) || max_instances=0
+    max_watches=$(cat /proc/sys/fs/inotify/max_user_watches 2>/dev/null) || max_watches=0
+
+    info "fs.inotify.max_user_instances = ${max_instances}"
+    info "fs.inotify.max_user_watches   = ${max_watches}"
+
+    if (( max_instances < 256 )); then
+        fail "fs.inotify.max_user_instances is ${max_instances} (need >= 256). Fix: sudo sysctl fs.inotify.max_user_instances=512"
+    fi
+    if (( max_watches < 100000 )); then
+        fail "fs.inotify.max_user_watches is ${max_watches} (need >= 100000). Fix: sudo sysctl fs.inotify.max_user_watches=524288"
+    fi
+    ok "Kernel limits OK."
+}
+
+preflight_check_docker() {
+    step "Pre-flight: checking Docker daemon..."
+    if ! docker info &>/dev/null; then
+        fail "Docker daemon is not running."
+    fi
+    ok "Docker daemon is reachable."
+}
+
+# ---------------------------------------------------------------------------
+# Cluster health check — verifies kube-system pods are healthy.
+# Catches issues like kube-proxy CrashLoopBackOff (e.g. from exhausted
+# inotify instances) before they cascade into mysterious timeouts later.
+# Waits up to 30s for pods to settle before checking.
+# ---------------------------------------------------------------------------
+check_cluster_health() {
+    local label="${1:-}"
+    local wait_timeout=30
+    local interval=5
+    local elapsed=0
+
+    step "Health check: kube-system pods${label:+ (${label})}..."
+
+    while (( elapsed < wait_timeout )); do
+        local unhealthy
+        unhealthy=$(kubectl get pods -n kube-system --no-headers 2>/dev/null \
+            | awk '$3 == "CrashLoopBackOff" || $3 == "Error" || $3 == "ImagePullBackOff" { print $1, $3 }') || true
+
+        if [[ -n "${unhealthy}" ]]; then
+            # Hard failures — don't wait, bail immediately.
+            warn "Unhealthy kube-system pods:"
+            echo "${unhealthy}" | while read -r pod status; do
+                info "  ${pod}: ${status}"
+                kubectl logs -n kube-system "${pod}" --tail=5 2>/dev/null | while read -r line; do
+                    info "    ${line}"
+                done
+            done
+            fail "Cluster is not healthy. Check kube-system pods before proceeding."
+        fi
+
+        # Check if all pods are Running and fully ready.
+        local not_ready
+        not_ready=$(kubectl get pods -n kube-system --no-headers 2>/dev/null \
+            | awk '$3 != "Running" && $3 != "Completed" { print $1, $3 }
+                   $3 == "Running" { split($2, a, "/"); if (a[1] != a[2]) print $1, $2 }') || true
+
+        if [[ -z "${not_ready}" ]]; then
+            ok "All kube-system pods healthy."
+            return 0
+        fi
+
+        info "Waiting for pods to settle... (${elapsed}s / ${wait_timeout}s)"
+        sleep "${interval}"
+        elapsed=$(( elapsed + interval ))
+    done
+
+    warn "kube-system pods not fully ready after ${wait_timeout}s:"
+    kubectl get pods -n kube-system --no-headers 2>/dev/null \
+        | awk '$3 != "Running" && $3 != "Completed" { print "  " $1 ": " $3 }
+               $3 == "Running" { split($2, a, "/"); if (a[1] != a[2]) print "  " $1 ": " $2 }' || true
+    fail "Cluster health check timed out."
+}
+
+# ---------------------------------------------------------------------------
 # Kind cluster management
 # ---------------------------------------------------------------------------
 kind_create() {
@@ -128,9 +227,13 @@ install_cert_manager() {
         run_cmd kubectl apply -f "${CERT_MANAGER_URL}"
     fi
 
-    info "Waiting for cert-manager webhook to be ready..."
+    info "Waiting for cert-manager deployments to be ready..."
+    run_cmd kubectl wait deployment.apps/cert-manager \
+        --for=condition=Available --namespace=cert-manager --timeout=60s
+    run_cmd kubectl wait deployment.apps/cert-manager-cainjector \
+        --for=condition=Available --namespace=cert-manager --timeout=60s
     run_cmd kubectl wait deployment.apps/cert-manager-webhook \
-        --for=condition=Available --namespace=cert-manager --timeout=5m
+        --for=condition=Available --namespace=cert-manager --timeout=60s
     ok "cert-manager is ready."
 
     # Create a proper CA chain. A plain self-signed issuer makes each cert its
@@ -351,7 +454,7 @@ smoke_test() {
         # Wait for the operator-client TLS secret to exist.
         info "Waiting for TLS secret '${tls_secret}' to be created by cert-manager..."
         if ! kubectl wait --for=jsonpath='{.type}'=kubernetes.io/tls \
-            secret/"${tls_secret}" -n "${NS}" --timeout=120s 2>/dev/null; then
+            secret/"${tls_secret}" -n "${NS}" --timeout=60s 2>/dev/null; then
             warn "TLS secret not ready. Skipping smoke test."
             return
         fi
@@ -514,12 +617,19 @@ cmd_status() {
 # up
 # ---------------------------------------------------------------------------
 cmd_up() {
+    preflight_check_tools
+    preflight_check_sysctl
+    preflight_check_docker
+
     kind_create
+    check_cluster_health "after Kind create"
+
     install_cert_manager
     build_and_load_images
 
     # Phase 1: Install operator
     install_operator
+    check_cluster_health "after operator install"
 
     # Phase 2: Install TAPIRCluster
     install_cluster

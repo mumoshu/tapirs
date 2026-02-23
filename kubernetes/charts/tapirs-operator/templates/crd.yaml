@@ -255,6 +255,34 @@ spec:
                   type: object
                 minItems: 1
                 type: array
+              tls:
+                description: |-
+                  tls configures mutual TLS for all cluster communication. When enabled,
+                  cert-manager Certificate resources are created for each component group,
+                  and TLS credentials are mounted into all pods.
+                properties:
+                  enabled:
+                    description: enabled activates mTLS for all inter-component connections.
+                    type: boolean
+                  issuerRef:
+                    description: |-
+                      issuerRef references a cert-manager Issuer or ClusterIssuer that signs
+                      TLS certificates for cluster components.
+                    properties:
+                      kind:
+                        default: ClusterIssuer
+                        description: kind is the kind of the issuer (Issuer or ClusterIssuer).
+                        enum:
+                        - Issuer
+                        - ClusterIssuer
+                        type: string
+                      name:
+                        description: name is the name of the issuer.
+                        type: string
+                    required:
+                    - name
+                    type: object
+                type: object
             required:
             - discovery
             - image

@@ -9,6 +9,7 @@ rules:
   - ""
   resources:
   - pods
+  - secrets
   verbs:
   - get
   - list
@@ -30,6 +31,18 @@ rules:
   resources:
   - deployments
   - statefulsets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - cert-manager.io
+  resources:
+  - certificates
   verbs:
   - create
   - delete
