@@ -77,26 +77,36 @@ pub async fn run(
         transport.set_shard_addresses(shard, membership);
     }
 
-    // Build key range entries. If any shard has explicit key_range fields, use
-    // them. Otherwise auto-partition the key space (a-z) evenly across shards.
-    let has_explicit_ranges = shards
-        .iter()
-        .any(|s| s.key_range_start.is_some() || s.key_range_end.is_some());
-
-    let entries: Vec<ShardEntry<String>> = if has_explicit_ranges || shards.len() <= 1 {
-        shards
+    // Build key range entries from discovery or static config. A single shard
+    // with no explicit ranges covers the entire key space [None, None). Multiple
+    // shards MUST have explicit key ranges — the client never fabricates ranges.
+    if shards.len() > 1 {
+        let missing: Vec<_> = shards
             .iter()
-            .map(|s| ShardEntry {
-                shard: ShardNumber(s.id),
-                range: KeyRange {
-                    start: s.key_range_start.clone(),
-                    end: s.key_range_end.clone(),
-                },
-            })
-            .collect()
-    } else {
-        build_shard_entries(shards.len() as u32)
-    };
+            .filter(|s| s.key_range_start.is_none() && s.key_range_end.is_none())
+            .map(|s| s.id)
+            .collect();
+        if !missing.is_empty() {
+            eprintln!(
+                "error: {} shard(s) have no key range (shard IDs: {:?}). \
+                 With multiple shards, every shard must have explicit key ranges \
+                 from discovery or static configuration.",
+                missing.len(),
+                missing,
+            );
+            std::process::exit(1);
+        }
+    }
+    let entries: Vec<ShardEntry<String>> = shards
+        .iter()
+        .map(|s| ShardEntry {
+            shard: ShardNumber(s.id),
+            range: KeyRange {
+                start: s.key_range_start.clone(),
+                end: s.key_range_end.clone(),
+            },
+        })
+        .collect();
 
     let directory = Arc::new(RwLock::new(ShardDirectory::new(entries)));
     let router = Arc::new(DynamicRouter::new(directory));
@@ -150,9 +160,18 @@ const DISCOVERY_MAX_RETRIES: u32 = 10;
 
 /// Fetch shard topology from a TAPIR discovery cluster endpoint.
 ///
-/// Uses eventual consistent reads (unlogged scan to 1 random replica).
-/// Retries with exponential backoff until a non-empty shard list is returned,
-/// since both `all()` and `publish_route_changes()` are eventually consistent.
+/// # Consistency model
+///
+/// The shard-manager writes shard membership and route changes to the TAPIR
+/// discovery cluster via **strongly-consistent** transactions (quorum writes).
+/// The client reads them via **eventually-consistent** reads (`ReadMode::Eventual`
+/// = unlogged scan to 1 random replica) for lower latency and load.
+///
+/// Because of this asymmetry, the client may read stale data right after the
+/// shard-manager writes. Both `all()` (shard membership) and
+/// `route_changes_since()` (key range changelog) are retried with exponential
+/// backoff until the reads are complete. The client never fabricates key
+/// ranges — it uses discovery-provided ranges or fails.
 async fn load_tapir_discovery(endpoint: &str) -> Vec<ShardConfig> {
     use std::collections::HashMap;
     use tapirs::discovery::{tapir, RemoteShardDirectory, ShardDirectoryChange};
@@ -181,16 +200,11 @@ async fn load_tapir_discovery(endpoint: &str) -> Vec<ShardConfig> {
         std::process::exit(1);
     });
 
-    // Both all() and route_changes_since() use ReadMode::Eventual (unlogged
-    // scan to 1 random replica). This is eventually consistent: after cluster
-    // bootstrap or shard-manager operations (register_shard, split, merge,
-    // compact), a replica may not yet have the latest writes. Retry with
-    // exponential backoff until we get a non-empty shard list.
-    //
-    // Similarly, publish_route_changes() writes route changelog entries via
-    // eventually-consistent TAPIR transactions. The route changelog read
-    // below may return stale or empty results if the discovery cluster
-    // hasn't fully propagated the writes yet.
+    // Consistency: all() uses ReadMode::Eventual (unlogged scan to 1 random
+    // replica). The shard-manager writes membership via strongly-consistent
+    // transactions, but this client reads eventually consistently. Right after
+    // cluster bootstrap or shard-manager operations, a replica may not yet
+    // have the latest writes. Retry with exponential backoff until non-empty.
     let entries = {
         let mut backoff = DISCOVERY_INITIAL_BACKOFF;
         let mut entries = Vec::new();
@@ -227,32 +241,83 @@ async fn load_tapir_discovery(endpoint: &str) -> Vec<ShardConfig> {
     // Replay the full route changelog to extract current key range
     // assignments. publish_route_changes() writes atomic changesets during
     // register_shard/split/merge/compact — replaying from index 0 gives us
-    // the latest key ranges. This is also an eventually-consistent read;
-    // if the changelog hasn't propagated yet we proceed without key ranges
-    // (falling back to auto-partition or None).
-    let changesets =
-        <_ as RemoteShardDirectory<TcpAddress, String>>::route_changes_since(&dir, 0)
-            .await
-            .unwrap_or_else(|e| {
-                eprintln!(
-                    "warning: failed to read route changelog from TAPIR discovery: {e}. \
-                     Proceeding without explicit key ranges."
-                );
-                vec![]
-            });
-    let mut key_ranges: HashMap<ShardNumber, KeyRange<String>> = HashMap::new();
-    for (_idx, changes) in changesets {
-        for change in changes {
-            match change {
-                ShardDirectoryChange::SetRange { shard, range, .. } => {
-                    key_ranges.insert(shard, range);
-                }
-                ShardDirectoryChange::RemoveRange { shard } => {
-                    key_ranges.remove(&shard);
+    // the latest key ranges.
+    //
+    // Consistency: route_changes_since() uses ReadMode::Eventual (unlogged
+    // scan to 1 random replica). The shard-manager writes route changes via
+    // strongly-consistent TAPIR transactions, but the client reads them
+    // eventually consistently — the read replica may not yet have the latest
+    // changesets. With multiple shards, every shard MUST have an explicit key
+    // range. If route changes haven't propagated yet, retry with backoff
+    // until all shards have ranges.
+    let shard_ids: Vec<ShardNumber> = entries.iter().map(|(s, _, _)| *s).collect();
+    let need_ranges = entries.len() > 1;
+
+    let key_ranges = {
+        let mut backoff = DISCOVERY_INITIAL_BACKOFF;
+        let mut key_ranges: HashMap<ShardNumber, KeyRange<String>> = HashMap::new();
+
+        for attempt in 0..=DISCOVERY_MAX_RETRIES {
+            let changesets =
+                <_ as RemoteShardDirectory<TcpAddress, String>>::route_changes_since(&dir, 0)
+                    .await
+                    .unwrap_or_else(|e| {
+                        eprintln!(
+                            "warning: failed to read route changelog from TAPIR discovery: {e}"
+                        );
+                        vec![]
+                    });
+
+            key_ranges.clear();
+            for (_idx, changes) in changesets {
+                for change in changes {
+                    match change {
+                        ShardDirectoryChange::SetRange { shard, range, .. } => {
+                            key_ranges.insert(shard, range);
+                        }
+                        ShardDirectoryChange::RemoveRange { shard } => {
+                            key_ranges.remove(&shard);
+                        }
+                    }
                 }
             }
+
+            if !need_ranges {
+                break;
+            }
+
+            // Check that every shard from all() has a key range.
+            let missing: Vec<_> = shard_ids
+                .iter()
+                .filter(|s| !key_ranges.contains_key(s))
+                .collect();
+            if missing.is_empty() {
+                break;
+            }
+
+            if attempt == DISCOVERY_MAX_RETRIES {
+                panic!(
+                    "TAPIR discovery route changelog missing key ranges for shard(s) {:?} \
+                     after {} retries (endpoint: {endpoint}). The shard-manager writes \
+                     route changes via strongly-consistent transactions, but client reads \
+                     are eventually consistent — the discovery replicas may not have \
+                     propagated yet. Is the discovery cluster healthy?",
+                    missing, DISCOVERY_MAX_RETRIES,
+                );
+            }
+            eprintln!(
+                "warning: route changelog missing key ranges for shard(s) {:?} \
+                 (attempt {}/{}, retrying in {:?}...)",
+                missing,
+                attempt + 1,
+                DISCOVERY_MAX_RETRIES,
+                backoff,
+            );
+            tokio::time::sleep(backoff).await;
+            backoff = (backoff * 2).min(DISCOVERY_MAX_BACKOFF);
         }
-    }
+        key_ranges
+    };
 
     entries
         .into_iter()
@@ -268,39 +333,3 @@ async fn load_tapir_discovery(endpoint: &str) -> Vec<ShardConfig> {
         .collect()
 }
 
-/// Partition key space (a-z) evenly across N shards with sequential IDs 0..N.
-fn build_shard_entries(n: u32) -> Vec<ShardEntry<String>> {
-    if n == 0 {
-        return vec![];
-    }
-    if n == 1 {
-        return vec![ShardEntry {
-            shard: ShardNumber(0),
-            range: KeyRange {
-                start: None,
-                end: None,
-            },
-        }];
-    }
-
-    let chars: Vec<char> = ('a'..='z').collect();
-    let per = chars.len() / n as usize;
-    let mut entries = Vec::new();
-    for i in 0..n {
-        let start = if i == 0 {
-            None
-        } else {
-            Some(chars[i as usize * per].to_string())
-        };
-        let end = if i == n - 1 {
-            None
-        } else {
-            Some(chars[(i as usize + 1) * per].to_string())
-        };
-        entries.push(ShardEntry {
-            shard: ShardNumber(i),
-            range: KeyRange { start, end },
-        });
-    }
-    entries
-}

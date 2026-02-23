@@ -615,6 +615,11 @@ async fn load_tapir_discovery_backend(endpoint: &str) -> DiscoveryBackend {
     let persist_dir = format!("/tmp/tapi_node_disc_{}", std::process::id());
     let disc_transport = TcpTransport::with_directory(ephemeral_addr, persist_dir, disc_dir);
 
+    // Consistency: Nodes use ReadMode::Eventual (unlogged scan to 1 random
+    // replica) for shard discovery. Nodes tolerate stale reads because
+    // CachingShardDirectory syncs periodically and the node retries on
+    // OutOfRange. The shard-manager (not the node) is the authority for
+    // consistent membership state.
     let rng = production_rng();
     let dir = tapir::parse_tapir_endpoint::<TcpAddress, _>(
         endpoint,
