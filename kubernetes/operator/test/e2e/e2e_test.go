@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -253,16 +254,95 @@ var _ = Describe("Manager", Ordered, func() {
 		})
 
 		// +kubebuilder:scaffold:e2e-webhooks-checks
+	})
 
-		// TODO: Customize the e2e test suite with scenarios specific to your project.
-		// Consider applying sample/CR(s) and check their status and/or verifying
-		// the reconciliation by using the metrics, i.e.:
-		// metricsOutput, err := getMetricsOutput()
-		// Expect(err).NotTo(HaveOccurred(), "Failed to retrieve logs from curl pod")
-		// Expect(metricsOutput).To(ContainSubstring(
-		//    fmt.Sprintf(`controller_runtime_reconcile_total{controller="%s",result="success"} 1`,
-		//    strings.ToLower(<Kind>),
-		// ))
+	Context("TAPIRCluster lifecycle", func() {
+		const testNS = "default"
+		const clusterName = "test-cluster"
+
+		AfterEach(func() {
+			// Clean up: delete the TAPIRCluster CR
+			cmd := exec.Command("kubectl", "delete", "tapircluster", clusterName,
+				"-n", testNS, "--ignore-not-found", "--timeout=60s")
+			_, _ = utils.Run(cmd)
+
+			// Wait for sub-resources to be cleaned up
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "statefulset",
+					"-l", fmt.Sprintf("app.kubernetes.io/instance=%s", clusterName),
+					"-n", testNS, "-o", "name")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(strings.TrimSpace(output)).To(BeEmpty(), "StatefulSets should be cleaned up")
+			}, 2*time.Minute).Should(Succeed())
+		})
+
+		It("should create sub-resources for a TAPIRCluster CR", func() {
+			By("applying the TAPIRCluster CR")
+			cmd := exec.Command("kubectl", "apply", "-f",
+				filepath.Join("test", "e2e", "testdata", "tapircluster-basic.yaml"),
+				"-n", testNS)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply TAPIRCluster CR")
+
+			By("verifying the discovery StatefulSet is created")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "statefulset",
+					clusterName+"-discovery", "-n", testNS,
+					"-o", "jsonpath={.spec.replicas}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("3"))
+			}).Should(Succeed())
+
+			By("verifying the shard-manager Deployment is created")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "deployment",
+					clusterName+"-shard-manager", "-n", testNS,
+					"-o", "jsonpath={.spec.replicas}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("1"))
+			}).Should(Succeed())
+
+			By("verifying the node pool StatefulSet is created")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "statefulset",
+					clusterName+"-default", "-n", testNS,
+					"-o", "jsonpath={.spec.replicas}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("3"))
+			}).Should(Succeed())
+
+			By("verifying the discovery headless Service is created")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "service",
+					clusterName+"-discovery", "-n", testNS,
+					"-o", "jsonpath={.spec.clusterIP}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("None"))
+			}).Should(Succeed())
+
+			By("verifying the shard-manager Service is created")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "service",
+					clusterName+"-shard-manager", "-n", testNS)
+				_, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+			}).Should(Succeed())
+
+			By("verifying status endpoints are set")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "tapircluster", clusterName,
+					"-n", testNS,
+					"-o", "jsonpath={.status.discoveryEndpoint}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("srv://"))
+			}).Should(Succeed())
+		})
 	})
 })
 

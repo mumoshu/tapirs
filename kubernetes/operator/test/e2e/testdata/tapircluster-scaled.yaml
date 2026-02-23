@@ -1,0 +1,18 @@
+apiVersion: tapir.tapir.dev/v1alpha1
+kind: TAPIRCluster
+metadata:
+  name: test-cluster
+spec:
+  image: tapir:latest
+  discovery:
+    replicas: 3
+  nodePools:
+    - name: default
+      replicas: 4
+  shards:
+    - number: 0
+      replicas: 3
+      keyRangeEnd: "n"
+    - number: 1
+      replicas: 3
+      keyRangeStart: "n"
