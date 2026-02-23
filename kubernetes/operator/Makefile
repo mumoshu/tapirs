@@ -14,6 +14,10 @@ endif
 # tools. (i.e. podman)
 CONTAINER_TOOL ?= docker
 
+# cert-manager version for E2E and TLS tests
+CERT_MANAGER_VERSION ?= v1.19.3
+CERT_MANAGER_URL = https://github.com/cert-manager/cert-manager/releases/download/$(CERT_MANAGER_VERSION)/cert-manager.yaml
+
 # Setting SHELL to bash allows bash commands to be executed by recipes.
 # Options are set to exit when a recipe line exits non-zero or a piped command fails.
 SHELL = /usr/bin/env bash -o pipefail
@@ -94,6 +98,30 @@ test-e2e: setup-test-e2e kind-load-tapir manifests generate fmt vet ## Run the e
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)
+
+.PHONY: cert-manager-install
+cert-manager-install: ## Install cert-manager into the current cluster.
+	$(KUBECTL) apply -f $(CERT_MANAGER_URL)
+	$(KUBECTL) wait deployment.apps/cert-manager-webhook \
+		--for=condition=Available --namespace=cert-manager --timeout=5m
+
+.PHONY: cert-manager-verify
+cert-manager-verify: ## Verify cert-manager is working by creating a test certificate.
+	@echo "Creating self-signed ClusterIssuer..."
+	$(KUBECTL) apply -f test/e2e/setup/selfsigned-issuer.yaml
+	@echo "Creating test Certificate..."
+	$(KUBECTL) apply -f - <<< '{"apiVersion":"cert-manager.io/v1","kind":"Certificate","metadata":{"name":"cert-manager-test","namespace":"default"},"spec":{"secretName":"cert-manager-test-tls","issuerRef":{"name":"tapir-selfsigned-issuer","kind":"ClusterIssuer"},"dnsNames":["test.example.com"]}}'
+	@echo "Waiting for test Certificate to become Ready..."
+	$(KUBECTL) wait certificate/cert-manager-test \
+		--for=condition=Ready --namespace=default --timeout=60s
+	@echo "cert-manager verification passed. Cleaning up test certificate..."
+	$(KUBECTL) delete certificate cert-manager-test -n default --ignore-not-found
+	$(KUBECTL) delete secret cert-manager-test-tls -n default --ignore-not-found
+	@echo "cert-manager is working correctly."
+
+.PHONY: cert-manager-uninstall
+cert-manager-uninstall: ## Uninstall cert-manager from the current cluster.
+	$(KUBECTL) delete -f $(CERT_MANAGER_URL) --ignore-not-found
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
