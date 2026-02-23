@@ -715,14 +715,52 @@ cmd_down() {
 }
 
 # ---------------------------------------------------------------------------
+# apply-code-changes — rebuild images, load into Kind, rolling restart pods
+# ---------------------------------------------------------------------------
+cmd_apply_code_changes() {
+    build_and_load_images
+
+    step "Rolling restart data plane StatefulSets..."
+    if kube get statefulset "${TAPIR_CLUSTER_NAME}-discovery" &>/dev/null; then
+        run_cmd kube rollout restart statefulset/"${TAPIR_CLUSTER_NAME}-discovery"
+    fi
+    for sts in $(kube get statefulsets -l "app.kubernetes.io/instance=${TAPIR_CLUSTER_NAME}" \
+        --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
+        if [[ "${sts}" == "${TAPIR_CLUSTER_NAME}-discovery" ]]; then continue; fi
+        run_cmd kube rollout restart statefulset/"${sts}"
+    done
+
+    step "Rolling restart operator Deployment..."
+    if kube_op get deployment tapirs-operator &>/dev/null; then
+        run_cmd kube_op rollout restart deployment/tapirs-operator
+    fi
+
+    step "Waiting for rollouts to complete..."
+    if kube get statefulset "${TAPIR_CLUSTER_NAME}-discovery" &>/dev/null; then
+        run_cmd kube rollout status statefulset/"${TAPIR_CLUSTER_NAME}-discovery" --timeout=120s
+    fi
+    for sts in $(kube get statefulsets -l "app.kubernetes.io/instance=${TAPIR_CLUSTER_NAME}" \
+        --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
+        if [[ "${sts}" == "${TAPIR_CLUSTER_NAME}-discovery" ]]; then continue; fi
+        run_cmd kube rollout status statefulset/"${sts}" --timeout=120s
+    done
+    if kube_op get deployment tapirs-operator &>/dev/null; then
+        run_cmd kube_op rollout status deployment/tapirs-operator --timeout=120s
+    fi
+
+    ok "All components restarted with new images."
+}
+
+# ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
 usage() {
     printf "Usage: %s <command>\n\n" "$(basename "$0")"
     printf "Commands:\n"
-    printf "  up        Deploy operator + cluster, smoke test, print guide\n"
-    printf "  down      Tear down all testbed resources\n"
-    printf "  status    Show cluster health\n"
+    printf "  up                  Deploy operator + cluster, smoke test, print guide\n"
+    printf "  down                Tear down all testbed resources\n"
+    printf "  status              Show cluster health\n"
+    printf "  apply-code-changes  Rebuild images, load into Kind, rolling restart\n"
     printf "\nEnvironment variables:\n"
     printf "  TAPIR_KIND=1                      Auto-create/destroy Kind cluster\n"
     printf "  TAPIR_KIND_CLUSTER                Kind cluster name (default: tapir-op)\n"
@@ -737,8 +775,9 @@ usage() {
 }
 
 case "${1:-}" in
-    up)     cmd_up     ;;
-    down)   cmd_down   ;;
-    status) cmd_status ;;
-    *)      usage      ;;
+    up)                 cmd_up                 ;;
+    down)               cmd_down               ;;
+    status)             cmd_status             ;;
+    apply-code-changes) cmd_apply_code_changes ;;
+    *)                  usage                  ;;
 esac
