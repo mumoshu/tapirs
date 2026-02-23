@@ -8,7 +8,6 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	tapirv1alpha1 "github.com/mumoshu/tapirs/kubernetes/operator/api/v1alpha1"
-	"github.com/mumoshu/tapirs/kubernetes/operator/internal/tapir"
 )
 
 // reconcileScaleUp checks whether any shards need more replicas and adds them
@@ -42,12 +41,11 @@ func (r *TAPIRClusterReconciler) reconcileScaleUp(ctx context.Context, cluster *
 		shardPods := allPods[:shard.Replicas]
 
 		for _, p := range shardPods {
-			adminAddr := fmt.Sprintf("%s:%d", p.PodIP, adminPort)
-			client := &tapir.AdminClient{Addr: adminAddr, Timeout: 10 * time.Second}
+			client := r.adminClient(ctx, cluster, p, p.ServiceName)
 
 			resp, err := client.Status(ctx)
 			if err != nil {
-				return fmt.Errorf("status %s: %w", adminAddr, err)
+				return fmt.Errorf("status %s: %w", client.Addr, err)
 			}
 
 			alreadyHasShard := false
@@ -67,7 +65,7 @@ func (r *TAPIRClusterReconciler) reconcileScaleUp(ctx context.Context, cluster *
 			log.Info("Scaling up: adding replica via dynamic join",
 				"pod", p.Name, "shard", shard.Number, "listenAddr", listenAddr)
 			if err := client.AddReplica(ctx, shard.Number, listenAddr, nil, storage); err != nil {
-				return fmt.Errorf("add_replica shard %d on %s: %w", shard.Number, adminAddr, err)
+				return fmt.Errorf("add_replica shard %d on %s: %w", shard.Number, client.Addr, err)
 			}
 
 			// Wait for view change to complete before adding next replica
@@ -109,8 +107,7 @@ func (r *TAPIRClusterReconciler) reconcileScaleDown(ctx context.Context, cluster
 				continue // this pod should keep the shard
 			}
 
-			adminAddr := fmt.Sprintf("%s:%d", p.PodIP, adminPort)
-			client := &tapir.AdminClient{Addr: adminAddr, Timeout: 10 * time.Second}
+			client := r.adminClient(ctx, cluster, p, p.ServiceName)
 
 			resp, err := client.Status(ctx)
 			if err != nil {
@@ -135,14 +132,14 @@ func (r *TAPIRClusterReconciler) reconcileScaleDown(ctx context.Context, cluster
 				"listenAddr", fmt.Sprintf("%s:%d", p.PodIP, port))
 
 			if err := client.Leave(ctx, shard.Number); err != nil {
-				return fmt.Errorf("leave shard %d on %s: %w", shard.Number, adminAddr, err)
+				return fmt.Errorf("leave shard %d on %s: %w", shard.Number, client.Addr, err)
 			}
 
 			// Wait for RemoveMember view change to propagate
 			time.Sleep(3 * time.Second)
 
 			if err := client.RemoveReplica(ctx, shard.Number); err != nil {
-				return fmt.Errorf("remove_replica shard %d on %s: %w", shard.Number, adminAddr, err)
+				return fmt.Errorf("remove_replica shard %d on %s: %w", shard.Number, client.Addr, err)
 			}
 		}
 	}

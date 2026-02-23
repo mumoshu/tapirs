@@ -33,8 +33,7 @@ func discoveryEndpoint(cluster *tapirv1alpha1.TAPIRCluster) string {
 }
 
 func shardManagerURL(cluster *tapirv1alpha1.TAPIRCluster) string {
-	return fmt.Sprintf("http://%s-shard-manager.%s.svc.cluster.local:%d",
-		cluster.Name, cluster.Namespace, shardManagerPort)
+	return shardManagerURLForCluster(cluster)
 }
 
 // desiredDiscoveryService returns the headless Service for discovery pods.
@@ -95,6 +94,11 @@ func desiredDiscoveryStatefulSet(cluster *tapirv1alpha1.TAPIRCluster) *appsv1.St
 		container.Resources = *cluster.Spec.Discovery.Resources
 	}
 
+	volumes := []corev1.Volume{
+		{Name: "data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+	}
+	injectTLS(&container, &volumes, cluster, "discovery")
+
 	return &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      cluster.Name + "-discovery",
@@ -109,9 +113,7 @@ func desiredDiscoveryStatefulSet(cluster *tapirv1alpha1.TAPIRCluster) *appsv1.St
 				ObjectMeta: metav1.ObjectMeta{Labels: labels(cluster, "discovery")},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{container},
-					Volumes: []corev1.Volume{
-						{Name: "data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-					},
+					Volumes:    volumes,
 				},
 			},
 		},
@@ -138,6 +140,34 @@ func desiredShardManagerService(cluster *tapirv1alpha1.TAPIRCluster) *corev1.Ser
 // desiredShardManagerDeployment returns the Deployment for the shard-manager.
 func desiredShardManagerDeployment(cluster *tapirv1alpha1.TAPIRCluster) *appsv1.Deployment {
 	var replicas int32 = 1
+
+	container := corev1.Container{
+		Name:            "shard-manager",
+		Image:           cluster.Spec.Image,
+		ImagePullPolicy: corev1.PullIfNotPresent,
+		Command:         []string{"tapi", "shard-manager"},
+		Args: []string{
+			fmt.Sprintf("--listen-addr=0.0.0.0:%d", shardManagerPort),
+			"--discovery-tapir-endpoint=" + discoveryEndpoint(cluster),
+		},
+		Env: []corev1.EnvVar{
+			{Name: "RUST_LOG", Value: "info,tapirs::discovery=debug"},
+		},
+		Ports: []corev1.ContainerPort{
+			{Name: "http", ContainerPort: shardManagerPort},
+		},
+		ReadinessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(shardManagerPort)},
+			},
+			InitialDelaySeconds: 5,
+			PeriodSeconds:       5,
+		},
+	}
+
+	var volumes []corev1.Volume
+	injectTLS(&container, &volumes, cluster, "shard-manager")
+
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      cluster.Name + "-shard-manager",
@@ -150,31 +180,8 @@ func desiredShardManagerDeployment(cluster *tapirv1alpha1.TAPIRCluster) *appsv1.
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels(cluster, "shard-manager")},
 				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Name:            "shard-manager",
-							Image:           cluster.Spec.Image,
-							ImagePullPolicy: corev1.PullIfNotPresent,
-							Command:         []string{"tapi", "shard-manager"},
-							Args: []string{
-								fmt.Sprintf("--listen-addr=0.0.0.0:%d", shardManagerPort),
-								"--discovery-tapir-endpoint=" + discoveryEndpoint(cluster),
-							},
-							Env: []corev1.EnvVar{
-								{Name: "RUST_LOG", Value: "info,tapirs::discovery=debug"},
-							},
-							Ports: []corev1.ContainerPort{
-								{Name: "http", ContainerPort: shardManagerPort},
-							},
-							ReadinessProbe: &corev1.Probe{
-								ProbeHandler: corev1.ProbeHandler{
-									TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(shardManagerPort)},
-								},
-								InitialDelaySeconds: 5,
-								PeriodSeconds:       5,
-							},
-						},
-					},
+					Containers: []corev1.Container{container},
+					Volumes:    volumes,
 				},
 			},
 		},
@@ -257,6 +264,11 @@ func desiredNodePoolStatefulSet(cluster *tapirv1alpha1.TAPIRCluster, pool tapirv
 		container.Resources = *pool.Resources
 	}
 
+	volumes := []corev1.Volume{
+		{Name: "data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+	}
+	injectTLS(&container, &volumes, cluster, pool.Name)
+
 	replicas := pool.Replicas
 	return &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
@@ -272,9 +284,7 @@ func desiredNodePoolStatefulSet(cluster *tapirv1alpha1.TAPIRCluster, pool tapirv
 				ObjectMeta: metav1.ObjectMeta{Labels: labels(cluster, component)},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{container},
-					Volumes: []corev1.Volume{
-						{Name: "data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-					},
+					Volumes:    volumes,
 				},
 			},
 		},

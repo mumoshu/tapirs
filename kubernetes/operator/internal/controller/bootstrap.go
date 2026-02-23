@@ -12,15 +12,15 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	tapirv1alpha1 "github.com/mumoshu/tapirs/kubernetes/operator/api/v1alpha1"
-	"github.com/mumoshu/tapirs/kubernetes/operator/internal/tapir"
 )
 
 const requeueDelay = 5 * time.Second
 
 // podInfo holds the resolved address info for a pod in a StatefulSet.
 type podInfo struct {
-	Name  string // pod name (e.g. "mycluster-default-0")
-	PodIP string // pod IP address
+	Name        string // pod name (e.g. "mycluster-default-0")
+	PodIP       string // pod IP address
+	ServiceName string // headless service name (e.g. "mycluster-default")
 }
 
 // reconcileBootstrap drives the cluster through its lifecycle phases.
@@ -123,14 +123,14 @@ func (r *TAPIRClusterReconciler) bootstrapDiscovery(ctx context.Context, cluster
 	}
 
 	// Bootstrap each discovery pod with shard 0 (the discovery shard)
+	discoverySvc := cluster.Name + "-discovery"
 	for _, p := range pods {
-		adminAddr := fmt.Sprintf("%s:%d", p.PodIP, adminPort)
-		client := &tapir.AdminClient{Addr: adminAddr, Timeout: 10 * time.Second}
+		client := r.adminClient(ctx, cluster, p, discoverySvc)
 
 		// Check if already bootstrapped
 		resp, err := client.Status(ctx)
 		if err != nil {
-			return fmt.Errorf("status %s: %w", adminAddr, err)
+			return fmt.Errorf("status %s: %w", client.Addr, err)
 		}
 
 		alreadyHasShard := false
@@ -148,7 +148,7 @@ func (r *TAPIRClusterReconciler) bootstrapDiscovery(ctx context.Context, cluster
 		listenAddr := fmt.Sprintf("%s:%d", p.PodIP, discoveryTapirPort)
 		log.Info("Bootstrapping discovery replica", "pod", p.Name, "listenAddr", listenAddr)
 		if err := client.AddReplica(ctx, 0, listenAddr, membership, "memory"); err != nil {
-			return fmt.Errorf("add_replica on %s: %w", adminAddr, err)
+			return fmt.Errorf("add_replica on %s: %w", client.Addr, err)
 		}
 	}
 
@@ -188,13 +188,12 @@ func (r *TAPIRClusterReconciler) bootstrapReplicas(ctx context.Context, cluster 
 
 		// Bootstrap each replica
 		for _, p := range shardPods {
-			adminAddr := fmt.Sprintf("%s:%d", p.PodIP, adminPort)
-			client := &tapir.AdminClient{Addr: adminAddr, Timeout: 10 * time.Second}
+			client := r.adminClient(ctx, cluster, p, p.ServiceName)
 
 			// Check if already bootstrapped
 			resp, err := client.Status(ctx)
 			if err != nil {
-				return fmt.Errorf("status %s: %w", adminAddr, err)
+				return fmt.Errorf("status %s: %w", client.Addr, err)
 			}
 
 			alreadyHasShard := false
@@ -212,7 +211,7 @@ func (r *TAPIRClusterReconciler) bootstrapReplicas(ctx context.Context, cluster 
 			listenAddr := fmt.Sprintf("%s:%d", p.PodIP, port)
 			log.Info("Bootstrapping data replica", "pod", p.Name, "shard", shard.Number, "listenAddr", listenAddr)
 			if err := client.AddReplica(ctx, shard.Number, listenAddr, membership, storage); err != nil {
-				return fmt.Errorf("add_replica shard %d on %s: %w", shard.Number, adminAddr, err)
+				return fmt.Errorf("add_replica shard %d on %s: %w", shard.Number, client.Addr, err)
 			}
 		}
 	}
@@ -229,9 +228,7 @@ func (r *TAPIRClusterReconciler) registerShards(ctx context.Context, cluster *ta
 		return err
 	}
 
-	smClient := &tapir.ShardManagerClient{
-		BaseURL: shardManagerURL(cluster),
-	}
+	smClient := r.shardManagerClient(ctx, cluster)
 
 	for _, shard := range cluster.Spec.Shards {
 		port := int32(replicaBasePort) + shard.Number
@@ -265,13 +262,12 @@ func (r *TAPIRClusterReconciler) updateStatus(ctx context.Context, cluster *tapi
 	// Update node status
 	nodeStatuses := make([]tapirv1alpha1.NodeStatus, 0, len(allPods))
 	for _, p := range allPods {
-		adminAddr := fmt.Sprintf("%s:%d", p.PodIP, adminPort)
-		client := &tapir.AdminClient{Addr: adminAddr, Timeout: 5 * time.Second}
+		client := r.adminClient(ctx, cluster, p, p.ServiceName)
 
 		ns := tapirv1alpha1.NodeStatus{
 			Name:      p.Name,
 			PodIP:     p.PodIP,
-			AdminAddr: adminAddr,
+			AdminAddr: client.Addr,
 			Ready:     true,
 		}
 
@@ -354,7 +350,7 @@ func (r *TAPIRClusterReconciler) getStatefulSetPodIPs(ctx context.Context, names
 		if pod.Status.PodIP == "" {
 			return nil, fmt.Errorf("pod %s has no IP yet", podName)
 		}
-		pods = append(pods, podInfo{Name: podName, PodIP: pod.Status.PodIP})
+		pods = append(pods, podInfo{Name: podName, PodIP: pod.Status.PodIP, ServiceName: stsName})
 	}
 	return pods, nil
 }

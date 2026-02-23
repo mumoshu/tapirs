@@ -31,6 +31,8 @@ type TAPIRClusterReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile creates or updates the Kubernetes resources that form a tapirs cluster,
 // then orchestrates bootstrap and scaling operations.
@@ -51,6 +53,12 @@ func (r *TAPIRClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		if err := r.Status().Update(ctx, &cluster); err != nil {
 			return ctrl.Result{}, err
 		}
+	}
+
+	// Create cert-manager Certificate CRs if TLS is enabled.
+	if err := r.reconcileTLS(ctx, &cluster); err != nil {
+		log.Error(err, "Failed to reconcile TLS certificates")
+		return ctrl.Result{}, err
 	}
 
 	// Create or update all sub-resources (StatefulSets, Deployments, Services).

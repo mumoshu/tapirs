@@ -42,6 +42,36 @@ type TAPIRClusterSpec struct {
 	// +required
 	// +kubebuilder:validation:MinItems=1
 	Shards []ShardSpec `json:"shards"`
+
+	// tls configures mutual TLS for all cluster communication. When enabled,
+	// cert-manager Certificate resources are created for each component group,
+	// and TLS credentials are mounted into all pods.
+	// +optional
+	TLS *TLSSpec `json:"tls,omitempty"`
+}
+
+// TLSSpec configures mutual TLS for all cluster communication.
+type TLSSpec struct {
+	// enabled activates mTLS for all inter-component connections.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// issuerRef references a cert-manager Issuer or ClusterIssuer that signs
+	// TLS certificates for cluster components.
+	// +optional
+	IssuerRef *IssuerRef `json:"issuerRef,omitempty"`
+}
+
+// IssuerRef references a cert-manager issuer.
+type IssuerRef struct {
+	// name is the name of the issuer.
+	// +required
+	Name string `json:"name"`
+
+	// kind is the kind of the issuer (Issuer or ClusterIssuer).
+	// +kubebuilder:default=ClusterIssuer
+	// +kubebuilder:validation:Enum=Issuer;ClusterIssuer
+	Kind string `json:"kind,omitempty"`
 }
 
 // DiscoverySpec configures the discovery store tier (a self-contained TAPIR
