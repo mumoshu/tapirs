@@ -3,6 +3,7 @@ package tapir
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -18,6 +19,10 @@ type AdminClient struct {
 
 	// Timeout is the per-call dial+read timeout. Defaults to 5s.
 	Timeout time.Duration
+
+	// TLSConfig enables mTLS when non-nil. Use LoadTLSConfig() to create
+	// a config with automatic certificate reloading.
+	TLSConfig *tls.Config
 }
 
 type adminRequest struct {
@@ -55,11 +60,26 @@ func (c *AdminClient) do(ctx context.Context, req adminRequest) (*AdminResponse,
 	}
 
 	d := net.Dialer{Timeout: c.timeout()}
-	conn, err := d.DialContext(ctx, "tcp", c.Addr)
+	rawConn, err := d.DialContext(ctx, "tcp", c.Addr)
 	if err != nil {
 		return nil, fmt.Errorf("admin dial %s: %w", c.Addr, err)
 	}
-	defer conn.Close()
+	defer rawConn.Close()
+
+	var conn net.Conn = rawConn
+	if c.TLSConfig != nil {
+		host, _, _ := net.SplitHostPort(c.Addr)
+		tlsConn := tls.Client(rawConn, &tls.Config{
+			ServerName:           host,
+			RootCAs:              c.TLSConfig.RootCAs,
+			GetClientCertificate: c.TLSConfig.GetClientCertificate,
+			MinVersion:           c.TLSConfig.MinVersion,
+		})
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			return nil, fmt.Errorf("admin TLS handshake with %s: %w", c.Addr, err)
+		}
+		conn = tlsConn
+	}
 
 	if err := conn.SetDeadline(deadline); err != nil {
 		return nil, fmt.Errorf("admin set deadline: %w", err)

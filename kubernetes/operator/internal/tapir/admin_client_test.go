@@ -3,9 +3,12 @@ package tapir
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"testing"
 	"time"
 )
@@ -170,5 +173,94 @@ func TestAdminClient_ErrorResponse(t *testing.T) {
 	_, err := client.Status(context.Background())
 	if err == nil {
 		t.Fatal("expected error for ok=false response")
+	}
+}
+
+// mockTLSAdminServer starts a TLS-enabled admin mock server.
+func mockTLSAdminServer(t *testing.T, serverTLS *tls.Config, handler func(req adminRequest) AdminResponse) string {
+	t.Helper()
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", serverTLS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				scanner := bufio.NewScanner(conn)
+				if !scanner.Scan() {
+					return
+				}
+				var req adminRequest
+				if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
+					resp := AdminResponse{OK: false, Message: fmt.Sprintf("bad request: %v", err)}
+					data, _ := json.Marshal(resp)
+					conn.Write(append(data, '\n'))
+					return
+				}
+				resp := handler(req)
+				data, _ := json.Marshal(resp)
+				conn.Write(append(data, '\n'))
+			}()
+		}
+	}()
+	return ln.Addr().String()
+}
+
+func TestAdminClient_TLS_Status(t *testing.T) {
+	dir := t.TempDir()
+	certFile, keyFile, caFile := generateTestCerts(t, dir)
+
+	// Build server TLS config requiring client certs (mTLS).
+	serverCert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caPEM, err := os.ReadFile(caFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caPool := x509.NewCertPool()
+	caPool.AppendCertsFromPEM(caPEM)
+
+	serverTLS := &tls.Config{
+		Certificates: []tls.Certificate{serverCert},
+		ClientCAs:    caPool,
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		MinVersion:   tls.VersionTLS12,
+	}
+
+	addr := mockTLSAdminServer(t, serverTLS, func(req adminRequest) AdminResponse {
+		if req.Command != "status" {
+			return AdminResponse{OK: false, Message: "unexpected command"}
+		}
+		return AdminResponse{
+			OK:     true,
+			Shards: []ShardInfo{{Shard: 0, ListenAddr: "10.0.0.1:6000"}},
+		}
+	})
+
+	// Client with TLS.
+	clientTLS, err := LoadTLSConfig(certFile, keyFile, caFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	client := &AdminClient{Addr: addr, Timeout: 2 * time.Second, TLSConfig: clientTLS}
+	resp, err := client.Status(context.Background())
+	if err != nil {
+		t.Fatalf("TLS Status() error: %v", err)
+	}
+	if !resp.OK {
+		t.Fatalf("TLS Status() not ok: %s", resp.Message)
+	}
+	if len(resp.Shards) != 1 {
+		t.Fatalf("expected 1 shard, got %d", len(resp.Shards))
 	}
 }
