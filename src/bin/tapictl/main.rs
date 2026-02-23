@@ -16,6 +16,9 @@ pub struct TlsArgs {
     /// Path to PEM-encoded CA certificate file for peer verification.
     #[arg(long)]
     pub tls_ca: Option<PathBuf>,
+    /// DNS name for TLS server name verification on outbound connections.
+    #[arg(long)]
+    pub tls_server_name: Option<String>,
 }
 
 impl TlsArgs {
@@ -269,6 +272,7 @@ fn make_sm_client(url: &str, #[cfg(feature = "tls")] tls: &TlsArgs) -> HttpShard
             cert_path: cert.clone(),
             key_path: key.clone(),
             ca_path: ca.clone(),
+            server_name: tls.tls_server_name.clone(),
         };
         let connector = tapirs::tls::ReloadableTlsConnector::new(&tls_config)
             .unwrap_or_else(|e| panic!("TLS config error: {e}"));

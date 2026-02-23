@@ -34,6 +34,11 @@ pub struct TlsArgs {
     /// Path to PEM-encoded CA certificate file for peer verification (e.g. ca.crt).
     #[arg(long)]
     pub tls_ca: Option<PathBuf>,
+    /// DNS name to use for TLS server name verification on outbound connections.
+    /// Required when peers are addressed by IP but certificates have DNS SANs
+    /// (e.g. in Kubernetes with cert-manager). Example: "tapir-default.ns.svc.cluster.local".
+    #[arg(long)]
+    pub tls_server_name: Option<String>,
 }
 
 impl TlsArgs {
@@ -65,6 +70,7 @@ impl TlsArgs {
                 cert_path: cert.clone(),
                 key_path: key.clone(),
                 ca_path: ca.clone(),
+                server_name: self.tls_server_name.clone(),
             }),
             _ => None,
         }

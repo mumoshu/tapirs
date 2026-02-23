@@ -46,9 +46,13 @@ where
     #[cfg(feature = "tls")]
     if let Some(ref connector) = inner.tls_connector {
         let tls_connector = connector.connector();
-        let server_name = rustls::pki_types::ServerName::IpAddress(
-            rustls::pki_types::IpAddr::from(addr.ip()),
-        );
+        let server_name = if let Some(ref name) = inner.tls_server_name {
+            name.clone()
+        } else {
+            rustls::pki_types::ServerName::IpAddress(
+                rustls::pki_types::IpAddr::from(addr.ip()),
+            )
+        };
         match tls_connector.connect(server_name, stream).await {
             Ok(tls_stream) => {
                 let (read_half, write_half) = tokio::io::split(tls_stream);

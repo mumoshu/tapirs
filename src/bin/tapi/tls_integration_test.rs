@@ -56,6 +56,7 @@ fn generate_test_certs(dir: &std::path::Path) -> tapirs::tls::TlsConfig {
         cert_path,
         key_path,
         ca_path,
+        server_name: None,
     }
 }
 

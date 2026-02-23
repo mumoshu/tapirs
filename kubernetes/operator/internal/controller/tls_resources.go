@@ -56,12 +56,21 @@ func tlsVolumeMount() corev1.VolumeMount {
 	}
 }
 
-// tlsArgs returns the CLI flags for TLS certificate paths.
-func tlsArgs() []string {
+// internalSAN returns the shared DNS SAN added to all component certificates.
+// All outbound TLS connections use this name for hostname verification,
+// allowing any component to connect to any other (discovery, data nodes,
+// shard-manager) with a single --tls-server-name.
+func internalSAN(cluster *tapirv1alpha1.TAPIRCluster) string {
+	return fmt.Sprintf("%s-internal.%s.svc.cluster.local", cluster.Name, cluster.Namespace)
+}
+
+// tlsArgs returns the CLI flags for TLS certificate paths and server name.
+func tlsArgs(cluster *tapirv1alpha1.TAPIRCluster) []string {
 	return []string{
 		fmt.Sprintf("--tls-cert=%s/tls.crt", tlsMountPath),
 		fmt.Sprintf("--tls-key=%s/tls.key", tlsMountPath),
 		fmt.Sprintf("--tls-ca=%s/ca.crt", tlsMountPath),
+		fmt.Sprintf("--tls-server-name=%s", internalSAN(cluster)),
 	}
 }
 
@@ -111,7 +120,7 @@ func injectTLS(container *corev1.Container, volumes *[]corev1.Volume, cluster *t
 	secretName := tlsSecretName(cluster.Name, component)
 	*volumes = append(*volumes, tlsVolume(secretName))
 	container.VolumeMounts = append(container.VolumeMounts, tlsVolumeMount())
-	container.Args = append(container.Args, tlsArgs()...)
+	container.Args = append(container.Args, tlsArgs(cluster)...)
 }
 
 // reconcileTLS creates cert-manager Certificate CRs for all cluster components.
@@ -121,12 +130,14 @@ func (r *TAPIRClusterReconciler) reconcileTLS(ctx context.Context, cluster *tapi
 	}
 
 	ns := cluster.Namespace
+	shared := internalSAN(cluster)
 
 	// Discovery certificate
 	discoverySvc := cluster.Name + "-discovery"
 	if err := r.ensureCertificate(ctx, cluster, desiredCertificate(cluster, "discovery", []string{
 		fmt.Sprintf("*.%s.%s.svc.cluster.local", discoverySvc, ns),
 		fmt.Sprintf("%s.%s.svc.cluster.local", discoverySvc, ns),
+		shared,
 	})); err != nil {
 		return fmt.Errorf("discovery certificate: %w", err)
 	}
@@ -137,6 +148,7 @@ func (r *TAPIRClusterReconciler) reconcileTLS(ctx context.Context, cluster *tapi
 		if err := r.ensureCertificate(ctx, cluster, desiredCertificate(cluster, pool.Name, []string{
 			fmt.Sprintf("*.%s.%s.svc.cluster.local", poolSvc, ns),
 			fmt.Sprintf("%s.%s.svc.cluster.local", poolSvc, ns),
+			shared,
 		})); err != nil {
 			return fmt.Errorf("node pool %s certificate: %w", pool.Name, err)
 		}
@@ -146,6 +158,7 @@ func (r *TAPIRClusterReconciler) reconcileTLS(ctx context.Context, cluster *tapi
 	smSvc := cluster.Name + "-shard-manager"
 	if err := r.ensureCertificate(ctx, cluster, desiredCertificate(cluster, "shard-manager", []string{
 		fmt.Sprintf("%s.%s.svc.cluster.local", smSvc, ns),
+		shared,
 	})); err != nil {
 		return fmt.Errorf("shard-manager certificate: %w", err)
 	}
@@ -153,6 +166,7 @@ func (r *TAPIRClusterReconciler) reconcileTLS(ctx context.Context, cluster *tapi
 	// Operator client certificate (for admin/SM API calls from the reconciler)
 	if err := r.ensureCertificate(ctx, cluster, desiredCertificate(cluster, "operator-client", []string{
 		fmt.Sprintf("%s-operator-client.%s.svc.cluster.local", cluster.Name, ns),
+		shared,
 	})); err != nil {
 		return fmt.Errorf("operator-client certificate: %w", err)
 	}

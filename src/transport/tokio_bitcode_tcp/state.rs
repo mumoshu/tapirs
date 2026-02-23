@@ -51,6 +51,9 @@ pub(super) struct TransportInner<U: ReplicaUpcalls> {
     /// Optional TLS connector for outbound connections.
     #[cfg(feature = "tls")]
     pub tls_connector: Option<crate::tls::ReloadableTlsConnector>,
+    /// DNS name for TLS server name verification (overrides IP-based check).
+    #[cfg(feature = "tls")]
+    pub tls_server_name: Option<rustls::pki_types::ServerName<'static>>,
 }
 
 impl<U: ReplicaUpcalls> TcpTransport<U> {
@@ -73,6 +76,8 @@ impl<U: ReplicaUpcalls> TcpTransport<U> {
                 tls_acceptor: None,
                 #[cfg(feature = "tls")]
                 tls_connector: None,
+                #[cfg(feature = "tls")]
+                tls_server_name: None,
             }),
         }
     }
@@ -92,6 +97,10 @@ impl<U: ReplicaUpcalls> TcpTransport<U> {
             Some(acceptor.swap_target().clone()),
             Some(connector.swap_target().clone()),
         );
+        let tls_server_name = tls_config.server_name.as_ref().map(|name| {
+            rustls::pki_types::ServerName::try_from(name.clone())
+                .unwrap_or_else(|e| panic!("invalid TLS server name '{name}': {e}"))
+        });
         Ok(Self {
             address,
             inner: Arc::new(TransportInner {
@@ -104,6 +113,7 @@ impl<U: ReplicaUpcalls> TcpTransport<U> {
                 persist_dir,
                 tls_acceptor: Some(acceptor),
                 tls_connector: Some(connector),
+                tls_server_name,
             }),
         })
     }

@@ -21,6 +21,12 @@ pub struct TlsConfig {
     pub cert_path: PathBuf,
     pub key_path: PathBuf,
     pub ca_path: PathBuf,
+    /// Optional DNS name to use for TLS server name verification on outbound
+    /// connections. When set, the transport uses this name instead of the peer's
+    /// IP address for certificate hostname checking. Required in Kubernetes where
+    /// certificates have DNS SANs (e.g. `*.svc.cluster.local`) but peers are
+    /// connected by IP.
+    pub server_name: Option<String>,
 }
 
 /// Server-side TLS acceptor with hot-reloadable certificates.
@@ -260,6 +266,7 @@ mod tests {
             cert_path,
             key_path,
             ca_path,
+            server_name: None,
         };
         let _server_config = build_server_config(&config).unwrap();
     }
@@ -273,6 +280,7 @@ mod tests {
             cert_path,
             key_path,
             ca_path,
+            server_name: None,
         };
         let _client_config = build_client_config(&config).unwrap();
     }
@@ -286,6 +294,7 @@ mod tests {
             cert_path,
             key_path,
             ca_path,
+            server_name: None,
         };
         let acceptor = ReloadableTlsAcceptor::new(&config).unwrap();
         let _tls_acceptor = acceptor.acceptor();

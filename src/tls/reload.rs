@@ -129,6 +129,7 @@ mod tests {
             cert_path,
             key_path,
             ca_path,
+            server_name: None,
         }
     }
 
@@ -146,6 +147,7 @@ mod tests {
             cert_path: "/nonexistent/tls.crt".into(),
             key_path: "/nonexistent/tls.key".into(),
             ca_path: "/nonexistent/ca.crt".into(),
+            server_name: None,
         };
         assert!(get_max_mtime(&config).is_none());
     }
