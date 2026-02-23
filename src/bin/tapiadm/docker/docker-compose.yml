@@ -16,7 +16,7 @@ services:
       - ./discovery1.toml:/etc/tapi/discovery.toml:ro
       - discovery1-data:/data
     healthcheck:
-      test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/127.0.0.1/6000' 2>/dev/null || exit 1"]
+      test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/127.0.0.1/9000' 2>/dev/null || exit 1"]
       interval: 2s
       timeout: 3s
       retries: 15
@@ -32,7 +32,7 @@ services:
       - ./discovery2.toml:/etc/tapi/discovery.toml:ro
       - discovery2-data:/data
     healthcheck:
-      test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/127.0.0.1/6000' 2>/dev/null || exit 1"]
+      test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/127.0.0.1/9000' 2>/dev/null || exit 1"]
       interval: 2s
       timeout: 3s
       retries: 15
@@ -48,7 +48,7 @@ services:
       - ./discovery3.toml:/etc/tapi/discovery.toml:ro
       - discovery3-data:/data
     healthcheck:
-      test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/127.0.0.1/6000' 2>/dev/null || exit 1"]
+      test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/127.0.0.1/9000' 2>/dev/null || exit 1"]
       interval: 2s
       timeout: 3s
       retries: 15
