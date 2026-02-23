@@ -29,12 +29,12 @@ async fn reload_loop(
     client: Option<Arc<ArcSwap<ClientConfig>>>,
     interval: Duration,
 ) {
-    let mut last_mtime = get_max_mtime(&config);
+    let mut last_mtime = get_max_mtime(&config).await;
 
     loop {
         tokio::time::sleep(interval).await;
 
-        let current_mtime = get_max_mtime(&config);
+        let current_mtime = get_max_mtime(&config).await;
         if current_mtime <= last_mtime {
             continue;
         }
@@ -42,8 +42,15 @@ async fn reload_loop(
         debug!("TLS certificate files changed, reloading");
         last_mtime = current_mtime;
 
+        // Cert loading uses std::fs::File + rustls_pemfile (sync I/O).
+        // Offload to the blocking thread pool to avoid stalling the
+        // tokio worker thread.
         if let Some(ref server_swap) = server {
-            match build_server_config(&config) {
+            let cfg = config.clone();
+            match tokio::task::spawn_blocking(move || build_server_config(&cfg))
+                .await
+                .expect("spawn_blocking panicked")
+            {
                 Ok(new_config) => {
                     server_swap.store(Arc::new(new_config));
                     debug!("TLS server config reloaded");
@@ -55,7 +62,11 @@ async fn reload_loop(
         }
 
         if let Some(ref client_swap) = client {
-            match build_client_config(&config) {
+            let cfg = config.clone();
+            match tokio::task::spawn_blocking(move || build_client_config(&cfg))
+                .await
+                .expect("spawn_blocking panicked")
+            {
                 Ok(new_config) => {
                     client_swap.store(Arc::new(new_config));
                     debug!("TLS client config reloaded");
@@ -70,11 +81,11 @@ async fn reload_loop(
 
 /// Get the maximum modification time across all three cert files.
 /// Returns `None` if any file can't be stat'd.
-fn get_max_mtime(config: &TlsConfig) -> Option<SystemTime> {
+async fn get_max_mtime(config: &TlsConfig) -> Option<SystemTime> {
     let paths = [&config.cert_path, &config.key_path, &config.ca_path];
     let mut max = None;
     for path in &paths {
-        match std::fs::metadata(path).and_then(|m| m.modified()) {
+        match tokio::fs::metadata(path).await.and_then(|m| m.modified()) {
             Ok(mtime) => {
                 max = Some(match max {
                     Some(current) if mtime > current => mtime,
@@ -133,23 +144,23 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_get_max_mtime() {
+    #[tokio::test]
+    async fn test_get_max_mtime() {
         let dir = tempfile::tempdir().unwrap();
         let config = generate_test_certs(dir.path());
-        let mtime = get_max_mtime(&config);
+        let mtime = get_max_mtime(&config).await;
         assert!(mtime.is_some());
     }
 
-    #[test]
-    fn test_get_max_mtime_missing_file() {
+    #[tokio::test]
+    async fn test_get_max_mtime_missing_file() {
         let config = TlsConfig {
             cert_path: "/nonexistent/tls.crt".into(),
             key_path: "/nonexistent/tls.key".into(),
             ca_path: "/nonexistent/ca.crt".into(),
             server_name: None,
         };
-        assert!(get_max_mtime(&config).is_none());
+        assert!(get_max_mtime(&config).await.is_none());
     }
 
     #[tokio::test]
