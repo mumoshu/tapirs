@@ -1,0 +1,35 @@
+name: Maelstrom
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  maelstrom:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.0
+      - name: Install Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install gnuplot
+        run: sudo apt-get install -y gnuplot-nox
+      - name: Cache maelstrom binary
+        uses: actions/cache@v4
+        with:
+          path: .maelstrom
+          key: maelstrom-0.2.4
+      - name: Run maelstrom lin-kv test
+        run: make maelstrom
