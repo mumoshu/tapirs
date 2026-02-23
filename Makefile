@@ -1,4 +1,4 @@
-.PHONY: test lint lock_server_stress_test coordinator_failure_stress_test_3 coordinator_failure_stress_test_7 bench fuzz fuzz100 maelstrom ci ci-full ci/operator-lint ci/operator-test ci/testbed-kubernetes-operator
+.PHONY: test lint lock_server_stress_test coordinator_failure_stress_test_3 coordinator_failure_stress_test_7 bench fuzz fuzz100 maelstrom ci ci-full ci/operator-lint ci/operator-test ci/testbed-kubernetes-operator ci/testbed-solo
 
 lint:
 	cargo clippy --workspace --all-targets -- -D warnings -D clippy::iter_over_hash_type && ./scripts/check-determinism.sh
@@ -66,3 +66,6 @@ ci/operator-test:
 ci/testbed-kubernetes-operator:
 	TAPIR_KIND=1 scripts/testbed-kube-operator.sh up
 	scripts/testbed-kube-operator.sh down
+
+ci/testbed-solo:
+	scripts/testbed-solo.sh up && scripts/testbed-solo.sh down || { scripts/testbed-solo.sh down; exit 1; }
