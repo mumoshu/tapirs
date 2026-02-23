@@ -256,58 +256,63 @@ var _ = Describe("Manager", Ordered, func() {
 		// +kubebuilder:scaffold:e2e-webhooks-checks
 	})
 
+	// clusterLifecycleAfterEach provides common cleanup for TAPIRCluster tests.
+	clusterLifecycleAfterEach := func(testNS, clusterName string) {
+		specReport := CurrentSpecReport()
+		if specReport.Failed() {
+			By("Fetching TAPIRCluster CR status")
+			cmd := exec.Command("kubectl", "get", "tapircluster", clusterName,
+				"-n", testNS, "-o", "yaml")
+			if output, err := utils.Run(cmd); err == nil {
+				_, _ = fmt.Fprintf(GinkgoWriter, "TAPIRCluster status:\n%s\n", output)
+			}
+
+			By("Fetching events from test namespace")
+			cmd = exec.Command("kubectl", "get", "events", "-n", testNS,
+				"--sort-by=.lastTimestamp")
+			if output, err := utils.Run(cmd); err == nil {
+				_, _ = fmt.Fprintf(GinkgoWriter, "Events in %s:\n%s\n", testNS, output)
+			}
+
+			By("Fetching pod status in test namespace")
+			cmd = exec.Command("kubectl", "get", "pods", "-n", testNS, "-o", "wide")
+			if output, err := utils.Run(cmd); err == nil {
+				_, _ = fmt.Fprintf(GinkgoWriter, "Pods in %s:\n%s\n", testNS, output)
+			}
+
+			By("Fetching sub-resource list")
+			for _, kind := range []string{"statefulset", "deployment", "service"} {
+				cmd = exec.Command("kubectl", "get", kind,
+					"-l", fmt.Sprintf("app.kubernetes.io/instance=%s", clusterName),
+					"-n", testNS)
+				if output, err := utils.Run(cmd); err == nil {
+					_, _ = fmt.Fprintf(GinkgoWriter, "%ss:\n%s\n", kind, output)
+				}
+			}
+		}
+
+		// Clean up: delete the TAPIRCluster CR
+		cmd := exec.Command("kubectl", "delete", "tapircluster", clusterName,
+			"-n", testNS, "--ignore-not-found", "--timeout=60s")
+		_, _ = utils.Run(cmd)
+
+		// Wait for sub-resources to be cleaned up
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "statefulset",
+				"-l", fmt.Sprintf("app.kubernetes.io/instance=%s", clusterName),
+				"-n", testNS, "-o", "name")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(strings.TrimSpace(output)).To(BeEmpty(), "StatefulSets should be cleaned up")
+		}, 2*time.Minute).Should(Succeed())
+	}
+
 	Context("TAPIRCluster lifecycle", func() {
 		const testNS = "default"
 		const clusterName = "test-cluster"
 
 		AfterEach(func() {
-			specReport := CurrentSpecReport()
-			if specReport.Failed() {
-				By("Fetching TAPIRCluster CR status")
-				cmd := exec.Command("kubectl", "get", "tapircluster", clusterName,
-					"-n", testNS, "-o", "yaml")
-				if output, err := utils.Run(cmd); err == nil {
-					_, _ = fmt.Fprintf(GinkgoWriter, "TAPIRCluster status:\n%s\n", output)
-				}
-
-				By("Fetching events from test namespace")
-				cmd = exec.Command("kubectl", "get", "events", "-n", testNS,
-					"--sort-by=.lastTimestamp")
-				if output, err := utils.Run(cmd); err == nil {
-					_, _ = fmt.Fprintf(GinkgoWriter, "Events in %s:\n%s\n", testNS, output)
-				}
-
-				By("Fetching pod status in test namespace")
-				cmd = exec.Command("kubectl", "get", "pods", "-n", testNS, "-o", "wide")
-				if output, err := utils.Run(cmd); err == nil {
-					_, _ = fmt.Fprintf(GinkgoWriter, "Pods in %s:\n%s\n", testNS, output)
-				}
-
-				By("Fetching sub-resource list")
-				for _, kind := range []string{"statefulset", "deployment", "service"} {
-					cmd = exec.Command("kubectl", "get", kind,
-						"-l", fmt.Sprintf("app.kubernetes.io/instance=%s", clusterName),
-						"-n", testNS)
-					if output, err := utils.Run(cmd); err == nil {
-						_, _ = fmt.Fprintf(GinkgoWriter, "%ss:\n%s\n", kind, output)
-					}
-				}
-			}
-
-			// Clean up: delete the TAPIRCluster CR
-			cmd := exec.Command("kubectl", "delete", "tapircluster", clusterName,
-				"-n", testNS, "--ignore-not-found", "--timeout=60s")
-			_, _ = utils.Run(cmd)
-
-			// Wait for sub-resources to be cleaned up
-			Eventually(func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "statefulset",
-					"-l", fmt.Sprintf("app.kubernetes.io/instance=%s", clusterName),
-					"-n", testNS, "-o", "name")
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(strings.TrimSpace(output)).To(BeEmpty(), "StatefulSets should be cleaned up")
-			}, 2*time.Minute).Should(Succeed())
+			clusterLifecycleAfterEach(testNS, clusterName)
 		})
 
 		It("should create sub-resources for a TAPIRCluster CR", func() {
@@ -374,6 +379,109 @@ var _ = Describe("Manager", Ordered, func() {
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("srv://"))
+			}).Should(Succeed())
+		})
+	})
+
+	Context("TAPIRCluster TLS lifecycle", func() {
+		const testNS = "default"
+		const tlsClusterName = "test-cluster"
+
+		BeforeEach(func() {
+			By("creating self-signed ClusterIssuer for TLS tests")
+			cmd := exec.Command("kubectl", "apply", "-f",
+				filepath.Join("test", "e2e", "setup", "selfsigned-issuer.yaml"))
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create self-signed ClusterIssuer")
+		})
+
+		AfterEach(func() {
+			clusterLifecycleAfterEach(testNS, tlsClusterName)
+
+			// Clean up ClusterIssuer
+			cmd := exec.Command("kubectl", "delete", "clusterissuer",
+				"tapir-selfsigned-issuer", "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		})
+
+		It("should create cert-manager Certificates and TLS secrets for a TLS-enabled cluster", func() {
+			By("applying the TLS-enabled TAPIRCluster CR")
+			cmd := exec.Command("kubectl", "apply", "-f",
+				filepath.Join("test", "e2e", "testdata", "tapircluster-tls.yaml"),
+				"-n", testNS)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply TLS TAPIRCluster CR")
+
+			By("verifying cert-manager Certificate for discovery is created and ready")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "certificate",
+					tlsClusterName+"-discovery-tls", "-n", testNS,
+					"-o", "jsonpath={.status.conditions[?(@.type=='Ready')].status}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("True"), "Discovery certificate not ready")
+			}, 2*time.Minute).Should(Succeed())
+
+			By("verifying cert-manager Certificate for shard-manager is created and ready")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "certificate",
+					tlsClusterName+"-shard-manager-tls", "-n", testNS,
+					"-o", "jsonpath={.status.conditions[?(@.type=='Ready')].status}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("True"), "Shard-manager certificate not ready")
+			}, 2*time.Minute).Should(Succeed())
+
+			By("verifying cert-manager Certificate for node pool is created and ready")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "certificate",
+					tlsClusterName+"-default-tls", "-n", testNS,
+					"-o", "jsonpath={.status.conditions[?(@.type=='Ready')].status}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("True"), "Node pool certificate not ready")
+			}, 2*time.Minute).Should(Succeed())
+
+			By("verifying cert-manager Certificate for operator client is created and ready")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "certificate",
+					tlsClusterName+"-operator-client-tls", "-n", testNS,
+					"-o", "jsonpath={.status.conditions[?(@.type=='Ready')].status}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("True"), "Operator client certificate not ready")
+			}, 2*time.Minute).Should(Succeed())
+
+			By("verifying TLS secrets are created")
+			for _, suffix := range []string{"discovery-tls", "shard-manager-tls", "default-tls", "operator-client-tls"} {
+				secretName := tlsClusterName + "-" + suffix
+				cmd := exec.Command("kubectl", "get", "secret", secretName,
+					"-n", testNS, "-o", "jsonpath={.type}")
+				output, err := utils.Run(cmd)
+				Expect(err).NotTo(HaveOccurred(), "Secret %s should exist", secretName)
+				Expect(output).To(Equal("kubernetes.io/tls"), "Secret %s should be type kubernetes.io/tls", secretName)
+			}
+
+			By("verifying discovery StatefulSet has TLS volume and args")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "statefulset",
+					tlsClusterName+"-discovery", "-n", testNS,
+					"-o", "jsonpath={.spec.template.spec.containers[0].args}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("--tls-cert=/tls/tls.crt"))
+				g.Expect(output).To(ContainSubstring("--tls-key=/tls/tls.key"))
+				g.Expect(output).To(ContainSubstring("--tls-ca=/tls/ca.crt"))
+			}).Should(Succeed())
+
+			By("verifying shard-manager URL uses https://")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "tapircluster", tlsClusterName,
+					"-n", testNS,
+					"-o", "jsonpath={.status.shardManagerURL}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(HavePrefix("https://"))
 			}).Should(Succeed())
 		})
 	})

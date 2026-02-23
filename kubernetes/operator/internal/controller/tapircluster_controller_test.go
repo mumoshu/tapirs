@@ -16,6 +16,167 @@ import (
 	tapirv1alpha1 "github.com/mumoshu/tapirs/kubernetes/operator/api/v1alpha1"
 )
 
+var _ = Describe("TAPIRCluster TLS resource generation", func() {
+	tlsCluster := &tapirv1alpha1.TAPIRCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "tls-test",
+			Namespace: "default",
+		},
+		Spec: tapirv1alpha1.TAPIRClusterSpec{
+			Image: "tapir:latest",
+			Discovery: tapirv1alpha1.DiscoverySpec{
+				Replicas: 3,
+			},
+			NodePools: []tapirv1alpha1.NodePool{
+				{Name: "default", Replicas: 3},
+			},
+			Shards: []tapirv1alpha1.ShardSpec{
+				{Number: 0, Replicas: 3, KeyRangeEnd: "n"},
+				{Number: 1, Replicas: 3, KeyRangeStart: "n"},
+			},
+			TLS: &tapirv1alpha1.TLSSpec{
+				Enabled: true,
+				IssuerRef: &tapirv1alpha1.IssuerRef{
+					Name: "test-issuer",
+					Kind: "ClusterIssuer",
+				},
+			},
+		},
+	}
+
+	It("should inject TLS volume and args into discovery StatefulSet", func() {
+		sts := desiredDiscoveryStatefulSet(tlsCluster)
+		container := sts.Spec.Template.Spec.Containers[0]
+		volumes := sts.Spec.Template.Spec.Volumes
+
+		By("verifying TLS volume exists")
+		var foundTLSVolume bool
+		for _, v := range volumes {
+			if v.Name == "tls" && v.Secret != nil {
+				Expect(v.Secret.SecretName).To(Equal("tls-test-discovery-tls"))
+				foundTLSVolume = true
+			}
+		}
+		Expect(foundTLSVolume).To(BeTrue(), "TLS volume not found")
+
+		By("verifying TLS volume mount exists")
+		var foundTLSMount bool
+		for _, m := range container.VolumeMounts {
+			if m.Name == "tls" && m.MountPath == "/tls" {
+				Expect(m.ReadOnly).To(BeTrue())
+				foundTLSMount = true
+			}
+		}
+		Expect(foundTLSMount).To(BeTrue(), "TLS volume mount not found")
+
+		By("verifying TLS CLI flags in container args")
+		Expect(container.Args).To(ContainElement("--tls-cert=/tls/tls.crt"))
+		Expect(container.Args).To(ContainElement("--tls-key=/tls/tls.key"))
+		Expect(container.Args).To(ContainElement("--tls-ca=/tls/ca.crt"))
+	})
+
+	It("should inject TLS volume and args into shard-manager Deployment", func() {
+		deploy := desiredShardManagerDeployment(tlsCluster)
+		container := deploy.Spec.Template.Spec.Containers[0]
+		volumes := deploy.Spec.Template.Spec.Volumes
+
+		By("verifying TLS volume exists")
+		var foundTLSVolume bool
+		for _, v := range volumes {
+			if v.Name == "tls" && v.Secret != nil {
+				Expect(v.Secret.SecretName).To(Equal("tls-test-shard-manager-tls"))
+				foundTLSVolume = true
+			}
+		}
+		Expect(foundTLSVolume).To(BeTrue(), "TLS volume not found")
+
+		By("verifying TLS CLI flags in container args")
+		Expect(container.Args).To(ContainElement("--tls-cert=/tls/tls.crt"))
+		Expect(container.Args).To(ContainElement("--tls-key=/tls/tls.key"))
+		Expect(container.Args).To(ContainElement("--tls-ca=/tls/ca.crt"))
+	})
+
+	It("should inject TLS volume and args into node pool StatefulSet", func() {
+		pool := tapirv1alpha1.NodePool{Name: "default", Replicas: 3}
+		sts := desiredNodePoolStatefulSet(tlsCluster, pool)
+		container := sts.Spec.Template.Spec.Containers[0]
+		volumes := sts.Spec.Template.Spec.Volumes
+
+		By("verifying TLS volume exists")
+		var foundTLSVolume bool
+		for _, v := range volumes {
+			if v.Name == "tls" && v.Secret != nil {
+				Expect(v.Secret.SecretName).To(Equal("tls-test-default-tls"))
+				foundTLSVolume = true
+			}
+		}
+		Expect(foundTLSVolume).To(BeTrue(), "TLS volume not found")
+
+		By("verifying TLS CLI flags in container args")
+		Expect(container.Args).To(ContainElement("--tls-cert=/tls/tls.crt"))
+		Expect(container.Args).To(ContainElement("--tls-key=/tls/tls.key"))
+		Expect(container.Args).To(ContainElement("--tls-ca=/tls/ca.crt"))
+	})
+
+	It("should use https:// for shard-manager URL when TLS is enabled", func() {
+		url := shardManagerURLForCluster(tlsCluster)
+		Expect(url).To(HavePrefix("https://"))
+		Expect(url).To(ContainSubstring("tls-test-shard-manager"))
+	})
+
+	It("should use http:// for shard-manager URL when TLS is disabled", func() {
+		plainCluster := &tapirv1alpha1.TAPIRCluster{
+			ObjectMeta: metav1.ObjectMeta{Name: "plain", Namespace: "default"},
+			Spec:       tapirv1alpha1.TAPIRClusterSpec{Image: "tapir:latest"},
+		}
+		url := shardManagerURLForCluster(plainCluster)
+		Expect(url).To(HavePrefix("http://"))
+	})
+
+	It("should not inject TLS when disabled", func() {
+		plainCluster := &tapirv1alpha1.TAPIRCluster{
+			ObjectMeta: metav1.ObjectMeta{Name: "plain", Namespace: "default"},
+			Spec: tapirv1alpha1.TAPIRClusterSpec{
+				Image:     "tapir:latest",
+				Discovery: tapirv1alpha1.DiscoverySpec{Replicas: 3},
+			},
+		}
+		sts := desiredDiscoveryStatefulSet(plainCluster)
+		container := sts.Spec.Template.Spec.Containers[0]
+
+		for _, v := range sts.Spec.Template.Spec.Volumes {
+			Expect(v.Name).NotTo(Equal("tls"), "TLS volume should not exist")
+		}
+		for _, m := range container.VolumeMounts {
+			Expect(m.Name).NotTo(Equal("tls"), "TLS mount should not exist")
+		}
+		for _, arg := range container.Args {
+			Expect(arg).NotTo(ContainSubstring("--tls-"), "TLS args should not exist")
+		}
+	})
+
+	It("should build correct cert-manager Certificate for discovery", func() {
+		cert := desiredCertificate(tlsCluster, "discovery", []string{
+			"*.tls-test-discovery.default.svc.cluster.local",
+			"tls-test-discovery.default.svc.cluster.local",
+		})
+		Expect(cert.GetKind()).To(Equal("Certificate"))
+		Expect(cert.GetAPIVersion()).To(Equal("cert-manager.io/v1"))
+		Expect(cert.GetName()).To(Equal("tls-test-discovery-tls"))
+
+		spec := cert.Object["spec"].(map[string]interface{})
+		Expect(spec["secretName"]).To(Equal("tls-test-discovery-tls"))
+
+		issuerRef := spec["issuerRef"].(map[string]interface{})
+		Expect(issuerRef["name"]).To(Equal("test-issuer"))
+		Expect(issuerRef["kind"]).To(Equal("ClusterIssuer"))
+
+		dnsNames := spec["dnsNames"].([]string)
+		Expect(dnsNames).To(HaveLen(2))
+		Expect(dnsNames[0]).To(Equal("*.tls-test-discovery.default.svc.cluster.local"))
+	})
+})
+
 var _ = Describe("TAPIRCluster Controller", func() {
 	Context("When reconciling a resource", func() {
 		const resourceName = "test-resource"
