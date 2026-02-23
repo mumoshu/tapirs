@@ -1,0 +1,34 @@
+name: Operator Lint
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'kubernetes/operator/**'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'kubernetes/operator/**'
+
+defaults:
+  run:
+    working-directory: kubernetes/operator
+
+jobs:
+  lint:
+    name: Run on Ubuntu
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: kubernetes/operator/go.mod
+
+      - name: Run linter
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.8.0
+          working-directory: kubernetes/operator

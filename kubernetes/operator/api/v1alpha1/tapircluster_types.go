@@ -1,0 +1,220 @@
+package v1alpha1
+
+import (
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+// ClusterPhase represents the lifecycle phase of a TAPIRCluster.
+// +kubebuilder:validation:Enum=Pending;CreatingDiscovery;BootstrappingDiscovery;CreatingDataPlane;BootstrappingReplicas;RegisteringShards;Running;Updating;Failed
+type ClusterPhase string
+
+const (
+	PhasePending                ClusterPhase = "Pending"
+	PhaseCreatingDiscovery      ClusterPhase = "CreatingDiscovery"
+	PhaseBootstrappingDiscovery ClusterPhase = "BootstrappingDiscovery"
+	PhaseCreatingDataPlane      ClusterPhase = "CreatingDataPlane"
+	PhaseBootstrappingReplicas  ClusterPhase = "BootstrappingReplicas"
+	PhaseRegisteringShards      ClusterPhase = "RegisteringShards"
+	PhaseRunning                ClusterPhase = "Running"
+	PhaseUpdating               ClusterPhase = "Updating"
+	PhaseFailed                 ClusterPhase = "Failed"
+)
+
+// TAPIRClusterSpec defines the desired state of a TAPIRCluster.
+type TAPIRClusterSpec struct {
+	// image is the container image for all tapirs components.
+	// +required
+	Image string `json:"image"`
+
+	// discovery configures the TAPIR discovery store tier.
+	// +required
+	Discovery DiscoverySpec `json:"discovery"`
+
+	// nodePools defines the data-node StatefulSets. Each pool maps to a
+	// separate StatefulSet named {cluster}-{pool.name}.
+	// +required
+	// +kubebuilder:validation:MinItems=1
+	NodePools []NodePool `json:"nodePools"`
+
+	// shards defines the shard layout. Key ranges must cover the full
+	// keyspace without gaps or overlaps.
+	// +required
+	// +kubebuilder:validation:MinItems=1
+	Shards []ShardSpec `json:"shards"`
+}
+
+// DiscoverySpec configures the discovery store tier (a self-contained TAPIR
+// cluster that stores shard topology metadata).
+type DiscoverySpec struct {
+	// replicas is the number of discovery pods.
+	// +kubebuilder:default=3
+	// +kubebuilder:validation:Minimum=1
+	Replicas int32 `json:"replicas"`
+
+	// resources defines CPU/memory requests and limits for discovery pods.
+	// +optional
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+}
+
+// NodePool defines a group of data-node pods backed by a StatefulSet.
+type NodePool struct {
+	// name is a unique identifier for this pool. The resulting StatefulSet
+	// is named {cluster}-{name}.
+	// +required
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`
+	Name string `json:"name"`
+
+	// replicas is the number of pods in this pool.
+	// +kubebuilder:validation:Minimum=0
+	Replicas int32 `json:"replicas"`
+
+	// resources defines CPU/memory requests and limits for pods in this pool.
+	// +optional
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+}
+
+// ShardSpec defines a single shard's configuration.
+type ShardSpec struct {
+	// number is the shard identifier.
+	// +required
+	// +kubebuilder:validation:Minimum=0
+	Number int32 `json:"number"`
+
+	// replicas is the number of TAPIR replicas for this shard. Must be <=
+	// total pods across all node pools.
+	// +required
+	// +kubebuilder:validation:Minimum=1
+	Replicas int32 `json:"replicas"`
+
+	// keyRangeStart is the inclusive lower bound of this shard's key range.
+	// Empty means the minimum key.
+	// +optional
+	KeyRangeStart string `json:"keyRangeStart,omitempty"`
+
+	// keyRangeEnd is the exclusive upper bound of this shard's key range.
+	// Empty means the maximum key.
+	// +optional
+	KeyRangeEnd string `json:"keyRangeEnd,omitempty"`
+
+	// storage is the backend type: "memory" (default) or "disk".
+	// +kubebuilder:default=memory
+	// +kubebuilder:validation:Enum=memory;disk
+	// +optional
+	Storage string `json:"storage,omitempty"`
+}
+
+// TAPIRClusterStatus defines the observed state of a TAPIRCluster.
+type TAPIRClusterStatus struct {
+	// phase is the high-level lifecycle phase of the cluster.
+	// +optional
+	Phase ClusterPhase `json:"phase,omitempty"`
+
+	// discoveryEndpoint is the endpoint clients use to connect via
+	// --discovery-tapir-endpoint (e.g. srv://{name}-discovery.{ns}.svc.cluster.local:6000).
+	// +optional
+	DiscoveryEndpoint string `json:"discoveryEndpoint,omitempty"`
+
+	// shardManagerURL is the HTTP URL for the shard-manager service.
+	// +optional
+	ShardManagerURL string `json:"shardManagerURL,omitempty"`
+
+	// nodes lists the observed state of each data-node pod.
+	// +optional
+	Nodes []NodeStatus `json:"nodes,omitempty"`
+
+	// shards lists the observed state of each shard.
+	// +optional
+	Shards []ShardStatus `json:"shards,omitempty"`
+
+	// conditions represent the current state of the TAPIRCluster.
+	// +listType=map
+	// +listMapKey=type
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// NodeStatus is the observed state of a single data-node pod.
+type NodeStatus struct {
+	// name is the pod name (e.g. "mycluster-default-0").
+	Name string `json:"name"`
+
+	// podIP is the pod's IP address.
+	// +optional
+	PodIP string `json:"podIP,omitempty"`
+
+	// ready indicates whether the pod is ready.
+	Ready bool `json:"ready"`
+
+	// adminAddr is the admin TCP endpoint (podIP:9000).
+	// +optional
+	AdminAddr string `json:"adminAddr,omitempty"`
+
+	// shards lists the TAPIR shard replicas hosted on this node.
+	// +optional
+	Shards []NodeShardStatus `json:"shards,omitempty"`
+}
+
+// NodeShardStatus describes a shard replica hosted on a node.
+type NodeShardStatus struct {
+	// number is the shard identifier.
+	Number int32 `json:"number"`
+
+	// listenAddr is the TAPIR protocol address (podIP:6000+shard).
+	// +optional
+	ListenAddr string `json:"listenAddr,omitempty"`
+
+	// storage is the backend type ("memory" or "disk").
+	// +optional
+	Storage string `json:"storage,omitempty"`
+}
+
+// ShardStatus is the observed state of a single shard.
+type ShardStatus struct {
+	// number is the shard identifier.
+	Number int32 `json:"number"`
+
+	// readyReplicas is the number of healthy replicas for this shard.
+	ReadyReplicas int32 `json:"readyReplicas"`
+
+	// replicas lists the current membership addresses.
+	// +optional
+	Replicas []string `json:"replicas,omitempty"`
+
+	// registered indicates whether the shard's key range has been registered
+	// with the shard-manager.
+	Registered bool `json:"registered"`
+}
+
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+// +kubebuilder:printcolumn:name="Discovery",type=string,JSONPath=`.status.discoveryEndpoint`,priority=1
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+
+// TAPIRCluster is the Schema for the tapirclusters API.
+type TAPIRCluster struct {
+	metav1.TypeMeta `json:",inline"`
+
+	// +optional
+	metav1.ObjectMeta `json:"metadata,omitzero"`
+
+	// +required
+	Spec TAPIRClusterSpec `json:"spec"`
+
+	// +optional
+	Status TAPIRClusterStatus `json:"status,omitzero"`
+}
+
+// +kubebuilder:object:root=true
+
+// TAPIRClusterList contains a list of TAPIRCluster.
+type TAPIRClusterList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitzero"`
+	Items           []TAPIRCluster `json:"items"`
+}
+
+func init() {
+	SchemeBuilder.Register(&TAPIRCluster{}, &TAPIRClusterList{})
+}
