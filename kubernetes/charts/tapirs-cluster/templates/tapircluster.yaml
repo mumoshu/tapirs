@@ -32,3 +32,10 @@ spec:
       storage: {{ .storage }}
       {{- end }}
     {{- end }}
+  {{- if .Values.tls.enabled }}
+  tls:
+    enabled: true
+    issuerRef:
+      name: {{ .Values.tls.issuerRef.name }}
+      kind: {{ .Values.tls.issuerRef.kind }}
+  {{- end }}

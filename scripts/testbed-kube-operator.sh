@@ -20,6 +20,7 @@
 #   TAPIR_OPERATOR_IMAGE=tapirs-operator:latest  Operator image
 #   TAPIR_BUILD_IMAGES=1                  Build Docker images (set 0 to skip)
 #   TAPIR_CLUSTER_NAME=tapir              TAPIRCluster resource name
+#   TAPIR_TLS=0                           Enable mTLS via cert-manager
 #
 set -euo pipefail
 
@@ -35,6 +36,7 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 : "${TAPIR_OPERATOR_IMAGE:=tapirs-operator:latest}"
 : "${TAPIR_BUILD_IMAGES:=1}"
 : "${TAPIR_CLUSTER_NAME:=tapir}"
+: "${TAPIR_TLS:=0}"
 
 DISCOVERY_TAPIR_PORT=6000
 ADMIN_PORT=9000
@@ -108,6 +110,51 @@ kind_delete() {
 }
 
 # ---------------------------------------------------------------------------
+# cert-manager (for TLS mode)
+# ---------------------------------------------------------------------------
+CERT_MANAGER_VERSION="v1.19.3"
+CERT_MANAGER_URL="https://github.com/cert-manager/cert-manager/releases/download/${CERT_MANAGER_VERSION}/cert-manager.yaml"
+CERT_MANAGER_ISSUER="tapir-selfsigned-issuer"
+
+install_cert_manager() {
+    if [[ "${TAPIR_TLS}" != "1" ]]; then return; fi
+
+    step "Installing cert-manager ${CERT_MANAGER_VERSION}..."
+
+    # Check if already installed.
+    if kubectl get crd certificates.cert-manager.io &>/dev/null; then
+        info "cert-manager CRDs already present."
+    else
+        run_cmd kubectl apply -f "${CERT_MANAGER_URL}"
+    fi
+
+    info "Waiting for cert-manager webhook to be ready..."
+    run_cmd kubectl wait deployment.apps/cert-manager-webhook \
+        --for=condition=Available --namespace=cert-manager --timeout=5m
+    ok "cert-manager is ready."
+
+    step "Creating self-signed ClusterIssuer '${CERT_MANAGER_ISSUER}'..."
+    kubectl apply -f - <<EOF
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: ${CERT_MANAGER_ISSUER}
+spec:
+  selfSigned: {}
+EOF
+    ok "ClusterIssuer created."
+}
+
+uninstall_cert_manager() {
+    if [[ "${TAPIR_TLS}" != "1" ]]; then return; fi
+
+    step "Cleaning up cert-manager resources..."
+    kubectl delete clusterissuer "${CERT_MANAGER_ISSUER}" --ignore-not-found 2>/dev/null || true
+    kubectl delete -f "${CERT_MANAGER_URL}" --ignore-not-found 2>/dev/null || true
+    ok "cert-manager cleaned up."
+}
+
+# ---------------------------------------------------------------------------
 # Docker image build and load
 # ---------------------------------------------------------------------------
 build_and_load_images() {
@@ -158,12 +205,24 @@ install_operator() {
 
 install_cluster() {
     step "Installing tapirs-cluster Helm chart..."
+
+    local tls_flags=()
+    if [[ "${TAPIR_TLS}" == "1" ]]; then
+        tls_flags=(
+            --set "tls.enabled=true"
+            --set "tls.issuerRef.name=${CERT_MANAGER_ISSUER}"
+            --set "tls.issuerRef.kind=ClusterIssuer"
+        )
+        info "TLS mode enabled — using issuer '${CERT_MANAGER_ISSUER}'."
+    fi
+
     run_cmd helm upgrade --install tapirs-cluster \
         "${PROJECT_ROOT}/kubernetes/charts/tapirs-cluster" \
         --namespace "${NS}" \
         --create-namespace \
         --set "name=${TAPIR_CLUSTER_NAME}" \
         --set "image=${TAPIR_IMAGE}" \
+        "${tls_flags[@]}" \
         --wait --timeout 30s
     ok "Cluster chart installed."
 }
@@ -237,20 +296,48 @@ smoke_test() {
     # Delete stale smoke test pods from failed previous runs.
     kube delete pod tapir-smoke-write tapir-smoke-read 2>/dev/null || true
 
+    # Build TLS flags and pod overrides for mounting cert secret.
+    local tls_args=()
+    local write_overrides=()
+    local read_overrides=()
+    if [[ "${TAPIR_TLS}" == "1" ]]; then
+        local tls_secret="${TAPIR_CLUSTER_NAME}-operator-client-tls"
+        tls_args=(--tls-cert /tls/tls.crt --tls-key /tls/tls.key --tls-ca /tls/ca.crt)
+
+        # Wait for the operator-client TLS secret to exist.
+        info "Waiting for TLS secret '${tls_secret}' to be created by cert-manager..."
+        if ! kubectl wait --for=jsonpath='{.type}'=kubernetes.io/tls \
+            secret/"${tls_secret}" -n "${NS}" --timeout=120s 2>/dev/null; then
+            warn "TLS secret not ready. Skipping smoke test."
+            return
+        fi
+
+        # Strategic merge patch: add TLS volume + volumeMount to the generated pod.
+        # Container name must match the pod name (kubectl run default).
+        local vol_json="{\"name\":\"tls\",\"secret\":{\"secretName\":\"${tls_secret}\"}}"
+        local mount_json="{\"name\":\"tls\",\"mountPath\":\"/tls\",\"readOnly\":true}"
+        write_overrides=(--overrides "{\"spec\":{\"containers\":[{\"name\":\"tapir-smoke-write\",\"volumeMounts\":[${mount_json}]}],\"volumes\":[${vol_json}]}}")
+        read_overrides=(--overrides "{\"spec\":{\"containers\":[{\"name\":\"tapir-smoke-read\",\"volumeMounts\":[${mount_json}]}],\"volumes\":[${vol_json}]}}")
+    fi
+
     info "Writing key 'hello' with value 'world'..."
     kube run tapir-smoke-write --rm -i --restart=Never \
-        --image="${TAPIR_IMAGE}" --image-pull-policy=IfNotPresent -- \
+        --image="${TAPIR_IMAGE}" --image-pull-policy=IfNotPresent \
+        "${write_overrides[@]}" -- \
         client \
             --discovery-tapir-endpoint "${disc_endpoint}" \
+            "${tls_args[@]}" \
             -e "begin; put hello world; commit" \
         2>/dev/null || true
 
     info "Reading key 'hello' back..."
     local output
     output=$(kube run tapir-smoke-read --rm -i --restart=Never \
-        --image="${TAPIR_IMAGE}" --image-pull-policy=IfNotPresent -- \
+        --image="${TAPIR_IMAGE}" --image-pull-policy=IfNotPresent \
+        "${read_overrides[@]}" -- \
         client \
             --discovery-tapir-endpoint "${disc_endpoint}" \
+            "${tls_args[@]}" \
             -e "begin ro; get hello; abort" \
         2>/dev/null) || true
 
@@ -384,6 +471,7 @@ cmd_status() {
 # ---------------------------------------------------------------------------
 cmd_up() {
     kind_create
+    install_cert_manager
     build_and_load_images
 
     # Phase 1: Install operator
@@ -433,6 +521,7 @@ cmd_down() {
         run_cmd kubectl delete namespace "${OP_NS}" --wait=true 2>/dev/null || true
     fi
 
+    uninstall_cert_manager
     kind_delete
     ok "Testbed removed."
 }
@@ -455,6 +544,7 @@ usage() {
     printf "  TAPIR_OPERATOR_IMAGE              Operator image (default: tapirs-operator:latest)\n"
     printf "  TAPIR_BUILD_IMAGES                Build images (default: 1, set 0 to skip)\n"
     printf "  TAPIR_CLUSTER_NAME                TAPIRCluster name (default: tapir)\n"
+    printf "  TAPIR_TLS=1                       Enable mTLS via cert-manager\n"
     exit 1
 }
 

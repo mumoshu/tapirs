@@ -17,3 +17,10 @@ shards:
   - number: 1
     replicas: 3
     keyRangeStart: "n"
+
+# tls configures mutual TLS for all cluster communication via cert-manager.
+tls:
+  enabled: false
+  issuerRef:
+    name: ""
+    kind: ClusterIssuer
