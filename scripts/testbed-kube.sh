@@ -223,16 +223,15 @@ kind_delete() {
 # Docker image build and load
 # ---------------------------------------------------------------------------
 build_and_load_image() {
-    if [[ "${TAPIR_BUILD_IMAGE}" != "1" ]]; then
+    if [[ "${TAPIR_BUILD_IMAGE}" == "1" ]]; then
+        step "Building Docker image '${TAPIR_IMAGE}'..."
+        run_cmd docker build -t "${TAPIR_IMAGE}" \
+            -f "${PROJECT_ROOT}/src/bin/tapiadm/docker/Dockerfile" \
+            "${PROJECT_ROOT}"
+        ok "Docker image built."
+    else
         info "Skipping image build (TAPIR_BUILD_IMAGE=0)."
-        return
     fi
-
-    step "Building Docker image '${TAPIR_IMAGE}'..."
-    run_cmd docker build -t "${TAPIR_IMAGE}" \
-        -f "${PROJECT_ROOT}/src/bin/tapiadm/docker/Dockerfile" \
-        "${PROJECT_ROOT}"
-    ok "Docker image built."
 
     if [[ "${TAPIR_KIND}" == "1" ]]; then
         step "Loading image into Kind cluster..."
