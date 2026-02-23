@@ -1,7 +1,7 @@
 .PHONY: test lock_server_stress_test coordinator_failure_stress_test_3 coordinator_failure_stress_test_7 bench fuzz fuzz100 maelstrom ci/testbed-kubernetes-operator
 
 test:
-	cargo clippy -- -D clippy::disallowed_methods && timeout -k 10s 120s cargo test --release
+	cargo clippy --workspace -- -D clippy::disallowed_methods && timeout -k 10s 120s cargo test --workspace --release
 
 lock_server_stress_test:
 	timeout -k 10s 600s cargo test --release -- lock_server_loop --nocapture --include-ignored
@@ -22,7 +22,7 @@ fuzz100:
 	FUZZ_ITERATIONS=100 FUZZ_PARALLEL=4 ./scripts/fuzz-multi-seed.sh
 
 maelstrom:
-	cargo build --release --features maelstrom --bin maelstrom
+	cargo build --release -p tapi-maelstrom
 	maelstrom test -w lin-kv --bin target/release/maelstrom --latency 0 --rate 10 --time-limit 90 --concurrency 20 --nemesis partition --nemesis-interval 20
 
 ci/testbed-kubernetes-operator:
