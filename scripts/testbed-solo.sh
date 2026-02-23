@@ -50,6 +50,16 @@ separator() {
     printf "\n${DIM}%s${RESET}\n" "────────────────────────────────────────────────────────────"
 }
 
+# Run a one-shot client transaction against the solo cluster.
+run_client() {
+    run_cmd "${TAPI}" client --config "${WORK_DIR}/client.toml" -e "$1"
+}
+
+# Run a client transaction and capture stdout+stderr for verification.
+run_client_capture() {
+    "${TAPI}" client --config "${WORK_DIR}/client.toml" -e "$1" 2>&1
+}
+
 # ---------------------------------------------------------------------------
 # Locate or build binaries
 # ---------------------------------------------------------------------------
@@ -219,6 +229,87 @@ smoke_test() {
 }
 
 # ---------------------------------------------------------------------------
+# Demo scenarios (matching testbed.sh where applicable)
+# ---------------------------------------------------------------------------
+demo_delete() {
+    step "Demo: Delete operation..."
+    info "Deleting key 'hello' (written by smoke test)..."
+    run_client "begin; delete hello; commit"
+
+    info "Verifying 'hello' is deleted (RO validated quorum read)..."
+    local output
+    output=$(run_client_capture "begin ro; get hello") || true
+    if echo "${output}" | grep -q "(not found)"; then
+        ok "Key 'hello' confirmed deleted."
+    else
+        warn "Expected '(not found)', got: ${output}"
+    fi
+    ok "Delete demo complete."
+}
+
+demo_seed_data() {
+    step "Seeding data for demo scenarios..."
+    info "Putting 6 keys: alice=100, bob=200, charlie=300, grapes=fruit, mango=tropical, orange=citrus"
+    run_client "begin; put alice 100; put bob 200; put charlie 300; put grapes fruit; put mango tropical; put orange citrus; commit"
+    ok "Data seeded (6 keys in shard 0)."
+}
+
+demo_multi_key_txns() {
+    step "Demo: Multi-key transactions..."
+    info "RO multi-key read (alice + orange)..."
+    run_client "begin ro; get alice; get orange"
+    info "RW multi-key write (fruit=apple, snack=pretzel)..."
+    run_client "begin; put fruit apple; put snack pretzel; commit"
+    ok "Multi-key transactions complete."
+}
+
+demo_range_scan() {
+    step "Demo: Range scan..."
+    info "Scanning all keys from 'a' to 'z' (RO validated quorum read)..."
+    run_client "begin ro; scan a z"
+    ok "Range scan complete."
+}
+
+demo_admin_status() {
+    step "Querying node1 admin status..."
+    run_cmd "${TAPI}" admin status --admin-listen-addr "127.0.0.1:${ADMIN_PORTS[0]}"
+}
+
+demo_view_change() {
+    step "Demo: Triggering a view change on shard 0..."
+    info "View changes synchronize the IR consensus record across replicas."
+    run_cmd "${TAPI}" admin view-change \
+        --admin-listen-addr "127.0.0.1:${ADMIN_PORTS[0]}" --shard 0
+    info "Waiting for view change to settle (3s)..."
+    sleep 3
+    info "Verifying data is still accessible after view change..."
+    run_client "begin ro; get alice"
+    ok "View change complete. Data intact."
+}
+
+demo_backup() {
+    step "Demo: Full cluster backup..."
+    local backup_dir="${WORK_DIR}/backup"
+    local admin_addrs="127.0.0.1:${ADMIN_PORTS[0]},127.0.0.1:${ADMIN_PORTS[1]},127.0.0.1:${ADMIN_PORTS[2]}"
+
+    info "Backing up all shards to ${backup_dir}..."
+    info "(This triggers a view change on shard 0 for consistency.)"
+    run_cmd "${TAPI}" admin backup \
+        --admin-addrs "${admin_addrs}" \
+        --output "${backup_dir}"
+
+    info "Verifying backup files..."
+    for f in "${backup_dir}/cluster.json" "${backup_dir}/shard_0.json"; do
+        if [[ -f "${f}" ]]; then
+            ok "Found $(basename "${f}") ($(wc -c < "${f}") bytes)"
+        else
+            warn "Missing $(basename "${f}")"
+        fi
+    done
+    ok "Backup complete."
+}
+
+# ---------------------------------------------------------------------------
 # Getting-started guide
 # ---------------------------------------------------------------------------
 print_guide() {
@@ -266,6 +357,13 @@ cmd_up() {
     generate_configs
     start_nodes
     smoke_test
+    demo_delete
+    demo_seed_data
+    demo_multi_key_txns
+    demo_range_scan
+    demo_admin_status
+    demo_view_change
+    demo_backup
     print_guide
 }
 
