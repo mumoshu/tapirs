@@ -39,7 +39,11 @@ pub async fn run(
     let shards = if let Some(json_path) = discovery_json {
         load_discovery_json(&json_path).await
     } else if let Some(ref endpoint) = discovery_tapir_endpoint {
-        load_tapir_discovery(endpoint).await
+        load_tapir_discovery(
+            endpoint,
+            #[cfg(feature = "tls")]
+            tls_config.as_ref(),
+        ).await
     } else if cfg.shards.is_empty() {
         eprintln!("error: no shards configured. Use --config, --discovery-json, or --discovery-tapir-endpoint.");
         std::process::exit(1);
@@ -182,7 +186,10 @@ const DISCOVERY_MAX_RETRIES: u32 = 10;
 /// `route_changes_since()` (key range changelog) are retried with exponential
 /// backoff until the reads are complete. The client never fabricates key
 /// ranges — it uses discovery-provided ranges or fails.
-async fn load_tapir_discovery(endpoint: &str) -> Vec<ShardConfig> {
+async fn load_tapir_discovery(
+    endpoint: &str,
+    #[cfg(feature = "tls")] tls_config: Option<&tapirs::tls::TlsConfig>,
+) -> Vec<ShardConfig> {
     use std::collections::HashMap;
     use tapirs::discovery::{tapir, RemoteShardDirectory, ShardDirectoryChange};
 
@@ -194,6 +201,16 @@ async fn load_tapir_discovery(endpoint: &str) -> Vec<ShardConfig> {
     };
     let disc_dir = Arc::new(tapirs::discovery::InMemoryShardDirectory::new());
     let persist_dir = format!("/tmp/tapi_client_disc_{}", std::process::id());
+
+    #[cfg(feature = "tls")]
+    let disc_transport: TcpTransport<TapirReplica<String, String>> = if let Some(tls_cfg) = tls_config {
+        TcpTransport::with_tls(ephemeral_addr, persist_dir, disc_dir, tls_cfg)
+            .unwrap_or_else(|e| panic!("discovery TLS config error: {e}"))
+    } else {
+        TcpTransport::with_directory(ephemeral_addr, persist_dir, disc_dir)
+    };
+
+    #[cfg(not(feature = "tls"))]
     let disc_transport: TcpTransport<TapirReplica<String, String>> =
         TcpTransport::with_directory(ephemeral_addr, persist_dir, disc_dir);
 
