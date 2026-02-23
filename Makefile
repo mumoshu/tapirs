@@ -1,7 +1,7 @@
 .PHONY: test lock_server_stress_test coordinator_failure_stress_test_3 coordinator_failure_stress_test_7 bench fuzz fuzz100 maelstrom ci ci-full ci/operator-lint ci/operator-test ci/testbed-kubernetes-operator
 
 test:
-	cargo clippy --workspace -- -D clippy::disallowed_methods && cargo test --workspace --release --no-run && timeout -k 10s 120s cargo test --workspace --release
+	cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace --release --no-run && timeout -k 10s 120s cargo test --workspace --release
 
 lock_server_stress_test:
 	timeout -k 10s 600s cargo test --release -- lock_server_loop --nocapture --include-ignored
