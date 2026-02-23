@@ -261,6 +261,39 @@ var _ = Describe("Manager", Ordered, func() {
 		const clusterName = "test-cluster"
 
 		AfterEach(func() {
+			specReport := CurrentSpecReport()
+			if specReport.Failed() {
+				By("Fetching TAPIRCluster CR status")
+				cmd := exec.Command("kubectl", "get", "tapircluster", clusterName,
+					"-n", testNS, "-o", "yaml")
+				if output, err := utils.Run(cmd); err == nil {
+					_, _ = fmt.Fprintf(GinkgoWriter, "TAPIRCluster status:\n%s\n", output)
+				}
+
+				By("Fetching events from test namespace")
+				cmd = exec.Command("kubectl", "get", "events", "-n", testNS,
+					"--sort-by=.lastTimestamp")
+				if output, err := utils.Run(cmd); err == nil {
+					_, _ = fmt.Fprintf(GinkgoWriter, "Events in %s:\n%s\n", testNS, output)
+				}
+
+				By("Fetching pod status in test namespace")
+				cmd = exec.Command("kubectl", "get", "pods", "-n", testNS, "-o", "wide")
+				if output, err := utils.Run(cmd); err == nil {
+					_, _ = fmt.Fprintf(GinkgoWriter, "Pods in %s:\n%s\n", testNS, output)
+				}
+
+				By("Fetching sub-resource list")
+				for _, kind := range []string{"statefulset", "deployment", "service"} {
+					cmd = exec.Command("kubectl", "get", kind,
+						"-l", fmt.Sprintf("app.kubernetes.io/instance=%s", clusterName),
+						"-n", testNS)
+					if output, err := utils.Run(cmd); err == nil {
+						_, _ = fmt.Fprintf(GinkgoWriter, "%ss:\n%s\n", kind, output)
+					}
+				}
+			}
+
 			// Clean up: delete the TAPIRCluster CR
 			cmd := exec.Command("kubectl", "delete", "tapircluster", clusterName,
 				"-n", testNS, "--ignore-not-found", "--timeout=60s")
