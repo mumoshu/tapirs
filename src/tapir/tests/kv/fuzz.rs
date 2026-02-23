@@ -208,6 +208,22 @@ async fn fuzz_tapir_transactions() {
 
     let event_log = FuzzEventLog::new();
 
+    // Wall-clock watchdog: fires before `timeout 10` safety net.
+    // Under start_paused=true, tokio::time::timeout uses simulated time which
+    // doesn't advance during hot loops. This thread uses real wall-clock time.
+    let watchdog_log = event_log.clone();
+    let (watchdog_cancel_tx, watchdog_cancel_rx) = std::sync::mpsc::channel::<()>();
+    let _watchdog_handle = std::thread::spawn(move || {
+        match watchdog_cancel_rx.recv_timeout(std::time::Duration::from_secs(8)) {
+            Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+        }
+        eprintln!("WATCHDOG: fuzz_tapir_transactions exceeded 8s wall-clock (seed={seed})");
+        watchdog_log.dump(seed);
+        eprintln!("WATCHDOG: exiting — check event log above for last completed step");
+        std::process::exit(1);
+    });
+
     let config = NetworkFaultConfig {
         drop_rate: 0.05,
         duplicate_rate: 0.02,
@@ -945,6 +961,7 @@ async fn fuzz_tapir_transactions() {
     });
 
     // Wait for all workloads with overall timeout.
+    let workload_wall_start = std::time::Instant::now();
     let all_done = timeout(Duration::from_secs(300), async {
         let _ = fault_handle.await;
         let mut workload_panic = None;
@@ -964,6 +981,7 @@ async fn fuzz_tapir_transactions() {
     })
     .await;
 
+    let workload_wall_ms = workload_wall_start.elapsed().as_millis();
     match &all_done {
         Err(_) => {
             event_log.record(FuzzEvent::WorkloadTimedOut);
@@ -974,7 +992,9 @@ async fn fuzz_tapir_transactions() {
             event_log.dump(seed);
             panic!("fuzz_tapir_transactions: workload panicked (seed={seed}): {join_err}");
         }
-        Ok(None) => {}
+        Ok(None) => {
+            eprintln!("fuzz: workload completed in {workload_wall_ms}ms wall-clock (seed={seed})");
+        }
     }
 
     route_poll_handle.abort();
@@ -1000,19 +1020,29 @@ async fn fuzz_tapir_transactions() {
         }
     }
 
+    // --- Verification phase (30s overall timeout) ---
+    let verify_result = timeout(Duration::from_secs(30), async {
+
+    let drain_start = std::time::Instant::now();
     eprintln!("fuzz: starting drain sleep (seed={seed})");
 
     // Let replicas drain pending operations after all view changes settle.
     FaultyTransport::sleep(Duration::from_secs(5)).await;
 
-    eprintln!("fuzz: drain sleep done, starting sync wait (seed={seed})");
+    let drain_ms = drain_start.elapsed().as_millis();
+    eprintln!("fuzz: drain sleep done in {drain_ms}ms (seed={seed})");
+
+    let sync_start = std::time::Instant::now();
+    eprintln!("fuzz: starting sync wait (seed={seed})");
 
     // Wait for final sync propagation after all workloads complete.
     tokio::time::sleep(Duration::from_millis(500)).await;
     tokio::task::yield_now().await;
 
-    eprintln!("fuzz: sync wait done (seed={seed})");
+    let sync_ms = sync_start.elapsed().as_millis();
+    eprintln!("fuzz: sync wait done in {sync_ms}ms (seed={seed})");
 
+    let cluster_start = std::time::Instant::now();
     eprintln!("fuzz: verifying cluster_remote shards (seed={seed})");
 
     // Verify cluster_remote has all active shards.
@@ -1021,33 +1051,87 @@ async fn fuzz_tapir_transactions() {
         let active_shards = final_shards.lock().unwrap();
         if let Some(ref shard_entries) = *active_shards {
             for entry in shard_entries {
-                if RemoteShardDirectory::<usize, i64>::get(&*cluster_remote, entry.shard)
-                    .await
-                    .unwrap()
-                    .is_none()
-                {
-                    event_log.dump(seed);
-                    panic!(
-                        "cluster_remote should contain shard {:?} (seed={seed})",
-                        entry.shard
-                    );
+                let shard_start = std::time::Instant::now();
+                eprintln!("fuzz: checking cluster_remote shard {:?} (seed={seed})", entry.shard);
+                let result = timeout(
+                    Duration::from_secs(5),
+                    RemoteShardDirectory::<usize, i64>::get(&*cluster_remote, entry.shard),
+                ).await;
+                match result {
+                    Ok(Ok(Some(_))) => {
+                        let ms = shard_start.elapsed().as_millis();
+                        event_log.record(FuzzEvent::VerifyClusterRemoteShardOk {
+                            shard: entry.shard.0, elapsed_ms: ms,
+                        });
+                    }
+                    Ok(Ok(None)) => {
+                        event_log.dump(seed);
+                        panic!(
+                            "cluster_remote should contain shard {:?} (seed={seed})",
+                            entry.shard
+                        );
+                    }
+                    Ok(Err(e)) => {
+                        event_log.dump(seed);
+                        panic!(
+                            "cluster_remote get shard {:?} failed: {e:?} (seed={seed})",
+                            entry.shard
+                        );
+                    }
+                    Err(_) => {
+                        event_log.record(FuzzEvent::VerifyPhaseTimedOut {
+                            phase: format!("cluster_remote_shard_{}", entry.shard.0),
+                            elapsed_ms: 5_000,
+                        });
+                        event_log.dump(seed);
+                        panic!(
+                            "cluster_remote.get(shard={:?}) timed out after 5s (seed={seed})",
+                            entry.shard
+                        );
+                    }
                 }
             }
         } else {
             for s in 0..num_shards {
-                if RemoteShardDirectory::<usize, i64>::get(&*cluster_remote, ShardNumber(s))
-                    .await
-                    .unwrap()
-                    .is_none()
-                {
-                    event_log.dump(seed);
-                    panic!("cluster_remote should contain shard {s} (seed={seed})");
+                let shard_start = std::time::Instant::now();
+                eprintln!("fuzz: checking cluster_remote shard {s} (seed={seed})");
+                let shard_num = ShardNumber(s);
+                let result = timeout(
+                    Duration::from_secs(5),
+                    RemoteShardDirectory::<usize, i64>::get(&*cluster_remote, shard_num),
+                ).await;
+                match result {
+                    Ok(Ok(Some(_))) => {
+                        let ms = shard_start.elapsed().as_millis();
+                        event_log.record(FuzzEvent::VerifyClusterRemoteShardOk {
+                            shard: s, elapsed_ms: ms,
+                        });
+                    }
+                    Ok(Ok(None)) => {
+                        event_log.dump(seed);
+                        panic!("cluster_remote should contain shard {s} (seed={seed})");
+                    }
+                    Ok(Err(e)) => {
+                        event_log.dump(seed);
+                        panic!("cluster_remote get shard {s} failed: {e:?} (seed={seed})");
+                    }
+                    Err(_) => {
+                        event_log.record(FuzzEvent::VerifyPhaseTimedOut {
+                            phase: format!("cluster_remote_shard_{s}"),
+                            elapsed_ms: 5_000,
+                        });
+                        event_log.dump(seed);
+                        panic!(
+                            "cluster_remote.get(shard={s}) timed out after 5s (seed={seed})"
+                        );
+                    }
                 }
             }
         }
     } // drop active_shards before counter verification locks final_shards
 
-    eprintln!("fuzz: cluster_remote verification done (seed={seed})");
+    let cluster_ms = cluster_start.elapsed().as_millis();
+    eprintln!("fuzz: cluster_remote verification done in {cluster_ms}ms (seed={seed})");
 
     // Keep all discovery infrastructure alive until end of assertions.
     drop(node_cachings);
@@ -1055,6 +1139,7 @@ async fn fuzz_tapir_transactions() {
 
     // Run invariant checker: serializability, strict serializability,
     // cross-shard atomicity (via dependency graph + real-time ordering).
+    let inv_start = std::time::Instant::now();
     event_log.record(FuzzEvent::InvariantCheckStart);
     let records = collector.lock().unwrap().clone();
     let checker = InvariantChecker::new(records, seed);
@@ -1080,7 +1165,8 @@ async fn fuzz_tapir_transactions() {
         );
     }
 
-    eprintln!("fuzz: invariant check done, starting counter verification (seed={seed})");
+    let inv_ms = inv_start.elapsed().as_millis();
+    eprintln!("fuzz: invariant check done in {inv_ms}ms, starting counter verification (seed={seed})");
 
     // Counter verification uses read-only transactions (quorum reads) rather
     // than RW transactions (single-replica unlogged reads). After resharding,
@@ -1098,20 +1184,50 @@ async fn fuzz_tapir_transactions() {
     let verify_router = Arc::new(DynamicRouter::new(Arc::new(RwLock::new(verify_dir))));
     let verify_client = RoutingClient::new(Arc::clone(&clients[0]), verify_router);
     let mut counter_mismatches: Vec<String> = Vec::new();
+    let counter_start = std::time::Instant::now();
     for (key, expected) in &inline_counts {
+        event_log.record(FuzzEvent::VerifyCounterKeyStart { key: *key });
+        let key_start = std::time::Instant::now();
         eprintln!("fuzz: verify key={key} (seed={seed})");
         let txn = verify_client.begin_read_only();
-        let actual = txn
-            .get(*key)
-            .await
-            .unwrap_or_else(|e| panic!("key={key}: {e:?} (seed={seed})"))
-            .unwrap_or(0);
-        if actual != *expected {
-            counter_mismatches.push(format!(
-                "key={key}: actual={actual} expected={expected}"
-            ));
+        let get_result = timeout(Duration::from_secs(5), txn.get(*key)).await;
+        match get_result {
+            Ok(Ok(val)) => {
+                let actual = val.unwrap_or(0);
+                let key_ms = key_start.elapsed().as_millis();
+                event_log.record(FuzzEvent::VerifyCounterKeyDone {
+                    key: *key, expected: *expected, actual, elapsed_ms: key_ms,
+                });
+                eprintln!(
+                    "fuzz: verify key={key} actual={actual} expected={expected} \
+                     in {key_ms}ms (seed={seed})"
+                );
+                if actual != *expected {
+                    counter_mismatches.push(format!(
+                        "key={key}: actual={actual} expected={expected}"
+                    ));
+                }
+            }
+            Ok(Err(e)) => {
+                event_log.dump(seed);
+                panic!("counter verify key={key}: {e:?} (seed={seed})");
+            }
+            Err(_) => {
+                event_log.record(FuzzEvent::VerifyPhaseTimedOut {
+                    phase: format!("counter_key_{key}"),
+                    elapsed_ms: 5_000,
+                });
+                event_log.dump(seed);
+                panic!(
+                    "counter verify key={key} timed out after 5s (seed={seed}). \
+                     quorum_read likely stuck in invoke_inconsistent_with_result retry loop — \
+                     check if replicas are ViewChanging."
+                );
+            }
         }
     }
+    let counter_ms = counter_start.elapsed().as_millis();
+    eprintln!("fuzz: counter verification done in {counter_ms}ms (seed={seed})");
     if !counter_mismatches.is_empty() {
         event_log.dump(seed);
         panic!(
@@ -1121,6 +1237,21 @@ async fn fuzz_tapir_transactions() {
     }
     event_log.record(FuzzEvent::CounterVerifyPassed);
 
+    // --- End of 30s overall verification timeout ---
+    }).await;
+
+    if verify_result.is_err() {
+        event_log.record(FuzzEvent::VerifyPhaseTimedOut {
+            phase: "entire-verification".to_string(),
+            elapsed_ms: 30_000,
+        });
+        event_log.dump(seed);
+        panic!(
+            "fuzz_tapir_transactions: verification phase timed out after 30s (seed={seed}). \
+             Check event log for last completed step."
+        );
+    }
+
     eprintln!(
         "fuzz_tapir_transactions: seed={seed} shards={num_shards} \
          replica_counts={replica_counts:?} \
@@ -1128,6 +1259,9 @@ async fn fuzz_tapir_transactions() {
     );
 
     event_log.dump_if(seed, false);
+
+    // Cancel wall-clock watchdog — test completed successfully.
+    let _ = watchdog_cancel_tx.send(());
 
     // Keep pre-built shard replicas alive until end of test.
     drop(new_shard_replicas);
