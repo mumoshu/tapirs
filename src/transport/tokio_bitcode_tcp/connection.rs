@@ -5,9 +5,7 @@ use crate::ir::ReplicaUpcalls;
 use serde::{de::DeserializeOwned, Serialize};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::io::AsyncReadExt;
-use tokio::io::AsyncWriteExt;
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 
@@ -57,7 +55,9 @@ where
 ///
 /// Coalesces multiple pending frames into a single write when the
 /// channel has buffered messages, reducing syscall count under load.
-async fn write_loop(mut writer: OwnedWriteHalf, mut rx: mpsc::Receiver<Vec<u8>>) {
+///
+/// Generic over `AsyncWrite` so both plain TCP and TLS streams work.
+pub(super) async fn write_loop<W: AsyncWrite + Unpin>(mut writer: W, mut rx: mpsc::Receiver<Vec<u8>>) {
     while let Some(first_frame) = rx.recv().await {
         // Coalesce: drain any additional buffered frames.
         let mut buf = first_frame;
@@ -75,10 +75,14 @@ async fn write_loop(mut writer: OwnedWriteHalf, mut rx: mpsc::Receiver<Vec<u8>>)
 /// Runs on connections initiated by this transport (for receiving
 /// reply messages). When the connection is closed, pending replies
 /// will timeout in send() and trigger retry with reconnection.
-async fn read_loop_outbound<U: ReplicaUpcalls>(
-    mut reader: OwnedReadHalf,
+///
+/// Generic over `AsyncRead` so both plain TCP and TLS streams work.
+pub(super) async fn read_loop_outbound<R, U>(
+    mut reader: R,
     inner: Arc<TransportInner<U>>,
 ) where
+    R: AsyncRead + Unpin,
+    U: ReplicaUpcalls,
     U::UO: Serialize + DeserializeOwned,
     U::UR: Serialize + DeserializeOwned,
     U::IO: Serialize + DeserializeOwned,

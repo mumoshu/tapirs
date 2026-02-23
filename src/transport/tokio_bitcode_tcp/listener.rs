@@ -5,8 +5,7 @@ use crate::ir::ReplicaUpcalls;
 use serde::{de::DeserializeOwned, Serialize};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tracing::warn;
 
@@ -82,11 +81,17 @@ async fn accept_loop<U: ReplicaUpcalls>(
 /// The receive callback (IrReplica::receive()) is synchronous —
 /// it processes the message and returns immediately. This avoids
 /// async overhead for the hot path.
-async fn read_loop_inbound<U: ReplicaUpcalls>(
-    mut reader: OwnedReadHalf,
-    mut writer: OwnedWriteHalf,
+///
+/// Generic over `AsyncRead`/`AsyncWrite` so both plain TCP and TLS
+/// streams can use the same loop.
+pub(super) async fn read_loop_inbound<R, W, U>(
+    mut reader: R,
+    mut writer: W,
     inner: Arc<TransportInner<U>>,
 ) where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+    U: ReplicaUpcalls,
     U::UO: Serialize + DeserializeOwned,
     U::UR: Serialize + DeserializeOwned,
     U::IO: Serialize + DeserializeOwned,
