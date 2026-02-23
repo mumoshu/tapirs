@@ -143,11 +143,19 @@ async fn load_discovery_json(json_path: &str) -> Vec<ShardConfig> {
     shard_configs
 }
 
+/// Backoff constants for waiting on eventually-consistent discovery reads.
+const DISCOVERY_INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_millis(500);
+const DISCOVERY_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(5);
+const DISCOVERY_MAX_RETRIES: u32 = 10;
+
 /// Fetch shard topology from a TAPIR discovery cluster endpoint.
 ///
 /// Uses eventual consistent reads (unlogged scan to 1 random replica).
+/// Retries with exponential backoff until a non-empty shard list is returned,
+/// since both `all()` and `publish_route_changes()` are eventually consistent.
 async fn load_tapir_discovery(endpoint: &str) -> Vec<ShardConfig> {
-    use tapirs::discovery::{tapir, RemoteShardDirectory};
+    use std::collections::HashMap;
+    use tapirs::discovery::{tapir, RemoteShardDirectory, ShardDirectoryChange};
 
     let ephemeral_addr = {
         let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
@@ -173,18 +181,89 @@ async fn load_tapir_discovery(endpoint: &str) -> Vec<ShardConfig> {
         std::process::exit(1);
     });
 
-    let entries =
-        <_ as RemoteShardDirectory<TcpAddress, String>>::all(&dir)
+    // Both all() and route_changes_since() use ReadMode::Eventual (unlogged
+    // scan to 1 random replica). This is eventually consistent: after cluster
+    // bootstrap or shard-manager operations (register_shard, split, merge,
+    // compact), a replica may not yet have the latest writes. Retry with
+    // exponential backoff until we get a non-empty shard list.
+    //
+    // Similarly, publish_route_changes() writes route changelog entries via
+    // eventually-consistent TAPIR transactions. The route changelog read
+    // below may return stale or empty results if the discovery cluster
+    // hasn't fully propagated the writes yet.
+    let entries = {
+        let mut backoff = DISCOVERY_INITIAL_BACKOFF;
+        let mut entries = Vec::new();
+        for attempt in 0..=DISCOVERY_MAX_RETRIES {
+            entries = <_ as RemoteShardDirectory<TcpAddress, String>>::all(&dir)
+                .await
+                .unwrap_or_else(|e| {
+                    panic!("failed to fetch topology from TAPIR discovery: {e}")
+                });
+            if !entries.is_empty() {
+                break;
+            }
+            if attempt == DISCOVERY_MAX_RETRIES {
+                panic!(
+                    "TAPIR discovery returned 0 shards after {} retries \
+                     (endpoint: {endpoint}). Is the discovery cluster healthy \
+                     and populated?",
+                    DISCOVERY_MAX_RETRIES
+                );
+            }
+            eprintln!(
+                "warning: TAPIR discovery returned 0 shards (attempt {}/{}), \
+                 retrying in {:?}... (eventual consistency propagation delay)",
+                attempt + 1,
+                DISCOVERY_MAX_RETRIES,
+                backoff,
+            );
+            tokio::time::sleep(backoff).await;
+            backoff = (backoff * 2).min(DISCOVERY_MAX_BACKOFF);
+        }
+        entries
+    };
+
+    // Replay the full route changelog to extract current key range
+    // assignments. publish_route_changes() writes atomic changesets during
+    // register_shard/split/merge/compact — replaying from index 0 gives us
+    // the latest key ranges. This is also an eventually-consistent read;
+    // if the changelog hasn't propagated yet we proceed without key ranges
+    // (falling back to auto-partition or None).
+    let changesets =
+        <_ as RemoteShardDirectory<TcpAddress, String>>::route_changes_since(&dir, 0)
             .await
-        .unwrap_or_else(|e| panic!("failed to fetch topology from TAPIR discovery: {e}"));
+            .unwrap_or_else(|e| {
+                eprintln!(
+                    "warning: failed to read route changelog from TAPIR discovery: {e}. \
+                     Proceeding without explicit key ranges."
+                );
+                vec![]
+            });
+    let mut key_ranges: HashMap<ShardNumber, KeyRange<String>> = HashMap::new();
+    for (_idx, changes) in changesets {
+        for change in changes {
+            match change {
+                ShardDirectoryChange::SetRange { shard, range, .. } => {
+                    key_ranges.insert(shard, range);
+                }
+                ShardDirectoryChange::RemoveRange { shard } => {
+                    key_ranges.remove(&shard);
+                }
+            }
+        }
+    }
 
     entries
         .into_iter()
-        .map(|(shard, membership, _view)| ShardConfig {
-            id: shard.0,
-            replicas: tapirs::discovery::membership_to_strings(&membership),
-            key_range_start: None,
-            key_range_end: None,
+        .map(|(shard, membership, _view)| {
+            let range = key_ranges.get(&shard);
+            ShardConfig {
+                id: shard.0,
+                replicas: tapirs::discovery::membership_to_strings(&membership),
+                key_range_start: range.and_then(|r| r.start.clone()),
+                key_range_end: range.and_then(|r| r.end.clone()),
+            }
         })
         .collect()
 }
