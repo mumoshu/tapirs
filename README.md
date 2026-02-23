@@ -12,11 +12,11 @@
             one binary · no external deps
 ```
 
-tapirs is a Rust implementation of the [TAPIR protocol](https://syslab.cs.washington.edu/papers/tapir-tr-v2.pdf) — a leaderless transactional key-value store. Read-write transactions provide strict serializability; read-only transactions provide linearizability with a single-replica fast path. No single point of failure, built-in online resharding, and no external dependencies.
+tapirs is a Rust implementation of the [TAPIR protocol](https://syslab.cs.washington.edu/papers/tapir-tr-v2.pdf) — a transactional key-value store with no leader on the hot path. All transactions — read-write and read-only — are linearizable in a single round trip from client to storage replicas. Compare that with 2PC over Raft, where every shard crossing requires client → leader → followers → leader → client before the coordinator can even begin the second phase. Eventual-consistent reads are available when you want even more read scalability. A temporary leader coordinates view changes only — never transaction processing.
 
 | | |
 |---|---|
-| **No leader, no failover delay** — symmetric replicas, no SPOF | **One binary, zero dependencies** — embedded discovery, no ZooKeeper/etcd |
+| **1 round trip, linearizable** — no leader relay, no multi-phase overhead | **One binary, zero dependencies** — embedded discovery, no ZooKeeper/etcd |
 | **Online resharding** — split, merge, compact without downtime | **Deterministic testing** — simulation, fault injection, Jepsen-compatible |
 
 ## Quick start
