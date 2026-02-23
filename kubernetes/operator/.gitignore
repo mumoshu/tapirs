@@ -28,3 +28,6 @@ go.work
 
 # Kubeconfig might contain secrets
 *.kubeconfig
+
+# Generated kustomize overlay for deploy (see Makefile deploy target)
+config/overlays/
