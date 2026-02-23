@@ -219,7 +219,12 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
             }
             cursor.advance(r.effective_end_view);
 
-            if r.pending_prepares == 0 && changes.is_empty() && cursor.stabilized(r.effective_end_view) {
+            let stabilized = cursor.stabilized(r.effective_end_view);
+            self.report_progress(&format!(
+                "split:drain-iter i={drain_iter} pending={} changes={} stabilized={stabilized}",
+                r.pending_prepares, filtered.len(),
+            ));
+            if r.pending_prepares == 0 && changes.is_empty() && stabilized {
                 break;
             }
             if drain_iter == 59 {
@@ -450,7 +455,12 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
             }
             cursor.advance(r.effective_end_view);
 
-            if r.pending_prepares == 0 && changes.is_empty() && cursor.stabilized(r.effective_end_view) {
+            let stabilized = cursor.stabilized(r.effective_end_view);
+            self.report_progress(&format!(
+                "merge:drain-iter i={drain_iter} pending={} changes={} stabilized={stabilized}",
+                r.pending_prepares, changes.len(),
+            ));
+            if r.pending_prepares == 0 && changes.is_empty() && stabilized {
                 break;
             }
             if drain_iter == 59 {
@@ -838,7 +848,12 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
             }
             cursor.advance(r.effective_end_view);
 
-            if r.pending_prepares == 0 && changes.is_empty() && cursor.stabilized(r.effective_end_view) {
+            let stabilized = cursor.stabilized(r.effective_end_view);
+            self.report_progress(&format!(
+                "compact:drain-iter i={drain_iter} pending={} changes={} stabilized={stabilized}",
+                r.pending_prepares, changes.len(),
+            ));
+            if r.pending_prepares == 0 && changes.is_empty() && stabilized {
                 eprintln!("[compact] phase 3b: drain stabilized, breaking");
                 break;
             }
