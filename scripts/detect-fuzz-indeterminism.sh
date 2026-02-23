@@ -192,18 +192,20 @@ Common sources of indeterminism in Tokio (current_thread + start_paused=true):
      Even with a seeded StdRng, HashMap::new() gets random SipHasher keys.
      Fix: Use BTreeMap, IndexMap, or HashMap with a deterministic hasher.
 
-  2. tokio::select! — when multiple branches are ready simultaneously,
-     select! uses thread_rng() to pick which branch runs first.
-     Fix: Use biased; in select!, or restructure to avoid simultaneous readiness.
+  # We intentionally don't mention select! indeterminism because this script
+  # aims to be used for fuzz_tapir_transactions which uses start_paused and
+  # rng_seed. With Builder::rng_seed(), tokio::select! uses the runtime's
+  # seeded RNG (via thread_rng_n), not thread_rng(), so branch ordering is
+  # deterministic for a given seed.
 
-  3. FuturesUnordered / JoinSet — task completion order may vary even
+  2. FuturesUnordered / JoinSet — task completion order may vary even
      with deterministic time if tasks yield at the same simulated instant.
      Fix: Use ordered join (join_all preserves order) or sequentialize.
 
-  4. Arc<AtomicU64> with Relaxed ordering — interleaving of fetch_add
+  3. Arc<AtomicU64> with Relaxed ordering — interleaving of fetch_add
      across concurrent tasks depends on scheduler decisions.
 
-  5. Channel receive ordering — when multiple senders enqueue concurrently,
+  4. Channel receive ordering — when multiple senders enqueue concurrently,
      receive order may not be deterministic across runs.
 
 GUIDANCE
