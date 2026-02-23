@@ -17,9 +17,10 @@ use tokio::time::Duration;
 type DiscTapirDir =
     tapir::TapirRemoteShardDirectory<TcpAddress, TcpTransport<TapirReplica<String, String>>>;
 
-/// Pin K=() so method calls are unambiguous (TapirRemoteShardDirectory
-/// implements RemoteShardDirectory for all K).
-fn disc(c: DiscTapirDir) -> impl RemoteShardDirectory<TcpAddress, ()> {
+/// Pin K=String so method calls are unambiguous (TapirRemoteShardDirectory
+/// implements RemoteShardDirectory for all K). String matches what
+/// publish_route_changes stores in key_range fields.
+fn disc(c: DiscTapirDir) -> impl RemoteShardDirectory<TcpAddress, String> {
     c
 }
 

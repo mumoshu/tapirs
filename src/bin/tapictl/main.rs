@@ -204,7 +204,7 @@ async fn get_topology(endpoint: &str) -> Result<(), String> {
     .map_err(|e| format!("failed to connect to discovery: {e}"))?;
 
     let entries =
-        <_ as RemoteShardDirectory<TcpAddress, ()>>::all(&dir)
+        <_ as RemoteShardDirectory<TcpAddress, String>>::all(&dir)
             .await
             .map_err(|e| format!("failed to fetch topology: {e}"))?;
 

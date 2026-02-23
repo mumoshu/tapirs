@@ -174,7 +174,7 @@ async fn load_tapir_discovery(endpoint: &str) -> Vec<ShardConfig> {
     });
 
     let entries =
-        <_ as RemoteShardDirectory<TcpAddress, ()>>::all(&dir)
+        <_ as RemoteShardDirectory<TcpAddress, String>>::all(&dir)
             .await
         .unwrap_or_else(|e| panic!("failed to fetch topology from TAPIR discovery: {e}"));
 
