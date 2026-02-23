@@ -12,6 +12,8 @@ mod shard_manager_server;
 mod helpers;
 #[cfg(test)]
 mod integration_test;
+#[cfg(all(test, feature = "tls"))]
+mod tls_integration_test;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use config::{ClientConfig, NodeConfig};
