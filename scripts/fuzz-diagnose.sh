@@ -19,7 +19,7 @@ set -euo pipefail
 # --- Configuration ---
 SEED="${TAPI_TEST_SEED:-0}"
 WATCHDOG="${TAPI_WATCHDOG_SECS:-30}"
-RUNS="${FUZZ_RUNS:-10}"
+RUNS="${FUZZ_RUNS:-100}"
 TEST_NAME="${FUZZ_TEST_NAME:-fuzz_tapir_transactions}"
 VERBOSE="${FUZZ_VERBOSE:-0}"
 
