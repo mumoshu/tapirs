@@ -193,8 +193,8 @@ fn build_shard_entries(num_shards: u32, num_keys: i64) -> Vec<ShardEntry<i64>> {
 //
 // Detect indeterminism (same seed, many runs):
 //   ./scripts/detect-fuzz-indeterminism.sh
-#[tokio::test(flavor = "current_thread", start_paused = true)]
-async fn fuzz_tapir_transactions() {
+#[test]
+fn fuzz_tapir_transactions() {
     if cfg!(debug_assertions) {
         eprintln!("\n\
             ╔══════════════════════════════════════════════════════════════════╗\n\
@@ -217,6 +217,21 @@ async fn fuzz_tapir_transactions() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
 
+    // Build runtime with deterministic scheduler seed so the same TAPI_TEST_SEED
+    // produces the same task interleaving across runs. Without rng_seed, tokio's
+    // internal scheduler RNG is seeded from the system, making task wake/poll
+    // order non-deterministic even with start_paused=true.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .start_paused(true)
+        .rng_seed(tokio::runtime::RngSeed::from_bytes(&seed.to_le_bytes()))
+        .build()
+        .unwrap();
+
+    rt.block_on(fuzz_tapir_transactions_inner(seed));
+}
+
+async fn fuzz_tapir_transactions_inner(seed: u64) {
     eprintln!("fuzz_tapir_transactions seed={seed}");
     let _ = std::fs::write("/tmp/tapi-fuzz-seed.txt", seed.to_string());
 
