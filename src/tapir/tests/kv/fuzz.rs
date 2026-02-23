@@ -899,13 +899,17 @@ async fn fuzz_tapir_transactions() {
                         reshard_event_log.record(FuzzEvent::ReshardSplitAttempt {
                             round, source_shard: source.0, split_key,
                         });
+                        let op_start = std::time::Instant::now();
                         match manager.split(source, split_key, new_shard_number, membership).await {
                             Ok(()) => {
                                 next_shard_idx += 1;
-                                reshard_event_log.record(FuzzEvent::ReshardSplitOk { round });
+                                reshard_event_log.record(FuzzEvent::ReshardSplitOk {
+                                    round, elapsed_ms: op_start.elapsed().as_millis(),
+                                });
                             }
                             Err(e) => reshard_event_log.record(FuzzEvent::ReshardSplitErr {
                                 round, error: format!("{e:?}"),
+                                elapsed_ms: op_start.elapsed().as_millis(),
                             }),
                         }
                         break;
@@ -920,12 +924,16 @@ async fn fuzz_tapir_transactions() {
                         reshard_event_log.record(FuzzEvent::ReshardMergeAttempt {
                             round, absorbed: absorbed.0, surviving: surviving.0,
                         });
+                        let op_start = std::time::Instant::now();
                         match manager.merge(absorbed, surviving).await {
                             Ok(()) => {
-                                reshard_event_log.record(FuzzEvent::ReshardMergeOk { round });
+                                reshard_event_log.record(FuzzEvent::ReshardMergeOk {
+                                    round, elapsed_ms: op_start.elapsed().as_millis(),
+                                });
                             }
                             Err(e) => reshard_event_log.record(FuzzEvent::ReshardMergeErr {
                                 round, error: format!("{e:?}"),
+                                elapsed_ms: op_start.elapsed().as_millis(),
                             }),
                         }
                         break;
@@ -938,13 +946,17 @@ async fn fuzz_tapir_transactions() {
                     reshard_event_log.record(FuzzEvent::ReshardCompactAttempt {
                         round, source_shard: source.0,
                     });
+                    let op_start = std::time::Instant::now();
                     match manager.compact(source, new_shard_number, membership).await {
                         Ok(()) => {
                             next_shard_idx += 1;
-                            reshard_event_log.record(FuzzEvent::ReshardCompactOk { round });
+                            reshard_event_log.record(FuzzEvent::ReshardCompactOk {
+                                round, elapsed_ms: op_start.elapsed().as_millis(),
+                            });
                         }
                         Err(e) => reshard_event_log.record(FuzzEvent::ReshardCompactErr {
                             round, error: format!("{e:?}"),
+                            elapsed_ms: op_start.elapsed().as_millis(),
                         }),
                     }
                     break;

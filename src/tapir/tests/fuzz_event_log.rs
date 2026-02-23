@@ -105,10 +105,12 @@ pub enum FuzzEvent {
     },
     ReshardSplitOk {
         round: usize,
+        elapsed_ms: u128,
     },
     ReshardSplitErr {
         round: usize,
         error: String,
+        elapsed_ms: u128,
     },
     ReshardMergeAttempt {
         round: usize,
@@ -117,10 +119,12 @@ pub enum FuzzEvent {
     },
     ReshardMergeOk {
         round: usize,
+        elapsed_ms: u128,
     },
     ReshardMergeErr {
         round: usize,
         error: String,
+        elapsed_ms: u128,
     },
     ReshardCompactAttempt {
         round: usize,
@@ -128,10 +132,12 @@ pub enum FuzzEvent {
     },
     ReshardCompactOk {
         round: usize,
+        elapsed_ms: u128,
     },
     ReshardCompactErr {
         round: usize,
         error: String,
+        elapsed_ms: u128,
     },
     ReshardPhase {
         round: usize,
@@ -260,22 +266,22 @@ impl fmt::Display for FuzzEvent {
                 write!(f, "out-of-range-retry: {message}"),
             FuzzEvent::ReshardSplitAttempt { round, source_shard, split_key } =>
                 write!(f, "RESHARD[{round}] split-attempt shard={source_shard} key={split_key}"),
-            FuzzEvent::ReshardSplitOk { round } =>
-                write!(f, "RESHARD[{round}] split-ok"),
-            FuzzEvent::ReshardSplitErr { round, error } =>
-                write!(f, "RESHARD[{round}] split-err: {error}"),
+            FuzzEvent::ReshardSplitOk { round, elapsed_ms } =>
+                write!(f, "RESHARD[{round}] split-ok elapsed={elapsed_ms}ms"),
+            FuzzEvent::ReshardSplitErr { round, error, elapsed_ms } =>
+                write!(f, "RESHARD[{round}] split-err elapsed={elapsed_ms}ms: {error}"),
             FuzzEvent::ReshardMergeAttempt { round, absorbed, surviving } =>
                 write!(f, "RESHARD[{round}] merge-attempt absorbed={absorbed} surviving={surviving}"),
-            FuzzEvent::ReshardMergeOk { round } =>
-                write!(f, "RESHARD[{round}] merge-ok"),
-            FuzzEvent::ReshardMergeErr { round, error } =>
-                write!(f, "RESHARD[{round}] merge-err: {error}"),
+            FuzzEvent::ReshardMergeOk { round, elapsed_ms } =>
+                write!(f, "RESHARD[{round}] merge-ok elapsed={elapsed_ms}ms"),
+            FuzzEvent::ReshardMergeErr { round, error, elapsed_ms } =>
+                write!(f, "RESHARD[{round}] merge-err elapsed={elapsed_ms}ms: {error}"),
             FuzzEvent::ReshardCompactAttempt { round, source_shard } =>
                 write!(f, "RESHARD[{round}] compact-attempt shard={source_shard}"),
-            FuzzEvent::ReshardCompactOk { round } =>
-                write!(f, "RESHARD[{round}] compact-ok"),
-            FuzzEvent::ReshardCompactErr { round, error } =>
-                write!(f, "RESHARD[{round}] compact-err: {error}"),
+            FuzzEvent::ReshardCompactOk { round, elapsed_ms } =>
+                write!(f, "RESHARD[{round}] compact-ok elapsed={elapsed_ms}ms"),
+            FuzzEvent::ReshardCompactErr { round, error, elapsed_ms } =>
+                write!(f, "RESHARD[{round}] compact-err elapsed={elapsed_ms}ms: {error}"),
             FuzzEvent::ReshardPhase { round, phase } =>
                 write!(f, "RESHARD[{round}] phase: {phase}"),
             FuzzEvent::MayHaveCommittedCount { count } =>
