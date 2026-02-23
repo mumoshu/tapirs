@@ -341,7 +341,7 @@ pub struct FuzzEventLog {
 
 impl FuzzEventLog {
     pub fn new() -> Self {
-        let verbose = std::env::var("FUZZ_VERBOSE").map_or(false, |v| v == "1");
+        let verbose = std::env::var("FUZZ_VERBOSE").is_ok_and(|v| v == "1");
         Self {
             start: Instant::now(),
             entries: Arc::new(Mutex::new(Vec::with_capacity(256))),

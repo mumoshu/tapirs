@@ -335,10 +335,10 @@ fn find_cycle(adjacency: &[Vec<(usize, DepType)>]) -> Option<Vec<usize>> {
     let mut stack = Vec::new();
 
     for start in 0..n {
-        if color[start] == Color::White {
-            if let Some(cycle) = dfs(start, adjacency, &mut color, &mut stack) {
-                return Some(cycle);
-            }
+        if color[start] == Color::White
+            && let Some(cycle) = dfs(start, adjacency, &mut color, &mut stack)
+        {
+            return Some(cycle);
         }
     }
     return None;

@@ -2,6 +2,7 @@ use super::*;
 
 // --- Faulty transport helpers ---
 
+#[allow(clippy::too_many_arguments)]
 fn build_shard_faulty(
     rng: &mut crate::Rng,
     shard: ShardNumber,
@@ -24,7 +25,7 @@ fn build_shard_faulty(
         local.put(shard, membership.clone(), 0);
     }
 
-    let replicas = (0..num_replicas)
+    (0..num_replicas)
         .map(|i| {
             let node_seed = seed.wrapping_add(initial_address as u64 + i as u64);
             let config = config.clone();
@@ -48,9 +49,7 @@ fn build_shard_faulty(
                 },
             )
         })
-        .collect::<Vec<_>>();
-
-    replicas
+        .collect::<Vec<_>>()
 }
 
 fn build_clients_faulty(
@@ -63,9 +62,9 @@ fn build_clients_faulty(
 ) -> (Vec<Arc<TapirClient<K, V, FaultyTransport>>>, Vec<FaultyTransport>) {
     let mut clients = Vec::new();
     let mut transports = Vec::new();
-    for i in 0..num_clients {
+    for (i, dir) in directories.iter().enumerate().take(num_clients) {
         let client_seed = seed.wrapping_add(10000 + i as u64);
-        let channel = registry.channel(move |_, _| unreachable!(), Arc::clone(&directories[i]));
+        let channel = registry.channel(move |_, _| unreachable!(), Arc::clone(dir));
         let transport = FaultyChannelTransport::new(channel, config.clone(), client_seed);
         transports.push(transport.clone());
         clients.push(Arc::new(TapirClient::new(rng.fork(), transport)));
@@ -75,6 +74,7 @@ fn build_clients_faulty(
 
 /// Returns (shards, clients, client_transports, registry, node_shard_sets).
 /// `node_shard_sets[node_idx]` = set of ShardNumbers assigned to that node.
+#[allow(clippy::too_many_arguments)]
 fn build_sharded_kv_faulty(
     rng: &mut crate::Rng,
     linearizable: bool,
@@ -112,9 +112,8 @@ fn build_sharded_kv_faulty(
         (0..num_nodes).map(|_| std::collections::HashSet::new()).collect();
 
     let mut shards = Vec::new();
-    for shard in 0..num_shards {
+    for (shard, &count) in replica_counts.iter().enumerate() {
         let shard_seed = seed.wrapping_add(shard as u64 * 100);
-        let count = replica_counts[shard];
 
         // Shuffle node indices — take first `count` for no same-shard collision.
         let mut node_indices: Vec<usize> = (0..num_nodes).collect();
@@ -1029,16 +1028,16 @@ async fn fuzz_tapir_transactions_inner(seed: u64) {
         let _ = fault_handle.await;
         let mut workload_panic = None;
         for handle in handles {
-            if let Err(e) = handle.await {
-                if workload_panic.is_none() {
-                    workload_panic = Some(e);
-                }
-            }
-        }
-        if let Err(e) = reshard_handle.await {
-            if workload_panic.is_none() {
+            if let Err(e) = handle.await
+                && workload_panic.is_none()
+            {
                 workload_panic = Some(e);
             }
+        }
+        if let Err(e) = reshard_handle.await
+            && workload_panic.is_none()
+        {
+            workload_panic = Some(e);
         }
         workload_panic
     })
@@ -1076,11 +1075,11 @@ async fn fuzz_tapir_transactions_inner(seed: u64) {
     }
 
     // Verify resharding and client transactions actually interleaved.
-    if let Some((txn_first, txn_last)) = event_log.txn_time_window() {
-        if !event_log.has_reshard_event_between(txn_first, txn_last) {
-            event_log.dump(seed);
-            panic!("resharding should overlap with client transactions (seed={seed})");
-        }
+    if let Some((txn_first, txn_last)) = event_log.txn_time_window()
+        && !event_log.has_reshard_event_between(txn_first, txn_last)
+    {
+        event_log.dump(seed);
+        panic!("resharding should overlap with client transactions (seed={seed})");
     }
 
     // --- Verification phase (30s overall timeout) ---

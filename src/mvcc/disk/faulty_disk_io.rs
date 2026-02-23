@@ -478,8 +478,7 @@ mod tests {
         let file = NamedTempFile::new().unwrap();
         let io = BufferedIo::open(file.path(), OpenFlags::default()).unwrap();
 
-        let mut config = DiskFaultConfig::default();
-        config.fsync_fail_rate = 1.0; // Always fail
+        let config = DiskFaultConfig { fsync_fail_rate: 1.0, ..Default::default() };
 
         let faulty = FaultyDiskIo::new(io, config, 42);
 
@@ -500,8 +499,7 @@ mod tests {
         let file = NamedTempFile::new().unwrap();
         let io = BufferedIo::open(file.path(), OpenFlags::default()).unwrap();
 
-        let mut config = DiskFaultConfig::default();
-        config.fsync_fail_rate = 0.0; // Never fail
+        let config = DiskFaultConfig { fsync_fail_rate: 0.0, ..Default::default() };
 
         let faulty = FaultyDiskIo::new(io, config, 42);
 
@@ -516,8 +514,7 @@ mod tests {
         let file = NamedTempFile::new().unwrap();
         let io = BufferedIo::open(file.path(), OpenFlags::default()).unwrap();
 
-        let mut config = DiskFaultConfig::default();
-        config.enospc_after_bytes = Some(8192); // Fail after 8KB
+        let config = DiskFaultConfig { enospc_after_bytes: Some(8192), ..Default::default() };
 
         let faulty = FaultyDiskIo::new(io, config, 42);
 
@@ -549,8 +546,7 @@ mod tests {
         let file = NamedTempFile::new().unwrap();
         let io = BufferedIo::open(file.path(), OpenFlags::default()).unwrap();
 
-        let mut config = DiskFaultConfig::default();
-        config.slow_io_latency = Some(Duration::from_millis(50));
+        let config = DiskFaultConfig { slow_io_latency: Some(Duration::from_millis(50)), ..Default::default() };
 
         let faulty = FaultyDiskIo::new(io, config, 42);
 
@@ -595,8 +591,7 @@ mod tests {
         let io1 = BufferedIo::open(file1.path(), OpenFlags::default()).unwrap();
         let io2 = BufferedIo::open(file2.path(), OpenFlags::default()).unwrap();
 
-        let mut config = DiskFaultConfig::default();
-        config.read_corruption_rate = 0.5;
+        let config = DiskFaultConfig { read_corruption_rate: 0.5, ..Default::default() };
 
         let faulty1 = FaultyDiskIo::new(io1, config.clone(), 999);
         let faulty2 = FaultyDiskIo::new(io2, config, 999);
@@ -642,8 +637,7 @@ mod tests {
         let file = NamedTempFile::new().unwrap();
         let io = BufferedIo::open(file.path(), OpenFlags::default()).unwrap();
 
-        let mut config = DiskFaultConfig::default();
-        config.read_corruption_rate = 1.0; // Always corrupt
+        let config = DiskFaultConfig { read_corruption_rate: 1.0, ..Default::default() };
 
         let faulty = FaultyDiskIo::new(io, config, 42);
 

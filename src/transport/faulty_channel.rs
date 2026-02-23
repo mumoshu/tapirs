@@ -70,6 +70,7 @@ impl Default for NetworkFaultConfig {
 }
 
 /// Latency injection configuration
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub enum LatencyConfig {
     None,
@@ -97,6 +98,7 @@ impl<U: IrReplicaUpcalls> ReorderBuffer<U> {
         self.messages.len() >= max_size
     }
 
+    #[allow(dead_code)]
     fn flush(&mut self, rng: &mut StdRng) -> Vec<IrMessage<U, Channel<U>>> {
         self.messages.shuffle(rng);
         self.messages.drain(..).collect()
@@ -129,6 +131,7 @@ impl<U: IrReplicaUpcalls> FaultyChannelTransport<U> {
         self.state.write().unwrap().config.drop_rate = rate;
     }
 
+    #[allow(dead_code)]
     pub fn set_duplicate_rate(&self, rate: f64) {
         assert!(
             (0.0..=1.0).contains(&rate),
@@ -141,6 +144,7 @@ impl<U: IrReplicaUpcalls> FaultyChannelTransport<U> {
         self.state.write().unwrap().config.latency = latency;
     }
 
+    #[allow(dead_code)]
     pub fn set_reorder_buffer_size(&self, size: usize) {
         self.state.write().unwrap().config.reorder_buffer_size = size;
     }
@@ -170,22 +174,26 @@ impl<U: IrReplicaUpcalls> FaultyChannelTransport<U> {
         }
     }
 
+    #[allow(dead_code)]
     pub fn partition_pair(&self, a: usize, b: usize) {
         let mut state = self.state.write().unwrap();
         state.config.partition_pairs.insert((a, b));
         state.config.partition_pairs.insert((b, a));
     }
 
+    #[allow(dead_code)]
     pub fn heal_pair(&self, a: usize, b: usize) {
         let mut state = self.state.write().unwrap();
         state.config.partition_pairs.remove(&(a, b));
         state.config.partition_pairs.remove(&(b, a));
     }
 
+    #[allow(dead_code)]
     pub fn set_config(&self, config: NetworkFaultConfig) {
         self.state.write().unwrap().config = config;
     }
 
+    #[allow(dead_code)]
     pub fn config(&self) -> NetworkFaultConfig {
         self.state.read().unwrap().config.clone()
     }
@@ -594,8 +602,7 @@ mod tests {
         let ch1 = registry.channel(|_from, _msg| None, Arc::clone(&dir));
         let ch2 = registry.channel(|_from, _msg| None, Arc::clone(&dir));
 
-        let mut config = NetworkFaultConfig::default();
-        config.drop_rate = 0.5;
+        let config = NetworkFaultConfig { drop_rate: 0.5, ..Default::default() };
 
         let faulty1 = FaultyChannelTransport::new(ch1, config.clone(), 12345);
         let faulty2 = FaultyChannelTransport::new(ch2, config, 12345);
@@ -721,8 +728,7 @@ mod tests {
         let ch1 = registry.channel(|_from, _msg| None, Arc::clone(&dir));
         let ch2 = registry.channel(|_from, _msg| None, Arc::clone(&dir));
 
-        let mut config = NetworkFaultConfig::default();
-        config.reorder_buffer_size = 5;
+        let config = NetworkFaultConfig { reorder_buffer_size: 5, ..Default::default() };
 
         let faulty1 = FaultyChannelTransport::new(ch1, config.clone(), 999);
         let faulty2 = FaultyChannelTransport::new(ch2, config, 999);
@@ -746,8 +752,7 @@ mod tests {
         let dir = Arc::new(InMemoryShardDirectory::new());
         let ch = registry.channel(|_from, _msg| None, Arc::clone(&dir));
 
-        let mut config = NetworkFaultConfig::default();
-        config.duplicate_rate = 1.0; // Always duplicate
+        let config = NetworkFaultConfig { duplicate_rate: 1.0, ..Default::default() }; // Always duplicate
 
         let faulty = FaultyChannelTransport::new(ch, config, 42);
 

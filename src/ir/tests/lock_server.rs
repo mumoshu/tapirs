@@ -97,8 +97,7 @@ async fn lock_server(num_replicas: usize) {
         type CO = Lock;
         type CR = LockResult;
 
-        fn exec_unlogged(&self, op: Self::UO) -> Self::UR {
-            let _ = op;
+        fn exec_unlogged(&self, _op: Self::UO) -> Self::UR {
             unreachable!();
         }
 
@@ -227,7 +226,7 @@ async fn lock_server(num_replicas: usize) {
         dir: &Arc<InMemoryShardDirectory<usize>>,
         membership: &IrMembership<usize>,
     ) {
-        let new = create_replica(rng, &registry, dir, &membership);
+        let new = create_replica(rng, registry, dir, membership);
         for d in &*replicas {
             new.transport().do_send(
                 d.address(),

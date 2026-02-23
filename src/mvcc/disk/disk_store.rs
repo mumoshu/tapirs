@@ -1272,7 +1272,7 @@ mod tests {
                 seg.recover_entries::<String, String, u64>(0)
             ).unwrap();
             // Both entries are in the vlog. Truncate after T1.
-            assert!(entries.len() >= 1);
+            assert!(!entries.is_empty());
             let t1_end = entries[0].1.offset + entries[0].1.length as u64;
             std::fs::OpenOptions::new()
                 .write(true)
@@ -1398,7 +1398,7 @@ mod tests {
             }
 
             store.save_manifest().unwrap();
-            assert!(store.lsm.l0_metas().len() > 0);
+            assert!(!store.lsm.l0_metas().is_empty());
         }
 
         // Phase 2: Write more data that would trigger flush, but don't save manifest
@@ -1543,7 +1543,7 @@ mod tests {
             }
 
             // If we have L0 files or L1, we're good
-            let has_sstables = store.lsm.l0_metas().len() >= 3 || store.lsm.l1_metas().len() > 0;
+            let has_sstables = store.lsm.l0_metas().len() >= 3 || !store.lsm.l1_metas().is_empty();
             assert!(has_sstables, "Expected L0 or L1 SSTables to be created");
             store.save_manifest().unwrap();
         }
@@ -1700,7 +1700,7 @@ mod tests {
         store.save_manifest().unwrap();
 
         // Force compaction if it hasn't happened
-        let has_l1 = store.lsm.l1_metas().len() > 0;
+        let has_l1 = !store.lsm.l1_metas().is_empty();
 
         // Verify all 1000 versions are readable at their timestamps
         for i in 1u64..=1000 {

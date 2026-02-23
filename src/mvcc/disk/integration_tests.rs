@@ -588,7 +588,7 @@ mod tests {
         let mut store = open_store();
 
         // Keys with null bytes in different positions
-        let keys = vec![
+        let keys = [
             "key\0middle",   // Null in middle
             "\0leading",     // Null at start
             "trailing\0",    // Null at end
@@ -776,12 +776,9 @@ mod tests {
                     let value = format!("v{:08x}", rng.r#gen::<u32>());
                     let ts = rng.r#gen_range(1..1000);
 
-                    match MvccBackend::put(&mut store, key.clone(), Some(value.clone()), ts) {
-                        Ok(_) => {
-                            pending_writes.push((key.clone(), value, ts));
-                            all_keys.insert(key);
-                        }
-                        Err(_) => {}
+                    if MvccBackend::put(&mut store, key.clone(), Some(value.clone()), ts).is_ok() {
+                        pending_writes.push((key.clone(), value, ts));
+                        all_keys.insert(key);
                     }
                 }
                 6..=7 => {

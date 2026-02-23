@@ -313,7 +313,7 @@ mod tests {
 
         let recv_clone = Arc::clone(&received);
         let ch0 = registry.channel(|_, _| None, Arc::clone(&dir));
-        let ch1 = registry.channel(move |from, msg| {
+        let _ch1 = registry.channel(move |from, msg| {
             if let TestMessage::FinalizeInconsistent(finalize) = msg {
                 recv_clone.lock().unwrap().push((from, finalize.op_id.number));
                 Some(test_reply())
@@ -378,7 +378,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn test_ordering_with_drop_fault_maintains_delivered_order() {
-        let mut rng = StdRng::seed_from_u64(42);
+        let _rng = StdRng::seed_from_u64(42);
 
         let registry = Registry::<TestUpcalls>::default();
         let dir = Arc::new(InMemoryShardDirectory::new());
@@ -396,8 +396,7 @@ mod tests {
         }, Arc::clone(&dir));
 
         // Wrap in FaultyChannelTransport with drop_rate=0.3
-        let mut config = NetworkFaultConfig::default();
-        config.drop_rate = 0.3;
+        let config = NetworkFaultConfig { drop_rate: 0.3, ..Default::default() };
         let ch0 = FaultyChannelTransport::new(ch0_inner, config.clone(), 42);
         let _ch1 = FaultyChannelTransport::new(ch1_inner, config, 43);
 
@@ -434,7 +433,7 @@ mod tests {
         let attempt_counter = Arc::new(AtomicUsize::new(0));
         let counter_clone = Arc::clone(&attempt_counter);
 
-        let _ch1 = registry.channel(move |from, msg| {
+        let _ch1 = registry.channel(move |_from, msg| {
             let attempt = counter_clone.fetch_add(1, AtomicOrdering::SeqCst);
 
             if let TestMessage::FinalizeInconsistent(finalize) = msg {
@@ -538,7 +537,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn test_delivery_with_partition_blocks_until_heal() {
-        let mut rng = StdRng::seed_from_u64(123);
+        let _rng = StdRng::seed_from_u64(123);
 
         let registry = Registry::<TestUpcalls>::default();
         let dir = Arc::new(InMemoryShardDirectory::new());
