@@ -1,6 +1,38 @@
+# CA chain for mTLS testing.
+#
+# A plain self-signed issuer makes each Certificate its own CA — no shared
+# trust root for mTLS. Instead we create:
+#   1. Self-signed ClusterIssuer (bootstrap — only signs the CA cert)
+#   2. CA Certificate in the cert-manager namespace (isCA: true)
+#   3. CA ClusterIssuer referencing the CA secret
+# All component certs then share the same CA for mutual verification.
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
-  name: tapir-selfsigned-issuer
+  name: tapir-selfsigned-bootstrap
 spec:
   selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: tapir-ca
+  namespace: cert-manager
+spec:
+  isCA: true
+  commonName: tapir-ca
+  secretName: tapir-ca-secret
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: tapir-selfsigned-bootstrap
+    kind: ClusterIssuer
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: tapir-ca-issuer
+spec:
+  ca:
+    secretName: tapir-ca-secret

@@ -388,20 +388,34 @@ var _ = Describe("Manager", Ordered, func() {
 		const tlsClusterName = "test-cluster"
 
 		BeforeEach(func() {
-			By("creating self-signed ClusterIssuer for TLS tests")
+			By("creating CA chain for TLS tests")
 			cmd := exec.Command("kubectl", "apply", "-f",
 				filepath.Join("test", "e2e", "setup", "selfsigned-issuer.yaml"))
 			_, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "Failed to create self-signed ClusterIssuer")
+			Expect(err).NotTo(HaveOccurred(), "Failed to create CA chain")
+
+			By("waiting for CA certificate to be issued")
+			cmd = exec.Command("kubectl", "wait", "certificate/tapir-ca",
+				"--for=condition=Ready", "--namespace=cert-manager", "--timeout=60s")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "CA certificate not ready")
 		})
 
 		AfterEach(func() {
 			clusterLifecycleAfterEach(testNS, tlsClusterName)
 
-			// Clean up ClusterIssuer
-			cmd := exec.Command("kubectl", "delete", "clusterissuer",
-				"tapir-selfsigned-issuer", "--ignore-not-found")
-			_, _ = utils.Run(cmd)
+			// Clean up CA chain resources
+			for _, res := range [][]string{
+				{"clusterissuer", "tapir-ca-issuer"},
+				{"certificate", "tapir-ca", "-n", "cert-manager"},
+				{"secret", "tapir-ca-secret", "-n", "cert-manager"},
+				{"clusterissuer", "tapir-selfsigned-bootstrap"},
+			} {
+				args := append([]string{"delete"}, res...)
+				args = append(args, "--ignore-not-found")
+				cmd := exec.Command("kubectl", args...)
+				_, _ = utils.Run(cmd)
+			}
 		})
 
 		It("should create cert-manager Certificates and TLS secrets for a TLS-enabled cluster", func() {

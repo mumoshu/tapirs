@@ -19,5 +19,5 @@ spec:
   tls:
     enabled: true
     issuerRef:
-      name: tapir-selfsigned-issuer
+      name: tapir-ca-issuer
       kind: ClusterIssuer

@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	tlsMountPath         = "/tls"
+	tlsMountPath          = "/tls"
 	certManagerAPIVersion = "cert-manager.io/v1"
 )
 

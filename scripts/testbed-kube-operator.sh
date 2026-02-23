@@ -114,7 +114,7 @@ kind_delete() {
 # ---------------------------------------------------------------------------
 CERT_MANAGER_VERSION="v1.19.3"
 CERT_MANAGER_URL="https://github.com/cert-manager/cert-manager/releases/download/${CERT_MANAGER_VERSION}/cert-manager.yaml"
-CERT_MANAGER_ISSUER="tapir-selfsigned-issuer"
+CERT_MANAGER_ISSUER="tapir-ca-issuer"
 
 install_cert_manager() {
     if [[ "${TAPIR_TLS}" != "1" ]]; then return; fi
@@ -133,16 +133,50 @@ install_cert_manager() {
         --for=condition=Available --namespace=cert-manager --timeout=5m
     ok "cert-manager is ready."
 
-    step "Creating self-signed ClusterIssuer '${CERT_MANAGER_ISSUER}'..."
+    # Create a proper CA chain. A plain self-signed issuer makes each cert its
+    # own CA — no shared trust root for mTLS. Instead we create:
+    #   1. Self-signed ClusterIssuer (bootstrap — only signs the CA cert)
+    #   2. CA Certificate in the cert-manager namespace (isCA: true)
+    #   3. CA ClusterIssuer referencing the CA secret
+    # All component certs then share the same CA for mutual verification.
+    step "Creating CA chain for mTLS..."
     kubectl apply -f - <<EOF
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: tapir-selfsigned-bootstrap
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: tapir-ca
+  namespace: cert-manager
+spec:
+  isCA: true
+  commonName: tapir-ca
+  secretName: tapir-ca-secret
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: tapir-selfsigned-bootstrap
+    kind: ClusterIssuer
+---
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
   name: ${CERT_MANAGER_ISSUER}
 spec:
-  selfSigned: {}
+  ca:
+    secretName: tapir-ca-secret
 EOF
-    ok "ClusterIssuer created."
+
+    info "Waiting for CA certificate to be issued..."
+    run_cmd kubectl wait certificate/tapir-ca \
+        --for=condition=Ready --namespace=cert-manager --timeout=60s
+    ok "CA chain created — ClusterIssuer '${CERT_MANAGER_ISSUER}' ready."
 }
 
 uninstall_cert_manager() {
@@ -150,6 +184,9 @@ uninstall_cert_manager() {
 
     step "Cleaning up cert-manager resources..."
     kubectl delete clusterissuer "${CERT_MANAGER_ISSUER}" --ignore-not-found 2>/dev/null || true
+    kubectl delete certificate tapir-ca -n cert-manager --ignore-not-found 2>/dev/null || true
+    kubectl delete secret tapir-ca-secret -n cert-manager --ignore-not-found 2>/dev/null || true
+    kubectl delete clusterissuer tapir-selfsigned-bootstrap --ignore-not-found 2>/dev/null || true
     kubectl delete -f "${CERT_MANAGER_URL}" --ignore-not-found 2>/dev/null || true
     ok "cert-manager cleaned up."
 }
