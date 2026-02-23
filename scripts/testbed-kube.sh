@@ -109,6 +109,44 @@ exec_tapictl() {
     kube exec "${pod}" -- tapictl "$@"
 }
 
+# Counter for unique client pod names.
+CLIENT_POD_COUNTER=0
+
+# Run a one-shot client transaction via kubectl run.
+# Usage: run_client <expression> [pod-suffix]
+# Captures output in RUN_CLIENT_OUTPUT for assertions.
+# Displays the command and output inline.
+RUN_CLIENT_OUTPUT=""
+run_client() {
+    local expr="$1"
+    local suffix="${2:-}"
+    CLIENT_POD_COUNTER=$((CLIENT_POD_COUNTER + 1))
+    local pod_name
+    if [[ -n "${suffix}" ]]; then
+        pod_name="tapir-client-${suffix}"
+    else
+        pod_name="tapir-client-$(printf '%03d' ${CLIENT_POD_COUNTER})"
+    fi
+    local disc_endpoint="srv://tapir-discovery.${NS}.svc.cluster.local:${DISCOVERY_TAPIR_PORT}"
+
+    # Clean up stale pod from failed previous runs.
+    kube delete pod "${pod_name}" 2>/dev/null || true
+
+    info "\$ kubectl run ${pod_name} ... -e \"${expr}\""
+    RUN_CLIENT_OUTPUT=$(kube run "${pod_name}" --rm -i --restart=Never \
+        --image="${TAPIR_IMAGE}" --image-pull-policy=IfNotPresent -- \
+        client \
+            --discovery-tapir-endpoint "${disc_endpoint}" \
+            -e "${expr}" \
+        2>/dev/null) || true
+
+    if [[ -n "${RUN_CLIENT_OUTPUT}" ]]; then
+        printf "%s\n" "${RUN_CLIENT_OUTPUT}" | while IFS= read -r line; do
+            info "  ${line}"
+        done
+    fi
+}
+
 # Compute split key for shard partitioning (a-z, evenly distributed).
 # Usage: split_key <shard_index> <total_shards>
 # Returns the split key for the boundary between shard i-1 and shard i.
@@ -582,32 +620,26 @@ register_shards() {
 smoke_test() {
     step "Running smoke test..."
 
-    local disc_endpoint="srv://tapir-discovery.${NS}.svc.cluster.local:${DISCOVERY_TAPIR_PORT}"
-
-    # Delete stale smoke test pods from failed previous runs.
-    kube delete pod tapir-smoke-write tapir-smoke-read 2>/dev/null || true
-
     info "Writing key 'hello' with value 'world'..."
-    kube run tapir-smoke-write --rm -i --restart=Never \
-        --image="${TAPIR_IMAGE}" --image-pull-policy=IfNotPresent -- \
-        client \
-            --discovery-tapir-endpoint "${disc_endpoint}" \
-            -e "begin; put hello world; commit" \
-        2>/dev/null || true
+    run_client "begin; put hello world; commit" "smoke-write"
 
     info "Reading key 'hello' back..."
-    local output
-    output=$(kube run tapir-smoke-read --rm -i --restart=Never \
-        --image="${TAPIR_IMAGE}" --image-pull-policy=IfNotPresent -- \
-        client \
-            --discovery-tapir-endpoint "${disc_endpoint}" \
-            -e "begin ro; get hello; abort" \
-        2>/dev/null) || true
-
-    if echo "${output}" | grep -q "world"; then
+    run_client "begin ro; get hello" "smoke-read"
+    if echo "${RUN_CLIENT_OUTPUT}" | grep -q "world"; then
         ok "Smoke test passed: read returned 'world'."
     else
-        warn "Smoke test result: ${output}"
+        warn "Smoke test result: ${RUN_CLIENT_OUTPUT}"
+    fi
+
+    info "Deleting key 'hello'..."
+    run_client "begin; delete hello; commit" "smoke-delete"
+
+    info "Verifying 'hello' is deleted (RO validated quorum read)..."
+    run_client "begin ro; get hello" "smoke-verify-del"
+    if echo "${RUN_CLIENT_OUTPUT}" | grep -q "world"; then
+        warn "Delete verification: 'hello' still returned 'world'"
+    else
+        ok "Delete verified: 'hello' no longer returns 'world'."
     fi
 }
 
