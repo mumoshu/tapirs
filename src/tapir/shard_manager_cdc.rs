@@ -168,7 +168,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
 
         // Phase 2: Catch-up tailing.
         self.report_progress("split:catch-up");
-        for _catchup_iter in 0..30u32 {
+        for catchup_iter in 0..30u32 {
             let r = self.shards[&source]
                 .client
                 .scan_changes(cursor.next_from())
@@ -178,7 +178,12 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
             if !filtered.is_empty() {
                 ship_changes(&self.shards[&new_shard].client, new_shard, &filtered, &mut self.rng).await;
             }
-            if changes.is_empty() && cursor.stabilized(r.effective_end_view) {
+            let stabilized = cursor.stabilized(r.effective_end_view);
+            self.report_progress(&format!(
+                "split:catch-up-iter i={catchup_iter} changes={} stabilized={stabilized}",
+                filtered.len(),
+            ));
+            if changes.is_empty() && stabilized {
                 break;
             }
             cursor.advance(r.effective_end_view);
@@ -415,7 +420,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
 
         // Phase 2: Catch-up tailing.
         self.report_progress("merge:catch-up");
-        for _catchup_iter in 0..30u32 {
+        for catchup_iter in 0..30u32 {
             let r = self.shards[&absorbed]
                 .client
                 .scan_changes(cursor.next_from())
@@ -424,7 +429,12 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
             if !changes.is_empty() {
                 ship_changes(&self.shards[&surviving].client, surviving, &changes, &mut self.rng).await;
             }
-            if changes.is_empty() && cursor.stabilized(r.effective_end_view) {
+            let stabilized = cursor.stabilized(r.effective_end_view);
+            self.report_progress(&format!(
+                "merge:catch-up-iter i={catchup_iter} changes={} stabilized={stabilized}",
+                changes.len(),
+            ));
+            if changes.is_empty() && stabilized {
                 break;
             }
             cursor.advance(r.effective_end_view);
@@ -799,21 +809,26 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
 
         // Phase 2: Catch-up tailing.
         self.report_progress("compact:catch-up");
-        for _catchup_iter in 0..30u32 {
-            eprintln!("[compact] phase 2: catch-up iter={_catchup_iter}, scan_changes({})", cursor.next_from());
+        for catchup_iter in 0..30u32 {
+            eprintln!("[compact] phase 2: catch-up iter={catchup_iter}, scan_changes({})", cursor.next_from());
             let r = self.shards[&source]
                 .client
                 .scan_changes(cursor.next_from())
                 .await;
             eprintln!("[compact] phase 2: scan_changes done");
             let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
-            eprintln!("[compact] phase 2: {} changes, effective_end_view={:?}, stabilized={}", changes.len(), r.effective_end_view, cursor.stabilized(r.effective_end_view));
+            let stabilized = cursor.stabilized(r.effective_end_view);
+            eprintln!("[compact] phase 2: {} changes, effective_end_view={:?}, stabilized={stabilized}", changes.len(), r.effective_end_view);
             if !changes.is_empty() {
                 eprintln!("[compact] phase 2: shipping changes");
                 ship_changes(&self.shards[&new_shard].client, new_shard, &changes, &mut self.rng).await;
                 eprintln!("[compact] phase 2: ship done");
             }
-            if changes.is_empty() && cursor.stabilized(r.effective_end_view) {
+            self.report_progress(&format!(
+                "compact:catch-up-iter i={catchup_iter} changes={} stabilized={stabilized}",
+                changes.len(),
+            ));
+            if changes.is_empty() && stabilized {
                 eprintln!("[compact] phase 2: stabilized, breaking");
                 break;
             }
