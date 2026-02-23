@@ -31,6 +31,16 @@ fn alloc_addr() -> SocketAddr {
     a
 }
 
+/// Allocate a TCP port and keep the listener alive to prevent TOCTOU races.
+///
+/// The returned listener must be passed to `Node::add_replica_with_listener`
+/// (or similar) so the transport can adopt it without re-binding.
+fn alloc_listener() -> (SocketAddr, std::net::TcpListener) {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let a = l.local_addr().unwrap();
+    (a, l)
+}
+
 fn env_or(var: &str, default: u32) -> u32 {
     std::env::var(var)
         .ok()
@@ -82,22 +92,27 @@ async fn bootstrap_cluster(
     // === Discovery tier: 3-node Tapir cluster for shard metadata ===
     let mut disc_nodes = Vec::new();
     let mut disc_temp_dirs = Vec::new();
-    let mut disc_addrs: Vec<SocketAddr> = Vec::new();
 
+    // Keep listeners alive to prevent TOCTOU port races.
+    let mut disc_listeners = Vec::new();
     for _ in 0..3 {
-        disc_addrs.push(alloc_addr());
+        disc_listeners.push(alloc_listener());
     }
+    let disc_addrs: Vec<SocketAddr> = disc_listeners.iter().map(|(a, _)| *a).collect();
     let disc_membership: Vec<String> = disc_addrs.iter().map(|a| a.to_string()).collect();
     let disc_endpoint = disc_membership.join(",");
 
-    for disc_addr in disc_addrs.iter().take(3) {
+    for (disc_addr, listener) in disc_listeners {
         let td = TempDir::new().unwrap();
         let node = Arc::new(Node::new(td.path().to_str().unwrap().to_string()));
-        node.add_replica(&ReplicaConfig {
-            shard: 0,
-            listen_addr: disc_addr.to_string(),
-            membership: disc_membership.clone(),
-        })
+        node.add_replica_with_listener(
+            &ReplicaConfig {
+                shard: 0,
+                listen_addr: disc_addr.to_string(),
+                membership: disc_membership.clone(),
+            },
+            listener,
+        )
         .await
         .unwrap();
         disc_nodes.push(node);
@@ -140,19 +155,27 @@ async fn bootstrap_cluster(
     // without any view change ceremony. Matches the operator workflow:
     //   `tapi admin add-replica --membership addr1,addr2,addr3`
     let disc_client = disc(create_disc_remote(&disc_endpoint, tapir::ReadMode::Eventual).await);
-    let mut replica_addrs: Vec<Vec<SocketAddr>> = vec![Vec::new(); num_shards as usize];
+    // Keep listeners alive to prevent TOCTOU port races.
+    let mut replica_listeners: Vec<Vec<(SocketAddr, std::net::TcpListener)>> =
+        (0..num_shards).map(|_| Vec::new()).collect();
     for shard_idx in 0..num_shards {
         for _ in 0..replicas_per_shard {
-            replica_addrs[shard_idx as usize].push(alloc_addr());
+            replica_listeners[shard_idx as usize].push(alloc_listener());
         }
     }
+    let replica_addrs: Vec<Vec<SocketAddr>> = replica_listeners
+        .iter()
+        .map(|shard| shard.iter().map(|(a, _)| *a).collect())
+        .collect();
 
     for shard_idx in 0..num_shards {
         let membership: Vec<String> = replica_addrs[shard_idx as usize]
             .iter()
             .map(|a| a.to_string())
             .collect();
-        for (replica_idx, &addr) in replica_addrs[shard_idx as usize].iter().enumerate() {
+        let shard_listeners =
+            std::mem::take(&mut replica_listeners[shard_idx as usize]);
+        for (replica_idx, (addr, listener)) in shard_listeners.into_iter().enumerate() {
             let node_idx = replica_idx % num_nodes as usize;
             let cfg = ReplicaConfig {
                 shard: shard_idx,
@@ -160,7 +183,7 @@ async fn bootstrap_cluster(
                 membership: membership.clone(),
             };
             nodes[node_idx]
-                .add_replica(&cfg)
+                .add_replica_with_listener(&cfg, listener)
                 .await
                 .unwrap_or_else(|e| {
                     panic!("add_replica shard {shard_idx} replica {replica_idx}: {e}")
@@ -723,15 +746,15 @@ async fn test_disaster_recovery_backup_restore() {
         node.remove_replica(shard);
     }
 
-    // 7. Create new nodes and allocate addresses.
+    // 7. Create new nodes and allocate addresses (listeners kept alive).
     let shard_manager_url = format!("http://{}", cluster.shard_manager_addr);
 
     let mut new_nodes: Vec<Arc<Node>> = Vec::new();
     let mut _new_temp_dirs: Vec<TempDir> = Vec::new();
-    let mut new_addrs: Vec<SocketAddr> = Vec::new();
+    let mut new_listeners: Vec<(SocketAddr, std::net::TcpListener)> = Vec::new();
 
     for _ in 0..3 {
-        new_addrs.push(alloc_addr());
+        new_listeners.push(alloc_listener());
         let td = TempDir::new().unwrap();
         let backend = create_disc_backend(&cluster.disc_endpoint, tapir::ReadMode::Eventual).await;
         let node = Arc::new(Node::with_discovery_backend_and_shard_manager(
@@ -742,22 +765,14 @@ async fn test_disaster_recovery_backup_restore() {
         new_nodes.push(node);
         _new_temp_dirs.push(td);
     }
+    let new_addrs: Vec<SocketAddr> = new_listeners.iter().map(|(a, _)| *a).collect();
 
-    // 8. Restore each replica from the backup.
-    for i in 0..3 {
-        loop {
-            match new_nodes[i]
-                .restore_shard(shard, new_addrs[i], &backup, new_addrs.clone())
-                .await
-            {
-                Ok(()) => break,
-                Err(e) if e.contains("already in use") => {
-                    new_addrs[i] = alloc_addr();
-                    continue;
-                }
-                Err(e) => panic!("restore_shard failed for node {i}: {e}"),
-            }
-        }
+    // 8. Restore each replica from the backup (pre-bound listeners, no TOCTOU race).
+    for (i, (addr, listener)) in new_listeners.into_iter().enumerate() {
+        new_nodes[i]
+            .restore_shard_with_listener(shard, addr, &backup, new_addrs.clone(), listener)
+            .await
+            .unwrap_or_else(|e| panic!("restore_shard failed for node {i}: {e}"));
     }
 
     // 9. Register new addresses in discovery.

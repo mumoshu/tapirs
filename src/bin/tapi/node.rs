@@ -73,6 +73,24 @@ impl Node {
     }
 
     pub async fn add_replica(&self, cfg: &ReplicaConfig) -> Result<(), String> {
+        self.add_replica_inner(cfg, None).await
+    }
+
+    /// Add a replica using a pre-bound TCP listener (no TOCTOU port race).
+    #[cfg(test)]
+    pub async fn add_replica_with_listener(
+        &self,
+        cfg: &ReplicaConfig,
+        listener: std::net::TcpListener,
+    ) -> Result<(), String> {
+        self.add_replica_inner(cfg, Some(listener)).await
+    }
+
+    async fn add_replica_inner(
+        &self,
+        cfg: &ReplicaConfig,
+        pre_bound_listener: Option<std::net::TcpListener>,
+    ) -> Result<(), String> {
         let shard = ShardNumber(cfg.shard);
         let listen_addr: SocketAddr = cfg
             .listen_addr
@@ -99,10 +117,16 @@ impl Node {
         transport.set_shard_addresses(shard, membership.clone());
 
         // Start listener BEFORE creating replica (IrReplica::new starts tick tasks).
-        transport
-            .listen(listen_addr)
-            .await
-            .map_err(|e| format!("failed to listen on {listen_addr}: {e}"))?;
+        if let Some(listener) = pre_bound_listener {
+            transport
+                .listen_from_std(listener)
+                .map_err(|e| format!("failed to listen on {listen_addr}: {e}"))?;
+        } else {
+            transport
+                .listen(listen_addr)
+                .await
+                .map_err(|e| format!("failed to listen on {listen_addr}: {e}"))?;
+        }
 
         let transport_for_replica = transport.clone();
         let mvcc_dir = format!("{}/shard_{}/mvcc", self.persist_dir, cfg.shard);
@@ -442,13 +466,39 @@ impl Node {
         backup: &ShardBackup,
         new_membership: Vec<SocketAddr>,
     ) -> Result<(), String> {
+        self.restore_shard_inner(shard, listen_addr, backup, new_membership, None)
+            .await
+    }
+
+    /// Restore a shard using a pre-bound TCP listener (no TOCTOU port race).
+    #[cfg(test)]
+    pub async fn restore_shard_with_listener(
+        &self,
+        shard: ShardNumber,
+        listen_addr: SocketAddr,
+        backup: &ShardBackup,
+        new_membership: Vec<SocketAddr>,
+        listener: std::net::TcpListener,
+    ) -> Result<(), String> {
+        self.restore_shard_inner(shard, listen_addr, backup, new_membership, Some(listener))
+            .await
+    }
+
+    async fn restore_shard_inner(
+        &self,
+        shard: ShardNumber,
+        listen_addr: SocketAddr,
+        backup: &ShardBackup,
+        new_membership: Vec<SocketAddr>,
+        pre_bound_listener: Option<std::net::TcpListener>,
+    ) -> Result<(), String> {
         // Create fresh replica with membership=[self].
         let cfg = ReplicaConfig {
             shard: shard.0,
             listen_addr: listen_addr.to_string(),
             membership: vec![listen_addr.to_string()],
         };
-        self.add_replica(&cfg).await?;
+        self.add_replica_inner(&cfg, pre_bound_listener).await?;
 
         // Build restore view: new membership, advanced view number,
         // preserved app_config (shard key ranges).
