@@ -9,7 +9,7 @@ use rand::distributions::{Distribution, Uniform};
 use rand_distr::Normal;
 use serde::{de::DeserializeOwned, Serialize};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap},
     fmt::Debug,
     future::Future,
     sync::{Arc, RwLock},
@@ -36,7 +36,7 @@ struct FaultState<U: IrReplicaUpcalls> {
     config: NetworkFaultConfig,
     rng: StdRng,
     reorder_buffers: HashMap<(usize, usize), ReorderBuffer<U>>,
-    partitioned_nodes: HashSet<usize>,
+    partitioned_nodes: BTreeSet<usize>,
 }
 
 /// Configuration for network fault injection
@@ -51,7 +51,7 @@ pub struct NetworkFaultConfig {
     /// Latency injection configuration
     pub latency: LatencyConfig,
     /// Blocked node pairs (symmetric)
-    pub partition_pairs: HashSet<(usize, usize)>,
+    pub partition_pairs: BTreeSet<(usize, usize)>,
     /// Per-node clock skew in nanoseconds
     pub clock_skew_nanos: i64,
 }
@@ -63,7 +63,7 @@ impl Default for NetworkFaultConfig {
             duplicate_rate: 0.0,
             reorder_buffer_size: 0,
             latency: LatencyConfig::None,
-            partition_pairs: HashSet::new(),
+            partition_pairs: BTreeSet::new(),
             clock_skew_nanos: 0,
         }
     }
@@ -114,7 +114,7 @@ impl<U: IrReplicaUpcalls> FaultyChannelTransport<U> {
                 config,
                 rng: StdRng::seed_from_u64(seed),
                 reorder_buffers: HashMap::new(),
-                partitioned_nodes: HashSet::new(),
+                partitioned_nodes: BTreeSet::new(),
             })),
         }
     }
@@ -873,7 +873,7 @@ mod tests {
                     max: Duration::from_millis(rng.gen_range(2..=50)),
                 },
             },
-            partition_pairs: HashSet::new(),
+            partition_pairs: BTreeSet::new(),
             clock_skew_nanos: rng.gen_range(-1_000_000_000..=1_000_000_000),
         };
 
@@ -981,7 +981,7 @@ mod tests {
 
         // 7. Verify hard invariants
         let received_msgs = received.lock().unwrap().clone();
-        let received_set: HashSet<(usize, usize, u64)> = received_msgs.iter().cloned().collect();
+        let received_set: BTreeSet<(usize, usize, u64)> = received_msgs.iter().cloned().collect();
 
         let send_count = sent_messages.len();
         eprintln!("Sent {} messages, received {}", send_count, received_msgs.len());

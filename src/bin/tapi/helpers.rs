@@ -1,5 +1,5 @@
 use crate::node::Node;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use tapirs::{
     DynamicRouter, RoutingClient, ShardNumber, TapirReplica, TcpTransport,
@@ -26,7 +26,7 @@ pub fn quorum_view_number(nodes: &[&Arc<Node>], shard: ShardNumber) -> u64 {
     let f = (n - 1) / 2;
     let quorum = f + 1;
 
-    let mut counts: HashMap<u64, usize> = HashMap::new();
+    let mut counts: BTreeMap<u64, usize> = BTreeMap::new();
     for &v in &views {
         *counts.entry(v).or_default() += 1;
     }

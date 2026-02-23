@@ -89,7 +89,7 @@ fn build_sharded_kv_faulty(
     Vec<Arc<TapirClient<K, V, FaultyTransport>>>,
     Vec<FaultyTransport>,
     ChannelRegistry<TapirReplica<K, V>>,
-    Vec<std::collections::HashSet<ShardNumber>>,
+    Vec<std::collections::BTreeSet<ShardNumber>>,
 ) {
     let num_shards = replica_counts.len();
     let num_nodes = node_locals.len();
@@ -108,8 +108,8 @@ fn build_sharded_kv_faulty(
     let mut assign_rng = StdRng::seed_from_u64(seed.wrapping_add(99999));
 
     // Track which shards each node hosts (for own_shards registration).
-    let mut node_shard_sets: Vec<std::collections::HashSet<ShardNumber>> =
-        (0..num_nodes).map(|_| std::collections::HashSet::new()).collect();
+    let mut node_shard_sets: Vec<std::collections::BTreeSet<ShardNumber>> =
+        (0..num_nodes).map(|_| std::collections::BTreeSet::new()).collect();
 
     let mut shards = Vec::new();
     for (shard, &count) in replica_counts.iter().enumerate() {

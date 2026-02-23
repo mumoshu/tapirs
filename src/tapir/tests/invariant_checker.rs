@@ -131,13 +131,13 @@ impl InvariantChecker {
                 write_history.entry(key).or_default().push((ts, value, rec.index));
             }
         }
-        #[allow(clippy::disallowed_methods)] // Order-independent per-key processing
+        #[allow(clippy::disallowed_methods, clippy::iter_over_hash_type)] // Order-independent per-key processing
         for history in write_history.values_mut() {
             history.sort_by_key(|(ts, _, _)| *ts);
         }
 
         // WW edges: consecutive writers to the same key.
-        #[allow(clippy::disallowed_methods)] // Order-independent per-key processing
+        #[allow(clippy::disallowed_methods, clippy::iter_over_hash_type)] // Order-independent per-key processing
         for history in write_history.values() {
             for window in history.windows(2) {
                 let from_rec = window[0].2;

@@ -11,7 +11,7 @@ fn test_rng(seed: u64) -> crate::Rng {
 }
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, BTreeSet},
     sync::Arc,
     time::Duration,
 };
@@ -120,8 +120,8 @@ async fn lock_server(num_replicas: usize) {
         fn sync(&mut self, _: &IrRecord<Self>, record: &IrRecord<Self>) {
             self.locked = None;
 
-            let mut locked = HashSet::<IrClientId>::new();
-            let mut unlocked = HashSet::<IrClientId>::new();
+            let mut locked = BTreeSet::<IrClientId>::new();
+            let mut unlocked = BTreeSet::<IrClientId>::new();
             for entry in record.inconsistent.values() {
                 unlocked.insert(entry.op.0);
             }
