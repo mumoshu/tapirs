@@ -111,22 +111,21 @@ kind_delete() {
 # Docker image build and load
 # ---------------------------------------------------------------------------
 build_and_load_images() {
-    if [[ "${TAPIR_BUILD_IMAGES}" != "1" ]]; then
+    if [[ "${TAPIR_BUILD_IMAGES}" == "1" ]]; then
+        step "Building TAPIR image '${TAPIR_IMAGE}'..."
+        run_cmd docker build -t "${TAPIR_IMAGE}" \
+            -f "${PROJECT_ROOT}/src/bin/tapiadm/docker/Dockerfile" \
+            "${PROJECT_ROOT}"
+        ok "TAPIR image built."
+
+        step "Building operator image '${TAPIR_OPERATOR_IMAGE}'..."
+        run_cmd docker build -t "${TAPIR_OPERATOR_IMAGE}" \
+            -f "${PROJECT_ROOT}/kubernetes/operator/Dockerfile" \
+            "${PROJECT_ROOT}/kubernetes/operator"
+        ok "Operator image built."
+    else
         info "Skipping image build (TAPIR_BUILD_IMAGES=0)."
-        return
     fi
-
-    step "Building TAPIR image '${TAPIR_IMAGE}'..."
-    run_cmd docker build -t "${TAPIR_IMAGE}" \
-        -f "${PROJECT_ROOT}/src/bin/tapiadm/docker/Dockerfile" \
-        "${PROJECT_ROOT}"
-    ok "TAPIR image built."
-
-    step "Building operator image '${TAPIR_OPERATOR_IMAGE}'..."
-    run_cmd docker build -t "${TAPIR_OPERATOR_IMAGE}" \
-        -f "${PROJECT_ROOT}/kubernetes/operator/Dockerfile" \
-        "${PROJECT_ROOT}/kubernetes/operator"
-    ok "Operator image built."
 
     if [[ "${TAPIR_KIND}" == "1" ]]; then
         step "Loading images into Kind cluster..."
