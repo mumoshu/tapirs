@@ -66,6 +66,7 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 # CertManager is installed by default; skip with:
 # - CERT_MANAGER_INSTALL_SKIP=true
 KIND_CLUSTER ?= tapirs-operator-test-e2e
+TAPIR_IMAGE ?= tapir:latest
 
 .PHONY: setup-test-e2e
 setup-test-e2e: install-kind ## Set up a Kind cluster for e2e tests if it does not exist
@@ -77,8 +78,16 @@ setup-test-e2e: install-kind ## Set up a Kind cluster for e2e tests if it does n
 			$(KIND) create cluster --name $(KIND_CLUSTER) ;; \
 	esac
 
+.PHONY: docker-build-tapir
+docker-build-tapir: ## Build the tapir data plane Docker image.
+	$(CONTAINER_TOOL) build -t $(TAPIR_IMAGE) -f ../../src/bin/tapiadm/docker/Dockerfile ../..
+
+.PHONY: kind-load-tapir
+kind-load-tapir: docker-build-tapir ## Build tapir image and load into Kind.
+	$(KIND) load docker-image $(TAPIR_IMAGE) --name $(KIND_CLUSTER)
+
 .PHONY: test-e2e
-test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
+test-e2e: setup-test-e2e kind-load-tapir manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
 	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e ./test/e2e/ -v -ginkgo.v
 	$(MAKE) cleanup-test-e2e
 
