@@ -234,7 +234,7 @@ install_cert_manager() {
         --for=condition=Available --namespace=cert-manager --timeout=60s
     run_cmd kubectl wait deployment.apps/cert-manager-webhook \
         --for=condition=Available --namespace=cert-manager --timeout=60s
-    ok "cert-manager is ready."
+    ok "cert-manager deployments are ready."
 
     # Create a proper CA chain. A plain self-signed issuer makes each cert its
     # own CA — no shared trust root for mTLS. Instead we create:
@@ -242,8 +242,12 @@ install_cert_manager() {
     #   2. CA Certificate in the cert-manager namespace (isCA: true)
     #   3. CA ClusterIssuer referencing the CA secret
     # All component certs then share the same CA for mutual verification.
+    #
+    # The deployment may report Available before the webhook endpoint is truly
+    # reachable. Retry the apply with backoff until the webhook responds.
     step "Creating CA chain for mTLS..."
-    kubectl apply -f - <<EOF
+    local ca_yaml
+    ca_yaml=$(cat <<CAEOF
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
@@ -274,7 +278,17 @@ metadata:
 spec:
   ca:
     secretName: tapir-ca-secret
-EOF
+CAEOF
+)
+    local ca_retries=0
+    while ! echo "${ca_yaml}" | kubectl apply -f - 2>/dev/null; do
+        ca_retries=$((ca_retries + 1))
+        if (( ca_retries > 24 )); then
+            fail "Failed to create CA chain after 120s (cert-manager webhook not ready?)"
+        fi
+        info "Waiting for cert-manager webhook... (${ca_retries}/24)"
+        sleep 5
+    done
 
     info "Waiting for CA certificate to be issued..."
     run_cmd kubectl wait certificate/tapir-ca \
@@ -443,13 +457,16 @@ smoke_test() {
     # Delete stale smoke test pods from failed previous runs.
     kube delete pod tapir-smoke-write tapir-smoke-read 2>/dev/null || true
 
-    # Build TLS flags and pod overrides for mounting cert secret.
-    local tls_args=()
-    local write_overrides=()
-    local read_overrides=()
+    # Build a pod YAML for the smoke test. When TLS is enabled, we add volume
+    # mounts and TLS CLI flags. We use kubectl apply instead of kubectl run
+    # --overrides because strategic merge on containers loses the image/args fields.
+    local tls_args=""
+    local tls_volumes=""
+    local tls_volume_mounts=""
     if [[ "${TAPIR_TLS}" == "1" ]]; then
         local tls_secret="${TAPIR_CLUSTER_NAME}-operator-client-tls"
-        tls_args=(--tls-cert /tls/tls.crt --tls-key /tls/tls.key --tls-ca /tls/ca.crt)
+        local internal_san="${TAPIR_CLUSTER_NAME}-internal.${NS}.svc.cluster.local"
+        tls_args="\"--tls-cert\", \"/tls/tls.crt\", \"--tls-key\", \"/tls/tls.key\", \"--tls-ca\", \"/tls/ca.crt\", \"--tls-server-name\", \"${internal_san}\","
 
         # Wait for the operator-client TLS secret to exist.
         info "Waiting for TLS secret '${tls_secret}' to be created by cert-manager..."
@@ -459,34 +476,51 @@ smoke_test() {
             return
         fi
 
-        # Strategic merge patch: add TLS volume + volumeMount to the generated pod.
-        # Container name must match the pod name (kubectl run default).
-        local vol_json="{\"name\":\"tls\",\"secret\":{\"secretName\":\"${tls_secret}\"}}"
-        local mount_json="{\"name\":\"tls\",\"mountPath\":\"/tls\",\"readOnly\":true}"
-        write_overrides=(--overrides "{\"spec\":{\"containers\":[{\"name\":\"tapir-smoke-write\",\"volumeMounts\":[${mount_json}]}],\"volumes\":[${vol_json}]}}")
-        read_overrides=(--overrides "{\"spec\":{\"containers\":[{\"name\":\"tapir-smoke-read\",\"volumeMounts\":[${mount_json}]}],\"volumes\":[${vol_json}]}}")
+        tls_volumes="
+  - name: tls
+    secret:
+      secretName: ${tls_secret}"
+        tls_volume_mounts="
+    volumeMounts:
+    - name: tls
+      mountPath: /tls
+      readOnly: true"
     fi
 
+    _smoke_pod() {
+        local name="$1"; shift
+        local expr="$1"; shift
+        cat <<PODEOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${name}
+  namespace: ${NS}
+spec:
+  restartPolicy: Never
+  containers:
+  - name: smoke
+    image: ${TAPIR_IMAGE}
+    imagePullPolicy: IfNotPresent
+    command: ["tapi"]
+    args: ["client", "--discovery-tapir-endpoint", "${disc_endpoint}", ${tls_args} "-e", "${expr}"]
+    stdin: true${tls_volume_mounts}
+  volumes:${tls_volumes:-" []"}
+PODEOF
+    }
+
     info "Writing key 'hello' with value 'world'..."
-    kube run tapir-smoke-write --rm -i --restart=Never \
-        --image="${TAPIR_IMAGE}" --image-pull-policy=IfNotPresent \
-        "${write_overrides[@]}" -- \
-        client \
-            --discovery-tapir-endpoint "${disc_endpoint}" \
-            "${tls_args[@]}" \
-            -e "begin; put hello world; commit" \
-        2>/dev/null || true
+    _smoke_pod tapir-smoke-write "begin; put hello world; commit" | kube apply -f -
+    kube wait --for=jsonpath='{.status.phase}'=Succeeded pod/tapir-smoke-write --timeout=60s 2>/dev/null || true
+    kube logs tapir-smoke-write 2>/dev/null || true
+    kube delete pod tapir-smoke-write --wait=false 2>/dev/null || true
 
     info "Reading key 'hello' back..."
+    _smoke_pod tapir-smoke-read "begin ro; get hello; abort" | kube apply -f -
+    kube wait --for=jsonpath='{.status.phase}'=Succeeded pod/tapir-smoke-read --timeout=60s 2>/dev/null || true
     local output
-    output=$(kube run tapir-smoke-read --rm -i --restart=Never \
-        --image="${TAPIR_IMAGE}" --image-pull-policy=IfNotPresent \
-        "${read_overrides[@]}" -- \
-        client \
-            --discovery-tapir-endpoint "${disc_endpoint}" \
-            "${tls_args[@]}" \
-            -e "begin ro; get hello; abort" \
-        2>/dev/null) || true
+    output=$(kube logs tapir-smoke-read 2>/dev/null) || true
+    kube delete pod tapir-smoke-read --wait=false 2>/dev/null || true
 
     if echo "${output}" | grep -q "world"; then
         ok "Smoke test passed: read returned 'world'."
