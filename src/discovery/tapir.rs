@@ -688,19 +688,19 @@ mod tests {
     use crate::discovery::RemoteShardDirectory;
 
     // Helpers to bind K=() for the blanket RemoteShardDirectory impl.
-    async fn put(dir: &(impl RemoteShardDirectory<usize, ()>), shard: ShardNumber, membership: IrMembership<usize>, view: u64) -> Result<(), DiscoveryError> {
+    async fn put(dir: &impl RemoteShardDirectory<usize, ()>, shard: ShardNumber, membership: IrMembership<usize>, view: u64) -> Result<(), DiscoveryError> {
         dir.put(shard, membership, view).await
     }
-    async fn get(dir: &(impl RemoteShardDirectory<usize, ()>), shard: ShardNumber) -> Result<Option<(IrMembership<usize>, u64)>, DiscoveryError> {
+    async fn get(dir: &impl RemoteShardDirectory<usize, ()>, shard: ShardNumber) -> Result<Option<(IrMembership<usize>, u64)>, DiscoveryError> {
         dir.get(shard).await
     }
-    async fn remove(dir: &(impl RemoteShardDirectory<usize, ()>), shard: ShardNumber) -> Result<(), DiscoveryError> {
+    async fn remove(dir: &impl RemoteShardDirectory<usize, ()>, shard: ShardNumber) -> Result<(), DiscoveryError> {
         dir.remove(shard).await
     }
-    async fn replace(dir: &(impl RemoteShardDirectory<usize, ()>), old: ShardNumber, new: ShardNumber, membership: IrMembership<usize>, view: u64) -> Result<(), DiscoveryError> {
+    async fn replace(dir: &impl RemoteShardDirectory<usize, ()>, old: ShardNumber, new: ShardNumber, membership: IrMembership<usize>, view: u64) -> Result<(), DiscoveryError> {
         dir.replace(old, new, membership, view).await
     }
-    async fn all(dir: &(impl RemoteShardDirectory<usize, ()>)) -> Result<Vec<(ShardNumber, IrMembership<usize>, u64)>, DiscoveryError> {
+    async fn all(dir: &impl RemoteShardDirectory<usize, ()>) -> Result<Vec<(ShardNumber, IrMembership<usize>, u64)>, DiscoveryError> {
         dir.all().await
     }
 

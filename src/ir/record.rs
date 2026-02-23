@@ -229,19 +229,19 @@ impl<IO: Clone, CO: Clone, CR: Clone> VersionedRecord<IO, CO, CR> {
     // --- Mutable access (for Finalize: promote from base to overlay if needed) ---
 
     pub fn get_mut_inconsistent(&mut self, op_id: &OpId) -> Option<&mut InconsistentEntry<IO>> {
-        if !self.overlay.inconsistent.contains_key(op_id) {
-            if let Some(entry) = self.base.inconsistent.get(op_id) {
-                self.overlay.inconsistent.insert(*op_id, entry.clone());
-            }
+        if !self.overlay.inconsistent.contains_key(op_id)
+            && let Some(entry) = self.base.inconsistent.get(op_id)
+        {
+            self.overlay.inconsistent.insert(*op_id, entry.clone());
         }
         self.overlay.inconsistent.get_mut(op_id)
     }
 
     pub fn get_mut_consensus(&mut self, op_id: &OpId) -> Option<&mut ConsensusEntry<CO, CR>> {
-        if !self.overlay.consensus.contains_key(op_id) {
-            if let Some(entry) = self.base.consensus.get(op_id) {
-                self.overlay.consensus.insert(*op_id, entry.clone());
-            }
+        if !self.overlay.consensus.contains_key(op_id)
+            && let Some(entry) = self.base.consensus.get(op_id)
+        {
+            self.overlay.consensus.insert(*op_id, entry.clone());
         }
         self.overlay.consensus.get_mut(op_id)
     }
@@ -249,6 +249,7 @@ impl<IO: Clone, CO: Clone, CR: Clone> VersionedRecord<IO, CO, CR> {
     // --- Delta extraction ---
 
     /// Returns a reference to the overlay (the delta since last seal).
+    #[cfg(test)]
     pub fn overlay(&self) -> &RecordImpl<IO, CO, CR> {
         &self.overlay
     }
@@ -290,6 +291,7 @@ impl<IO: Clone, CO: Clone, CR: Clone> VersionedRecord<IO, CO, CR> {
     // --- View change operations ---
 
     /// Merge overlay into base and clear the overlay. Called at view change boundaries.
+    #[cfg(test)]
     pub fn seal(&mut self, new_view: u64) {
         for (op_id, entry) in std::mem::take(&mut self.overlay.inconsistent) {
             self.base.inconsistent.insert(op_id, entry);

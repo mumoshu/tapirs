@@ -311,10 +311,10 @@ where
                     // end_key is the scan's exclusive upper bound — allow
                     // end_key == range.end since scan [start, end) is fully
                     // within [range.start, range.end).
-                    if let Some(range_end) = &range.end {
-                        if &end_key > range_end {
-                            return UR::OutOfRange;
-                        }
+                    if let Some(range_end) = &range.end
+                        && &end_key > range_end
+                    {
+                        return UR::OutOfRange;
                     }
                 }
                 // When no timestamp is specified, use latest (same semantics as Get).
@@ -395,10 +395,10 @@ where
                     if !range.contains(&start_key) {
                         return UR::OutOfRange;
                     }
-                    if let Some(range_end) = &range.end {
-                        if &end_key > range_end {
-                            return UR::OutOfRange;
-                        }
+                    if let Some(range_end) = &range.end
+                        && &end_key > range_end
+                    {
+                        return UR::OutOfRange;
                     }
                 }
                 UR::ScanValidated(self.inner.scan_validated(&start_key, &end_key, snapshot_ts))
@@ -542,10 +542,10 @@ where
                     if !range.contains(start_key) {
                         return Some(IR::OutOfRange);
                     }
-                    if let Some(range_end) = &range.end {
-                        if end_key > range_end {
-                            return Some(IR::OutOfRange);
-                        }
+                    if let Some(range_end) = &range.end
+                        && end_key > range_end
+                    {
+                        return Some(IR::OutOfRange);
                     }
                 }
                 let results = self.inner.quorum_scan(start_key.clone(), end_key.clone(), *snapshot_ts);

@@ -16,7 +16,7 @@ use super::invariant_checker::{InvariantChecker, TxnOutcome, TxnRecord};
 use crate::{
     discovery::{
         CachingShardDirectory, InMemoryShardDirectory,
-        RemoteShardDirectory as _, ShardDirectory as _,
+        ShardDirectory as _,
     },
     mvcc::disk::{DiskStore, memory_io::MemoryIo},
     tapir::dynamic_router::{DynamicRouter, ShardDirectory, ShardEntry},
