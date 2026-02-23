@@ -182,10 +182,14 @@ func (r *TAPIRClusterReconciler) createOrUpdateStatefulSet(ctx context.Context, 
 		return err
 	}
 
-	// Update mutable fields
-	existing.Spec.Replicas = desired.Spec.Replicas
-	existing.Spec.Template = desired.Spec.Template
-	return r.Update(ctx, &existing)
+	// Update mutable fields only if changed
+	if !equality.Semantic.DeepEqual(existing.Spec.Replicas, desired.Spec.Replicas) ||
+		!equality.Semantic.DeepEqual(existing.Spec.Template, desired.Spec.Template) {
+		existing.Spec.Replicas = desired.Spec.Replicas
+		existing.Spec.Template = desired.Spec.Template
+		return r.Update(ctx, &existing)
+	}
+	return nil
 }
 
 func (r *TAPIRClusterReconciler) createOrUpdateDeployment(ctx context.Context, cluster *tapirv1alpha1.TAPIRCluster, desired *appsv1.Deployment) error {
@@ -202,10 +206,14 @@ func (r *TAPIRClusterReconciler) createOrUpdateDeployment(ctx context.Context, c
 		return err
 	}
 
-	// Update mutable fields
-	existing.Spec.Replicas = desired.Spec.Replicas
-	existing.Spec.Template = desired.Spec.Template
-	return r.Update(ctx, &existing)
+	// Update mutable fields only if changed
+	if !equality.Semantic.DeepEqual(existing.Spec.Replicas, desired.Spec.Replicas) ||
+		!equality.Semantic.DeepEqual(existing.Spec.Template, desired.Spec.Template) {
+		existing.Spec.Replicas = desired.Spec.Replicas
+		existing.Spec.Template = desired.Spec.Template
+		return r.Update(ctx, &existing)
+	}
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
