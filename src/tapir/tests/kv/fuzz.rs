@@ -899,17 +899,21 @@ async fn fuzz_tapir_transactions() {
                         reshard_event_log.record(FuzzEvent::ReshardSplitAttempt {
                             round, source_shard: source.0, split_key,
                         });
-                        let op_start = std::time::Instant::now();
+                        let op_wall_start = std::time::Instant::now();
+                        let op_sim_start = tokio::time::Instant::now();
                         match manager.split(source, split_key, new_shard_number, membership).await {
                             Ok(()) => {
                                 next_shard_idx += 1;
                                 reshard_event_log.record(FuzzEvent::ReshardSplitOk {
-                                    round, elapsed_ms: op_start.elapsed().as_millis(),
+                                    round,
+                                    wall_ms: op_wall_start.elapsed().as_millis(),
+                                    sim_ms: op_sim_start.elapsed().as_millis(),
                                 });
                             }
                             Err(e) => reshard_event_log.record(FuzzEvent::ReshardSplitErr {
                                 round, error: format!("{e:?}"),
-                                elapsed_ms: op_start.elapsed().as_millis(),
+                                wall_ms: op_wall_start.elapsed().as_millis(),
+                                sim_ms: op_sim_start.elapsed().as_millis(),
                             }),
                         }
                         break;
@@ -924,16 +928,20 @@ async fn fuzz_tapir_transactions() {
                         reshard_event_log.record(FuzzEvent::ReshardMergeAttempt {
                             round, absorbed: absorbed.0, surviving: surviving.0,
                         });
-                        let op_start = std::time::Instant::now();
+                        let op_wall_start = std::time::Instant::now();
+                        let op_sim_start = tokio::time::Instant::now();
                         match manager.merge(absorbed, surviving).await {
                             Ok(()) => {
                                 reshard_event_log.record(FuzzEvent::ReshardMergeOk {
-                                    round, elapsed_ms: op_start.elapsed().as_millis(),
+                                    round,
+                                    wall_ms: op_wall_start.elapsed().as_millis(),
+                                    sim_ms: op_sim_start.elapsed().as_millis(),
                                 });
                             }
                             Err(e) => reshard_event_log.record(FuzzEvent::ReshardMergeErr {
                                 round, error: format!("{e:?}"),
-                                elapsed_ms: op_start.elapsed().as_millis(),
+                                wall_ms: op_wall_start.elapsed().as_millis(),
+                                sim_ms: op_sim_start.elapsed().as_millis(),
                             }),
                         }
                         break;
@@ -946,17 +954,21 @@ async fn fuzz_tapir_transactions() {
                     reshard_event_log.record(FuzzEvent::ReshardCompactAttempt {
                         round, source_shard: source.0,
                     });
-                    let op_start = std::time::Instant::now();
+                    let op_wall_start = std::time::Instant::now();
+                    let op_sim_start = tokio::time::Instant::now();
                     match manager.compact(source, new_shard_number, membership).await {
                         Ok(()) => {
                             next_shard_idx += 1;
                             reshard_event_log.record(FuzzEvent::ReshardCompactOk {
-                                round, elapsed_ms: op_start.elapsed().as_millis(),
+                                round,
+                                wall_ms: op_wall_start.elapsed().as_millis(),
+                                sim_ms: op_sim_start.elapsed().as_millis(),
                             });
                         }
                         Err(e) => reshard_event_log.record(FuzzEvent::ReshardCompactErr {
                             round, error: format!("{e:?}"),
-                            elapsed_ms: op_start.elapsed().as_millis(),
+                            wall_ms: op_wall_start.elapsed().as_millis(),
+                            sim_ms: op_sim_start.elapsed().as_millis(),
                         }),
                     }
                     break;
@@ -1033,6 +1045,8 @@ async fn fuzz_tapir_transactions() {
     }
 
     // --- Verification phase (30s overall timeout) ---
+    let verify_wall_start = std::time::Instant::now();
+    let verify_sim_start = tokio::time::Instant::now();
     let verify_result = timeout(Duration::from_secs(30), async {
 
     let drain_start = std::time::Instant::now();
@@ -1063,7 +1077,8 @@ async fn fuzz_tapir_transactions() {
         let active_shards = final_shards.lock().unwrap();
         if let Some(ref shard_entries) = *active_shards {
             for entry in shard_entries {
-                let shard_start = std::time::Instant::now();
+                let shard_wall_start = std::time::Instant::now();
+                let shard_sim_start = tokio::time::Instant::now();
                 eprintln!("fuzz: checking cluster_remote shard {:?} (seed={seed})", entry.shard);
                 let result = timeout(
                     Duration::from_secs(5),
@@ -1071,9 +1086,10 @@ async fn fuzz_tapir_transactions() {
                 ).await;
                 match result {
                     Ok(Ok(Some(_))) => {
-                        let ms = shard_start.elapsed().as_millis();
                         event_log.record(FuzzEvent::VerifyClusterRemoteShardOk {
-                            shard: entry.shard.0, elapsed_ms: ms,
+                            shard: entry.shard.0,
+                            wall_ms: shard_wall_start.elapsed().as_millis(),
+                            sim_ms: shard_sim_start.elapsed().as_millis(),
                         });
                     }
                     Ok(Ok(None)) => {
@@ -1093,7 +1109,8 @@ async fn fuzz_tapir_transactions() {
                     Err(_) => {
                         event_log.record(FuzzEvent::VerifyPhaseTimedOut {
                             phase: format!("cluster_remote_shard_{}", entry.shard.0),
-                            elapsed_ms: 5_000,
+                            wall_ms: shard_wall_start.elapsed().as_millis(),
+                            sim_ms: shard_sim_start.elapsed().as_millis(),
                         });
                         event_log.dump(seed);
                         panic!(
@@ -1105,7 +1122,8 @@ async fn fuzz_tapir_transactions() {
             }
         } else {
             for s in 0..num_shards {
-                let shard_start = std::time::Instant::now();
+                let shard_wall_start = std::time::Instant::now();
+                let shard_sim_start = tokio::time::Instant::now();
                 eprintln!("fuzz: checking cluster_remote shard {s} (seed={seed})");
                 let shard_num = ShardNumber(s);
                 let result = timeout(
@@ -1114,9 +1132,10 @@ async fn fuzz_tapir_transactions() {
                 ).await;
                 match result {
                     Ok(Ok(Some(_))) => {
-                        let ms = shard_start.elapsed().as_millis();
                         event_log.record(FuzzEvent::VerifyClusterRemoteShardOk {
-                            shard: s, elapsed_ms: ms,
+                            shard: s,
+                            wall_ms: shard_wall_start.elapsed().as_millis(),
+                            sim_ms: shard_sim_start.elapsed().as_millis(),
                         });
                     }
                     Ok(Ok(None)) => {
@@ -1130,7 +1149,8 @@ async fn fuzz_tapir_transactions() {
                     Err(_) => {
                         event_log.record(FuzzEvent::VerifyPhaseTimedOut {
                             phase: format!("cluster_remote_shard_{s}"),
-                            elapsed_ms: 5_000,
+                            wall_ms: shard_wall_start.elapsed().as_millis(),
+                            sim_ms: shard_sim_start.elapsed().as_millis(),
                         });
                         event_log.dump(seed);
                         panic!(
@@ -1196,23 +1216,25 @@ async fn fuzz_tapir_transactions() {
     let verify_router = Arc::new(DynamicRouter::new(Arc::new(RwLock::new(verify_dir))));
     let verify_client = RoutingClient::new(Arc::clone(&clients[0]), verify_router);
     let mut counter_mismatches: Vec<String> = Vec::new();
-    let counter_start = std::time::Instant::now();
+    let counter_wall_start = std::time::Instant::now();
     for (key, expected) in &inline_counts {
         event_log.record(FuzzEvent::VerifyCounterKeyStart { key: *key });
-        let key_start = std::time::Instant::now();
+        let key_wall_start = std::time::Instant::now();
+        let key_sim_start = tokio::time::Instant::now();
         eprintln!("fuzz: verify key={key} (seed={seed})");
         let txn = verify_client.begin_read_only();
         let get_result = timeout(Duration::from_secs(5), txn.get(*key)).await;
         match get_result {
             Ok(Ok(val)) => {
                 let actual = val.unwrap_or(0);
-                let key_ms = key_start.elapsed().as_millis();
+                let wall_ms = key_wall_start.elapsed().as_millis();
+                let sim_ms = key_sim_start.elapsed().as_millis();
                 event_log.record(FuzzEvent::VerifyCounterKeyDone {
-                    key: *key, expected: *expected, actual, elapsed_ms: key_ms,
+                    key: *key, expected: *expected, actual, wall_ms, sim_ms,
                 });
                 eprintln!(
                     "fuzz: verify key={key} actual={actual} expected={expected} \
-                     in {key_ms}ms (seed={seed})"
+                     wall={wall_ms}ms sim={sim_ms}ms (seed={seed})"
                 );
                 if actual != *expected {
                     counter_mismatches.push(format!(
@@ -1227,7 +1249,8 @@ async fn fuzz_tapir_transactions() {
             Err(_) => {
                 event_log.record(FuzzEvent::VerifyPhaseTimedOut {
                     phase: format!("counter_key_{key}"),
-                    elapsed_ms: 5_000,
+                    wall_ms: key_wall_start.elapsed().as_millis(),
+                    sim_ms: key_sim_start.elapsed().as_millis(),
                 });
                 event_log.dump(seed);
                 panic!(
@@ -1238,7 +1261,7 @@ async fn fuzz_tapir_transactions() {
             }
         }
     }
-    let counter_ms = counter_start.elapsed().as_millis();
+    let counter_ms = counter_wall_start.elapsed().as_millis();
     eprintln!("fuzz: counter verification done in {counter_ms}ms (seed={seed})");
     if !counter_mismatches.is_empty() {
         event_log.dump(seed);
@@ -1255,7 +1278,8 @@ async fn fuzz_tapir_transactions() {
     if verify_result.is_err() {
         event_log.record(FuzzEvent::VerifyPhaseTimedOut {
             phase: "entire-verification".to_string(),
-            elapsed_ms: 30_000,
+            wall_ms: verify_wall_start.elapsed().as_millis(),
+            sim_ms: verify_sim_start.elapsed().as_millis(),
         });
         event_log.dump(seed);
         panic!(

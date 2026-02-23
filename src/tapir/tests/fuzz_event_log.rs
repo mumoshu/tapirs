@@ -105,12 +105,14 @@ pub enum FuzzEvent {
     },
     ReshardSplitOk {
         round: usize,
-        elapsed_ms: u128,
+        wall_ms: u128,
+        sim_ms: u128,
     },
     ReshardSplitErr {
         round: usize,
         error: String,
-        elapsed_ms: u128,
+        wall_ms: u128,
+        sim_ms: u128,
     },
     ReshardMergeAttempt {
         round: usize,
@@ -119,12 +121,14 @@ pub enum FuzzEvent {
     },
     ReshardMergeOk {
         round: usize,
-        elapsed_ms: u128,
+        wall_ms: u128,
+        sim_ms: u128,
     },
     ReshardMergeErr {
         round: usize,
         error: String,
-        elapsed_ms: u128,
+        wall_ms: u128,
+        sim_ms: u128,
     },
     ReshardCompactAttempt {
         round: usize,
@@ -132,12 +136,14 @@ pub enum FuzzEvent {
     },
     ReshardCompactOk {
         round: usize,
-        elapsed_ms: u128,
+        wall_ms: u128,
+        sim_ms: u128,
     },
     ReshardCompactErr {
         round: usize,
         error: String,
-        elapsed_ms: u128,
+        wall_ms: u128,
+        sim_ms: u128,
     },
     ReshardPhase {
         round: usize,
@@ -158,7 +164,8 @@ pub enum FuzzEvent {
     // Verification phase
     VerifyClusterRemoteShardOk {
         shard: u32,
-        elapsed_ms: u128,
+        wall_ms: u128,
+        sim_ms: u128,
     },
     VerifyCounterKeyStart {
         key: i64,
@@ -167,11 +174,13 @@ pub enum FuzzEvent {
         key: i64,
         expected: i64,
         actual: i64,
-        elapsed_ms: u128,
+        wall_ms: u128,
+        sim_ms: u128,
     },
     VerifyPhaseTimedOut {
         phase: String,
-        elapsed_ms: u128,
+        wall_ms: u128,
+        sim_ms: u128,
     },
 }
 
@@ -266,22 +275,22 @@ impl fmt::Display for FuzzEvent {
                 write!(f, "out-of-range-retry: {message}"),
             FuzzEvent::ReshardSplitAttempt { round, source_shard, split_key } =>
                 write!(f, "RESHARD[{round}] split-attempt shard={source_shard} key={split_key}"),
-            FuzzEvent::ReshardSplitOk { round, elapsed_ms } =>
-                write!(f, "RESHARD[{round}] split-ok elapsed={elapsed_ms}ms"),
-            FuzzEvent::ReshardSplitErr { round, error, elapsed_ms } =>
-                write!(f, "RESHARD[{round}] split-err elapsed={elapsed_ms}ms: {error}"),
+            FuzzEvent::ReshardSplitOk { round, wall_ms, sim_ms } =>
+                write!(f, "RESHARD[{round}] split-ok wall={wall_ms}ms sim={sim_ms}ms"),
+            FuzzEvent::ReshardSplitErr { round, error, wall_ms, sim_ms } =>
+                write!(f, "RESHARD[{round}] split-err wall={wall_ms}ms sim={sim_ms}ms: {error}"),
             FuzzEvent::ReshardMergeAttempt { round, absorbed, surviving } =>
                 write!(f, "RESHARD[{round}] merge-attempt absorbed={absorbed} surviving={surviving}"),
-            FuzzEvent::ReshardMergeOk { round, elapsed_ms } =>
-                write!(f, "RESHARD[{round}] merge-ok elapsed={elapsed_ms}ms"),
-            FuzzEvent::ReshardMergeErr { round, error, elapsed_ms } =>
-                write!(f, "RESHARD[{round}] merge-err elapsed={elapsed_ms}ms: {error}"),
+            FuzzEvent::ReshardMergeOk { round, wall_ms, sim_ms } =>
+                write!(f, "RESHARD[{round}] merge-ok wall={wall_ms}ms sim={sim_ms}ms"),
+            FuzzEvent::ReshardMergeErr { round, error, wall_ms, sim_ms } =>
+                write!(f, "RESHARD[{round}] merge-err wall={wall_ms}ms sim={sim_ms}ms: {error}"),
             FuzzEvent::ReshardCompactAttempt { round, source_shard } =>
                 write!(f, "RESHARD[{round}] compact-attempt shard={source_shard}"),
-            FuzzEvent::ReshardCompactOk { round, elapsed_ms } =>
-                write!(f, "RESHARD[{round}] compact-ok elapsed={elapsed_ms}ms"),
-            FuzzEvent::ReshardCompactErr { round, error, elapsed_ms } =>
-                write!(f, "RESHARD[{round}] compact-err elapsed={elapsed_ms}ms: {error}"),
+            FuzzEvent::ReshardCompactOk { round, wall_ms, sim_ms } =>
+                write!(f, "RESHARD[{round}] compact-ok wall={wall_ms}ms sim={sim_ms}ms"),
+            FuzzEvent::ReshardCompactErr { round, error, wall_ms, sim_ms } =>
+                write!(f, "RESHARD[{round}] compact-err wall={wall_ms}ms sim={sim_ms}ms: {error}"),
             FuzzEvent::ReshardPhase { round, phase } =>
                 write!(f, "RESHARD[{round}] phase: {phase}"),
             FuzzEvent::MayHaveCommittedCount { count } =>
@@ -294,14 +303,14 @@ impl fmt::Display for FuzzEvent {
                 write!(f, "COUNTER verify-passed"),
             FuzzEvent::WorkloadTimedOut =>
                 write!(f, "WORKLOAD timed-out"),
-            FuzzEvent::VerifyClusterRemoteShardOk { shard, elapsed_ms } =>
-                write!(f, "cluster-remote shard={shard} ok elapsed={elapsed_ms}ms"),
+            FuzzEvent::VerifyClusterRemoteShardOk { shard, wall_ms, sim_ms } =>
+                write!(f, "cluster-remote shard={shard} ok wall={wall_ms}ms sim={sim_ms}ms"),
             FuzzEvent::VerifyCounterKeyStart { key } =>
                 write!(f, "counter key={key} starting"),
-            FuzzEvent::VerifyCounterKeyDone { key, expected, actual, elapsed_ms } =>
-                write!(f, "counter key={key} expected={expected} actual={actual} elapsed={elapsed_ms}ms"),
-            FuzzEvent::VerifyPhaseTimedOut { phase, elapsed_ms } =>
-                write!(f, "TIMED OUT phase={phase} elapsed={elapsed_ms}ms"),
+            FuzzEvent::VerifyCounterKeyDone { key, expected, actual, wall_ms, sim_ms } =>
+                write!(f, "counter key={key} expected={expected} actual={actual} wall={wall_ms}ms sim={sim_ms}ms"),
+            FuzzEvent::VerifyPhaseTimedOut { phase, wall_ms, sim_ms } =>
+                write!(f, "TIMED OUT phase={phase} wall={wall_ms}ms sim={sim_ms}ms"),
         }
     }
 }
@@ -313,9 +322,16 @@ struct FuzzEventEntry {
 
 /// Thread-safe event log shared across spawned tasks.
 ///
-/// Timestamps are simulated time from `tokio::time::Instant` (deterministic
-/// under `start_paused = true`), so the log output is identical across runs
-/// for the same seed.
+/// **Time conventions:**
+/// - The `[sim Xms]` column in dump output is **simulated time** from
+///   `tokio::time::Instant` (deterministic under `start_paused = true`).
+/// - Event fields named `wall_ms` are **wall-clock time** from
+///   `std::time::Instant` (real elapsed, varies between runs).
+/// - Event fields named `sim_ms` are **simulated elapsed time** for that
+///   specific operation (not the global timeline offset).
+/// - Events spanning async work (resharding, verification) report both
+///   `wall_ms` and `sim_ms` so you can distinguish protocol overhead
+///   (sim) from CPU/scheduling overhead (wall).
 #[derive(Clone)]
 pub struct FuzzEventLog {
     start: Instant,
@@ -345,7 +361,7 @@ impl FuzzEventLog {
         for entry in entries.iter() {
             let ms = entry.elapsed.as_millis();
             let actor = entry.event.actor();
-            eprintln!("[{ms:>8}ms] {actor:<10} {}", entry.event);
+            eprintln!("[sim {ms:>8}ms] {actor:<10} {}", entry.event);
         }
         eprintln!("=== END FUZZ EVENT LOG ===");
     }
