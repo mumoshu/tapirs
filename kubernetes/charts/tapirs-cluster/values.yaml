@@ -1,0 +1,19 @@
+# name overrides the TAPIRCluster metadata.name (defaults to release name).
+name: ""
+
+image: tapir:latest
+
+discovery:
+  replicas: 3
+
+nodePools:
+  - name: default
+    replicas: 3
+
+shards:
+  - number: 0
+    replicas: 3
+    keyRangeEnd: "n"
+  - number: 1
+    replicas: 3
+    keyRangeStart: "n"
