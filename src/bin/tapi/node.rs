@@ -222,8 +222,10 @@ impl Node {
         Ok(())
     }
 
-    async fn shard_manager_join(
+    /// Send an HTTP POST to the shard-manager, handling both plain TCP and TLS.
+    async fn shard_manager_http_post(
         &self,
+        path: &str,
         shard: ShardNumber,
         listen_addr: SocketAddr,
     ) -> Result<(), String> {
@@ -232,45 +234,77 @@ impl Node {
             .as_ref()
             .ok_or_else(|| "no shard-manager-url configured".to_string())?;
 
-        let host_port = url
-            .strip_prefix("http://")
-            .unwrap_or(url);
+        let (host_port, _is_https) = if let Some(hp) = url.strip_prefix("https://") {
+            (hp, true)
+        } else if let Some(hp) = url.strip_prefix("http://") {
+            (hp, false)
+        } else {
+            (url.as_str(), false)
+        };
 
         let body = serde_json::to_string(&serde_json::json!({
             "shard": shard.0,
             "listen_addr": listen_addr.to_string(),
         }))
-        .map_err(|e| format!("serialize join request: {e}"))?;
+        .map_err(|e| format!("serialize {path} request: {e}"))?;
 
         let request = format!(
-            "POST /v1/join HTTP/1.1\r\nHost: {host_port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            "POST {path} HTTP/1.1\r\nHost: {host_port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len(),
         );
 
         // Use string-based connect to support both IP:port and hostname:port.
-        let mut stream = tokio::net::TcpStream::connect(host_port)
+        let tcp_stream = tokio::net::TcpStream::connect(host_port)
             .await
             .map_err(|e| format!("connect to shard-manager at {host_port}: {e}"))?;
 
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        stream
-            .write_all(request.as_bytes())
-            .await
-            .map_err(|e| format!("send join request: {e}"))?;
 
-        let mut response = Vec::new();
-        stream
-            .read_to_end(&mut response)
-            .await
-            .map_err(|e| format!("read join response: {e}"))?;
+        #[cfg(feature = "tls")]
+        let response = if _is_https {
+            let tls_config = self.tls_config.as_ref()
+                .ok_or_else(|| "https:// shard-manager URL requires TLS config (--tls-cert/--tls-key/--tls-ca)".to_string())?;
+            let connector = tapirs::tls::ReloadableTlsConnector::new(tls_config)
+                .map_err(|e| format!("TLS connector: {e}"))?;
+            let host = host_port.rsplit_once(':').map(|(h, _)| h).unwrap_or(host_port);
+            let server_name = rustls::pki_types::ServerName::try_from(host.to_string())
+                .map_err(|e| format!("invalid TLS server name '{host}': {e}"))?;
+            let mut tls_stream = connector.connector()
+                .connect(server_name, tcp_stream).await
+                .map_err(|e| format!("TLS handshake with shard-manager: {e}"))?;
+            tls_stream.write_all(request.as_bytes()).await
+                .map_err(|e| format!("send {path}: {e}"))?;
+            let mut resp = Vec::new();
+            tls_stream.read_to_end(&mut resp).await
+                .map_err(|e| format!("read {path}: {e}"))?;
+            resp
+        } else {
+            let mut stream = tcp_stream;
+            stream.write_all(request.as_bytes()).await
+                .map_err(|e| format!("send {path}: {e}"))?;
+            let mut resp = Vec::new();
+            stream.read_to_end(&mut resp).await
+                .map_err(|e| format!("read {path}: {e}"))?;
+            resp
+        };
+
+        #[cfg(not(feature = "tls"))]
+        let response = {
+            let _ = _is_https;
+            let mut stream = tcp_stream;
+            stream.write_all(request.as_bytes()).await
+                .map_err(|e| format!("send {path}: {e}"))?;
+            let mut resp = Vec::new();
+            stream.read_to_end(&mut resp).await
+                .map_err(|e| format!("read {path}: {e}"))?;
+            resp
+        };
 
         let resp_str = String::from_utf8_lossy(&response);
         let resp_body = resp_str
             .split_once("\r\n\r\n")
             .map(|(_, b)| b)
             .unwrap_or("");
-
-        // Parse HTTP status line for error detection.
         let status_ok = resp_str
             .lines()
             .next()
@@ -278,7 +312,6 @@ impl Node {
             .unwrap_or(false);
 
         if !status_ok {
-            // Try to extract error message from JSON body.
             #[derive(serde::Deserialize)]
             struct ErrResp {
                 error: String,
@@ -286,10 +319,18 @@ impl Node {
             if let Ok(err) = serde_json::from_str::<ErrResp>(resp_body) {
                 return Err(err.error);
             }
-            return Err(format!("shard-manager returned error (body: {resp_body})"));
+            return Err(format!("shard-manager error on {path}: {resp_body}"));
         }
 
         Ok(())
+    }
+
+    async fn shard_manager_join(
+        &self,
+        shard: ShardNumber,
+        listen_addr: SocketAddr,
+    ) -> Result<(), String> {
+        self.shard_manager_http_post("/v1/join", shard, listen_addr).await
     }
 
     /// Coordinate removing this node's replica from a shard via the shard-manager.
@@ -321,65 +362,7 @@ impl Node {
         shard: ShardNumber,
         listen_addr: SocketAddr,
     ) -> Result<(), String> {
-        let url = self
-            .shard_manager_url
-            .as_ref()
-            .ok_or_else(|| "no shard-manager-url configured".to_string())?;
-
-        let host_port = url.strip_prefix("http://").unwrap_or(url);
-
-        let body = serde_json::to_string(&serde_json::json!({
-            "shard": shard.0,
-            "listen_addr": listen_addr.to_string(),
-        }))
-        .map_err(|e| format!("serialize leave request: {e}"))?;
-
-        let request = format!(
-            "POST /v1/leave HTTP/1.1\r\nHost: {host_port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len(),
-        );
-
-        // Use string-based connect to support both IP:port and hostname:port.
-        let mut stream = tokio::net::TcpStream::connect(host_port)
-            .await
-            .map_err(|e| format!("connect to shard-manager at {host_port}: {e}"))?;
-
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        stream
-            .write_all(request.as_bytes())
-            .await
-            .map_err(|e| format!("send leave request: {e}"))?;
-
-        let mut response = Vec::new();
-        stream
-            .read_to_end(&mut response)
-            .await
-            .map_err(|e| format!("read leave response: {e}"))?;
-
-        let resp_str = String::from_utf8_lossy(&response);
-        let resp_body = resp_str
-            .split_once("\r\n\r\n")
-            .map(|(_, b)| b)
-            .unwrap_or("");
-
-        let status_ok = resp_str
-            .lines()
-            .next()
-            .map(|line| line.contains("200"))
-            .unwrap_or(false);
-
-        if !status_ok {
-            #[derive(serde::Deserialize)]
-            struct ErrResp {
-                error: String,
-            }
-            if let Ok(err) = serde_json::from_str::<ErrResp>(resp_body) {
-                return Err(err.error);
-            }
-            return Err(format!("shard-manager returned error (body: {resp_body})"));
-        }
-
-        Ok(())
+        self.shard_manager_http_post("/v1/leave", shard, listen_addr).await
     }
 
     pub fn remove_replica(&self, shard: ShardNumber) -> bool {
@@ -572,7 +555,11 @@ pub async fn run(
         }
         Arc::new(node)
     } else if let Some(endpoint) = discovery_tapir_endpoint {
-        let backend = load_tapir_discovery_backend(&endpoint).await;
+        let backend = load_tapir_discovery_backend(
+            &endpoint,
+            #[cfg(feature = "tls")]
+            &tls_config,
+        ).await;
         let mut node = Node::with_discovery_backend(persist_dir, backend);
         if let Some(ref url) = cfg.shard_manager_url {
             node.shard_manager_url = Some(url.clone());
@@ -697,7 +684,10 @@ async fn load_json_discovery_backend(json_path: &str) -> DiscoveryBackend {
 ///
 /// Uses eventual consistent reads (unlogged scan) — suitable for node
 /// shard discovery via CachingShardDirectory PULL.
-async fn load_tapir_discovery_backend(endpoint: &str) -> DiscoveryBackend {
+async fn load_tapir_discovery_backend(
+    endpoint: &str,
+    #[cfg(feature = "tls")] tls_config: &Option<tapirs::tls::TlsConfig>,
+) -> DiscoveryBackend {
     use tapirs::discovery::tapir;
 
     let ephemeral_addr = {
@@ -708,6 +698,15 @@ async fn load_tapir_discovery_backend(endpoint: &str) -> DiscoveryBackend {
     };
     let disc_dir = Arc::new(tapirs::discovery::InMemoryShardDirectory::new());
     let persist_dir = format!("/tmp/tapi_node_disc_{}", std::process::id());
+
+    #[cfg(feature = "tls")]
+    let disc_transport = if let Some(tls) = tls_config {
+        TcpTransport::with_tls(ephemeral_addr, persist_dir, disc_dir, tls)
+            .unwrap_or_else(|e| panic!("discovery transport TLS error: {e}"))
+    } else {
+        TcpTransport::with_directory(ephemeral_addr, persist_dir, disc_dir)
+    };
+    #[cfg(not(feature = "tls"))]
     let disc_transport = TcpTransport::with_directory(ephemeral_addr, persist_dir, disc_dir);
 
     // Consistency: Nodes use ReadMode::Eventual (unlogged scan to 1 random

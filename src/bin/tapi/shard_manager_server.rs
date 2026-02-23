@@ -24,7 +24,10 @@ struct ShardManagerState {
 }
 
 impl ShardManagerState {
-    fn new(remote: Arc<DiscoveryBackend>) -> Self {
+    fn new(
+        remote: Arc<DiscoveryBackend>,
+        #[cfg(feature = "tls")] tls_config: &Option<tapirs::tls::TlsConfig>,
+    ) -> Self {
         let ephemeral_addr = {
             let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
             let a = l.local_addr().unwrap();
@@ -33,11 +36,21 @@ impl ShardManagerState {
         };
         let directory = Arc::new(InMemoryShardDirectory::new());
         let persist_dir = format!("/tmp/tapi_shard_manager_{}", std::process::id());
+
+        #[cfg(feature = "tls")]
+        let transport = if let Some(tls) = tls_config {
+            TcpTransport::with_tls(ephemeral_addr, persist_dir, Arc::clone(&directory), tls)
+                .unwrap_or_else(|e| panic!("shard-manager transport TLS error: {e}"))
+        } else {
+            TcpTransport::with_directory(ephemeral_addr, persist_dir, Arc::clone(&directory))
+        };
+        #[cfg(not(feature = "tls"))]
         let transport = TcpTransport::with_directory(
             ephemeral_addr,
             persist_dir,
             Arc::clone(&directory),
         );
+
         let manager = ShardManager::new(
             tapirs::Rng::from_seed(thread_rng().r#gen()),
             transport,
@@ -357,8 +370,13 @@ pub(crate) async fn serve(
     listener: TcpListener,
     remote: Arc<DiscoveryBackend>,
     #[cfg(feature = "tls")] tls_acceptor: Option<tapirs::tls::ReloadableTlsAcceptor>,
+    #[cfg(feature = "tls")] tls_config: Option<tapirs::tls::TlsConfig>,
 ) {
-    let state = Arc::new(ShardManagerState::new(remote));
+    let state = Arc::new(ShardManagerState::new(
+        remote,
+        #[cfg(feature = "tls")]
+        &tls_config,
+    ));
 
     loop {
         match listener.accept().await {
@@ -476,6 +494,14 @@ pub async fn run(
         };
         let disc_dir = Arc::new(tapirs::discovery::InMemoryShardDirectory::new());
         let persist_dir = format!("/tmp/tapi_sm_disc_{}", std::process::id());
+        #[cfg(feature = "tls")]
+        let disc_transport = if let Some(ref tls) = tls_config {
+            TcpTransport::with_tls(ephemeral_addr, persist_dir, disc_dir, tls)
+                .unwrap_or_else(|e| panic!("discovery transport TLS error: {e}"))
+        } else {
+            TcpTransport::with_directory(ephemeral_addr, persist_dir, disc_dir)
+        };
+        #[cfg(not(feature = "tls"))]
         let disc_transport = TcpTransport::with_directory(ephemeral_addr, persist_dir, disc_dir);
 
         // Consistency: The shard-manager is the authority for shard membership
@@ -523,6 +549,8 @@ pub async fn run(
         Arc::new(backend),
         #[cfg(feature = "tls")]
         tls_acceptor,
+        #[cfg(feature = "tls")]
+        tls_config,
     )
     .await;
 }
