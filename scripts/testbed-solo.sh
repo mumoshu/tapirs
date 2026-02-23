@@ -314,7 +314,7 @@ demo_backup() {
 # ---------------------------------------------------------------------------
 print_guide() {
     separator
-    printf "\n${BOLD}    Solo TAPIR cluster is running (shard 0, 3 replicas)${RESET}\n"
+    printf "\n${BOLD}    Solo TAPIR Testbed — Getting Started Guide${RESET}\n"
     separator
 
     cat <<EOF
@@ -322,28 +322,107 @@ print_guide() {
   Node admin ports: 127.0.0.1:${ADMIN_PORTS[0]}, 127.0.0.1:${ADMIN_PORTS[1]}, 127.0.0.1:${ADMIN_PORTS[2]}
   TAPIR ports:      127.0.0.1:${TAPIR_PORTS[0]}, 127.0.0.1:${TAPIR_PORTS[1]}, 127.0.0.1:${TAPIR_PORTS[2]}
 
-  ${BOLD}Interactive client REPL:${RESET}
-    ${TAPI} client --config ${WORK_DIR}/client.toml
+${BOLD}1. INTERACTIVE REPL${RESET}
 
-  ${BOLD}Scripted put/get:${RESET}
-    echo -e "put hello world\nget hello\ncommit" | ${TAPI} client --config ${WORK_DIR}/client.toml
+   Start an interactive client session:
 
-  ${BOLD}Node status:${RESET}
-    ${TAPI} admin status --admin-listen-addr 127.0.0.1:${ADMIN_PORTS[0]}
+     ${TAPI} client --config ${WORK_DIR}/client.toml
 
-  ${BOLD}Clone shard to a new cluster (blue-green compaction):${RESET}
-    # 1. Start a second solo cluster on different ports (edit configs).
-    # 2. Clone shard 0 from this cluster to the new one:
-    tapictl solo clone \\
-      --source-nodes-admin-addrs 127.0.0.1:${ADMIN_PORTS[0]},127.0.0.1:${ADMIN_PORTS[1]},127.0.0.1:${ADMIN_PORTS[2]} \\
-      --source-shard 0 \\
-      --dest-nodes-admin-addrs 127.0.0.1:9021,127.0.0.1:9022,127.0.0.1:9023 \\
-      --dest-shard 0 \\
-      --dest-base-port 7000
-    # 3. Switch clients to the new cluster, tear down the old one.
+   Then at the tapi> prompt:
 
-  ${BOLD}Teardown:${RESET}
-    scripts/testbed-solo.sh down
+     begin
+     put alice 100
+     put bob 200
+     commit
+     begin ro
+     get alice
+     get bob
+     begin ro
+     scan a z
+     begin
+     delete alice
+     commit
+
+   Type 'help' for all commands, 'quit' to exit.
+   Read-only transactions don't need explicit abort.
+
+${BOLD}2. SCRIPTED TRANSACTIONS${RESET}
+
+   Run one-liner transactions (no interactive session needed):
+
+     ${TAPI} client --config ${WORK_DIR}/client.toml \\
+       -e "begin; put counter 42; commit"
+
+     ${TAPI} client --config ${WORK_DIR}/client.toml \\
+       -e "begin ro; get counter"
+
+   Multi-key transaction (all keys in shard 0):
+
+     ${TAPI} client --config ${WORK_DIR}/client.toml \\
+       -e "begin; put apple fruit; put orange citrus; commit"
+
+   Run a command file (one command per line):
+
+     ${TAPI} client --config ${WORK_DIR}/client.toml \\
+       -s /path/to/script.txt
+
+${BOLD}3. CLUSTER INSPECTION${RESET}
+
+     ${TAPI} admin status --admin-listen-addr 127.0.0.1:${ADMIN_PORTS[0]}
+     ${TAPI} admin status --admin-listen-addr 127.0.0.1:${ADMIN_PORTS[1]}
+     ${TAPI} admin status --admin-listen-addr 127.0.0.1:${ADMIN_PORTS[2]}
+
+${BOLD}4. VIEW CHANGES${RESET}
+
+   Trigger a view change to synchronize the IR consensus record:
+
+     ${TAPI} admin view-change \\
+       --admin-listen-addr 127.0.0.1:${ADMIN_PORTS[0]} --shard 0
+
+${BOLD}5. BACKUP & RESTORE${RESET}
+
+   Full cluster backup (triggers a view change for consistency):
+
+     ${TAPI} admin backup \\
+       --admin-addrs 127.0.0.1:${ADMIN_PORTS[0]},127.0.0.1:${ADMIN_PORTS[1]},127.0.0.1:${ADMIN_PORTS[2]} \\
+       --output ${WORK_DIR}/backup
+
+   Restore from backup onto fresh nodes:
+
+     ${TAPI} admin restore \\
+       --admin-addrs 127.0.0.1:${ADMIN_PORTS[0]},127.0.0.1:${ADMIN_PORTS[1]},127.0.0.1:${ADMIN_PORTS[2]} \\
+       --backup-dir ${WORK_DIR}/backup \\
+       --base-port ${TAPIR_PORTS[0]}
+
+${BOLD}6. SOLO CLONE (BLUE-GREEN COMPACTION)${RESET}
+
+   Clone shard 0 from this cluster to a second solo cluster.
+
+   1. Start a second solo cluster on different ports (edit configs).
+   2. Clone shard 0:
+
+     tapictl solo clone \\
+       --source-nodes-admin-addrs 127.0.0.1:${ADMIN_PORTS[0]},127.0.0.1:${ADMIN_PORTS[1]},127.0.0.1:${ADMIN_PORTS[2]} \\
+       --source-shard 0 \\
+       --dest-nodes-admin-addrs 127.0.0.1:9021,127.0.0.1:9022,127.0.0.1:9023 \\
+       --dest-shard 0 \\
+       --dest-base-port 7000
+
+   3. Switch clients to the new cluster, tear down the old one.
+
+${BOLD}7. LIMITATIONS${RESET}
+
+   The solo testbed runs a single shard with static membership. The
+   following operations require the full multi-shard stack (shard-manager,
+   discovery service) provided by scripts/testbed.sh:
+
+     - Add/remove nodes (dynamic membership changes)
+     - Shard split / merge / compact
+     - Cross-shard transactions (requires 2+ shards)
+
+${BOLD}8. TEARDOWN${RESET}
+
+     scripts/testbed-solo.sh down
 
 EOF
 }
