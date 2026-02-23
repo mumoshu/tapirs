@@ -1,0 +1,6 @@
+apiVersion: v2
+name: tapirs-operator
+description: TAPIR Kubernetes operator — reconciles TAPIRCluster custom resources
+type: application
+version: 0.1.0
+appVersion: "0.0.1"

@@ -1,0 +1,432 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: tapirclusters.tapir.tapir.dev
+  labels:
+    {{- include "tapirs-operator.labels" . | nindent 4 }}
+spec:
+  group: tapir.tapir.dev
+  names:
+    kind: TAPIRCluster
+    listKind: TAPIRClusterList
+    plural: tapirclusters
+    singular: tapircluster
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.discoveryEndpoint
+      name: Discovery
+      priority: 1
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: TAPIRCluster is the Schema for the tapirclusters API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: TAPIRClusterSpec defines the desired state of a TAPIRCluster.
+            properties:
+              discovery:
+                description: discovery configures the TAPIR discovery store tier.
+                properties:
+                  replicas:
+                    default: 3
+                    description: replicas is the number of discovery pods.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  resources:
+                    description: resources defines CPU/memory requests and limits
+                      for discovery pods.
+                    properties:
+                      claims:
+                        description: |-
+                          Claims lists the names of resources, defined in spec.resourceClaims,
+                          that are used by this container.
+
+                          This field depends on the
+                          DynamicResourceAllocation feature gate.
+
+                          This field is immutable. It can only be set for containers.
+                        items:
+                          description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                          properties:
+                            name:
+                              description: |-
+                                Name must match the name of one entry in pod.spec.resourceClaims of
+                                the Pod where this field is used. It makes that resource available
+                                inside a container.
+                              type: string
+                            request:
+                              description: |-
+                                Request is the name chosen for a request in the referenced claim.
+                                If empty, everything from the claim is made available, otherwise
+                                only the result of this request.
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
+                      limits:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          Limits describes the maximum amount of compute resources allowed.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        type: object
+                      requests:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          Requests describes the minimum amount of compute resources required.
+                          If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                          otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        type: object
+                    type: object
+                required:
+                - replicas
+                type: object
+              image:
+                description: image is the container image for all tapirs components.
+                type: string
+              nodePools:
+                description: |-
+                  nodePools defines the data-node StatefulSets. Each pool maps to a
+                  separate StatefulSet named {cluster}-{pool.name}.
+                items:
+                  description: NodePool defines a group of data-node pods backed by
+                    a StatefulSet.
+                  properties:
+                    name:
+                      description: |-
+                        name is a unique identifier for this pool. The resulting StatefulSet
+                        is named {cluster}-{name}.
+                      pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+                      type: string
+                    replicas:
+                      description: replicas is the number of pods in this pool.
+                      format: int32
+                      minimum: 0
+                      type: integer
+                    resources:
+                      description: resources defines CPU/memory requests and limits
+                        for pods in this pool.
+                      properties:
+                        claims:
+                          description: |-
+                            Claims lists the names of resources, defined in spec.resourceClaims,
+                            that are used by this container.
+
+                            This field depends on the
+                            DynamicResourceAllocation feature gate.
+
+                            This field is immutable. It can only be set for containers.
+                          items:
+                            description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                            properties:
+                              name:
+                                description: |-
+                                  Name must match the name of one entry in pod.spec.resourceClaims of
+                                  the Pod where this field is used. It makes that resource available
+                                  inside a container.
+                                type: string
+                              request:
+                                description: |-
+                                  Request is the name chosen for a request in the referenced claim.
+                                  If empty, everything from the claim is made available, otherwise
+                                  only the result of this request.
+                                type: string
+                            required:
+                            - name
+                            type: object
+                          type: array
+                          x-kubernetes-list-map-keys:
+                          - name
+                          x-kubernetes-list-type: map
+                        limits:
+                          additionalProperties:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          description: |-
+                            Limits describes the maximum amount of compute resources allowed.
+                            More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                          type: object
+                        requests:
+                          additionalProperties:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          description: |-
+                            Requests describes the minimum amount of compute resources required.
+                            If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                            otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                            More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                          type: object
+                      type: object
+                  required:
+                  - name
+                  - replicas
+                  type: object
+                minItems: 1
+                type: array
+              shards:
+                description: |-
+                  shards defines the shard layout. Key ranges must cover the full
+                  keyspace without gaps or overlaps.
+                items:
+                  description: ShardSpec defines a single shard's configuration.
+                  properties:
+                    keyRangeEnd:
+                      description: |-
+                        keyRangeEnd is the exclusive upper bound of this shard's key range.
+                        Empty means the maximum key.
+                      type: string
+                    keyRangeStart:
+                      description: |-
+                        keyRangeStart is the inclusive lower bound of this shard's key range.
+                        Empty means the minimum key.
+                      type: string
+                    number:
+                      description: number is the shard identifier.
+                      format: int32
+                      minimum: 0
+                      type: integer
+                    replicas:
+                      description: |-
+                        replicas is the number of TAPIR replicas for this shard. Must be <=
+                        total pods across all node pools.
+                      format: int32
+                      minimum: 1
+                      type: integer
+                    storage:
+                      default: memory
+                      description: 'storage is the backend type: "memory" (default)
+                        or "disk".'
+                      enum:
+                      - memory
+                      - disk
+                      type: string
+                  required:
+                  - number
+                  - replicas
+                  type: object
+                minItems: 1
+                type: array
+            required:
+            - discovery
+            - image
+            - nodePools
+            - shards
+            type: object
+          status:
+            description: TAPIRClusterStatus defines the observed state of a TAPIRCluster.
+            properties:
+              conditions:
+                description: conditions represent the current state of the TAPIRCluster.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              discoveryEndpoint:
+                description: |-
+                  discoveryEndpoint is the endpoint clients use to connect via
+                  --discovery-tapir-endpoint (e.g. srv://{name}-discovery.{ns}.svc.cluster.local:6000).
+                type: string
+              nodes:
+                description: nodes lists the observed state of each data-node pod.
+                items:
+                  description: NodeStatus is the observed state of a single data-node
+                    pod.
+                  properties:
+                    adminAddr:
+                      description: adminAddr is the admin TCP endpoint (podIP:9000).
+                      type: string
+                    name:
+                      description: name is the pod name (e.g. "mycluster-default-0").
+                      type: string
+                    podIP:
+                      description: podIP is the pod's IP address.
+                      type: string
+                    ready:
+                      description: ready indicates whether the pod is ready.
+                      type: boolean
+                    shards:
+                      description: shards lists the TAPIR shard replicas hosted on
+                        this node.
+                      items:
+                        description: NodeShardStatus describes a shard replica hosted
+                          on a node.
+                        properties:
+                          listenAddr:
+                            description: listenAddr is the TAPIR protocol address
+                              (podIP:6000+shard).
+                            type: string
+                          number:
+                            description: number is the shard identifier.
+                            format: int32
+                            type: integer
+                          storage:
+                            description: storage is the backend type ("memory" or
+                              "disk").
+                            type: string
+                        required:
+                        - number
+                        type: object
+                      type: array
+                  required:
+                  - name
+                  - ready
+                  type: object
+                type: array
+              phase:
+                description: phase is the high-level lifecycle phase of the cluster.
+                enum:
+                - Pending
+                - CreatingDiscovery
+                - BootstrappingDiscovery
+                - CreatingDataPlane
+                - BootstrappingReplicas
+                - RegisteringShards
+                - Running
+                - Updating
+                - Failed
+                type: string
+              shardManagerURL:
+                description: shardManagerURL is the HTTP URL for the shard-manager
+                  service.
+                type: string
+              shards:
+                description: shards lists the observed state of each shard.
+                items:
+                  description: ShardStatus is the observed state of a single shard.
+                  properties:
+                    number:
+                      description: number is the shard identifier.
+                      format: int32
+                      type: integer
+                    readyReplicas:
+                      description: readyReplicas is the number of healthy replicas
+                        for this shard.
+                      format: int32
+                      type: integer
+                    registered:
+                      description: |-
+                        registered indicates whether the shard's key range has been registered
+                        with the shard-manager.
+                      type: boolean
+                    replicas:
+                      description: replicas lists the current membership addresses.
+                      items:
+                        type: string
+                      type: array
+                  required:
+                  - number
+                  - readyReplicas
+                  - registered
+                  type: object
+                type: array
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
