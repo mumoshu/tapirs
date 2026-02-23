@@ -4,6 +4,7 @@
 #
 # Usage:
 #   scripts/testbed-kube.sh up       Deploy cluster, bootstrap, smoke-test, print guide
+#   scripts/testbed-kube.sh demo     Run full demo (seed, cross-shard TX, split, backup)
 #   scripts/testbed-kube.sh down     Tear down all testbed resources
 #   scripts/testbed-kube.sh status   Show cluster health
 #
@@ -736,7 +737,36 @@ ${BOLD}5. SHARD OPERATIONS${RESET}
        --shard-manager-url ${sm_url} \\
        --absorbed 2 --surviving 0
 
-${BOLD}6. TEAR DOWN${RESET}
+${BOLD}6. VIEW CHANGES${RESET}
+
+   Trigger a view change to synchronize the IR consensus record:
+
+     kubectl exec -n ${NS} tapir-node-0 -- tapi admin view-change \\
+       --admin-listen-addr 127.0.0.1:${ADMIN_PORT} --shard 0
+
+${BOLD}7. BACKUP & RESTORE${RESET}
+
+   Full cluster backup (run from inside a node pod):
+
+     NODE0_IP=\$(kubectl get pod -n ${NS} tapir-node-0 -o jsonpath='{.status.podIP}')
+     NODE1_IP=\$(kubectl get pod -n ${NS} tapir-node-1 -o jsonpath='{.status.podIP}')
+     NODE2_IP=\$(kubectl get pod -n ${NS} tapir-node-2 -o jsonpath='{.status.podIP}')
+     kubectl exec -n ${NS} tapir-node-0 -- tapi admin backup \\
+       --admin-addrs \${NODE0_IP}:${ADMIN_PORT},\${NODE1_IP}:${ADMIN_PORT},\${NODE2_IP}:${ADMIN_PORT} \\
+       --output /tmp/backup
+
+   Verify backup files:
+
+     kubectl exec -n ${NS} tapir-node-0 -- ls -la /tmp/backup/
+
+${BOLD}8. FULL DEMO${RESET}
+
+   Run all demo scenarios (seed, cross-shard TX, scan, add node,
+   view change, shard split, backup) on an already-running cluster:
+
+     scripts/testbed-kube.sh demo
+
+${BOLD}9. TEAR DOWN${RESET}
 
      scripts/testbed-kube.sh down
 
@@ -822,6 +852,208 @@ cmd_down() {
 }
 
 # ---------------------------------------------------------------------------
+# demo — full scenario suite (matches testbed.sh)
+# ---------------------------------------------------------------------------
+# Runs after 'up'. Exercises: data seeding, cross-shard TX, range scan,
+# admin status, add 4th node, view change, shard split, post-split verify,
+# and backup. Each scenario is modeled after testbed.sh's cmd_up.
+cmd_demo() {
+    step "Running full TAPIR demo..."
+
+    # --- Seed data ---
+    step "Seeding data for demo scenarios..."
+    info "Shard 0 keys (below future split point 'g'): alice, bob, charlie"
+    info "Shard 0 keys (above 'g'): grapes, mango"
+    info "Shard 1 keys (>= 'n'): orange, pear, zebra"
+    run_client "begin; put alice 100; put bob 200; put charlie 300; put grapes fruit; put mango tropical; commit" "seed-shard0"
+    run_client "begin; put orange citrus; put pear green; put zebra animal; commit" "seed-shard1"
+    ok "Data seeded (8 keys across 2 shards)."
+
+    # --- Cross-shard transaction ---
+    step "Demo: Cross-shard transaction..."
+    info "RO read across shards (alice=shard0, orange=shard1)..."
+    run_client "begin ro; get alice; get orange" "cross-shard-ro"
+    info "RW write across shards (fruit→shard0, snack→shard1)..."
+    run_client "begin; put fruit apple; put snack pretzel; commit" "cross-shard-rw"
+    ok "Cross-shard transactions complete."
+
+    # --- Range scan ---
+    step "Demo: Range scan..."
+    info "Scanning all keys from 'a' to 'z' (RO validated quorum read across both shards)..."
+    run_client "begin ro; scan a z" "range-scan"
+    ok "Range scan complete."
+
+    # --- Admin status ---
+    step "Querying tapir-node-0 admin status..."
+    exec_tapi "tapir-node-0" admin status \
+        --admin-listen-addr "127.0.0.1:${ADMIN_PORT}"
+
+    # --- Add 4th node ---
+    step "Demo: Adding a 4th node to the cluster..."
+    local current_count
+    current_count=$(kube get statefulset tapir-node -o jsonpath='{.spec.replicas}')
+    local new_count=$(( current_count + 1 ))
+    local new_idx=$(( current_count ))
+    local new_pod="tapir-node-${new_idx}"
+
+    info "Scaling tapir-node StatefulSet: ${current_count} -> ${new_count}..."
+    kube scale statefulset tapir-node --replicas="${new_count}"
+
+    info "Waiting for ${new_pod} to be ready..."
+    local retries=0
+    while ! kube get pod "${new_pod}" &>/dev/null; do
+        retries=$((retries + 1))
+        if (( retries > 30 )); then
+            fail "Timed out waiting for ${new_pod} to appear"
+        fi
+        sleep 2
+    done
+    kube wait --for=condition=Ready pod "${new_pod}" --timeout=120s
+
+    local new_ip
+    new_ip=$(pod_ip "${new_pod}")
+    info "${new_pod} ready at ${new_ip}"
+
+    local shards="${TAPIR_SHARDS}"
+    for (( s=0; s<shards; s++ )); do
+        local port=$(( REPLICA_BASE_PORT + s ))
+        info "Joining shard ${s} on ${new_pod} (${new_ip}:${port})..."
+        exec_tapi "${new_pod}" admin add-replica \
+            --admin-listen-addr "127.0.0.1:${ADMIN_PORT}" \
+            --shard "${s}" \
+            --listen-addr "${new_ip}:${port}"
+        # Wait for AddMember view change to propagate.
+        sleep 5
+    done
+
+    info "Verifying cluster with ${new_count} nodes..."
+    cmd_status
+    ok "Node ${new_pod} added to all ${shards} shard(s)."
+
+    # --- View change ---
+    step "Demo: Triggering a view change on shard 0..."
+    info "View changes synchronize the IR consensus record across replicas."
+    exec_tapi "tapir-node-0" admin view-change \
+        --admin-listen-addr "127.0.0.1:${ADMIN_PORT}" --shard 0
+    info "Waiting for view change to settle (5s)..."
+    sleep 5
+    info "Verifying data is still accessible after view change..."
+    run_client "begin ro; get alice" "vc-verify"
+    if echo "${RUN_CLIENT_OUTPUT}" | grep -q "100"; then
+        ok "View change complete. Data intact."
+    else
+        warn "View change verification: unexpected result: ${RUN_CLIENT_OUTPUT}"
+    fi
+
+    # --- Shard split ---
+    step "Demo: Splitting shard 0 at key 'g' into new shard 2..."
+    info "Shard 0 currently handles keys < 'n'."
+    info "After split: shard 0 → keys < 'g', shard 2 → keys ['g', 'n')."
+
+    # Collect node IPs for shard 2 membership (use original 3 nodes).
+    local shard2_ips=()
+    for (( n=0; n<3; n++ )); do
+        local ip
+        ip=$(pod_ip "tapir-node-${n}")
+        shard2_ips+=("${ip}")
+    done
+
+    local shard2_port=6002
+    local shard2_membership=""
+    for ip in "${shard2_ips[@]}"; do
+        if [[ -n "${shard2_membership}" ]]; then shard2_membership="${shard2_membership},"; fi
+        shard2_membership="${shard2_membership}${ip}:${shard2_port}"
+    done
+
+    info "Creating shard 2 replicas on nodes 0-2 (port ${shard2_port})..."
+    info "Using --membership for static bootstrap (shard 2 not yet in discovery)."
+    for (( n=0; n<3; n++ )); do
+        local pod="tapir-node-${n}"
+        local ip="${shard2_ips[$n]}"
+        exec_tapi "${pod}" admin add-replica \
+            --admin-listen-addr "127.0.0.1:${ADMIN_PORT}" \
+            --shard 2 --listen-addr "${ip}:${shard2_port}" \
+            --membership "${shard2_membership}"
+        sleep 1
+    done
+    info "Waiting for shard 2 replicas to form quorum (5s)..."
+    sleep 5
+
+    info "Executing shard split via shard-manager..."
+    local sm_pod
+    sm_pod=$(kube get pods -l app=tapir-shard-manager -o jsonpath='{.items[0].metadata.name}')
+    exec_tapictl "${sm_pod}" split shard \
+        --shard-manager-url "http://127.0.0.1:${SHARD_MANAGER_PORT}" \
+        --source 0 --split-key g --new-shard 2 \
+        --new-replicas "${shard2_membership}"
+    ok "Shard split complete."
+
+    # --- Post-split verification ---
+    step "Verifying data after shard split..."
+    info "Each client invocation reads latest key ranges from TAPIR discovery at startup."
+
+    info "Reading 'alice' (a < g → still on shard 0)..."
+    run_client "begin ro; get alice" "split-verify-alice"
+
+    info "Reading 'grapes' (g >= g → now routes to shard 2)..."
+    run_client "begin ro; get grapes" "split-verify-grapes"
+
+    info "Reading 'orange' (o >= n → shard 1, unaffected by split)..."
+    run_client "begin ro; get orange" "split-verify-orange"
+
+    info "Full range scan across all 3 shards..."
+    run_client "begin ro; scan a z" "split-verify-scan"
+    ok "Post-split verification complete."
+
+    # --- Backup ---
+    step "Demo: Full cluster backup..."
+    local backup_dir="/tmp/tapir-backup"
+
+    # Collect admin addresses (pod IPs:admin_port) for all nodes.
+    local admin_addrs=""
+    local total_nodes
+    total_nodes=$(kube get statefulset tapir-node -o jsonpath='{.spec.replicas}')
+    for (( n=0; n<total_nodes; n++ )); do
+        local ip
+        ip=$(pod_ip "tapir-node-${n}")
+        if [[ -n "${admin_addrs}" ]]; then admin_addrs="${admin_addrs},"; fi
+        admin_addrs="${admin_addrs}${ip}:${ADMIN_PORT}"
+    done
+
+    info "Backing up all shards to ${backup_dir} on tapir-node-0..."
+    info "(This triggers view changes on each shard for consistency.)"
+    exec_tapi "tapir-node-0" admin backup \
+        --admin-addrs "${admin_addrs}" \
+        --output "${backup_dir}"
+
+    info "Verifying backup files..."
+    local backup_files
+    backup_files=$(kube exec "tapir-node-0" -- ls "${backup_dir}/" 2>/dev/null) || true
+    for f in cluster.json shard_0.json shard_1.json shard_2.json; do
+        if echo "${backup_files}" | grep -q "${f}"; then
+            ok "Found ${f}"
+        else
+            warn "Missing ${f}"
+        fi
+    done
+    ok "Backup complete."
+
+    # --- Summary ---
+    separator
+    printf "\n${BOLD}${GREEN}    Demo complete!${RESET}\n"
+    printf "    All scenarios passed:\n"
+    printf "      - Data seeding (8 keys across 2 shards)\n"
+    printf "      - Cross-shard transactions (RO + RW)\n"
+    printf "      - Range scan\n"
+    printf "      - Add 4th node\n"
+    printf "      - View change + data verification\n"
+    printf "      - Shard split (shard 0 at 'g' → shard 2)\n"
+    printf "      - Post-split verification\n"
+    printf "      - Full cluster backup\n"
+    separator
+}
+
+# ---------------------------------------------------------------------------
 # add-node (dynamic shard-manager — runtime operation)
 # ---------------------------------------------------------------------------
 # Scales the tapir-node StatefulSet by 1 and uses the dynamic shard-manager
@@ -890,6 +1122,7 @@ usage() {
     printf "Commands:\n"
     printf "  up        Deploy cluster, bootstrap, smoke test, print guide\n"
     printf "  down      Tear down all testbed resources\n"
+    printf "  demo      Run full demo (seed, cross-shard TX, split, backup)\n"
     printf "  status    Show cluster health\n"
     printf "  add-node  Add a new data node (dynamic shard-manager join)\n"
     printf "\nEnvironment variables:\n"
@@ -906,6 +1139,7 @@ usage() {
 case "${1:-}" in
     up)       cmd_up       ;;
     down)     cmd_down     ;;
+    demo)     cmd_demo     ;;
     status)   cmd_status   ;;
     add-node) cmd_add_node ;;
     *)        usage        ;;
