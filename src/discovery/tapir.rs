@@ -47,10 +47,11 @@ struct ShardRecord<K> {
     key_range: Option<KeyRange<K>>,
 }
 
-#[derive(Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-enum ShardStatus {
+pub enum ShardStatus {
     Active,
+    Pending,
     Tombstoned,
 }
 
@@ -330,7 +331,7 @@ where
         match self.read_raw(&shard_key(shard)).await? {
             Some(json) => {
                 let record = parse_record::<K>(&json)?;
-                if record.status == ShardStatus::Tombstoned {
+                if record.status != ShardStatus::Active {
                     return Ok(None);
                 }
                 let membership = parse_membership_from(&record)?;
@@ -474,7 +475,7 @@ where
                 continue;
             };
             let record = parse_record::<K>(&json)?;
-            if record.status == ShardStatus::Tombstoned {
+            if record.status != ShardStatus::Active {
                 continue;
             }
             let membership = parse_membership_from(&record)?;

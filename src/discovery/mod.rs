@@ -1,6 +1,8 @@
 pub mod json;
 pub mod tapir;
 
+pub use tapir::ShardStatus;
+
 use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::str::FromStr;
