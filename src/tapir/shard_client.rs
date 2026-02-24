@@ -1,4 +1,5 @@
 use super::{Key, LeaderRecordDelta, Replica, ShardNumber, Timestamp, TransactionError, Value, CO, CR, IO, IR, UO, UR};
+use tracing::debug;
 use super::message::MinPrepareBaselineResult;
 use crate::{
     transport::Transport, IrClient, IrClientId, IrMembership, IrRecord, IrSharedView,
@@ -7,6 +8,7 @@ use crate::{
 use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 pub struct ShardClient<K: Key, V: Value, T: Transport<Replica<K, V>>> {
     shard: ShardNumber,
@@ -178,18 +180,40 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
     /// Fast-path read: check if one replica has a validated version.
     ///
     /// Returns `Ok(result)` when the replica responds with a valid
-    /// `ReadValidated` reply, or `Err(())` on unexpected response type
-    /// or timeout (added in a subsequent commit).
+    /// `ReadValidated` reply within 2s, `Err(OutOfRange)` if the key
+    /// is outside this shard's range, or `Err(Unavailable)` on timeout
+    /// or unexpected response type.
     pub fn read_validated(
         &self,
         key: K,
         timestamp: Timestamp,
-    ) -> impl Future<Output = Result<Option<(Option<V>, Timestamp)>, ()>> {
+    ) -> impl Future<Output = Result<Option<(Option<V>, Timestamp)>, TransactionError>> {
         let future = self.inner.invoke_unlogged(UO::ReadValidated { key, timestamp });
         async move {
-            match future.await {
-                UR::ReadValidated(result) => Ok(result),
-                _ => Err(()),
+            let timeout = T::sleep(Duration::from_secs(2));
+            let timeout = std::pin::pin!(timeout);
+            let future = std::pin::pin!(future);
+            let result = futures::future::select(timeout, future).await;
+            match &result {
+                futures::future::Either::Right((UR::ReadValidated(_), _)) => {
+                    debug!("read_validated: got response");
+                }
+                futures::future::Either::Right((UR::OutOfRange, _)) => {
+                    debug!("read_validated: OutOfRange");
+                }
+                futures::future::Either::Left(_) => {
+                    debug!("read_validated: 2s timeout");
+                }
+                _ => {
+                    debug!("read_validated: unexpected UR variant");
+                }
+            }
+            match result {
+                futures::future::Either::Right((UR::ReadValidated(r), _)) => Ok(r),
+                futures::future::Either::Right((UR::OutOfRange, _)) => {
+                    Err(TransactionError::OutOfRange)
+                }
+                _ => Err(TransactionError::Unavailable),
             }
         }
     }

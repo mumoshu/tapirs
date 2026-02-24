@@ -26,7 +26,7 @@ use crate::{
     testing::{self, cluster},
     transport::{FaultyChannelTransport, LatencyConfig, NetworkFaultConfig},
     ChannelRegistry, ChannelTransport, IrMembership, IrReplica, RoutingClient, ShardNumber,
-    TapirClient, TapirReplica, TapirTimestamp, Transport as _,
+    TapirClient, TapirReplica, TapirTimestamp, TransactionError, Transport as _,
 };
 use futures::future::join_all;
 use rand::{rngs::StdRng, seq::SliceRandom, Rng, SeedableRng};

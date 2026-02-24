@@ -15,7 +15,7 @@ use std::{
     time::Duration,
 };
 use futures::future::Either;
-use tracing::trace;
+use tracing::{debug, trace};
 
 pub struct Client<K: Key, V: Value, T: TapirTransport<K, V>> {
     inner: Arc<Mutex<Inner<K, V, T>>>,
@@ -589,19 +589,28 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> ReadOnlyTransaction<K, V, T> {
             let shard_client = Inner::shard_client(&client, key.shard).await;
 
             // Fast path: check if one replica has a validated version.
+            debug!(shard = ?key.shard, key = ?key.key, "ro_get: read_validated start");
             match shard_client.read_validated(key.key.clone(), snapshot_ts).await {
                 Ok(Some((value, _write_ts))) => {
+                    debug!(shard = ?key.shard, key = ?key.key, "ro_get: read_validated Ok(Some)");
                     let mut cache = read_cache.lock().unwrap();
                     cache.entry(key).or_insert(value.clone());
                     return Ok(value);
                 }
-                Ok(None) => {} // Valid empty — fall through to quorum_read
-                Err(()) => return Err(TransactionError::Unavailable),
+                Ok(None) => {
+                    debug!(shard = ?key.shard, key = ?key.key, "ro_get: read_validated Ok(None), falling to quorum_read");
+                }
+                Err(ref e) => {
+                    debug!(shard = ?key.shard, key = ?key.key, error = ?e, "ro_get: read_validated Err");
+                    return Err(e.clone());
+                }
             }
 
             // Slow path: quorum read via IR inconsistent op.
+            debug!(shard = ?key.shard, key = ?key.key, "ro_get: quorum_read start");
             let (value, _write_ts) =
                 shard_client.quorum_read(key.key.clone(), snapshot_ts).await?;
+            debug!(shard = ?key.shard, key = ?key.key, "ro_get: quorum_read done");
 
             let mut cache = read_cache.lock().unwrap();
             cache.entry(key).or_insert(value.clone());

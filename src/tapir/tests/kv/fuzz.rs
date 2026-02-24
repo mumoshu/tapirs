@@ -1261,8 +1261,27 @@ async fn fuzz_tapir_transactions_inner(seed: u64) {
         let key_wall_start = std::time::Instant::now();
         let key_sim_start = tokio::time::Instant::now();
         eprintln!("fuzz: verify key={key} (seed={seed})");
-        let txn = verify_client.begin_read_only();
-        let get_result = timeout(Duration::from_secs(5), txn.get(*key)).await;
+        let get_result = timeout(Duration::from_secs(5), async {
+            let mut attempt = 0u32;
+            loop {
+                attempt += 1;
+                eprintln!("fuzz: verify key={key} attempt={attempt} sim={}ms (seed={seed})",
+                    key_sim_start.elapsed().as_millis());
+                let txn = verify_client.begin_read_only();
+                match txn.get(*key).await {
+                    Ok(val) => break Ok(val),
+                    Err(TransactionError::Unavailable) => {
+                        eprintln!("fuzz: verify key={key} attempt={attempt} got Unavailable, retrying (seed={seed})");
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        continue;
+                    }
+                    Err(e) => {
+                        eprintln!("fuzz: verify key={key} attempt={attempt} got error: {e:?} (seed={seed})");
+                        break Err(e);
+                    }
+                }
+            }
+        }).await;
         match get_result {
             Ok(Ok(val)) => {
                 let actual = val.unwrap_or(0);
