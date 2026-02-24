@@ -76,6 +76,27 @@ async fn handle_request(
     path: &str,
     body: &str,
 ) -> (u16, String) {
+    if method == "GET" && path == "/healthz" {
+        tracing::debug!("healthz: checking discovery connectivity");
+        match tokio::time::timeout(std::time::Duration::from_secs(3), state.remote.all()).await {
+            Ok(Ok(_)) => {
+                return (200, r#"{"ok":true}"#.to_string());
+            }
+            Ok(Err(e)) => {
+                return (
+                    503,
+                    format!(r#"{{"ok":false,"error":"discovery error: {e}"}}"#),
+                );
+            }
+            Err(_) => {
+                return (
+                    503,
+                    r#"{"ok":false,"error":"discovery timeout"}"#.to_string(),
+                );
+            }
+        }
+    }
+
     if method == "POST" && path == "/v1/join" {
         let req: JoinRequest = match serde_json::from_str(body) {
             Ok(r) => r,
@@ -362,6 +383,8 @@ fn status_text(code: u16) -> &'static str {
         400 => "Bad Request",
         404 => "Not Found",
         500 => "Internal Server Error",
+        503 => "Service Unavailable",
+        504 => "Gateway Timeout",
         _ => "Unknown",
     }
 }
@@ -466,8 +489,18 @@ where
         String::new()
     };
 
-    let (status, response_body) =
-        handle_request(state, method, path, &body).await;
+    let (status, response_body) = match tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        handle_request(state, method, path, &body),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            tracing::warn!(method, path, "request timed out after 60s");
+            (504, r#"{"error":"request timed out"}"#.to_string())
+        }
+    };
 
     let response = format!(
         "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
