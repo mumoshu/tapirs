@@ -132,14 +132,6 @@ pub trait RemoteShardDirectory<A: Clone + Send + Sync + 'static, K: Clone + Send
         async { Ok(vec![]) }
     }
 
-    /// Atomically replace one shard with another.
-    fn strong_replace(
-        &self,
-        old: ShardNumber,
-        new: ShardNumber,
-        membership: IrMembership<A>,
-        view: u64,
-    ) -> impl std::future::Future<Output = Result<(), DiscoveryError>> + Send + '_;
 }
 
 // ---- ShardDirectory trait ----
@@ -655,16 +647,6 @@ mod tests {
         r.weak_get_active_shard_membership(shard).await.unwrap()
     }
 
-    async fn remote_replace(
-        r: &impl RemoteShardDirectory<usize, ()>,
-        old: ShardNumber,
-        new: ShardNumber,
-        membership: IrMembership<usize>,
-        view: u64,
-    ) {
-        r.strong_replace(old, new, membership, view).await.unwrap();
-    }
-
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn caching_directory_local_operations() {
         let mut rng = test_rng(42);
@@ -732,50 +714,6 @@ mod tests {
         assert_eq!(pulled.len(), 2);
         assert!(pulled.contains(40));
         assert!(pulled.contains(50));
-    }
-
-    #[tokio::test(flavor = "current_thread", start_paused = true)]
-    async fn caching_directory_replace_and_sync() {
-        // Test replace flow: remote.replace() removes old shard,
-        // CachingShardDirectory's PULL picks up the new shard.
-        let mut rng = test_rng(45);
-        let disc = build_single_node_discovery(&mut rng);
-        let remote = disc.create_remote(&mut rng);
-        let remote_check = disc.create_remote_strong(&mut rng);
-        let local = Arc::new(InMemoryShardDirectory::new());
-        let dir =
-            CachingShardDirectory::<usize, (), _>::new(local, Arc::clone(&remote), Duration::from_millis(100));
-
-        // Node hosts shard 1.
-        dir.add_own_shard(ShardNumber(1));
-        dir.put(ShardNumber(1), IrMembership::new(vec![10, 20, 30]), 0);
-
-        // Let it sync — shard 1 pushed to remote.
-        tokio::time::sleep(Duration::from_millis(150)).await;
-        tokio::task::yield_now().await;
-        assert!(remote_get(&*remote_check, ShardNumber(1)).await.is_some());
-
-        // Simulate ShardManager's replace: remove old shard and add new shard in remote.
-        remote_replace(
-            &*remote_check,
-            ShardNumber(1),
-            ShardNumber(2),
-            IrMembership::new(vec![40, 50]),
-            0,
-        ).await;
-
-        // Remote: shard 1 gone, shard 2 present.
-        assert!(remote_get(&*remote_check, ShardNumber(1)).await.is_none());
-        assert!(remote_get(&*remote_check, ShardNumber(2)).await.is_some());
-
-        // Next sync cycle: PULL picks up shard 2.
-        tokio::time::sleep(Duration::from_millis(150)).await;
-        tokio::task::yield_now().await;
-
-        // Local now has shard 2 from PULL.
-        let (pulled, _) = dir.get(ShardNumber(2)).unwrap();
-        assert_eq!(pulled.len(), 2);
-        assert!(pulled.contains(40));
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]

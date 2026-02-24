@@ -81,29 +81,6 @@ impl RemoteShardDirectory<TcpAddress, String> for DiscoveryBackend {
         }
     }
 
-    async fn strong_replace(
-        &self,
-        old: ShardNumber,
-        new: ShardNumber,
-        membership: IrMembership<TcpAddress>,
-        view: u64,
-    ) -> Result<(), DiscoveryError> {
-        match self {
-            Self::Json(c) => {
-                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::strong_replace(
-                    c, old, new, membership, view,
-                )
-                .await
-            }
-            Self::Tapir(c) => {
-                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::strong_replace(
-                    c, old, new, membership, view,
-                )
-                .await
-            }
-        }
-    }
-
     async fn strong_atomic_update_shards(
         &self,
         changes: Vec<ShardDirectoryChange<String, TcpAddress>>,

@@ -147,16 +147,6 @@ impl<A: Clone + Send + Sync + 'static, K: Clone + Send + Sync + 'static> RemoteS
         Ok(entries)
     }
 
-    /// No-op — JSON config is the authoritative source.
-    async fn strong_replace(
-        &self,
-        _old: ShardNumber,
-        _new: ShardNumber,
-        _membership: IrMembership<A>,
-        _view: u64,
-    ) -> Result<(), DiscoveryError> {
-        Ok(())
-    }
 }
 
 /// Resolve a hostname:port to sorted SocketAddrs.

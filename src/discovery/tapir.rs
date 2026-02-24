@@ -488,59 +488,6 @@ where
         Ok(result)
     }
 
-    async fn strong_replace(
-        &self,
-        old: ShardNumber,
-        new: ShardNumber,
-        membership: IrMembership<A>,
-        view: u64,
-    ) -> Result<(), DiscoveryError> {
-        let old_key = shard_key(old);
-        let new_key = shard_key(new);
-        let new_json = to_json::<_, K>(&membership, view, ShardStatus::Active, None);
-
-        // Consistent pre-read: build tombstone for old shard.
-        let old_tombstone = if let Some(json) = self.read_raw(&old_key).await? {
-            let mut record = parse_record::<K>(&json)?;
-            record.status = ShardStatus::Tombstoned;
-            Some(serde_json::to_string(&record).unwrap())
-        } else {
-            None
-        };
-
-        for _attempt in 0..5 {
-            let txn = self.client.begin();
-
-            // RW get for OCC read-set tracking (inconsistent — may be stale).
-            let _ = txn
-                .get(old_key.clone())
-                .await
-                .map_err(|e| DiscoveryError::ConnectionFailed(format!("{e:?}")))?;
-
-            if let Some(ref tombstone) = old_tombstone {
-                txn.put(old_key.clone(), Some(tombstone.clone()));
-            }
-
-            // OCC-track the new key too.
-            let _ = txn
-                .get(new_key.clone())
-                .await
-                .map_err(|e| DiscoveryError::ConnectionFailed(format!("{e:?}")))?;
-
-            txn.put(new_key.clone(), Some(new_json.clone()));
-
-            if txn.commit().await.is_some() {
-                tokio::task::yield_now().await;
-                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-                return Ok(());
-            }
-        }
-
-        Err(DiscoveryError::ConnectionFailed(
-            "replace failed after retries".to_string(),
-        ))
-    }
-
     async fn strong_atomic_update_shards(
         &self,
         changes: Vec<ShardDirectoryChange<K, A>>,
@@ -702,9 +649,6 @@ mod tests {
     async fn remove(dir: &impl RemoteShardDirectory<usize, ()>, shard: ShardNumber) -> Result<(), DiscoveryError> {
         dir.strong_remove_shard(shard).await
     }
-    async fn replace(dir: &impl RemoteShardDirectory<usize, ()>, old: ShardNumber, new: ShardNumber, membership: IrMembership<usize>, view: u64) -> Result<(), DiscoveryError> {
-        dir.strong_replace(old, new, membership, view).await
-    }
     async fn all(dir: &impl RemoteShardDirectory<usize, ()>) -> Result<Vec<(ShardNumber, IrMembership<usize>, u64)>, DiscoveryError> {
         dir.weak_all_active_shard_view_memberships().await
     }
@@ -823,28 +767,6 @@ mod tests {
 
         let result = remove(&*dir, ShardNumber(1)).await;
         assert!(matches!(result, Err(DiscoveryError::NotFound)));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn replace_atomic() {
-        let mut rng = test_rng(49);
-        let disc = build_test_discovery(&mut rng, 3);
-        let dir = disc.create_remote_strong(&mut rng);
-
-        let old_membership = IrMembership::new(vec![10usize, 11, 12]);
-        put(&*dir, ShardNumber(1), old_membership, 1).await.unwrap();
-
-        let new_membership = IrMembership::new(vec![20usize, 21, 22]);
-        replace(&*dir, ShardNumber(1), ShardNumber(2), new_membership, 2).await.unwrap();
-
-        // Old shard tombstoned.
-        assert!(get(&*dir, ShardNumber(1)).await.unwrap().is_none());
-
-        // New shard active.
-        let (got, view) = get(&*dir, ShardNumber(2)).await.unwrap().unwrap();
-        assert_eq!(view, 2);
-        let addrs: Vec<usize> = got.iter().collect();
-        assert_eq!(addrs, vec![20, 21, 22]);
     }
 
     #[tokio::test(start_paused = true)]

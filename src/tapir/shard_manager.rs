@@ -23,8 +23,9 @@ use std::sync::Arc;
 ///    (periodic; local rejects stale via view numbers)
 ///
 /// ShardManager is the sole authority for shard **lifecycle** (register,
-/// replace). Lifecycle methods (`replace_shard`) tombstone old shards in
-/// the remote discovery service, ensuring cluster-wide consistency.
+/// compact, split, merge). Lifecycle methods tombstone old shards in the
+/// remote discovery service via `strong_atomic_update_shards`, ensuring
+/// cluster-wide consistency.
 ///
 /// # Architecture
 ///
@@ -38,7 +39,7 @@ use std::sync::Arc;
 ///     - PULL: all remote entries → local (local rejects stale via view)
 ///
 /// ShardManager (shard lifecycle authority):
-///   replace_shard tombstones old shards in remote directly
+///   strong_atomic_update_shards tombstones old shards in remote directly
 ///
 /// Remote Discovery (cluster-wide):
 ///   TapirRemoteShardDirectory / JsonRemoteShardDirectory
@@ -53,7 +54,7 @@ use std::sync::Arc;
 /// |-----------|-------------------------|--------------------------------|-------------|
 /// | Split     | Kept (range narrowed)   | Fresh # (operator-specified)   | No          |
 /// | Merge     | Tombstoned via route update | Surviving keeps its #          | No          |
-/// | Compact   | `replace_shard()`       | Fresh # (operator-specified)   | Yes (v=0)   |
+/// | Compact   | Tombstoned via route update | Fresh # (operator-specified)   | Yes (v=0)   |
 /// | Join/Leave| Membership updated      | N/A                            | No          |
 ///
 /// Shard numbers are never reused. Remote tombstones enforce this cluster-wide.
@@ -206,24 +207,6 @@ impl<
             membership: stored_membership,
             client,
         });
-    }
-
-    /// Atomically replace one shard with another in remote discovery and
-    /// tombstone the old shard.
-    ///
-    /// Removes `old` from the local shard registry and tombstones it in
-    /// remote discovery, preventing other nodes from re-pushing stale data.
-    ///
-    /// See [`ShardManager`] module docs § "Careful Handling: Avoiding
-    /// Push-Pull Cycles".
-    pub(crate) async fn replace_shard(
-        &mut self,
-        old: ShardNumber,
-        new: ShardNumber,
-        membership: IrMembership<T::Address>,
-    ) {
-        self.shards.remove(&old);
-        let _ = self.remote.strong_replace(old, new, membership, 0).await;
     }
 
     pub fn shard_client(&self, shard: ShardNumber) -> Option<&ShardClient<K, V, T>> {

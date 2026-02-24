@@ -26,7 +26,7 @@ impl SoloClusterManager {
     ///
     /// - **No atomic swap**: Source and destination are separate clusters.
     ///   The caller handles client switchover.
-    /// - **No directory operations**: No `create_shard_client`, `replace_shard`.
+    /// - **No directory operations**: No `create_shard_client`.
     /// - **Source left frozen**: After clone, source is in `ReadOnly` phase
     ///   (then `Decommissioning` after read protection transfer). Caller
     ///   decides whether to unfreeze or tear down.
