@@ -3,7 +3,7 @@ use rand::{thread_rng, Rng as _};
 use serde::Deserialize;
 use std::sync::Arc;
 use tapirs::discovery::{
-    InMemoryShardDirectory, RemoteShardDirectory as _, ShardDirectory as _,
+    InMemoryShardDirectory, RemoteShardDirectory as _, ShardStatus,
     strings_to_membership,
 };
 use tapirs::{IrMembership, KeyRange, ShardManager, ShardNumber, TapirReplica, TcpAddress, TcpTransport};
@@ -19,7 +19,6 @@ type TapirShardManager = ShardManager<
 
 struct ShardManagerState {
     manager: tokio::sync::Mutex<TapirShardManager>,
-    directory: Arc<InMemoryShardDirectory<TcpAddress>>,
     remote: Arc<DiscoveryBackend>,
 }
 
@@ -58,7 +57,6 @@ impl ShardManagerState {
         );
         Self {
             manager: tokio::sync::Mutex::new(manager),
-            directory,
             remote,
         }
     }
@@ -112,20 +110,12 @@ async fn handle_request(
             }
         };
 
-        // Query discovery for existing membership.
-        let existing = state
-            .remote
-            .weak_all_active_shard_view_memberships()
-            .await
-            .ok()
-            .and_then(|entries| entries.into_iter().find(|(s, _, _)| *s == shard))
-            .map(|(_, m, v)| (m, v))
-            .filter(|(m, _)| m.len() > 0);
+        // Strong read: check shard exists and is Active before calling join().
+        let exists = state.remote.strong_get_shard(shard).await
+            .ok().flatten()
+            .is_some_and(|r| r.status == ShardStatus::Active && r.membership.len() > 0);
 
-        if let Some((membership, view)) = existing {
-            // Populate address directory so manager.join() can discover membership.
-            state.directory.put(shard, membership, view);
-
+        if exists {
             match state.manager.lock().await.join(shard, new_addr).await {
                 Ok(()) => (200, r#"{"ok":true}"#.to_string()),
                 Err(e) => {
@@ -160,28 +150,23 @@ async fn handle_request(
             }
         };
 
-        // Query discovery for existing membership.
+        // Strong read: check shard exists and address is in membership.
         eprintln!("[leave-handler] querying discovery for shard={shard:?} to remove addr={addr:?}");
-        let existing = state
-            .remote
-            .weak_all_active_shard_view_memberships()
-            .await
-            .ok()
-            .and_then(|entries| entries.into_iter().find(|(s, _, _)| *s == shard))
-            .map(|(_, m, v)| (m, v))
-            .filter(|(m, _)| m.len() > 0);
+        let record = state.remote.strong_get_shard(shard).await
+            .ok().flatten()
+            .filter(|r| r.status == ShardStatus::Active && r.membership.len() > 0);
 
-        let Some((membership, view)) = existing else {
+        let Some(record) = record else {
             eprintln!("[leave-handler] shard {shard:?} not found in discovery");
             return (
                 400,
                 format!(r#"{{"error":"shard {} not found in discovery"}}"#, req.shard),
             );
         };
-        eprintln!("[leave-handler] discovery returned membership len={} view={view} for shard={shard:?}", membership.len());
+        eprintln!("[leave-handler] discovery returned membership len={} view={} for shard={shard:?}", record.membership.len(), record.view);
 
         // Verify the address is part of the shard.
-        if !membership.contains(addr) {
+        if !record.membership.contains(addr) {
             eprintln!("[leave-handler] addr={addr:?} not in membership for shard={shard:?}");
             return (
                 400,
@@ -191,11 +176,6 @@ async fn handle_request(
                 ),
             );
         }
-
-        // Populate address directory so manager.leave() can discover membership.
-        state
-            .directory
-            .put(shard, membership, view);
 
         eprintln!("[leave-handler] calling manager.leave(shard={shard:?}, addr={addr:?})");
         match state.manager.lock().await.leave(shard, addr).await {
@@ -221,7 +201,7 @@ async fn handle_request(
         tracing::info!(?shard, "register: received request");
 
         // Use provided replicas or query discovery for shard membership.
-        let (membership, view) = if let Some(ref replicas) = req.replicas {
+        let (membership, _view) = if let Some(ref replicas) = req.replicas {
             tracing::info!(?shard, replicas_count = replicas.len(), "register: using provided replicas");
             match strings_to_membership::<TcpAddress>(replicas) {
                 Ok(m) => (m, 0u64),
@@ -231,14 +211,10 @@ async fn handle_request(
             }
         } else {
             tracing::info!(?shard, "register: querying discovery for membership");
-            let existing = state
-                .remote
-                .weak_all_active_shard_view_memberships()
-                .await
-                .ok()
-                .and_then(|entries| entries.into_iter().find(|(s, _, _)| *s == shard))
-                .map(|(_, m, v)| (m, v))
-                .filter(|(m, _)| m.len() > 0);
+            let existing = state.remote.strong_get_shard(shard).await
+                .ok().flatten()
+                .filter(|r| r.status == ShardStatus::Active)
+                .map(|r| (r.membership, r.view));
 
             match existing {
                 Some((m, v)) => (m, v),
@@ -253,8 +229,6 @@ async fn handle_request(
                 }
             }
         };
-
-        state.directory.put(shard, membership.clone(), view);
 
         let key_range = KeyRange {
             start: req.key_range_start,
@@ -289,10 +263,6 @@ async fn handle_request(
                     return (400, format!(r#"{{"error":"invalid new_replicas: {e}"}}"#));
                 }
             };
-
-        state
-            .directory
-            .put(ShardNumber(req.new_shard), new_membership.clone(), 0);
 
         match state
             .manager
@@ -353,10 +323,6 @@ async fn handle_request(
                     return (400, format!(r#"{{"error":"invalid new_replicas: {e}"}}"#));
                 }
             };
-
-        state
-            .directory
-            .put(ShardNumber(req.new_shard), new_membership.clone(), 0);
 
         match state
             .manager
