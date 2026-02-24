@@ -558,7 +558,18 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
                     return finalize_results.into_values().map(|r| r.result).collect();
                 }
 
-                // Not enough finalize replies — retry from the beginning
+                // Not enough finalize replies — update view from partial replies
+                // and apply backoff before retrying.
+                {
+                    let mut sync = inner.sync.lock().unwrap();
+                    Self::update_view(
+                        &inner.transport,
+                        &mut *sync,
+                        finalize_results.iter().map(|(i, r)| (*i, &r.view)),
+                    );
+                }
+                T::sleep(retry_backoff).await;
+                retry_backoff = (retry_backoff * 2).min(Duration::from_secs(1));
             }
         }
     }
