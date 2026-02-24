@@ -244,7 +244,7 @@ func (r *TAPIRClusterReconciler) registerShards(ctx context.Context, cluster *ta
 			"replicas", replicas)
 
 		start := time.Now()
-		if err := smClient.RegisterShard(ctx, shard.Number,
+		if err := smClient.RegisterActiveShard(ctx, shard.Number,
 			shard.KeyRangeStart, shard.KeyRangeEnd, replicas); err != nil {
 			log.Error(err, "Shard registration failed", "shard", shard.Number, "elapsed", time.Since(start))
 			return fmt.Errorf("register shard %d: %w", shard.Number, err)

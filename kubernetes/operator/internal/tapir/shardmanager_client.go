@@ -72,10 +72,11 @@ type registerRequest struct {
 	Replicas      []string `json:"replicas,omitempty"`
 }
 
-// RegisterShard registers a shard's key range and replica addresses with the
-// shard-manager. Passing explicit replicas avoids the 10s CachingShardDirectory
-// push race during initial bootstrap.
-func (c *ShardManagerClient) RegisterShard(ctx context.Context, shard int32, keyRangeStart, keyRangeEnd string, replicas []string) error {
+// RegisterActiveShard makes an already configured and running shard's replicas
+// visible to clients and other replicas in the cluster via the discovery cluster.
+// Passing explicit replicas avoids the 10s CachingShardDirectory push race during
+// initial bootstrap.
+func (c *ShardManagerClient) RegisterActiveShard(ctx context.Context, shard int32, keyRangeStart, keyRangeEnd string, replicas []string) error {
 	req := registerRequest{
 		Shard:    shard,
 		Replicas: replicas,

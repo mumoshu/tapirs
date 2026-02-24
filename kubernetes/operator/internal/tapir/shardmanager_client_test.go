@@ -12,7 +12,7 @@ import (
 	"testing"
 )
 
-func TestShardManagerClient_RegisterShard(t *testing.T) {
+func TestShardManagerClient_RegisterActiveShard(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/register" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
@@ -52,14 +52,14 @@ func TestShardManagerClient_RegisterShard(t *testing.T) {
 	defer srv.Close()
 
 	client := &ShardManagerClient{BaseURL: srv.URL}
-	err := client.RegisterShard(context.Background(), 0, "", "n",
+	err := client.RegisterActiveShard(context.Background(), 0, "", "n",
 		[]string{"10.0.0.1:6000", "10.0.0.2:6000", "10.0.0.3:6000"})
 	if err != nil {
-		t.Fatalf("RegisterShard() error: %v", err)
+		t.Fatalf("RegisterActiveShard() error: %v", err)
 	}
 }
 
-func TestShardManagerClient_RegisterShard_Error(t *testing.T) {
+func TestShardManagerClient_RegisterActiveShard_Error(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(400)
 		_ = json.NewEncoder(w).Encode(shardManagerResponse{Error: "shard 0 not found in discovery"})
@@ -67,7 +67,7 @@ func TestShardManagerClient_RegisterShard_Error(t *testing.T) {
 	defer srv.Close()
 
 	client := &ShardManagerClient{BaseURL: srv.URL}
-	err := client.RegisterShard(context.Background(), 0, "", "n", nil)
+	err := client.RegisterActiveShard(context.Background(), 0, "", "n", nil)
 	if err == nil {
 		t.Fatal("expected error for 400 response")
 	}
@@ -127,7 +127,7 @@ func TestShardManagerClient_Merge(t *testing.T) {
 	}
 }
 
-func TestShardManagerClient_TLS_RegisterShard(t *testing.T) {
+func TestShardManagerClient_TLS_RegisterActiveShard(t *testing.T) {
 	dir := t.TempDir()
 	certFile, keyFile, caFile := generateTestCerts(t, dir)
 
@@ -178,9 +178,9 @@ func TestShardManagerClient_TLS_RegisterShard(t *testing.T) {
 	}
 
 	client := &ShardManagerClient{BaseURL: srv.URL, HTTPClient: httpClient}
-	err = client.RegisterShard(context.Background(), 0, "", "n",
+	err = client.RegisterActiveShard(context.Background(), 0, "", "n",
 		[]string{"10.0.0.1:6000", "10.0.0.2:6000", "10.0.0.3:6000"})
 	if err != nil {
-		t.Fatalf("TLS RegisterShard() error: %v", err)
+		t.Fatalf("TLS RegisterActiveShard() error: %v", err)
 	}
 }
