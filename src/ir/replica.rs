@@ -461,11 +461,19 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                 }
             }
             Message::<U, T>::FinalizeInconsistent(FinalizeInconsistent { op_id }) => {
-                if sync.status.is_normal() && let Some(entry) = sync.record.get_mut_inconsistent(&op_id) && entry.state.is_tentative() {
-                    entry.state = RecordEntryState::Finalized(sync.view.number);
-                    entry.modified_view = sync.view.number.0;
+                if sync.status.is_normal()
+                    && let Some(entry) = sync.record.get_mut_inconsistent(&op_id)
+                {
+                    if entry.state.is_tentative() {
+                        entry.state = RecordEntryState::Finalized(sync.view.number);
+                        entry.modified_view = sync.view.number.0;
+                    }
+                    // Execute and reply regardless of whether the entry was
+                    // just finalized or was already finalized (e.g. from a
+                    // view-change merge). Re-execution is safe: QuorumRead's
+                    // commit_get is idempotent, and Commit/Abort return None
+                    // (no reply sent either way).
                     let result = sync.upcalls.exec_inconsistent(&entry.op);
-
                     if let Some(result) = result {
                         return Some(Message::<U, T>::FinalizeInconsistentReply(FinalizeInconsistentReply {
                             op_id,

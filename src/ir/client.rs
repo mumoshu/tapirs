@@ -10,6 +10,7 @@ use crate::{
     util::{join, Join},
     Transport,
 };
+use tracing::debug;
 use futures::{stream::FuturesUnordered, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -466,7 +467,9 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
 
         async move {
             let mut retry_backoff = Duration::from_millis(50);
+            let mut phase1_attempt = 0u32;
             loop {
+                phase1_attempt += 1;
                 // Phase 1: Propose (same as invoke_inconsistent)
                 //
                 // Generate a fresh op_id per attempt — see comment in invoke_inconsistent.
@@ -474,7 +477,12 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
                     let mut sync = inner.sync.lock().unwrap();
                     let op_id = OpId { client_id, number: sync.next_number() };
                     let membership_size = sync.view.membership.size();
-
+                    debug!(
+                        phase1_attempt,
+                        view = ?sync.view.number,
+                        ?membership_size,
+                        "iir: phase1 start",
+                    );
                     let future = join(sync.view.membership.iter().map(|address| {
                         (
                             address,
@@ -508,9 +516,23 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
                         },
                     )
                     .await;
+                debug!(
+                    "iir: phase1 done attempt={phase1_attempt} responses={} ancient={} quorum={}",
+                    results.len(),
+                    has_ancient(&results),
+                    has_quorum(membership_size, &results, true),
+                );
 
                 let phase2 = {
                     let mut sync = inner.sync.lock().unwrap();
+                    // Per IR protocol: "If a client receives responses with
+                    // different view numbers, it notifies the replicas in the
+                    // older view." This may cause notified replicas to enter
+                    // ViewChanging, temporarily preventing them from responding
+                    // to Phase 2's FinalizeInconsistent. That is correct — the
+                    // FinalizeInconsistent handler responds for already-Finalized
+                    // entries (finalized during view-change merge/sync), so once
+                    // replicas return to Normal they will reply.
                     Self::update_view(
                         &inner.transport,
                         &mut *sync,
@@ -521,6 +543,8 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
                         None
                     } else {
                         // Phase 2: Finalize — send FinalizeInconsistent and wait for f+1 replies
+                        let addrs: Vec<_> = sync.view.membership.iter().collect();
+                        debug!("iir: phase2 sending to addrs={addrs:?} op_id={op_id:?}");
                         let finalize_future = join(sync.view.membership.iter().map(|address| {
                             (
                                 address,
@@ -536,12 +560,14 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
                 };
 
                 let Some((finalize_future, finalize_membership_size)) = phase2 else {
+                    debug!("iir: phase1 failed, retrying (backoff={retry_backoff:?})");
                     // Exponential backoff before retrying to prevent a tight async
                     // loop that freezes simulated time under `start_paused = true`.
                     T::sleep(retry_backoff).await;
                     retry_backoff = (retry_backoff * 2).min(Duration::from_secs(1));
                     continue;
                 };
+                debug!("iir: phase2 start f_plus_one={}", finalize_membership_size.f_plus_one());
 
                 let mut finalize_timeout = std::pin::pin!(T::sleep(Duration::from_millis(5000)));
 
@@ -554,6 +580,7 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
                         },
                     )
                     .await;
+                debug!("iir: phase2 done responses={} needed={}", finalize_results.len(), finalize_membership_size.f_plus_one());
 
                 if finalize_results.len() >= finalize_membership_size.f_plus_one() {
                     let mut sync = inner.sync.lock().unwrap();
