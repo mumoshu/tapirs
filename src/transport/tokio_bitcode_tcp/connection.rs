@@ -17,7 +17,7 @@ use tokio::sync::mpsc;
 pub(super) async fn ensure_connection<U: ReplicaUpcalls>(
     inner: &Arc<TransportInner<U>>,
     addr: SocketAddr,
-) -> mpsc::Sender<Vec<u8>>
+) -> Option<mpsc::Sender<Vec<u8>>>
 where
     U::UO: Serialize + DeserializeOwned,
     U::UR: Serialize + DeserializeOwned,
@@ -32,14 +32,18 @@ where
         if let Some(tx) = conns.get(&addr)
             && !tx.is_closed()
         {
-            return tx.clone();
+            return Some(tx.clone());
         }
     }
 
     // Establish new connection.
-    let stream = TcpStream::connect(addr)
-        .await
-        .unwrap_or_else(|e| panic!("connect to {addr} failed: {e}"));
+    let stream = match TcpStream::connect(addr).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("connect to {addr} failed: {e}");
+            return None;
+        }
+    };
 
     let (tx, rx) = mpsc::channel::<Vec<u8>>(1024);
 
@@ -59,10 +63,11 @@ where
                 tokio::spawn(write_loop(write_half, rx));
                 tokio::spawn(read_loop_outbound(read_half, Arc::clone(inner)));
                 inner.connections.lock().unwrap().insert(addr, tx.clone());
-                return tx;
+                return Some(tx);
             }
             Err(e) => {
-                panic!("TLS connect to {addr} failed: {e}");
+                tracing::warn!("TLS connect to {addr} failed: {e}");
+                return None;
             }
         }
     }
@@ -73,7 +78,7 @@ where
     tokio::spawn(read_loop_outbound(read_half, Arc::clone(inner)));
 
     inner.connections.lock().unwrap().insert(addr, tx.clone());
-    tx
+    Some(tx)
 }
 
 /// Write loop: drains the mpsc channel and writes frames to the socket.

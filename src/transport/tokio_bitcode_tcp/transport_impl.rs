@@ -83,7 +83,16 @@ where
                 };
                 let frame = FrameCodec::encode(&wire).expect("encode");
 
-                let tx = ensure_connection::<U>(&inner, address.socket_addr()).await;
+                let tx = match ensure_connection::<U>(&inner, address.socket_addr()).await {
+                    Some(tx) => tx,
+                    None => {
+                        // Connection failed, retry with backoff.
+                        inner.pending_replies.lock().unwrap().remove(&request_id);
+                        tokio::time::sleep(delay).await;
+                        delay = (delay * 2).min(max_delay);
+                        continue;
+                    }
+                };
                 if tx.send(frame).await.is_err() {
                     inner
                         .pending_replies
@@ -133,8 +142,9 @@ where
                 from,
                 payload: message,
             };
-            if let Ok(frame) = FrameCodec::encode(&wire) {
-                let tx = ensure_connection::<U>(&inner, address.socket_addr()).await;
+            if let Ok(frame) = FrameCodec::encode(&wire)
+                && let Some(tx) = ensure_connection::<U>(&inner, address.socket_addr()).await
+            {
                 let _ = tx.send(frame).await;
             }
         });
