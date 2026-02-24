@@ -3,6 +3,19 @@ pub mod tapir;
 
 pub use tapir::ShardStatus;
 
+/// Full shard metadata returned by [`RemoteShardDirectory::strong_get_shard`].
+///
+/// Unlike the previous `(IrMembership<A>, u64)` tuple, this includes
+/// [`ShardStatus`] and [`KeyRange`] so callers get the complete shard
+/// record without the directory filtering out non-Active entries.
+#[derive(Debug, Clone)]
+pub struct ShardRecord<A, K> {
+    pub membership: IrMembership<A>,
+    pub view: u64,
+    pub status: ShardStatus,
+    pub key_range: Option<KeyRange<K>>,
+}
+
 use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::str::FromStr;
