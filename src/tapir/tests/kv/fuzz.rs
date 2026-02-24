@@ -570,6 +570,11 @@ async fn fuzz_tapir_transactions_inner(seed: u64) {
                     .into_iter()
                     .map(|(shard, range)| ShardEntry { shard, range })
                     .collect();
+                eprintln!(
+                    "fuzz: route_update: updating router with {} shard(s): {:?}",
+                    entries.len(),
+                    entries.iter().map(|e| (e.shard, &e.range)).collect::<Vec<_>>()
+                );
                 route_poll_router.directory().write().unwrap().update(entries);
             }
             if route_poll_stop.load(Ordering::Relaxed) {

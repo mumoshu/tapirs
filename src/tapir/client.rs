@@ -52,6 +52,11 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Inner<K, V, T> {
             lock.clients
                 .entry(shard)
                 .or_insert_with(|| {
+                    tracing::debug!(
+                        shard = ?shard,
+                        membership_size = membership.len(),
+                        "Creating new ShardClient (cache miss)"
+                    );
                     ShardClient::new(lock.rng.fork(), lock.id, shard, membership, lock.transport.clone())
                 })
                 .clone()

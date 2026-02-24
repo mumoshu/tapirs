@@ -573,6 +573,12 @@ where
                     }
                 }
                 if self.phase != ShardPhase::ReadWrite {
+                    tracing::debug!(
+                        shard = ?self.inner.shard(),
+                        phase = ?self.phase,
+                        txn_id = ?transaction_id,
+                        "Prepare rejected: shard not in ReadWrite phase"
+                    );
                     self.counters.prepare_fail_count.fetch_add(1, Ordering::Relaxed);
                     return CR::Prepare(OccPrepareResult::Fail);
                 }
@@ -606,6 +612,13 @@ where
                     .map(|(c, _, _)| c.time < self.min_prepare_time)
                     .unwrap_or(false)
             {
+                tracing::debug!(
+                    shard = ?self.inner.shard(),
+                    txn_id = ?transaction_id,
+                    commit_time = commit.time,
+                    min_prepare_time = self.min_prepare_time,
+                    "Prepare rejected: TooLate (commit_time < min_prepare_time)"
+                );
                 // Too late to prepare or reprepare.
                 OccPrepareResult::TooLate
             } else {
