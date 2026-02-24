@@ -38,7 +38,7 @@ fn parse_shard_number(key: &str) -> Option<ShardNumber> {
     serialize = "K: serde::Serialize",
     deserialize = "K: serde::de::DeserializeOwned"
 ))]
-struct ShardRecord<K> {
+struct StoredShardRecord<K> {
     membership: Vec<String>,
     view: u64,
     status: ShardStatus,
@@ -81,12 +81,12 @@ pub struct TapirRemoteShardDirectory<A, T: TapirTransport<String, String>> {
     _phantom: PhantomData<A>,
 }
 
-fn parse_record<K: serde::de::DeserializeOwned>(json: &str) -> Result<ShardRecord<K>, DiscoveryError> {
+fn parse_record<K: serde::de::DeserializeOwned>(json: &str) -> Result<StoredShardRecord<K>, DiscoveryError> {
     serde_json::from_str(json)
         .map_err(|e| DiscoveryError::InvalidResponse(format!("invalid JSON: {e}")))
 }
 
-fn parse_membership_from<A, K>(record: &ShardRecord<K>) -> Result<IrMembership<A>, DiscoveryError>
+fn parse_membership_from<A, K>(record: &StoredShardRecord<K>) -> Result<IrMembership<A>, DiscoveryError>
 where
     A: FromStr + Display + Copy + Eq,
     <A as FromStr>::Err: Display,
@@ -100,7 +100,7 @@ where
     A: Copy + Eq + Display,
     K: Serialize,
 {
-    serde_json::to_string(&ShardRecord {
+    serde_json::to_string(&StoredShardRecord {
         membership: membership_to_strings(membership),
         view,
         status,
