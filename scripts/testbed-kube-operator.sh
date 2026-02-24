@@ -412,7 +412,7 @@ uninstall_operator() {
 # Wait for TAPIRCluster to reach Running phase
 # ---------------------------------------------------------------------------
 wait_cluster_running() {
-    local timeout=180
+    local timeout="${TAPIR_WAIT_TIMEOUT:-180}"
     local interval=5
     local elapsed=0
 

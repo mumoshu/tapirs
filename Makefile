@@ -68,7 +68,7 @@ ci/testbed-kube-operator:
 	scripts/testbed-kube-operator.sh down
 
 ci/testbed-kube-operator-tls:
-	TAPIR_TLS=1 TAPIR_KIND=1 scripts/testbed-kube-operator.sh up
+	TAPIR_TLS=1 TAPIR_KIND=1 TAPIR_WAIT_TIMEOUT=300 scripts/testbed-kube-operator.sh up
 	scripts/testbed-kube-operator.sh down
 
 ci/testbed-kube:
