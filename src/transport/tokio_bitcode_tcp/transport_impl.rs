@@ -111,9 +111,10 @@ where
                             }
                         }
                     }
-                    _ = tokio::time::sleep(Duration::from_secs(1)) => {
-                        // Timeout, cleanup and retry.
+                    _ = tokio::time::sleep(Duration::from_secs(5)) => {
+                        // Timeout — cleanup pending reply and retry with backoff.
                         inner.pending_replies.lock().unwrap().remove(&request_id);
+                        tokio::time::sleep(delay).await;
                         delay = (delay * 2).min(max_delay);
                         continue;
                     }
