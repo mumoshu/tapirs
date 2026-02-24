@@ -566,7 +566,8 @@ where
                     if let Some(json) = self.read_raw(&key).await? {
                         let record = parse_record::<K>(&json)?;
                         if record.status == ShardStatus::Tombstoned {
-                            continue;
+                            // Tombstoned shards cannot be revived through route changes.
+                            return Err(DiscoveryError::Tombstoned);
                         }
                         if record.view > *view {
                             // Stale view — update only key_range.
