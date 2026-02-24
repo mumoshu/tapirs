@@ -298,13 +298,13 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         self.report_progress("split:publish-route");
         let source_membership = self.shards[&source].membership.clone();
         let _ = self.remote.strong_publish_route_changes(vec![
-            ShardDirectoryChange::SetRange {
+            ShardDirectoryChange::ActivateShard {
                 shard: source,
                 range: narrowed_range,
                 membership: source_membership,
                 view: 0,
             },
-            ShardDirectoryChange::SetRange {
+            ShardDirectoryChange::ActivateShard {
                 shard: new_shard,
                 range: new_range,
                 membership: new_membership_for_put,
@@ -538,8 +538,8 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         // Single publish_route_changes atomically updates both.
         let surviving_membership = self.shards[&surviving].membership.clone();
         let _ = self.remote.strong_publish_route_changes(vec![
-            ShardDirectoryChange::RemoveRange { shard: absorbed },
-            ShardDirectoryChange::SetRange {
+            ShardDirectoryChange::TombstoneShard { shard: absorbed },
+            ShardDirectoryChange::ActivateShard {
                 shard: surviving,
                 range: merged_range,
                 membership: surviving_membership,
@@ -921,8 +921,8 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         self.report_progress("compact:decommission");
         let source_range = self.shards[&new_shard].key_range.clone();
         let _ = self.remote.strong_publish_route_changes(vec![
-            ShardDirectoryChange::RemoveRange { shard: source },
-            ShardDirectoryChange::SetRange {
+            ShardDirectoryChange::TombstoneShard { shard: source },
+            ShardDirectoryChange::ActivateShard {
                 shard: new_shard,
                 range: source_range,
                 membership: new_membership_for_swap,

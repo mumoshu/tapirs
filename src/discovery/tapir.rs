@@ -563,7 +563,7 @@ where
         let mut shard_writes: Vec<(String, String)> = Vec::new();
         for change in &changes {
             match change {
-                ShardDirectoryChange::SetRange { shard, range, membership, view } => {
+                ShardDirectoryChange::ActivateShard { shard, range, membership, view } => {
                     let key = shard_key(*shard);
                     tracing::debug!(%key, ?shard, "publish_route_changes: pre-reading shard entry");
                     if let Some(json) = self.read_raw(&key).await? {
@@ -584,7 +584,7 @@ where
                     let json = to_json(membership, *view, ShardStatus::Active, Some(range.clone()));
                     shard_writes.push((key, json));
                 }
-                ShardDirectoryChange::RemoveRange { shard } => {
+                ShardDirectoryChange::TombstoneShard { shard } => {
                     let key = shard_key(*shard);
                     if let Some(json) = self.read_raw(&key).await? {
                         let mut record = parse_record::<K>(&json)?;

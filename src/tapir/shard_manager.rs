@@ -158,7 +158,7 @@ impl<
         key_range: KeyRange<K>,
     ) {
         let _ = self.remote.strong_publish_route_changes(vec![
-            ShardDirectoryChange::SetRange {
+            ShardDirectoryChange::ActivateShard {
                 shard,
                 range: key_range.clone(),
                 membership: membership.clone(),

@@ -18,7 +18,7 @@ use crate::{IrMembership, KeyRange, ShardNumber};
 /// Published atomically by ShardManager during resharding to ensure consumers
 /// never see intermediate states with overlapping key ranges.
 ///
-/// `SetRange` includes the shard's membership and view so that
+/// `ActivateShard` includes the shard's membership and view so that
 /// `publish_route_changes` can atomically update both the route changelog
 /// and the shard membership entries in a single write.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,13 +28,13 @@ use crate::{IrMembership, KeyRange, ShardNumber};
     deserialize = "K: serde::de::DeserializeOwned, A: serde::de::DeserializeOwned"
 ))]
 pub enum ShardDirectoryChange<K, A> {
-    SetRange {
+    ActivateShard {
         shard: ShardNumber,
         range: KeyRange<K>,
         membership: IrMembership<A>,
         view: u64,
     },
-    RemoveRange { shard: ShardNumber },
+    TombstoneShard { shard: ShardNumber },
 }
 
 /// An atomic set of route changes published at a single index.
@@ -109,8 +109,8 @@ pub trait RemoteShardDirectory<A: Clone + Send + Sync + 'static, K: Clone + Send
     /// Publish an atomic set of route changes (additions and removals).
     ///
     /// Atomically updates both the route changelog (for consumers polling via
-    /// [`weak_route_changes_since`]) and the shard membership entries. `SetRange`
-    /// puts the shard with its membership/view; `RemoveRange` tombstones it.
+    /// [`weak_route_changes_since`]) and the shard membership entries. `ActivateShard`
+    /// puts the shard with its membership/view; `TombstoneShard` tombstones it.
     ///
     /// Each changeset is indexed sequentially (1-based).
     ///
@@ -371,7 +371,7 @@ where
 
                 // PULL route changelog: apply atomic changesets to key_ranges.
                 // High watermark never regresses — stale eventual reads are ignored.
-                // Within each changeset, process RemoveRange before SetRange to
+                // Within each changeset, process TombstoneShard before ActivateShard to
                 // avoid transient overlapping ranges when a shard is replaced.
                 let hwm = *dir.route_hwm.read().unwrap();
                 if let Ok(changesets) = dir.remote.weak_route_changes_since(hwm).await {
@@ -383,12 +383,12 @@ where
                         }
                         // Deletes first, then inserts.
                         for change in &changes {
-                            if let ShardDirectoryChange::RemoveRange { shard } = change {
+                            if let ShardDirectoryChange::TombstoneShard { shard } = change {
                                 ranges.remove(shard);
                             }
                         }
                         for change in changes {
-                            if let ShardDirectoryChange::SetRange { shard, range, .. } = change {
+                            if let ShardDirectoryChange::ActivateShard { shard, range, .. } = change {
                                 ranges.insert(shard, range);
                             }
                         }

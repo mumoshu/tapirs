@@ -299,10 +299,10 @@ async fn load_tapir_discovery(
             for (_idx, changes) in changesets {
                 for change in changes {
                     match change {
-                        ShardDirectoryChange::SetRange { shard, range, .. } => {
+                        ShardDirectoryChange::ActivateShard { shard, range, .. } => {
                             key_ranges.insert(shard, range);
                         }
-                        ShardDirectoryChange::RemoveRange { shard } => {
+                        ShardDirectoryChange::TombstoneShard { shard } => {
                             key_ranges.remove(&shard);
                         }
                     }
