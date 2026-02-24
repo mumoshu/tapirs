@@ -22,9 +22,9 @@ tapirs is a distributed transactional key-value store written in Rust, with no l
 ## Quick start
 
 ```sh
-scripts/testbed.sh up     # 3-node cluster, 2 shards
-tapi client --repl        # interactive transaction shell
-scripts/testbed.sh down   # teardown
+scripts/testbed-docker-compose.sh up     # 3-node cluster, 2 shards
+tapi client --repl                      # interactive transaction shell
+scripts/testbed-docker-compose.sh down   # teardown
 ```
 
 Full walkthrough: [Getting Started](docs/operate/getting-started.md)

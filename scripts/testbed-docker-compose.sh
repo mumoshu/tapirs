@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# testbed.sh — Create or destroy a demo TAPIR cluster.
+# testbed-docker-compose.sh — Create or destroy a demo TAPIR cluster.
 #
 # Usage:
-#   scripts/testbed.sh up      Build, create cluster, run full demo, print guide
-#   scripts/testbed.sh down    Tear down all testbed resources
+#   scripts/testbed-docker-compose.sh up      Build, create cluster, run full demo, print guide
+#   scripts/testbed-docker-compose.sh down    Tear down all testbed resources
 #
 # Two-tier deployment:
 #   Tier 1 — Discovery store: 3-node single-shard TAPIR cluster (static membership)
@@ -95,7 +95,7 @@ check_ports() {
     done
 
     if (( ${#busy[@]} > 0 )); then
-        fail "Port(s) ${busy[*]} already in use. Run 'scripts/testbed.sh down' first, or free them manually."
+        fail "Port(s) ${busy[*]} already in use. Run 'scripts/testbed-docker-compose.sh down' first, or free them manually."
     fi
 }
 
@@ -482,7 +482,7 @@ ${BOLD}7. BACKUP & RESTORE${RESET}
 
 ${BOLD}8. TEAR DOWN${RESET}
 
-     scripts/testbed.sh down
+     scripts/testbed-docker-compose.sh down
 
 EOF
 }

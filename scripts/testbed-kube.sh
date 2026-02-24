@@ -8,7 +8,7 @@
 #   scripts/testbed-kube.sh down     Tear down all testbed resources
 #   scripts/testbed-kube.sh status   Show cluster health
 #
-# Two-tier deployment (same architecture as scripts/testbed.sh):
+# Two-tier deployment (same architecture as scripts/testbed-docker-compose.sh):
 #   Tier 1 — Discovery store: 3-node single-shard TAPIR cluster (StatefulSet)
 #   Tier 2 — Main cluster: N shards x 3 replicas across M nodes (StatefulSet)
 #
@@ -851,11 +851,11 @@ cmd_down() {
 }
 
 # ---------------------------------------------------------------------------
-# demo — full scenario suite (matches testbed.sh)
+# demo — full scenario suite (matches testbed-docker-compose.sh)
 # ---------------------------------------------------------------------------
 # Runs after 'up'. Exercises: data seeding, cross-shard TX, range scan,
 # admin status, add 4th node, view change, shard split, post-split verify,
-# and backup. Each scenario is modeled after testbed.sh's cmd_up.
+# and backup. Each scenario is modeled after testbed-docker-compose.sh's cmd_up.
 cmd_demo() {
     step "Running full TAPIR demo..."
 

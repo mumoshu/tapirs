@@ -25,14 +25,14 @@
         +----------+
 ```
 
-**Bootstrap a cluster:** The fastest way to try tapirs is the Docker testbed. Run `scripts/testbed.sh up` to build the Docker image, bootstrap a 3-node cluster with 2 shards (replication factor 3), wire up discovery, and start all components. The entire process takes about a minute. When you're done, `scripts/testbed.sh down` tears everything down cleanly. If you don't have Docker or prefer a lighter setup, see the [single-node quick start](getting-started-testbed-solo.md) instead.
+**Bootstrap a cluster:** The fastest way to try tapirs is the Docker testbed. Run `scripts/testbed-docker-compose.sh up` to build the Docker image, bootstrap a 3-node cluster with 2 shards (replication factor 3), wire up discovery, and start all components. The entire process takes about a minute. When you're done, `scripts/testbed-docker-compose.sh down` tears everything down cleanly. If you don't have Docker or prefer a lighter setup, see the [single-node quick start](getting-started-testbed-solo.md) instead.
 
 **Connect and transact:** Once the cluster is running, connect with the interactive REPL: `tapi client --repl`. The REPL opens a transaction session where you can issue `begin`, `get`, `put`, `delete`, `scan`, `commit`, and `abort` commands -- all strict serializable by default. For scripting, use `-e` for one-liner expressions or `-s` to pipe a script file. See the [client reference](cli-tapi-client.md) for the full command list and the [CLI Reference](cli-reference.md) for all binary options.
 
 **Explore the architecture:** The testbed is also a good starting point for understanding tapirs' architecture in practice: you can observe view changes by stopping and restarting a node, trigger online resharding with `tapictl split`, and watch the discovery sync propagate shard membership updates across nodes. All of these operations work against the running testbed without any special configuration.
 
 ```
-$ scripts/testbed.sh up
+$ scripts/testbed-docker-compose.sh up
 Building tapirs Docker image...
 Starting 3-node cluster with 2 shards (replication factor 3)...
 Discovery service started on 172.18.0.2:9100

@@ -11,7 +11,7 @@
 # required — all replicas know the full membership from their config files.
 #
 # This testbed is for developing and testing the TAPIR-based discovery store.
-# For the full multi-shard production-like stack, use scripts/testbed.sh.
+# For the full multi-shard production-like stack, use scripts/testbed-docker-compose.sh.
 #
 set -euo pipefail
 
@@ -229,7 +229,7 @@ smoke_test() {
 }
 
 # ---------------------------------------------------------------------------
-# Demo scenarios (matching testbed.sh where applicable)
+# Demo scenarios (matching testbed-docker-compose.sh where applicable)
 # ---------------------------------------------------------------------------
 demo_delete() {
     step "Demo: Delete operation..."
@@ -414,7 +414,7 @@ ${BOLD}7. LIMITATIONS${RESET}
 
    The solo testbed runs a single shard with static membership. The
    following operations require the full multi-shard stack (shard-manager,
-   discovery service) provided by scripts/testbed.sh:
+   discovery service) provided by scripts/testbed-docker-compose.sh:
 
      - Add/remove nodes (dynamic membership changes)
      - Shard split / merge / compact
