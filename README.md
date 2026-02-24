@@ -12,7 +12,7 @@
             one binary · no external deps
 ```
 
-tapirs is a Rust implementation of the [TAPIR protocol](https://syslab.cs.washington.edu/papers/tapir-tr-v2.pdf) — a transactional key-value store with no leader on the hot path. All transactions — read-write and read-only — are linearizable in a single round trip from client to storage replicas. Compare that with 2PC over Raft, where every shard crossing requires client → leader → followers → leader → client before the coordinator can even begin the second phase. Eventual-consistent reads are available when you want even more read scalability. A temporary leader coordinates view changes only — never transaction processing.
+tapirs is a distributed transactional key-value store written in Rust, with no leader on the hot path. All transactions — read-write and read-only — are linearizable in a single round trip from client to storage replicas. Compare that with 2PC over Raft, where every shard crossing requires client → leader → followers → leader → client before the coordinator can even begin the second phase. Eventual-consistent reads are available when you want even more read scalability. A temporary leader coordinates view changes only — never transaction processing.
 
 | | |
 |---|---|
@@ -37,9 +37,9 @@ Full walkthrough: [Getting Started](docs/operate/getting-started.md)
 
 **Running a cluster?** [Operate tapirs](docs/operate/) has everything from a one-minute Docker testbed to CLI reference, monitoring, and troubleshooting.
 
-**Curious how it works?** [Learn how tapirs works](docs/learn/) covers the foundational concepts — TAPIR, IR consensus, OCC — and goes deeper into architecture, protocol internals, and design decisions.
+**Curious how it works?** [Learn how tapirs works](docs/learn/) covers the foundational concepts — consensus, concurrency control, conflict detection — and goes deeper into architecture, protocol internals, and design decisions.
 
-**Contributing or studying the code?** The [Code Tour](docs/learn/code-tour.md) gives a recommended reading order through the source, with a [Paper Map](docs/learn/paper-map.md) connecting each section of the TAPIR paper to the corresponding code.
+**Contributing or studying the code?** The [Code Tour](docs/learn/code-tour.md) gives a recommended reading order through the source, with a [Paper Map](docs/learn/paper-map.md) connecting the research paper to the corresponding code.
 
 Full documentation: [docs/](docs/README.md) · [Roadmap](docs/roadmap.md) · [History](docs/history.md)
 
