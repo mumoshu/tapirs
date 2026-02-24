@@ -1,5 +1,5 @@
 use super::replica::{ShardConfig, ShardPhase};
-use super::{Change, Key, KeyRange, ShardNumber, Value};
+use super::{Change, Key, KeyRange, ShardClient, ShardNumber, Value};
 use crate::discovery::{RemoteShardDirectory, ShardDirectoryChange};
 use crate::tapir::shard_manager::ShardManager;
 use crate::tapir::{Replica, Sharded};
@@ -85,16 +85,20 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
     /// It is strictly stronger — it also rejects old-timestamp writes to
     /// keys that were never read, but that is a harmless over-rejection.
     /// Clients that get TooLate simply retry with a fresh timestamp.
-    async fn transfer_read_protection(&self, source: ShardNumber, target: ShardNumber) {
+    async fn transfer_read_protection(
+        &self,
+        source_client: &ShardClient<K, V, T>,
+        target_client: &ShardClient<K, V, T>,
+    ) {
         // Freeze ALL operations on source — blocks IO::QuorumScan and
         // IO::QuorumRead to freeze range_reads and last_read_commit_ts.
-        eprintln!("[transfer_rp] reconfigure source={source:?} to Decommissioning");
+        eprintln!("[transfer_rp] reconfigure source to Decommissioning");
         let decommission = serde_json::to_vec(&ShardConfig::<K> {
             key_range: None,
             phase: ShardPhase::Decommissioning,
         })
         .expect("serialize decommission config");
-        self.shards[&source].client.reconfigure(decommission);
+        source_client.reconfigure(decommission);
 
         // Wait for in-flight reads to complete after freeze propagates.
         eprintln!("[transfer_rp] sleeping 3s");
@@ -103,15 +107,14 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
 
         // Query min_prepare_baseline from source (f+1 replicas).
         let (max_range_read_time, max_read_commit_time) =
-            self.shards[&source].client.min_prepare_baseline().await;
+            source_client.min_prepare_baseline().await;
         eprintln!("[transfer_rp] baseline: rr={max_range_read_time}, rc={max_read_commit_time}");
 
         // Raise min_prepare_time on target shard.
         let barrier = max_range_read_time.max(max_read_commit_time) + 1;
         if barrier > 1 {
-            eprintln!("[transfer_rp] raising barrier={barrier} on target={target:?}");
-            self.shards[&target]
-                .client
+            eprintln!("[transfer_rp] raising barrier={barrier} on target");
+            target_client
                 .raise_min_prepare_time(barrier)
                 .await;
             eprintln!("[transfer_rp] raise done");
@@ -270,7 +273,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         // scan(start, end, snapshot_ts) only depend on version write-
         // timestamps (BTreeMap keys), which are identical.
         self.report_progress("split:transfer-read-protection");
-        self.transfer_read_protection(source, new_shard).await;
+        self.transfer_read_protection(&self.shards[&source].client, &self.shards[&new_shard].client).await;
 
         // Phase 3c: Unfreeze source and narrow its key range.
         self.report_progress("split:switchover");
@@ -514,7 +517,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         // transactions see the same data regardless of which shard
         // originally held the key — version timestamps are preserved.
         self.report_progress("merge:transfer-read-protection");
-        self.transfer_read_protection(absorbed, surviving).await;
+        self.transfer_read_protection(&self.shards[&absorbed].client, &self.shards[&surviving].client).await;
 
         // Phase 3c: Expand surviving shard's key range.
         self.report_progress("merge:switchover");
@@ -909,7 +912,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         // prepared state, transaction_log). Read-only transactions at any
         // snapshot timestamp see the same version data.
         self.report_progress("compact:transfer-read-protection");
-        self.transfer_read_protection(source, new_shard).await;
+        self.transfer_read_protection(&self.shards[&source].client, &self.shards[&new_shard].client).await;
 
         // Phase 3c: Atomic swap — source disappears, new shard appears in all
         // directories simultaneously. Single strong_atomic_update_shards atomically
