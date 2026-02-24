@@ -35,6 +35,10 @@ Write Path                          Read Path
 
 **Write and read paths:** Write path: writes go to an in-memory BTreeMap (memtable), flushed to an L0 SSTable when full. When L0 reaches 4 files, compaction merges L0 into L1. Read path: check memtable first, then L0 (all files), then L1 (binary search). Value log entries include CRC checksums for integrity. The manifest persists LSM state for crash recovery.
 
+**Crash-safe compaction:** When L0 compaction merges SSTables into L1, the manifest is updated atomically via write-fsync-rename: the new manifest is written to a temporary file, fsynced, then renamed over the old manifest. If the process crashes mid-compaction, the old manifest still points to the pre-compaction SSTable set, so incomplete compactions are effectively rolled back on recovery. The old SSTable files are only deleted after the new manifest is durable.
+
+**Value log garbage collection:** The append-only value log accumulates dead entries as values are overwritten or transactions are aborted. GC scans vlog segments and checks each entry's liveness by looking up its key and timestamp in the LSM tree — if the LSM no longer points to that vlog offset, the entry is dead. Live entries are rewritten to a new segment, and the old segment is reclaimed. GC uses `recover_pointers` to skip full deserialization during the liveness scan, and `read_key_ts` for efficient key-timestamp extraction without reading the full value. Key files: `src/mvcc/disk/vlog.rs`, `src/mvcc/disk/disk_store.rs`.
+
 **Related docs:** See [Storage concepts](../concepts/storage.md) for term definitions, [Testing](testing.md) for FaultyDiskIo, and [Architecture Decisions](architecture-decisions.md) for why WiscKey over plain LSM. Key files: `src/mvcc/disk/lsm.rs`, `src/mvcc/disk/vlog.rs`, `src/mvcc/disk/memtable.rs`, `src/mvcc/disk/manifest.rs`.
 
 | Component | Key file | Description |
