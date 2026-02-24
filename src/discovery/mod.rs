@@ -97,7 +97,7 @@ pub trait RemoteShardDirectory<A: Clone + Send + Sync + 'static, K: Clone + Send
         shard: ShardNumber,
     ) -> impl std::future::Future<Output = Result<(), DiscoveryError>> + Send + '_;
 
-    fn weak_all_shard_view_memberships(
+    fn weak_all_active_shard_view_memberships(
         &self,
     ) -> impl std::future::Future<Output = Result<Vec<(ShardNumber, IrMembership<A>, u64)>, DiscoveryError>>
            + Send
@@ -368,7 +368,7 @@ where
                 // Alive replica's local (higher view) is never overwritten.
                 // Dead replica's local (lower view) gets overwritten by fresh remote data.
                 // Tombstoned shards are omitted by remote.all().
-                if let Ok(entries) = dir.remote.weak_all_shard_view_memberships().await {
+                if let Ok(entries) = dir.remote.weak_all_active_shard_view_memberships().await {
                     for (shard, membership, remote_view) in entries {
                         dir.local.put(shard, membership, remote_view);
                     }

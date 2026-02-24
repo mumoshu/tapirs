@@ -68,15 +68,15 @@ impl RemoteShardDirectory<TcpAddress, String> for DiscoveryBackend {
         }
     }
 
-    async fn weak_all_shard_view_memberships(
+    async fn weak_all_active_shard_view_memberships(
         &self,
     ) -> Result<Vec<(ShardNumber, IrMembership<TcpAddress>, u64)>, DiscoveryError> {
         match self {
             Self::Json(c) => {
-                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::weak_all_shard_view_memberships(c).await
+                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::weak_all_active_shard_view_memberships(c).await
             }
             Self::Tapir(c) => {
-                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::weak_all_shard_view_memberships(c).await
+                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::weak_all_active_shard_view_memberships(c).await
             }
         }
     }

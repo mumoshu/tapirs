@@ -437,7 +437,7 @@ where
         ))
     }
 
-    async fn weak_all_shard_view_memberships(
+    async fn weak_all_active_shard_view_memberships(
         &self,
     ) -> Result<Vec<(ShardNumber, IrMembership<A>, u64)>, DiscoveryError> {
         // Refresh shard client cache (no-op if not DNS mode).
@@ -703,7 +703,7 @@ mod tests {
         dir.strong_replace(old, new, membership, view).await
     }
     async fn all(dir: &impl RemoteShardDirectory<usize, ()>) -> Result<Vec<(ShardNumber, IrMembership<usize>, u64)>, DiscoveryError> {
-        dir.weak_all_shard_view_memberships().await
+        dir.weak_all_active_shard_view_memberships().await
     }
 
     #[tokio::test(start_paused = true)]

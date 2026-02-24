@@ -122,7 +122,7 @@ impl<A: Clone + Send + Sync + 'static, K: Clone + Send + Sync + 'static> RemoteS
     }
 
     #[allow(clippy::disallowed_methods)]
-    async fn weak_all_shard_view_memberships(
+    async fn weak_all_active_shard_view_memberships(
         &self,
     ) -> Result<Vec<(ShardNumber, IrMembership<A>, u64)>, DiscoveryError> {
         let state = self.state.read().unwrap();
