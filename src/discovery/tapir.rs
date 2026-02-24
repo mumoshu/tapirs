@@ -341,7 +341,7 @@ where
         }
     }
 
-    async fn strong_put_shard_view_membership(
+    async fn strong_put_active_shard_view_membership(
         &self,
         shard: ShardNumber,
         membership: IrMembership<A>,
@@ -691,7 +691,7 @@ mod tests {
 
     // Helpers to bind K=() for the blanket RemoteShardDirectory impl.
     async fn put(dir: &impl RemoteShardDirectory<usize, ()>, shard: ShardNumber, membership: IrMembership<usize>, view: u64) -> Result<(), DiscoveryError> {
-        dir.strong_put_shard_view_membership(shard, membership, view).await
+        dir.strong_put_active_shard_view_membership(shard, membership, view).await
     }
     async fn get(dir: &impl RemoteShardDirectory<usize, ()>, shard: ShardNumber) -> Result<Option<(IrMembership<usize>, u64)>, DiscoveryError> {
         dir.weak_get_active_shard_membership(shard).await

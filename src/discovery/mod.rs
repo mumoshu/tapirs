@@ -85,7 +85,7 @@ pub trait RemoteShardDirectory<A: Clone + Send + Sync + 'static, K: Clone + Send
            + Send
            + '_;
 
-    fn strong_put_shard_view_membership(
+    fn strong_put_active_shard_view_membership(
         &self,
         shard: ShardNumber,
         membership: IrMembership<A>,
@@ -136,7 +136,7 @@ pub trait RemoteShardDirectory<A: Clone + Send + Sync + 'static, K: Clone + Send
 
     /// Atomically replace one shard with another.
     ///
-    /// Default: non-atomic `strong_remove_shard` + `strong_put_shard_view_membership`.
+    /// Default: non-atomic `strong_remove_shard` + `strong_put_active_shard_view_membership`.
     /// Implementations should override for true atomicity.
     fn strong_replace(
         &self,
@@ -147,7 +147,7 @@ pub trait RemoteShardDirectory<A: Clone + Send + Sync + 'static, K: Clone + Send
     ) -> impl std::future::Future<Output = Result<(), DiscoveryError>> + Send + '_ {
         async move {
             let _ = self.strong_remove_shard(old).await;
-            self.strong_put_shard_view_membership(new, membership, view).await
+            self.strong_put_active_shard_view_membership(new, membership, view).await
         }
     }
 }
@@ -410,7 +410,7 @@ where
                 let own = dir.own_shards.read().unwrap().clone();
                 for (shard, membership, local_view) in dir.local.all() {
                     if own.contains(&shard) {
-                        let _ = dir.remote.strong_put_shard_view_membership(shard, membership, local_view).await;
+                        let _ = dir.remote.strong_put_active_shard_view_membership(shard, membership, local_view).await;
                     }
                 }
             }
@@ -655,7 +655,7 @@ mod tests {
         membership: IrMembership<usize>,
         view: u64,
     ) {
-        r.strong_put_shard_view_membership(shard, membership, view).await.unwrap();
+        r.strong_put_active_shard_view_membership(shard, membership, view).await.unwrap();
     }
 
     async fn remote_get(

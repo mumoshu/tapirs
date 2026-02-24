@@ -107,7 +107,7 @@ impl<A: Clone + Send + Sync + 'static, K: Clone + Send + Sync + 'static> RemoteS
     }
 
     /// No-op — JSON config is the authoritative source.
-    async fn strong_put_shard_view_membership(
+    async fn strong_put_active_shard_view_membership(
         &self,
         _shard: ShardNumber,
         _membership: IrMembership<A>,

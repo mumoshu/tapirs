@@ -196,7 +196,7 @@ async fn bootstrap_cluster(
         let m = tapirs::discovery::strings_to_membership::<TcpAddress>(&membership)
             .expect("parse membership");
         disc_client
-            .strong_put_shard_view_membership(ShardNumber(shard_idx), m, 0)
+            .strong_put_active_shard_view_membership(ShardNumber(shard_idx), m, 0)
             .await
             .unwrap();
     }
@@ -495,7 +495,7 @@ async fn test_rolling_membership_replacement() {
     let new_view = quorum_view_number(&shard_nodes, shard);
     let addrs: Vec<TcpAddress> = live_addrs.iter().map(|a| TcpAddress(*a)).collect();
     disc_client
-        .strong_put_shard_view_membership(ShardNumber(0), tapirs::IrMembership::new(addrs), new_view)
+        .strong_put_active_shard_view_membership(ShardNumber(0), tapirs::IrMembership::new(addrs), new_view)
         .await
         .unwrap();
 
@@ -554,7 +554,7 @@ async fn test_rolling_membership_replacement() {
         let new_view = quorum_view_number(&all_nodes, shard);
         let addrs: Vec<TcpAddress> = live_addrs.iter().map(|a| TcpAddress(*a)).collect();
         disc_client
-            .strong_put_shard_view_membership(ShardNumber(0), tapirs::IrMembership::new(addrs), new_view)
+            .strong_put_active_shard_view_membership(ShardNumber(0), tapirs::IrMembership::new(addrs), new_view)
             .await
             .unwrap();
 
@@ -609,7 +609,7 @@ async fn test_rolling_membership_replacement() {
         live_addrs.retain(|a| *a != *original_addr);
         let addrs: Vec<TcpAddress> = live_addrs.iter().map(|a| TcpAddress(*a)).collect();
         disc_client
-            .strong_put_shard_view_membership(ShardNumber(0), tapirs::IrMembership::new(addrs), new_view)
+            .strong_put_active_shard_view_membership(ShardNumber(0), tapirs::IrMembership::new(addrs), new_view)
             .await
             .unwrap();
 
@@ -785,7 +785,7 @@ async fn test_disaster_recovery_backup_restore() {
     let restore_view = backup.view.number.0 + 10;
     let addrs: Vec<TcpAddress> = new_addrs.iter().map(|a| TcpAddress(*a)).collect();
     disc_client
-        .strong_put_shard_view_membership(ShardNumber(0), tapirs::IrMembership::new(addrs), restore_view)
+        .strong_put_active_shard_view_membership(ShardNumber(0), tapirs::IrMembership::new(addrs), restore_view)
         .await
         .unwrap();
 
@@ -1043,7 +1043,7 @@ async fn test_cluster_backup_restore_via_admin() {
         let restore_view = backup_value["view"]["number"].as_u64().unwrap_or(0) + 10;
         let addrs: Vec<TcpAddress> = new_addrs.iter().map(|a| TcpAddress(*a)).collect();
         disc_client
-            .strong_put_shard_view_membership(ShardNumber(shard_id), tapirs::IrMembership::new(addrs), restore_view)
+            .strong_put_active_shard_view_membership(ShardNumber(shard_id), tapirs::IrMembership::new(addrs), restore_view)
             .await
             .unwrap();
     }

@@ -33,7 +33,7 @@ impl RemoteShardDirectory<TcpAddress, String> for DiscoveryBackend {
         }
     }
 
-    async fn strong_put_shard_view_membership(
+    async fn strong_put_active_shard_view_membership(
         &self,
         shard: ShardNumber,
         membership: IrMembership<TcpAddress>,
@@ -41,13 +41,13 @@ impl RemoteShardDirectory<TcpAddress, String> for DiscoveryBackend {
     ) -> Result<(), DiscoveryError> {
         match self {
             Self::Json(c) => {
-                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::strong_put_shard_view_membership(
+                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::strong_put_active_shard_view_membership(
                     c, shard, membership, view,
                 )
                 .await
             }
             Self::Tapir(c) => {
-                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::strong_put_shard_view_membership(
+                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::strong_put_active_shard_view_membership(
                     c, shard, membership, view,
                 )
                 .await
