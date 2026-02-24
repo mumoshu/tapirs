@@ -9,6 +9,9 @@ use std::time::Duration;
 impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteShardDirectory<T::Address, K>> ShardManager<K, V, T, RD> {
     /// Add a new replica to an existing shard by pre-loading it with the
     /// shard's leader_record before triggering a membership change.
+    ///
+    /// **Requires**: The shard must already be registered in the remote discovery
+    /// cluster with `Active` status via `register_active_shard()`.
     pub async fn add_replica(
         &mut self,
         shard: ShardNumber,
@@ -68,6 +71,11 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
     }
 
     /// Sole entry point for adding a replica to a shard. Sends AddMember to IR.
+    ///
+    /// **Requires**: The shard must already be registered in the remote discovery
+    /// cluster with `Active` status — i.e., `register_active_shard()` (or the
+    /// HTTP `/v1/register` endpoint) must have been called previously. Returns an
+    /// error immediately if the shard is missing or not `Active`.
     ///
     /// Discovers the existing membership from the address directory, fetches
     /// the leader_record, bootstraps the new replica, then triggers AddMember.
