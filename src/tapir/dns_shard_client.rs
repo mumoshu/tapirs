@@ -6,12 +6,12 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 /// A [`ShardClient`] whose membership is periodically refreshed by resolving
-/// a DNS hostname. When resolved IPs change, the internal `ShardClient` is
-/// rebuilt with the new [`IrMembership`].
+/// a DNS hostname. When resolved IPs change, the internal membership is
+/// updated in-place via [`IrClient::reset_membership`].
 ///
 /// The `ShardClient` is accessed via [`DnsRefreshingShardClient::get`] which
 /// clones the current client (cheap — `ShardClient` wraps `Arc`). The
-/// background DNS task acquires a write lock only when IPs actually change.
+/// background DNS task acquires a read lock only when IPs actually change.
 pub struct DnsRefreshingShardClient<K: Key, V: Value, T: Transport<Replica<K, V>>> {
     inner: Arc<RwLock<ShardClient<K, V, T>>>,
     _task: tokio::task::JoinHandle<()>,
@@ -85,14 +85,11 @@ where
                 if new_addrs != current_addrs {
                     let membership =
                         IrMembership::new(new_addrs.iter().copied().map(T::Address::from).collect());
-                    let new_client = ShardClient::new(
-                        rng.fork(),
-                        client_id,
-                        shard,
-                        membership,
-                        transport.clone(),
-                    );
-                    *inner_clone.write().unwrap() = new_client;
+                    // Update membership in-place rather than creating a new ShardClient.
+                    // Creating a new ShardClient would reset the IrClient's operation
+                    // counter to 0, causing op_id collisions with entries already in
+                    // the replica's record from prior proposals.
+                    inner_clone.read().unwrap().inner.reset_membership(membership);
                     current_addrs = new_addrs;
                 }
             }

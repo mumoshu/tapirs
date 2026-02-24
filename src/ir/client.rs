@@ -108,6 +108,20 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
         self.id = id;
     }
 
+    /// Replace the membership and reset the view to 0 without resetting the
+    /// operation counter. Used by `DnsRefreshingShardClient` when DNS resolution
+    /// detects IP changes: the counter must continue monotonically to avoid
+    /// op_id collisions with entries already in the replica's record from
+    /// previous proposals.
+    pub fn reset_membership(&self, membership: Membership<T::Address>) {
+        let mut sync = self.inner.sync.lock().unwrap();
+        sync.view = SharedView::new(View {
+            membership,
+            number: ViewNumber(0),
+            app_config: None,
+        });
+    }
+
     pub fn transport(&self) -> &T {
         &self.inner.transport
     }
