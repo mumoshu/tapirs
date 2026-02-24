@@ -213,6 +213,28 @@ where
         tracing::debug!(key, mode = mode_str, ok = result.is_ok(), "discovery read_raw: completed");
         result
     }
+
+    /// Pre-reads shard entry, verifies it exists and is not already tombstoned,
+    /// and returns `(key, tombstone_json)`. Returns `Err(NotFound)` if the shard
+    /// does not exist or is already tombstoned.
+    async fn prepare_tombstone<K: serde::de::DeserializeOwned + serde::Serialize>(
+        &self,
+        shard: ShardNumber,
+    ) -> Result<(String, String), DiscoveryError> {
+        let key = shard_key(shard);
+        match self.read_raw(&key).await? {
+            Some(json) => {
+                let mut record = parse_record::<K>(&json)?;
+                if record.status == ShardStatus::Tombstoned {
+                    return Err(DiscoveryError::NotFound);
+                }
+                record.status = ShardStatus::Tombstoned;
+                let tombstone_json = serde_json::to_string(&record).unwrap();
+                Ok((key, tombstone_json))
+            }
+            None => Err(DiscoveryError::NotFound),
+        }
+    }
 }
 
 impl<A, T> TapirRemoteShardDirectory<A, T>
@@ -398,24 +420,7 @@ where
     }
 
     async fn strong_remove_shard(&self, shard: ShardNumber) -> Result<(), DiscoveryError> {
-        let key = shard_key(shard);
-
-        // Consistent pre-read to verify shard exists and isn't tombstoned.
-        let pre_read = self.read_raw(&key).await?;
-        match &pre_read {
-            Some(json) => {
-                let record = parse_record::<K>(json)?;
-                if record.status == ShardStatus::Tombstoned {
-                    return Err(DiscoveryError::NotFound);
-                }
-            }
-            None => return Err(DiscoveryError::NotFound),
-        }
-
-        // Build tombstone from the consistent pre-read value.
-        let mut record = parse_record::<K>(pre_read.as_ref().unwrap())?;
-        record.status = ShardStatus::Tombstoned;
-        let tombstone_json = serde_json::to_string(&record).unwrap();
+        let (key, tombstone_json) = self.prepare_tombstone::<K>(shard).await?;
 
         for _attempt in 0..5 {
             let txn = self.client.begin();
@@ -532,15 +537,8 @@ where
                     shard_writes.push((key, json));
                 }
                 ShardDirectoryChange::TombstoneShard { shard } => {
-                    let key = shard_key(*shard);
-                    if let Some(json) = self.read_raw(&key).await? {
-                        let mut record = parse_record::<K>(&json)?;
-                        if record.status != ShardStatus::Tombstoned {
-                            record.status = ShardStatus::Tombstoned;
-                            let json = serde_json::to_string(&record).unwrap();
-                            shard_writes.push((key, json));
-                        }
-                    }
+                    let (key, json) = self.prepare_tombstone::<K>(*shard).await?;
+                    shard_writes.push((key, json));
                 }
             }
         }
