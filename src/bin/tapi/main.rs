@@ -248,7 +248,7 @@ enum AdminAction {
     // Alternative approach: `tapictl create shard --shard N --replicas ...`
     // can register a shard with the shard-manager (POST /v1/register), which
     // publishes to discovery. After that, add-replica without --membership
-    // would work. But register_shard requires replicas to already exist
+    // would work. But register_active_shard requires replicas to already exist
     // (chicken-and-egg), so the first replica still needs --membership for
     // static bootstrap. The fix is to have /v1/join auto-register the shard
     // with a single-member membership on the first call, then use the

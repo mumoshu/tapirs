@@ -56,12 +56,12 @@ async fn test_compact_new_shard_rejects_old_prepare_after_range_scan_on_old_shar
     let manager_channel = registry.channel(move |_, _| None, Arc::clone(&dir));
     let mut manager = ShardManager::new(rng.fork(), manager_channel, disc.create_remote(&mut rng));
     eprintln!("[compact-test] registering shard 0");
-    manager.register_shard(
+    manager.register_active_shard(
         ShardNumber(0),
         IrMembership::new(vec![0, 1, 2]),
         KeyRange { start: None, end: None },
     ).await;
-    eprintln!("[compact-test] register_shard done");
+    eprintln!("[compact-test] register_active_shard done");
 
     // Addresses assigned: shard 0 = [0,1,2], clients = [3], shard_client_0 = [4],
     // shard 1 = [5,6,7].
@@ -153,7 +153,7 @@ async fn test_compact_new_shard_rejects_old_prepare_after_quorum_read_on_old_sha
     let disc = build_single_node_discovery(&mut rng);
     let manager_channel = registry.channel(move |_, _| None, Arc::clone(&dir));
     let mut manager = ShardManager::new(rng.fork(), manager_channel, disc.create_remote(&mut rng));
-    manager.register_shard(
+    manager.register_active_shard(
         ShardNumber(0),
         IrMembership::new(vec![0, 1, 2]),
         KeyRange { start: None, end: None },

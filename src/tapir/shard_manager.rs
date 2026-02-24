@@ -152,7 +152,13 @@ impl<
         }
     }
 
-    pub async fn register_shard(
+    /// Registers an already configured and running shard's replicas with the
+    /// discovery cluster, making them visible to clients and other replicas.
+    ///
+    /// This is only used in setups that have a discovery TAPIR cluster.
+    /// It is not used when nodes use static membership (via `--discovery-json`),
+    /// which is the typical configuration for the discovery cluster itself.
+    pub async fn register_active_shard(
         &mut self,
         shard: ShardNumber,
         membership: IrMembership<T::Address>,

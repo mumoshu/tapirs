@@ -150,7 +150,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         if let Some(managed) = self.shards.get_mut(&source) {
             managed.key_range = narrowed_range.clone();
         }
-        // Use create_shard_client (not register_shard) to avoid publishing
+        // Use create_shard_client (not register_active_shard) to avoid publishing
         // routing prematurely. Routing is published atomically at freeze
         // (Phase 3a) with both narrowed source and new shard in one changeset.
         let new_membership_for_put = new_membership.clone();

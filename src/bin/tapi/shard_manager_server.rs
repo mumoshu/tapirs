@@ -262,8 +262,8 @@ async fn handle_request(
         };
         tracing::info!(?shard, ?key_range, "register: acquiring manager lock");
         let mut manager = state.manager.lock().await;
-        tracing::info!(?shard, "register: calling register_shard (strong_atomic_update_shards)");
-        manager.register_shard(shard, membership, key_range).await;
+        tracing::info!(?shard, "register: calling register_active_shard (strong_atomic_update_shards)");
+        manager.register_active_shard(shard, membership, key_range).await;
         drop(manager);
         tracing::info!(?shard, "register: completed successfully");
         (200, r#"{"ok":true}"#.to_string())

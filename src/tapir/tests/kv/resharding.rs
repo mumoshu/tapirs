@@ -36,12 +36,12 @@ async fn test_merge_two_shards() {
     let disc = build_single_node_discovery(&mut rng);
     let manager_channel = registry.channel(move |_, _| None, Arc::clone(&dir));
     let mut manager = ShardManager::new(rng.fork(), manager_channel, disc.create_remote(&mut rng));
-    manager.register_shard(
+    manager.register_active_shard(
         ShardNumber(0),
         IrMembership::new(vec![0, 1, 2]),
         KeyRange { start: None, end: Some(50) },
     ).await;
-    manager.register_shard(
+    manager.register_active_shard(
         ShardNumber(1),
         IrMembership::new(vec![3, 4, 5]),
         KeyRange { start: Some(50), end: None },
@@ -113,7 +113,7 @@ async fn test_split_merge_two_shards() {
     let disc = build_single_node_discovery(&mut rng);
     let manager_channel = registry.channel(move |_, _| None, Arc::clone(&dir));
     let mut manager = ShardManager::new(rng.fork(), manager_channel, disc.create_remote(&mut rng));
-    manager.register_shard(
+    manager.register_active_shard(
         ShardNumber(0),
         IrMembership::new(vec![0, 1, 2]),
         KeyRange { start: None, end: None },

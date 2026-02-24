@@ -67,7 +67,7 @@ async fn test_add_replica_with_preload() {
     let original_membership =
         IrMembership::new((0..3).collect::<Vec<_>>());
     let mut manager = ShardManager::new(rng.fork(), manager_channel, disc.create_remote(&mut rng));
-    manager.register_shard(shard, original_membership, KeyRange {
+    manager.register_active_shard(shard, original_membership, KeyRange {
         start: None,
         end: None,
     }).await;

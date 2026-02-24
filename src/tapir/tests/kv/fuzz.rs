@@ -889,7 +889,7 @@ async fn fuzz_tapir_transactions_inner(seed: u64) {
             Arc::clone(&reshard_cluster_remote),
         );
         for (i, entry) in reshard_shard_entries.iter().enumerate() {
-            manager.register_shard(
+            manager.register_active_shard(
                 entry.shard, initial_memberships[i].clone(), entry.range.clone(),
             ).await;
         }
