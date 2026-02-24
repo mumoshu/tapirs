@@ -176,6 +176,19 @@ enum Command {
         #[command(flatten)]
         tls: TlsArgs,
     },
+    /// Check shard-manager readiness via its /healthz HTTP endpoint.
+    ///
+    /// Sends HTTP GET /healthz to the shard-manager and exits 0 on success
+    /// (200 OK) or 1 on failure. Designed for use as a Kubernetes exec-based
+    /// readiness probe when TLS prevents HTTP probes.
+    ShardManagerHealthz {
+        /// Shard-manager URL (default: http://127.0.0.1:9001 for in-pod use).
+        #[arg(long, default_value = "http://127.0.0.1:9001")]
+        shard_manager_url: String,
+
+        #[command(flatten)]
+        tls: TlsArgs,
+    },
     /// Run a standalone shard manager server.
     ShardManager {
         /// Address to listen on.
@@ -399,6 +412,46 @@ async fn main() {
             )
             .await;
             std::process::exit(exit_code);
+        }
+        Command::ShardManagerHealthz {
+            shard_manager_url,
+            tls,
+        } => {
+            tls.validate();
+            let client = {
+                #[cfg(feature = "tls")]
+                {
+                    if let Some(ref tls_config) = tls.to_tls_config() {
+                        let connector =
+                            tapirs::tls::ReloadableTlsConnector::new(tls_config)
+                                .unwrap_or_else(|e| {
+                                    eprintln!("TLS setup error: {e}");
+                                    std::process::exit(1);
+                                });
+                        tapirs::shard_manager_api::HttpShardManagerClient::with_tls(
+                            &shard_manager_url,
+                            connector,
+                            tls.tls_server_name.clone(),
+                        )
+                    } else {
+                        tapirs::shard_manager_api::HttpShardManagerClient::new(
+                            &shard_manager_url,
+                        )
+                    }
+                }
+                #[cfg(not(feature = "tls"))]
+                tapirs::shard_manager_api::HttpShardManagerClient::new(&shard_manager_url)
+            };
+            match client.healthz() {
+                Ok(()) => {
+                    println!(r#"{{"ok":true}}"#);
+                    std::process::exit(0);
+                }
+                Err(e) => {
+                    eprintln!(r#"{{"ok":false,"error":"{e}"}}"#);
+                    std::process::exit(1);
+                }
+            }
         }
         Command::ShardManager {
             listen_addr,
