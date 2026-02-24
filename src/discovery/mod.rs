@@ -138,21 +138,13 @@ pub trait RemoteShardDirectory<A: Clone + Send + Sync + 'static, K: Clone + Send
     }
 
     /// Atomically replace one shard with another.
-    ///
-    /// Default: non-atomic `strong_remove_shard` + `strong_put_active_shard_view_membership`.
-    /// Implementations should override for true atomicity.
     fn strong_replace(
         &self,
         old: ShardNumber,
         new: ShardNumber,
         membership: IrMembership<A>,
         view: u64,
-    ) -> impl std::future::Future<Output = Result<(), DiscoveryError>> + Send + '_ {
-        async move {
-            let _ = self.strong_remove_shard(old).await;
-            self.strong_put_active_shard_view_membership(new, membership, view).await
-        }
-    }
+    ) -> impl std::future::Future<Output = Result<(), DiscoveryError>> + Send + '_;
 }
 
 // ---- ShardDirectory trait ----
