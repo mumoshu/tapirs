@@ -307,15 +307,7 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
     /// Returns when the inconsistent operation is finalized, retrying indefinitely.
     pub fn invoke_inconsistent(&self, op: U::IO) -> impl Future<Output = ()> + use<U, T> {
         let inner = Arc::clone(&self.inner);
-
-        let op_id = {
-            let mut sync = inner.sync.lock().unwrap();
-
-            OpId {
-                client_id: self.id,
-                number: sync.next_number(),
-            }
-        };
+        let client_id = self.id;
 
         fn has_ancient<A>(results: &BTreeMap<A, ReplyInconsistent<A>>) -> bool {
             results.values().any(|v| v.state.is_none())
@@ -345,8 +337,14 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
         async move {
             let mut retry_backoff = Duration::from_millis(50);
             loop {
-                let (membership_size, future) = {
-                    let sync = inner.sync.lock().unwrap();
+                // Generate a fresh op_id for each attempt. Reusing an op_id across
+                // retries is incorrect: after a view change the replica's merged record
+                // may already contain an entry for the old op_id with different state,
+                // causing a debug_assert_eq!(occupied.op, op) failure on re-proposal.
+                // This matches the invoke_consensus pattern (line ~627).
+                let (membership_size, op_id, future) = {
+                    let mut sync = inner.sync.lock().unwrap();
+                    let op_id = OpId { client_id, number: sync.next_number() };
                     let membership_size = sync.view.membership.size();
 
                     let future = join(sync.view.membership.iter().map(|address| {
@@ -362,7 +360,7 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
                             ),
                         )
                     }));
-                    (membership_size, future)
+                    (membership_size, op_id, future)
                 };
 
                 let mut soft_timeout = std::pin::pin!(T::sleep(Duration::from_millis(250)));
@@ -425,15 +423,7 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
     /// replies that carry the execution results.
     pub fn invoke_inconsistent_with_result(&self, op: U::IO) -> impl Future<Output = Vec<U::IR>> + Send + use<U, T> {
         let inner = Arc::clone(&self.inner);
-
-        let op_id = {
-            let mut sync = inner.sync.lock().unwrap();
-
-            OpId {
-                client_id: self.id,
-                number: sync.next_number(),
-            }
-        };
+        let client_id = self.id;
 
         fn has_ancient<A>(results: &BTreeMap<A, ReplyInconsistent<A>>) -> bool {
             results.values().any(|v| v.state.is_none())
@@ -464,8 +454,11 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
             let mut retry_backoff = Duration::from_millis(50);
             loop {
                 // Phase 1: Propose (same as invoke_inconsistent)
-                let (membership_size, future) = {
-                    let sync = inner.sync.lock().unwrap();
+                //
+                // Generate a fresh op_id per attempt — see comment in invoke_inconsistent.
+                let (membership_size, op_id, future) = {
+                    let mut sync = inner.sync.lock().unwrap();
+                    let op_id = OpId { client_id, number: sync.next_number() };
                     let membership_size = sync.view.membership.size();
 
                     let future = join(sync.view.membership.iter().map(|address| {
@@ -481,7 +474,7 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
                             ),
                         )
                     }));
-                    (membership_size, future)
+                    (membership_size, op_id, future)
                 };
 
                 let mut soft_timeout = std::pin::pin!(T::sleep(Duration::from_millis(250)));
@@ -624,6 +617,11 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
         async move {
             let mut retry_backoff = Duration::from_millis(50);
             loop {
+                // Fresh op_id per attempt: reusing an op_id across retries is
+                // incorrect because the replica's merged record (after a view
+                // change) may already contain an entry for the old op_id,
+                // causing a conflict on re-proposal. All three invoke_* methods
+                // follow this pattern.
                 let (membership_size, op_id, future) = {
                     let mut sync = inner.sync.lock().unwrap();
                     let number = sync.next_number();
