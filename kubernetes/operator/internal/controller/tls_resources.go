@@ -263,7 +263,7 @@ func (r *TAPIRClusterReconciler) shardManagerClient(ctx context.Context, cluster
 		if tlsConfig != nil {
 			smClient.HTTPClient = &http.Client{
 				Transport: &http.Transport{TLSClientConfig: tlsConfig},
-				Timeout:   10 * time.Second,
+				Timeout:   30 * time.Second,
 			}
 		}
 	}

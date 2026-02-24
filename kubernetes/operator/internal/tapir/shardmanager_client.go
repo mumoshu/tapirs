@@ -23,7 +23,7 @@ func (c *ShardManagerClient) httpClient() *http.Client {
 	if c.HTTPClient != nil {
 		return c.HTTPClient
 	}
-	return &http.Client{Timeout: 10 * time.Second}
+	return &http.Client{Timeout: 30 * time.Second}
 }
 
 type shardManagerResponse struct {
