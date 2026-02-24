@@ -589,12 +589,14 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> ReadOnlyTransaction<K, V, T> {
             let shard_client = Inner::shard_client(&client, key.shard).await;
 
             // Fast path: check if one replica has a validated version.
-            if let Some((value, _write_ts)) =
-                shard_client.read_validated(key.key.clone(), snapshot_ts).await
-            {
-                let mut cache = read_cache.lock().unwrap();
-                cache.entry(key).or_insert(value.clone());
-                return Ok(value);
+            match shard_client.read_validated(key.key.clone(), snapshot_ts).await {
+                Ok(Some((value, _write_ts))) => {
+                    let mut cache = read_cache.lock().unwrap();
+                    cache.entry(key).or_insert(value.clone());
+                    return Ok(value);
+                }
+                Ok(None) => {} // Valid empty — fall through to quorum_read
+                Err(()) => return Err(TransactionError::Unavailable),
             }
 
             // Slow path: quorum read via IR inconsistent op.

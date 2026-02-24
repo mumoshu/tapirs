@@ -39,4 +39,7 @@ pub enum TransactionError {
     /// the routing directory is stale — the shard was re-ranged during
     /// resharding. The caller should refresh routing and retry.
     OutOfRange,
+    /// The shard's replicas are temporarily unreachable (e.g. view change
+    /// in progress, network partition). The caller should retry later.
+    Unavailable,
 }

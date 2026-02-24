@@ -176,16 +176,20 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
     }
 
     /// Fast-path read: check if one replica has a validated version.
+    ///
+    /// Returns `Ok(result)` when the replica responds with a valid
+    /// `ReadValidated` reply, or `Err(())` on unexpected response type
+    /// or timeout (added in a subsequent commit).
     pub fn read_validated(
         &self,
         key: K,
         timestamp: Timestamp,
-    ) -> impl Future<Output = Option<(Option<V>, Timestamp)>> {
+    ) -> impl Future<Output = Result<Option<(Option<V>, Timestamp)>, ()>> {
         let future = self.inner.invoke_unlogged(UO::ReadValidated { key, timestamp });
         async move {
             match future.await {
-                UR::ReadValidated(result) => result,
-                _ => None,
+                UR::ReadValidated(result) => Ok(result),
+                _ => Err(()),
             }
         }
     }
