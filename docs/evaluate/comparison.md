@@ -25,10 +25,15 @@
 
 | Feature | tapirs | etcd | FoundationDB | CockroachDB | TiKV |
 |---------|--------|------|-------------|-------------|------|
-| Consensus | IR (leaderless) | Raft | Paxos + sequencer | Raft | Raft |
-| Transactions | Strict serializable | Serializable | Serializable | Serializable | Snapshot isolation |
+| Txn coordination | TAPIR (unified with replication) | Raft leader | Sequencer + resolvers | 2PC (parallel commits) | 2PC (Percolator) |
+| Storage replication | TAPIR (unified with coordination) | Raft | Paxos (log servers) | Raft | Raft |
+| Transactions | [Strict serializable](../learn/concepts/consistency.md) | [Strict serializable](https://etcd.io/docs/v3.5/learning/api_guarantees/) | [Strict serializable](https://apple.github.io/foundationdb/consistency.html) | [Serializable](https://www.cockroachlabs.com/docs/stable/transactions) | [Snapshot isolation](https://tikv.org/deep-dive/distributed-transaction/isolation-level/) |
+| Horizontal scalability | Yes (all replicas serve writes, no per-shard leader) | [No](https://etcd.io/docs/v3.2/learning/why/) (single Raft group) | [Yes](https://apple.github.io/foundationdb/scalability.html) (sequencer ceiling) | [Yes](https://www.cockroachlabs.com/docs/stable/frequently-asked-questions) (per-range leaders) | [Yes](https://tikv.org/deep-dive/scalability/introduction/) (per-range leaders) |
 | Sharding | Built-in, online | None (single range) | Automatic | Automatic | Automatic |
-| Leader required | No | Yes | Yes (sequencer) | Yes (per-range) | Yes (per-range) |
-| Use as backend | Yes | Metadata only | Yes | SQL built-in | Yes (via TiDB) |
+| Leader required in txn processing | No | Yes | Yes (sequencer) | Yes (per-range) | Yes (per-range) |
+| Use as backend of high-level DB | Yes | Metadata only | Yes | SQL built-in | Yes (via TiDB) |
+| Use as metadata store | Yes | Yes (primary use) | Yes | Possible (overkill) | No (PD is metadata store) |
+| Use as document store | No | No | Yes (Document Layer) | Yes (JSONB) | No |
+| Use as cache store | Yes | No | No | No | No |
 
 > **Note:** Performance benchmarks for this implementation are planned — see [Roadmap](../roadmap.md). The original [TAPIR paper](https://syslab.cs.washington.edu/papers/tapir-tr-v2.pdf) (S7) reports 50% lower latency and 3x better throughput than Paxos-based systems.
