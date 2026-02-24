@@ -152,6 +152,22 @@ impl<
         }
     }
 
+    /// Create a `ShardClient` using the manager's shared client ID, RNG, and
+    /// transport. Does not store the client — callers use it as a local variable.
+    pub(crate) fn make_shard_client(
+        &mut self,
+        shard: ShardNumber,
+        membership: IrMembership<T::Address>,
+    ) -> ShardClient<K, V, T> {
+        ShardClient::new(
+            self.rng.fork(),
+            self.client_id,
+            shard,
+            membership,
+            self.transport.clone(),
+        )
+    }
+
     /// Registers an already configured and running shard's replicas with the
     /// discovery cluster, making them visible to clients and other replicas.
     ///
@@ -172,18 +188,11 @@ impl<
                 view: 0,
             },
         ]).await;
-        let stored_membership = membership.clone();
-        let client = ShardClient::new(
-            self.rng.fork(),
-            self.client_id,
-            shard,
-            membership,
-            self.transport.clone(),
-        );
+        let client = self.make_shard_client(shard, membership.clone());
         self.shards.insert(shard, ManagedShard {
             shard,
             key_range,
-            membership: stored_membership,
+            membership,
             client,
         });
     }
@@ -199,18 +208,11 @@ impl<
         membership: IrMembership<T::Address>,
         key_range: KeyRange<K>,
     ) {
-        let stored_membership = membership.clone();
-        let client = ShardClient::new(
-            self.rng.fork(),
-            self.client_id,
-            shard,
-            membership,
-            self.transport.clone(),
-        );
+        let client = self.make_shard_client(shard, membership.clone());
         self.shards.insert(shard, ManagedShard {
             shard,
             key_range,
-            membership: stored_membership,
+            membership,
             client,
         });
     }
