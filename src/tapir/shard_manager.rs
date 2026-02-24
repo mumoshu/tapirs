@@ -1,12 +1,11 @@
 use super::{
-    dynamic_router::ShardEntry,
     Key, KeyRange, ShardClient, ShardNumber, Value,
 };
 use crate::discovery::{RemoteShardDirectory, ShardDirectoryChange, ShardRecord, ShardStatus};
 use crate::transport::Transport;
 use crate::tapir::Replica;
 use crate::{IrClientId, IrMembership};
-use std::collections::HashMap;
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 /// Shard lifecycle manager for TAPIR clusters.
@@ -94,29 +93,24 @@ use std::sync::Arc;
 /// push membership for shards they host replicas for, avoiding O(N×S) echo
 /// traffic. PULL is never filtered — monotonic writes protect local data.
 ///
-/// A shard group managed by the ShardManager.
-pub struct ManagedShard<K: Key, V: Value, T: Transport<Replica<K, V>>> {
-    pub shard: ShardNumber,
-    pub key_range: KeyRange<K>,
-    pub membership: IrMembership<T::Address>,
-    pub client: ShardClient<K, V, T>,
-}
-
-/// Sidecar that orchestrates resharding operations (split, merge, migrate)
-/// using `IrClient` to interact with shard groups via the normal protocol.
-/// NOT in the message path — uses the same API as application clients.
+/// # Stateless Design
+///
+/// ShardManager holds no local shard cache. All shard metadata (key range,
+/// membership, status) is queried from the remote discovery cluster via
+/// `strong_get_shard()` at the start of each operation. ShardClients are
+/// created on-demand via `make_shard_client()` and used as local variables.
 pub struct ShardManager<
     K: Key,
     V: Value,
     T: Transport<Replica<K, V>>,
     RD: RemoteShardDirectory<T::Address, K>,
 > {
-    pub(crate) shards: HashMap<ShardNumber, ManagedShard<K, V, T>>,
     pub(crate) transport: T,
     client_id: IrClientId,
     pub(crate) rng: crate::Rng,
     pub(crate) on_progress: Option<Box<dyn Fn(&str) + Send + Sync>>,
     pub(crate) remote: Arc<RD>,
+    _phantom: PhantomData<(K, V)>,
 }
 
 impl<
@@ -133,12 +127,12 @@ impl<
     ) -> Self {
         let client_id = IrClientId::new(&mut rng);
         Self {
-            shards: HashMap::new(),
             transport: transport.clone(),
             client_id,
             rng,
             on_progress: None,
             remote,
+            _phantom: PhantomData,
         }
     }
 
@@ -194,7 +188,7 @@ impl<
     /// It is not used when nodes use static membership (via `--discovery-json`),
     /// which is the typical configuration for the discovery cluster itself.
     pub async fn register_active_shard(
-        &mut self,
+        &self,
         shard: ShardNumber,
         membership: IrMembership<T::Address>,
         key_range: KeyRange<K>,
@@ -202,57 +196,10 @@ impl<
         let _ = self.remote.strong_atomic_update_shards(vec![
             ShardDirectoryChange::ActivateShard {
                 shard,
-                range: key_range.clone(),
-                membership: membership.clone(),
+                range: key_range,
+                membership,
                 view: 0,
             },
         ]).await;
-        let client = self.make_shard_client(shard, membership.clone());
-        self.shards.insert(shard, ManagedShard {
-            shard,
-            key_range,
-            membership,
-            client,
-        });
     }
-
-    /// Create a shard client and insert into `self.shards` without touching
-    /// remote discovery.
-    ///
-    /// Used by compact to set up the new shard's client during migration
-    /// without making it visible to cross-shard discovery.
-    pub(crate) fn create_shard_client(
-        &mut self,
-        shard: ShardNumber,
-        membership: IrMembership<T::Address>,
-        key_range: KeyRange<K>,
-    ) {
-        let client = self.make_shard_client(shard, membership.clone());
-        self.shards.insert(shard, ManagedShard {
-            shard,
-            key_range,
-            membership,
-            client,
-        });
-    }
-
-    pub fn shard_client(&self, shard: ShardNumber) -> Option<&ShardClient<K, V, T>> {
-        self.shards.get(&shard).map(|s| &s.client)
-    }
-
-    /// Return the current shard topology (shard number + key range).
-    #[allow(clippy::disallowed_methods)] // values() order is irrelevant — callers sort if needed
-    pub fn shard_entries(&self) -> Vec<ShardEntry<K>>
-    where
-        K: Clone,
-    {
-        self.shards
-            .values()
-            .map(|s| ShardEntry {
-                shard: s.shard,
-                range: s.key_range.clone(),
-            })
-            .collect()
-    }
-
 }

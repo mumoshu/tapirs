@@ -325,8 +325,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
     /// **Phase 3c — Expand Surviving + Cleanup**:
     /// 1. `reconfigure(ShardConfig { key_range: merged_range })` on surviving
     /// 2. Sleep 5 seconds for view change to propagate
-    /// 3. Update surviving shard's `key_range` in `self.shards`
-    /// 4. Remove absorbed shard from local registry (lifecycle handled by atomic route update)
+    /// 3. Publish route change: tombstone absorbed, set surviving's merged range
     ///
     /// # Key design decisions
     ///
@@ -592,8 +591,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
     /// one more poll to capture sealed commits from the last view change.
     ///
     /// **Phase 3c — Swap + Cleanup**:
-    /// 1. Update new shard's `key_range` in `self.shards` (already set at registration)
-    /// 2. Remove source shard from local registry (lifecycle handled by atomic route update)
+    /// 1. Publish route change: tombstone source, register new shard
     ///
     /// # Key design decisions
     ///
