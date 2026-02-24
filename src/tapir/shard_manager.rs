@@ -106,7 +106,6 @@ pub struct ShardManager<
     RD: RemoteShardDirectory<T::Address, K>,
 > {
     pub(crate) transport: T,
-    client_id: IrClientId,
     pub(crate) rng: crate::Rng,
     pub(crate) on_progress: Option<Box<dyn Fn(&str) + Send + Sync>>,
     pub(crate) remote: Arc<RD>,
@@ -121,14 +120,12 @@ impl<
 > ShardManager<K, V, T, RD>
 {
     pub fn new(
-        mut rng: crate::Rng,
+        rng: crate::Rng,
         transport: T,
         remote: Arc<RD>,
     ) -> Self {
-        let client_id = IrClientId::new(&mut rng);
         Self {
             transport: transport.clone(),
-            client_id,
             rng,
             on_progress: None,
             remote,
@@ -146,8 +143,10 @@ impl<
         }
     }
 
-    /// Create a `ShardClient` using the manager's shared client ID, RNG, and
-    /// transport. Does not store the client — callers use it as a local variable.
+    /// Create a `ShardClient` with a fresh random client ID, the manager's RNG,
+    /// and transport. Each call gets a unique ID so that op_id counters never
+    /// collide when multiple ShardClients target the same shard across
+    /// different resharding operations (e.g., split then merge).
     pub(crate) fn make_shard_client(
         &mut self,
         shard: ShardNumber,
@@ -155,7 +154,7 @@ impl<
     ) -> ShardClient<K, V, T> {
         ShardClient::new(
             self.rng.fork(),
-            self.client_id,
+            IrClientId::new(&mut self.rng),
             shard,
             membership,
             self.transport.clone(),
