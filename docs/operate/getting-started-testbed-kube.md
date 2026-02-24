@@ -30,7 +30,7 @@ StatefulSet: tapir-node (3 pods)
 
 **Bootstrap a cluster:** This testbed deploys tapirs onto Kubernetes using raw StatefulSets and shell-driven bootstrapping — no operator, no Helm. It creates a Kind cluster, builds the Docker image, deploys a 3-node discovery store and a 3-node data cluster with 2 shards (replication factor 3), bootstraps static membership, registers shards, and runs a smoke test. The entire process takes a few minutes. If you prefer an operator-managed deployment, see [Kubernetes Operator Testbed](getting-started-testbed-kube-operator.md) instead. For Docker without Kubernetes, see the [Docker testbed](getting-started-testbed.md).
 
-**Prerequisites:** Docker, kubectl, [Kind](https://kind.sigs.k8s.io/). The script auto-installs Kind's cluster when `TAPIR_KIND=1`.
+**Prerequisites:** [Testbed Prerequisites](getting-started-testbed-prerequisites.md), [Docker](https://docs.docker.com/get-docker/), [kubectl](https://kubernetes.io/docs/tasks/tools/), [Kind](https://kind.sigs.k8s.io/). The script auto-creates the Kind cluster when `TAPIR_KIND=1`.
 
 ```
 $ TAPIR_KIND=1 scripts/testbed-kube.sh up

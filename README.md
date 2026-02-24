@@ -21,7 +21,10 @@ tapirs is a distributed transactional key-value store written in Rust, with no l
 
 ## Quick start
 
+Clone the repository and make sure [Docker](https://docs.docker.com/get-docker/) is installed ([full prerequisites](docs/operate/getting-started-testbed-prerequisites.md)):
+
 ```sh
+git clone https://github.com/mumoshu/tapirs.git && cd tapirs
 scripts/testbed-docker-compose.sh up     # 3-node cluster, 2 shards
 tapi client --repl                      # interactive transaction shell
 scripts/testbed-docker-compose.sh down   # teardown

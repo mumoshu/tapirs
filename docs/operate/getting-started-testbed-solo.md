@@ -22,6 +22,8 @@
         +----------+
 ```
 
+**Prerequisites:** [Testbed Prerequisites](getting-started-testbed-prerequisites.md), [Rust toolchain](https://rustup.rs/) (stable 1.93.0+).
+
 **No cluster required:** You don't need a multi-node cluster to use tapirs. Single-node mode runs hundreds of shard replicas in a single process, providing the full transaction API with strict serializability -- no Docker, no network, no external dependencies. This is ideal for local development, integration testing, or workloads that need strong transactional guarantees but don't yet require horizontal distribution. Because tapirs uses a single-threaded state machine per replica with sharding for parallelism, running many replicas in one process naturally utilizes multiple cores.
 
 **Launch and connect:** Launch with `tapi node --solo` (or the equivalent TOML configuration). Once running, connect with the same REPL (`tapi client --repl`) or client API that you'd use against a multi-node cluster -- the interface is identical. When your workload outgrows a single node, switch to the [multi-node Docker testbed](getting-started-testbed.md) or a production deployment without changing application code.

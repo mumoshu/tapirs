@@ -28,7 +28,7 @@ tapir namespace
 
 **Bootstrap a cluster:** This testbed deploys tapirs using the Kubernetes operator and Helm charts. The operator watches for `TAPIRCluster` custom resources and automatically creates all sub-resources (StatefulSets, Deployments, Services), bootstraps discovery, creates replicas, and registers shards. One command handles everything — building images, creating a Kind cluster, installing the operator via Helm, and creating a `TAPIRCluster`. For a shell-driven Kubernetes deployment without the operator, see [Kubernetes Testbed](getting-started-testbed-kube.md). For Docker without Kubernetes, see the [Docker testbed](getting-started-testbed.md).
 
-**Prerequisites:** Docker, kubectl, Helm, [Kind](https://kind.sigs.k8s.io/). The script auto-installs Kind's cluster when `TAPIR_KIND=1`.
+**Prerequisites:** [Testbed Prerequisites](getting-started-testbed-prerequisites.md), [Docker](https://docs.docker.com/get-docker/), [kubectl](https://kubernetes.io/docs/tasks/tools/), [Helm](https://helm.sh/docs/intro/install/), [Kind](https://kind.sigs.k8s.io/). The script auto-creates the Kind cluster when `TAPIR_KIND=1`.
 
 ```
 $ TAPIR_KIND=1 scripts/testbed-kube-operator.sh up
