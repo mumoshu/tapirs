@@ -1037,6 +1037,12 @@ async fn fuzz_tapir_transactions_inner(seed: u64) {
 
         }
 
+        // Wait for route propagation: CachingShardDirectory needs up to
+        // sync_interval to pull the last route changeset, and the route update
+        // task needs another sync_interval to propagate it to the DynamicRouter.
+        // 3× provides margin for clients to transact against the new shard.
+        tokio::time::sleep(Duration::from_millis(200) * 3).await;
+
         // Signal clients to stop after resharding completes.
         reshard_stop.store(true, Ordering::Relaxed);
 
