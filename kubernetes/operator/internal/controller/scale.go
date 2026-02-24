@@ -93,10 +93,7 @@ func (r *TAPIRClusterReconciler) reconcileScaleDown(ctx context.Context, cluster
 		// Find which pods currently host this shard but shouldn't
 		// Target pods = first shard.Replicas pods (round-robin)
 		targetPodNames := make(map[string]bool)
-		upperBound := int(shard.Replicas)
-		if upperBound > len(allPods) {
-			upperBound = len(allPods)
-		}
+		upperBound := min(int(shard.Replicas), len(allPods))
 		for _, p := range allPods[:upperBound] {
 			targetPodNames[p.Name] = true
 		}

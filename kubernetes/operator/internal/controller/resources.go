@@ -191,9 +191,8 @@ func desiredShardManagerDeployment(cluster *tapirv1alpha1.TAPIRCluster) *appsv1.
 // desiredNodePoolService returns the headless Service for a node pool.
 func desiredNodePoolService(cluster *tapirv1alpha1.TAPIRCluster, pool tapirv1alpha1.NodePool) *corev1.Service {
 	component := "node-" + pool.Name
-	ports := []corev1.ServicePort{
-		{Name: "admin", Port: adminPort},
-	}
+	ports := make([]corev1.ServicePort, 0, 1+len(cluster.Spec.Shards))
+	ports = append(ports, corev1.ServicePort{Name: "admin", Port: adminPort})
 	for _, shard := range cluster.Spec.Shards {
 		port := int32(replicaBasePort) + shard.Number
 		ports = append(ports, corev1.ServicePort{
@@ -220,9 +219,8 @@ func desiredNodePoolService(cluster *tapirv1alpha1.TAPIRCluster, pool tapirv1alp
 func desiredNodePoolStatefulSet(cluster *tapirv1alpha1.TAPIRCluster, pool tapirv1alpha1.NodePool) *appsv1.StatefulSet {
 	component := "node-" + pool.Name
 
-	containerPorts := []corev1.ContainerPort{
-		{Name: "admin", ContainerPort: adminPort},
-	}
+	containerPorts := make([]corev1.ContainerPort, 0, 1+len(cluster.Spec.Shards))
+	containerPorts = append(containerPorts, corev1.ContainerPort{Name: "admin", ContainerPort: adminPort})
 	for _, shard := range cluster.Spec.Shards {
 		port := int32(replicaBasePort) + shard.Number
 		containerPorts = append(containerPorts, corev1.ContainerPort{

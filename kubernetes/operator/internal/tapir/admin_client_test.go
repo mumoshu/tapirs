@@ -21,7 +21,7 @@ func mockAdminServer(t *testing.T, handler func(req adminRequest) AdminResponse)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { ln.Close() })
+	t.Cleanup(func() { _ = ln.Close() })
 
 	go func() {
 		for {
@@ -30,7 +30,7 @@ func mockAdminServer(t *testing.T, handler func(req adminRequest) AdminResponse)
 				return // listener closed
 			}
 			go func() {
-				defer conn.Close()
+				defer func() { _ = conn.Close() }()
 				scanner := bufio.NewScanner(conn)
 				if !scanner.Scan() {
 					return
@@ -39,12 +39,12 @@ func mockAdminServer(t *testing.T, handler func(req adminRequest) AdminResponse)
 				if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
 					resp := AdminResponse{OK: false, Message: fmt.Sprintf("bad request: %v", err)}
 					data, _ := json.Marshal(resp)
-					conn.Write(append(data, '\n'))
+					_, _ = conn.Write(append(data, '\n'))
 					return
 				}
 				resp := handler(req)
 				data, _ := json.Marshal(resp)
-				conn.Write(append(data, '\n'))
+				_, _ = conn.Write(append(data, '\n'))
 			}()
 		}
 	}()
@@ -183,7 +183,7 @@ func mockTLSAdminServer(t *testing.T, serverTLS *tls.Config, handler func(req ad
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { ln.Close() })
+	t.Cleanup(func() { _ = ln.Close() })
 
 	go func() {
 		for {
@@ -192,7 +192,7 @@ func mockTLSAdminServer(t *testing.T, serverTLS *tls.Config, handler func(req ad
 				return
 			}
 			go func() {
-				defer conn.Close()
+				defer func() { _ = conn.Close() }()
 				scanner := bufio.NewScanner(conn)
 				if !scanner.Scan() {
 					return
@@ -201,12 +201,12 @@ func mockTLSAdminServer(t *testing.T, serverTLS *tls.Config, handler func(req ad
 				if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
 					resp := AdminResponse{OK: false, Message: fmt.Sprintf("bad request: %v", err)}
 					data, _ := json.Marshal(resp)
-					conn.Write(append(data, '\n'))
+					_, _ = conn.Write(append(data, '\n'))
 					return
 				}
 				resp := handler(req)
 				data, _ := json.Marshal(resp)
-				conn.Write(append(data, '\n'))
+				_, _ = conn.Write(append(data, '\n'))
 			}()
 		}
 	}()

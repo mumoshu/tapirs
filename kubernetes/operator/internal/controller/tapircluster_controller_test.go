@@ -16,6 +16,8 @@ import (
 	tapirv1alpha1 "github.com/mumoshu/tapirs/kubernetes/operator/api/v1alpha1"
 )
 
+const tlsVolumeName = "tls"
+
 var _ = Describe("TAPIRCluster TLS resource generation", func() {
 	tlsCluster := &tapirv1alpha1.TAPIRCluster{
 		ObjectMeta: metav1.ObjectMeta{
@@ -52,7 +54,7 @@ var _ = Describe("TAPIRCluster TLS resource generation", func() {
 		By("verifying TLS volume exists")
 		var foundTLSVolume bool
 		for _, v := range volumes {
-			if v.Name == "tls" && v.Secret != nil {
+			if v.Name == tlsVolumeName && v.Secret != nil {
 				Expect(v.Secret.SecretName).To(Equal("tls-test-discovery-tls"))
 				foundTLSVolume = true
 			}
@@ -62,7 +64,7 @@ var _ = Describe("TAPIRCluster TLS resource generation", func() {
 		By("verifying TLS volume mount exists")
 		var foundTLSMount bool
 		for _, m := range container.VolumeMounts {
-			if m.Name == "tls" && m.MountPath == "/tls" {
+			if m.Name == tlsVolumeName && m.MountPath == "/tls" {
 				Expect(m.ReadOnly).To(BeTrue())
 				foundTLSMount = true
 			}
@@ -83,7 +85,7 @@ var _ = Describe("TAPIRCluster TLS resource generation", func() {
 		By("verifying TLS volume exists")
 		var foundTLSVolume bool
 		for _, v := range volumes {
-			if v.Name == "tls" && v.Secret != nil {
+			if v.Name == tlsVolumeName && v.Secret != nil {
 				Expect(v.Secret.SecretName).To(Equal("tls-test-shard-manager-tls"))
 				foundTLSVolume = true
 			}
@@ -105,7 +107,7 @@ var _ = Describe("TAPIRCluster TLS resource generation", func() {
 		By("verifying TLS volume exists")
 		var foundTLSVolume bool
 		for _, v := range volumes {
-			if v.Name == "tls" && v.Secret != nil {
+			if v.Name == tlsVolumeName && v.Secret != nil {
 				Expect(v.Secret.SecretName).To(Equal("tls-test-default-tls"))
 				foundTLSVolume = true
 			}
@@ -145,10 +147,10 @@ var _ = Describe("TAPIRCluster TLS resource generation", func() {
 		container := sts.Spec.Template.Spec.Containers[0]
 
 		for _, v := range sts.Spec.Template.Spec.Volumes {
-			Expect(v.Name).NotTo(Equal("tls"), "TLS volume should not exist")
+			Expect(v.Name).NotTo(Equal(tlsVolumeName), "TLS volume should not exist")
 		}
 		for _, m := range container.VolumeMounts {
-			Expect(m.Name).NotTo(Equal("tls"), "TLS mount should not exist")
+			Expect(m.Name).NotTo(Equal(tlsVolumeName), "TLS mount should not exist")
 		}
 		for _, arg := range container.Args {
 			Expect(arg).NotTo(ContainSubstring("--tls-"), "TLS args should not exist")
@@ -164,10 +166,10 @@ var _ = Describe("TAPIRCluster TLS resource generation", func() {
 		Expect(cert.GetAPIVersion()).To(Equal("cert-manager.io/v1"))
 		Expect(cert.GetName()).To(Equal("tls-test-discovery-tls"))
 
-		spec := cert.Object["spec"].(map[string]interface{})
+		spec := cert.Object["spec"].(map[string]any)
 		Expect(spec["secretName"]).To(Equal("tls-test-discovery-tls"))
 
-		issuerRef := spec["issuerRef"].(map[string]interface{})
+		issuerRef := spec["issuerRef"].(map[string]any)
 		Expect(issuerRef["name"]).To(Equal("test-issuer"))
 		Expect(issuerRef["kind"]).To(Equal("ClusterIssuer"))
 

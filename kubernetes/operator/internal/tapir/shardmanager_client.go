@@ -47,7 +47,7 @@ func (c *ShardManagerClient) post(ctx context.Context, path string, body any) er
 	if err != nil {
 		return fmt.Errorf("shard-manager POST %s: %w", path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {

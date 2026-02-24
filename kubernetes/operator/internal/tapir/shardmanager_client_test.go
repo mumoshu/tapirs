@@ -21,7 +21,7 @@ func TestShardManagerClient_RegisterShard(t *testing.T) {
 		}
 		if r.Method != http.MethodPost {
 			t.Errorf("unexpected method: %s", r.Method)
-			http.Error(w, "method not allowed", 405)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 
@@ -47,7 +47,7 @@ func TestShardManagerClient_RegisterShard(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(shardManagerResponse{OK: true})
+		_ = json.NewEncoder(w).Encode(shardManagerResponse{OK: true})
 	}))
 	defer srv.Close()
 
@@ -62,7 +62,7 @@ func TestShardManagerClient_RegisterShard(t *testing.T) {
 func TestShardManagerClient_RegisterShard_Error(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(400)
-		json.NewEncoder(w).Encode(shardManagerResponse{Error: "shard 0 not found in discovery"})
+		_ = json.NewEncoder(w).Encode(shardManagerResponse{Error: "shard 0 not found in discovery"})
 	}))
 	defer srv.Close()
 
@@ -89,7 +89,7 @@ func TestShardManagerClient_Split(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(shardManagerResponse{OK: true})
+		_ = json.NewEncoder(w).Encode(shardManagerResponse{OK: true})
 	}))
 	defer srv.Close()
 
@@ -116,7 +116,7 @@ func TestShardManagerClient_Merge(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(shardManagerResponse{OK: true})
+		_ = json.NewEncoder(w).Encode(shardManagerResponse{OK: true})
 	}))
 	defer srv.Close()
 
@@ -152,12 +152,12 @@ func TestShardManagerClient_TLS_RegisterShard(t *testing.T) {
 		// Verify the client presented a certificate (mTLS).
 		if len(r.TLS.PeerCertificates) == 0 {
 			t.Error("expected client certificate in mTLS")
-			http.Error(w, "no client cert", 403)
+			http.Error(w, "no client cert", http.StatusForbidden)
 			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(shardManagerResponse{OK: true})
+		_ = json.NewEncoder(w).Encode(shardManagerResponse{OK: true})
 	}))
 	srv.TLS = &tls.Config{
 		Certificates: []tls.Certificate{serverCert},

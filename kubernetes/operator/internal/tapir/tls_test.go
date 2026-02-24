@@ -86,7 +86,7 @@ func writePEM(t *testing.T, path, blockType string, data []byte) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if err := pem.Encode(f, &pem.Block{Type: blockType, Bytes: data}); err != nil {
 		t.Fatal(err)
 	}

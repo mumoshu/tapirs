@@ -341,7 +341,7 @@ func (r *TAPIRClusterReconciler) getAllDataNodePods(ctx context.Context, cluster
 // individual pods by their deterministic names.
 func (r *TAPIRClusterReconciler) getStatefulSetPodIPs(ctx context.Context, namespace, stsName string, replicas int32) ([]podInfo, error) {
 	pods := make([]podInfo, 0, replicas)
-	for i := int32(0); i < replicas; i++ {
+	for i := range replicas {
 		podName := fmt.Sprintf("%s-%d", stsName, i)
 		var pod corev1.Pod
 		if err := r.Get(ctx, types.NamespacedName{Name: podName, Namespace: namespace}, &pod); err != nil {

@@ -99,14 +99,14 @@ func desiredCertificate(cluster *tapirv1alpha1.TAPIRCluster, component string, d
 		issuerKind = "ClusterIssuer"
 	}
 
-	cert.Object["spec"] = map[string]interface{}{
+	cert.Object["spec"] = map[string]any{
 		"secretName": secretName,
-		"issuerRef": map[string]interface{}{
+		"issuerRef": map[string]any{
 			"name": cluster.Spec.TLS.IssuerRef.Name,
 			"kind": issuerKind,
 		},
 		"dnsNames": dnsNames,
-		"usages":   []interface{}{"server auth", "client auth"},
+		"usages":   []any{"server auth", "client auth"},
 	}
 
 	return cert
@@ -191,8 +191,8 @@ func (r *TAPIRClusterReconciler) ensureCertificate(ctx context.Context, cluster 
 	}
 
 	// Update if spec changed
-	existingSpec, _ := existing.Object["spec"].(map[string]interface{})
-	desiredSpec, _ := cert.Object["spec"].(map[string]interface{})
+	existingSpec, _ := existing.Object["spec"].(map[string]any)
+	desiredSpec, _ := cert.Object["spec"].(map[string]any)
 	if fmt.Sprintf("%v", existingSpec) != fmt.Sprintf("%v", desiredSpec) {
 		existing.Object["spec"] = desiredSpec
 		return r.Update(ctx, &existing)

@@ -64,9 +64,9 @@ func (c *AdminClient) do(ctx context.Context, req adminRequest) (*AdminResponse,
 	if err != nil {
 		return nil, fmt.Errorf("admin dial %s: %w", c.Addr, err)
 	}
-	defer rawConn.Close()
+	defer func() { _ = rawConn.Close() }()
 
-	var conn net.Conn = rawConn
+	conn := rawConn
 	if c.TLSConfig != nil {
 		host, _, _ := net.SplitHostPort(c.Addr)
 		tlsConn := tls.Client(rawConn, &tls.Config{
