@@ -409,6 +409,45 @@ uninstall_operator() {
 }
 
 # ---------------------------------------------------------------------------
+# Dump diagnostic logs from all components
+# ---------------------------------------------------------------------------
+dump_logs() {
+    local sm_tail="${1:-100}"
+    local disc_tail="${2:-50}"
+    local node_tail="${3:-30}"
+    local op_tail="${4:-50}"
+
+    step "Cluster resource status:"
+    kube get tapircluster "${TAPIR_CLUSTER_NAME}" -o yaml 2>/dev/null || true
+    kube get pods -o wide 2>/dev/null || true
+
+    step "Shard-manager logs (last ${sm_tail} lines):"
+    kube logs -l app.kubernetes.io/component=shard-manager --tail="${sm_tail}" 2>/dev/null || true
+
+    step "Discovery pod logs (last ${disc_tail} lines each):"
+    for pod in $(kube get pods -l app.kubernetes.io/component=discovery \
+        -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+        info "  --- ${pod} ---"
+        kube logs "${pod}" --tail="${disc_tail}" 2>/dev/null || true
+    done
+
+    step "Data node pod logs (last ${node_tail} lines each):"
+    for pod in $(kube get pods \
+        -l "app.kubernetes.io/instance=${TAPIR_CLUSTER_NAME},app.kubernetes.io/component notin (discovery,shard-manager)" \
+        -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+        info "  --- ${pod} ---"
+        kube logs "${pod}" --tail="${node_tail}" 2>/dev/null || true
+    done
+
+    step "Operator logs (last ${op_tail} lines):"
+    kube_op logs deployment/tapirs-operator --tail="${op_tail}" 2>/dev/null || true
+}
+
+cmd_dump_logs() {
+    dump_logs
+}
+
+# ---------------------------------------------------------------------------
 # Wait for TAPIRCluster to reach Running phase
 # ---------------------------------------------------------------------------
 wait_cluster_running() {
@@ -439,10 +478,8 @@ wait_cluster_running() {
         elapsed=$(( elapsed + interval ))
     done
 
-    warn "Timed out. Current status:"
-    kube get tapircluster "${TAPIR_CLUSTER_NAME}" -o yaml 2>/dev/null || true
-    kube get pods -o wide 2>/dev/null || true
-    kube_op logs deployment/tapirs-operator --tail=50 2>/dev/null || true
+    warn "Timed out waiting for Running phase."
+    dump_logs
     fail "TAPIRCluster did not reach Running within ${timeout}s."
 }
 
@@ -761,6 +798,7 @@ usage() {
     printf "  down                Tear down all testbed resources\n"
     printf "  status              Show cluster health\n"
     printf "  apply-code-changes  Rebuild images, load into Kind, rolling restart\n"
+    printf "  dump-logs           Dump diagnostic logs from all components\n"
     printf "\nEnvironment variables:\n"
     printf "  TAPIR_KIND=1                      Auto-create/destroy Kind cluster\n"
     printf "  TAPIR_KIND_CLUSTER                Kind cluster name (default: tapir-op)\n"
@@ -779,5 +817,6 @@ case "${1:-}" in
     down)               cmd_down               ;;
     status)             cmd_status             ;;
     apply-code-changes) cmd_apply_code_changes ;;
+    dump-logs)          cmd_dump_logs          ;;
     *)                  usage                  ;;
 esac
