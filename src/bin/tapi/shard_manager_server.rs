@@ -510,6 +510,9 @@ where
         response_body,
     );
     let _ = writer.write_all(response.as_bytes()).await;
+    // Flush and send TLS close_notify (if TLS). Without this, rustls clients
+    // see "peer closed connection without sending TLS close_notify" on read_to_end.
+    let _ = writer.shutdown().await;
 }
 
 pub async fn run(
