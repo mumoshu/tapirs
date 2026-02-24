@@ -156,13 +156,32 @@ func desiredShardManagerDeployment(cluster *tapirv1alpha1.TAPIRCluster) *appsv1.
 		Ports: []corev1.ContainerPort{
 			{Name: "http", ContainerPort: shardManagerPort},
 		},
-		ReadinessProbe: &corev1.Probe{
+	}
+
+	if tlsEnabled(cluster) {
+		// K8s HTTP probes cannot do mTLS — use exec probe with CLI healthcheck.
+		container.ReadinessProbe = &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
-				TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(shardManagerPort)},
+				Exec: &corev1.ExecAction{
+					Command: shardManagerHealthcheckCommand(cluster),
+				},
 			},
 			InitialDelaySeconds: 5,
 			PeriodSeconds:       5,
-		},
+			TimeoutSeconds:      10,
+		}
+	} else {
+		container.ReadinessProbe = &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: "/healthz",
+					Port: intstr.FromInt32(shardManagerPort),
+				},
+			},
+			InitialDelaySeconds: 5,
+			PeriodSeconds:       5,
+			TimeoutSeconds:      10,
+		}
 	}
 
 	var volumes []corev1.Volume
@@ -186,6 +205,25 @@ func desiredShardManagerDeployment(cluster *tapirv1alpha1.TAPIRCluster) *appsv1.
 			},
 		},
 	}
+}
+
+// shardManagerHealthcheckCommand builds the exec probe command for shard-manager
+// readiness checks when TLS is enabled. Runs `tapi shard-manager-healthz` with
+// localhost URL and TLS flags. The probe runs inside the shard-manager pod.
+func shardManagerHealthcheckCommand(cluster *tapirv1alpha1.TAPIRCluster) []string {
+	scheme := "http"
+	if tlsEnabled(cluster) {
+		scheme = "https"
+	}
+	url := fmt.Sprintf("%s://127.0.0.1:%d", scheme, shardManagerPort)
+	cmd := []string{
+		"tapi", "shard-manager-healthz",
+		"--shard-manager-url=" + url,
+	}
+	if tlsEnabled(cluster) {
+		cmd = append(cmd, tlsArgs(cluster)...)
+	}
+	return cmd
 }
 
 // desiredNodePoolService returns the headless Service for a node pool.

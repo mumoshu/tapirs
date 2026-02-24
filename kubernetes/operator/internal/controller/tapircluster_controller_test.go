@@ -96,6 +96,13 @@ var _ = Describe("TAPIRCluster TLS resource generation", func() {
 		Expect(container.Args).To(ContainElement("--tls-cert=/tls/tls.crt"))
 		Expect(container.Args).To(ContainElement("--tls-key=/tls/tls.key"))
 		Expect(container.Args).To(ContainElement("--tls-ca=/tls/ca.crt"))
+
+		By("verifying readiness probe uses exec healthcheck for TLS")
+		probe := container.ReadinessProbe
+		Expect(probe).NotTo(BeNil())
+		Expect(probe.Exec).NotTo(BeNil())
+		Expect(probe.Exec.Command[0]).To(Equal("tapi"))
+		Expect(probe.Exec.Command[1]).To(Equal("shard-manager-healthz"))
 	})
 
 	It("should inject TLS volume and args into node pool StatefulSet", func() {
@@ -323,6 +330,12 @@ var _ = Describe("TAPIRCluster Controller", func() {
 			// Verify it references the discovery endpoint
 			Expect(smDeploy.Spec.Template.Spec.Containers[0].Args).To(ContainElement(
 				ContainSubstring("--discovery-tapir-endpoint=srv://")))
+
+			By("verifying readiness probe uses HTTP /healthz")
+			probe := smDeploy.Spec.Template.Spec.Containers[0].ReadinessProbe
+			Expect(probe).NotTo(BeNil())
+			Expect(probe.HTTPGet).NotTo(BeNil())
+			Expect(probe.HTTPGet.Path).To(Equal("/healthz"))
 		})
 
 		It("should create node pool StatefulSet and headless Service", func() {
