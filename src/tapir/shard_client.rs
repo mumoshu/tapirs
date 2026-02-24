@@ -362,13 +362,59 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
     }
 
     /// Request committed changes by view number for CDC-based resharding.
-    /// Queries f+1 replicas from the same view and returns changes.
+    /// Queries f+1 replicas from the same view, merges their CDC deltas,
+    /// and returns the combined result.
     ///
-    /// If any response has `pending_prepares == 0`, uses that single
-    /// response's data directly — by quorum intersection, such a replica
-    /// is at the intersection of the view change quorum and the commit
-    /// quorum, so its state is authoritative. Otherwise, falls back to
-    /// merging all responses with `max(pending_prepares)`.
+    /// # What scan_changes returns
+    ///
+    /// CDC deltas recorded during past **completed** view changes. Each delta
+    /// is the diff between two consecutive view-change-merged states.
+    ///
+    /// The current view's overlay is **not** captured — all operations since
+    /// the last view change started (new Prepares, new Commits, in-flight
+    /// transactions) are invisible until the next view change seals them.
+    /// In other words, this provides a snapshot of data known to have
+    /// committed as of the current view's start.
+    ///
+    /// # Committed-only guarantee
+    ///
+    /// CDC deltas contain only **committed** changes — the KV write sets from
+    /// transactions whose `IO::Commit` was executed. Prepared-but-not-yet-
+    /// committed transactions (`CO::Prepare`) are **not** included.
+    ///
+    /// This distinction is critical for correctness: TAPIR transactions are
+    /// multi-shard. `CO::Prepare` carries the write set; `IO::Commit` only
+    /// carries ID+timestamp. If a shard loses a prepared transaction (e.g.,
+    /// via backup/restore or resharding that only ships committed data), and
+    /// the coordinator later commits it, the write set is lost — violating
+    /// the atomicity guarantee.
+    ///
+    /// # Completeness for migration (split/merge/compact)
+    ///
+    /// For complete data migration, callers must freeze the shard (reject new
+    /// Prepares via `phase=ReadOnly`) and drain all existing prepared
+    /// transactions via `recover_coordination()`. Only after `pending_prepares`
+    /// reaches 0 and the final view change seals the resolutions does
+    /// `scan_changes` capture the complete state. This is Phase 3
+    /// freeze+drain in `shard_manager_cdc.rs`.
+    ///
+    /// # Backup use case
+    ///
+    /// For backup (where freezing the shard is not acceptable), `scan_changes`
+    /// provides a point-in-time snapshot of data committed as of the current
+    /// view start. Changes during the current view are not captured. This is
+    /// acceptable because the cluster continues running; these changes will be
+    /// sealed by a subsequent view change and appear in the next incremental
+    /// backup.
+    ///
+    /// # No force_view_change() required
+    ///
+    /// `force_view_change()` is not required before calling `scan_changes()`.
+    /// IR replicas trigger natural view changes every ~2s via periodic
+    /// `tick()`, so past operations are already in sealed deltas. The shard
+    /// manager split/merge/compact operations call `scan_changes(0)` without
+    /// `force_view_change()` first, using catch-up loops + freeze+drain for
+    /// convergence and completeness.
     pub async fn scan_changes(&self, from_view: u64) -> ScanChangesResult<K, V> {
         let responses = self
             .inner
