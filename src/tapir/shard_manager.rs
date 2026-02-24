@@ -22,9 +22,9 @@ use std::sync::Arc;
 /// 4. Other nodes' `CachingShardDirectory` PULL from remote discovery
 ///    (periodic; local rejects stale via view numbers)
 ///
-/// ShardManager is the sole authority for shard **lifecycle** (register, deregister,
-/// replace). Lifecycle methods (`deregister_shard`, `replace_shard`) tombstone old
-/// shards in the remote discovery service, ensuring cluster-wide consistency.
+/// ShardManager is the sole authority for shard **lifecycle** (register,
+/// replace). Lifecycle methods (`replace_shard`) tombstone old shards in
+/// the remote discovery service, ensuring cluster-wide consistency.
 ///
 /// # Architecture
 ///
@@ -38,7 +38,7 @@ use std::sync::Arc;
 ///     - PULL: all remote entries → local (local rejects stale via view)
 ///
 /// ShardManager (shard lifecycle authority):
-///   deregister_shard/replace_shard tombstone old shards in remote directly
+///   replace_shard tombstones old shards in remote directly
 ///
 /// Remote Discovery (cluster-wide):
 ///   TapirRemoteShardDirectory / JsonRemoteShardDirectory
@@ -52,7 +52,7 @@ use std::sync::Arc;
 /// | Operation | Old shard               | New shard                      | View reset? |
 /// |-----------|-------------------------|--------------------------------|-------------|
 /// | Split     | Kept (range narrowed)   | Fresh # (operator-specified)   | No          |
-/// | Merge     | `deregister_shard()`    | Surviving keeps its #          | No          |
+/// | Merge     | Tombstoned via route update | Surviving keeps its #          | No          |
 /// | Compact   | `replace_shard()`       | Fresh # (operator-specified)   | Yes (v=0)   |
 /// | Join/Leave| Membership updated      | N/A                            | No          |
 ///
@@ -224,16 +224,6 @@ impl<
     ) {
         self.shards.remove(&old);
         let _ = self.remote.strong_replace(old, new, membership, 0).await;
-    }
-
-    /// Removes shard from local registry and tombstones in remote
-    /// discovery.
-    ///
-    /// See [`ShardManager`] module docs § "Careful Handling: Avoiding
-    /// Push-Pull Cycles".
-    pub async fn deregister_shard(&mut self, shard: ShardNumber) {
-        self.shards.remove(&shard);
-        let _ = self.remote.strong_remove_shard(shard).await;
     }
 
     pub fn shard_client(&self, shard: ShardNumber) -> Option<&ShardClient<K, V, T>> {

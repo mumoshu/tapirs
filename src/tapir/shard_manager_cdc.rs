@@ -342,8 +342,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
     /// 1. `reconfigure(ShardConfig { key_range: merged_range })` on surviving
     /// 2. Sleep 5 seconds for view change to propagate
     /// 3. Update surviving shard's `key_range` in `self.shards`
-    /// 4. `deregister_shard(absorbed)` — removes from shards, address_directory,
-    ///    rebuilds directory
+    /// 4. Remove absorbed shard from local registry (lifecycle handled by atomic route update)
     ///
     /// # Key design decisions
     ///
@@ -618,8 +617,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
     ///
     /// **Phase 3c — Swap + Cleanup**:
     /// 1. Update new shard's `key_range` in `self.shards` (already set at registration)
-    /// 2. `deregister_shard(source)` — removes from shards, address_directory,
-    ///    rebuilds directory to route all traffic to the new shard
+    /// 2. Remove source shard from local registry (lifecycle handled by atomic route update)
     ///
     /// # Key design decisions
     ///
