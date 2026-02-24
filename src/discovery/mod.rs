@@ -95,11 +95,6 @@ pub trait RemoteShardDirectory<A: Clone + Send + Sync + 'static, K: Clone + Send
         view: u64,
     ) -> impl std::future::Future<Output = Result<(), DiscoveryError>> + Send + '_;
 
-    fn strong_remove_shard(
-        &self,
-        shard: ShardNumber,
-    ) -> impl std::future::Future<Output = Result<(), DiscoveryError>> + Send + '_;
-
     fn weak_all_active_shard_view_memberships(
         &self,
     ) -> impl std::future::Future<Output = Result<Vec<(ShardNumber, IrMembership<A>, u64)>, DiscoveryError>>

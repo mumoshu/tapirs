@@ -116,11 +116,6 @@ impl<A: Clone + Send + Sync + 'static, K: Clone + Send + Sync + 'static> RemoteS
         Ok(())
     }
 
-    /// No-op — JSON config is the authoritative source.
-    async fn strong_remove_shard(&self, _shard: ShardNumber) -> Result<(), DiscoveryError> {
-        Ok(())
-    }
-
     /// JSON config backend does not support atomic shard updates.
     ///
     /// Returns an error to verify the assumption that this method is never

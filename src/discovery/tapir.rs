@@ -419,32 +419,6 @@ where
         ))
     }
 
-    async fn strong_remove_shard(&self, shard: ShardNumber) -> Result<(), DiscoveryError> {
-        let (key, tombstone_json) = self.prepare_tombstone::<K>(shard).await?;
-
-        for _attempt in 0..5 {
-            let txn = self.client.begin();
-
-            // RW get for OCC read-set tracking (inconsistent — may be stale).
-            let _ = txn
-                .get(key.clone())
-                .await
-                .map_err(|e| DiscoveryError::ConnectionFailed(format!("{e:?}")))?;
-
-            txn.put(key.clone(), Some(tombstone_json.clone()));
-
-            if txn.commit().await.is_some() {
-                tokio::task::yield_now().await;
-                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-                return Ok(());
-            }
-        }
-
-        Err(DiscoveryError::ConnectionFailed(
-            "remove failed after retries".to_string(),
-        ))
-    }
-
     async fn weak_all_active_shard_view_memberships(
         &self,
     ) -> Result<Vec<(ShardNumber, IrMembership<A>, u64)>, DiscoveryError> {
@@ -645,7 +619,7 @@ mod tests {
         dir.weak_get_active_shard_membership(shard).await
     }
     async fn remove(dir: &impl RemoteShardDirectory<usize, ()>, shard: ShardNumber) -> Result<(), DiscoveryError> {
-        dir.strong_remove_shard(shard).await
+        dir.strong_atomic_update_shards(vec![ShardDirectoryChange::TombstoneShard { shard }]).await
     }
     async fn all(dir: &impl RemoteShardDirectory<usize, ()>) -> Result<Vec<(ShardNumber, IrMembership<usize>, u64)>, DiscoveryError> {
         dir.weak_all_active_shard_view_memberships().await

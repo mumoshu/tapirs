@@ -55,19 +55,6 @@ impl RemoteShardDirectory<TcpAddress, String> for DiscoveryBackend {
         }
     }
 
-    async fn strong_remove_shard(&self, shard: ShardNumber) -> Result<(), DiscoveryError> {
-        match self {
-            Self::Json(c) => {
-                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::strong_remove_shard(c, shard)
-                    .await
-            }
-            Self::Tapir(c) => {
-                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::strong_remove_shard(c, shard)
-                    .await
-            }
-        }
-    }
-
     async fn weak_all_active_shard_view_memberships(
         &self,
     ) -> Result<Vec<(ShardNumber, IrMembership<TcpAddress>, u64)>, DiscoveryError> {
