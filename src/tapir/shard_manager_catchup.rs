@@ -14,18 +14,24 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         shard: ShardNumber,
         new_address: T::Address,
         new_membership: IrMembership<T::Address>,
-    ) {
-        let managed = self.shards.get(&shard).expect("shard not registered");
+    ) -> Result<(), String> {
+        let record = self.remote.strong_get_shard(shard).await
+            .map_err(|e| format!("failed to get shard {shard:?}: {e:?}"))?
+            .ok_or_else(|| format!("shard {shard:?} not found in remote directory"))?;
+        if record.status != ShardStatus::Active {
+            return Err(format!("shard {shard:?} is {:?}, expected Active", record.status));
+        }
+
+        let existing_client = self.make_shard_client(shard, record.membership);
 
         // 1. Fetch the stable leader_record from any replica in the shard.
-        let (view, record) = managed
-            .client
+        let (view, leader_record) = existing_client
             .fetch_leader_record()
             .await
-            .expect("shard has no leader_record");
+            .ok_or_else(|| format!("shard {shard:?} has no leader_record"))?;
 
-        // 2. Bootstrap R4 via a standalone client.
-        //    Client sends BootstrapRecord → R4 converts to self-directed StartView.
+        // 2. Bootstrap the new replica via a standalone client.
+        //    Client sends BootstrapRecord → new replica converts to self-directed StartView.
         let standalone = ShardClient::<K, V, T>::new(
             self.rng.fork(),
             IrClientId::new(&mut self.rng),
@@ -33,11 +39,11 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
             new_membership,
             self.transport.clone(),
         );
-        standalone.bootstrap_record((*record).clone(), view);
+        standalone.bootstrap_record((*leader_record).clone(), view);
 
         // 3. Trigger AddMember → view change N → N+3.
-        let managed = self.shards.get(&shard).expect("shard not registered");
-        managed.client.add_member(new_address);
+        existing_client.add_member(new_address);
+        Ok(())
     }
 
     /// Bootstrap a shard with a single replica.

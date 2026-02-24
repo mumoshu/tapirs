@@ -74,7 +74,7 @@ async fn test_add_replica_with_preload() {
 
     // add_replica: fetch leader_record → bootstrap R4 → AddMember.
     let new_membership = IrMembership::new(vec![new_address]);
-    manager.add_replica(shard, new_address, new_membership).await;
+    manager.add_replica(shard, new_address, new_membership).await.unwrap();
 
     // Wait for the view change (AddMember → N+3) to complete.
     tokio::time::sleep(Duration::from_secs(10)).await;
