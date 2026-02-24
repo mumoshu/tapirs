@@ -31,15 +31,11 @@ Full walkthrough: [Getting Started](docs/operate/getting-started.md)
 
 ## Documentation
 
-**Evaluating tapirs for your project?** [Evaluate tapirs](docs/evaluate/) walks you through what makes it different, whether it fits your use case, and how it compares with etcd, FoundationDB, CockroachDB, and TiKV.
-
-**Building an application on tapirs?** [Building on tapirs](docs/integrate/) covers the Rust client SDK, consistency levels, and integration patterns for SQL databases, document stores, and stateful services.
-
-**Running a cluster?** [Operate tapirs](docs/operate/) has everything from a one-minute Docker testbed to CLI reference, monitoring, and troubleshooting.
-
-**Curious how it works?** [Learn how tapirs works](docs/learn/) covers the foundational concepts — consensus, concurrency control, conflict detection — and goes deeper into architecture, protocol internals, and design decisions.
-
-**Contributing or studying the code?** The [Code Tour](docs/learn/code-tour.md) gives a recommended reading order through the source, with a [Paper Map](docs/learn/paper-map.md) connecting the research paper to the corresponding code.
+- [Does tapirs fit my project?](docs/evaluate/) — comparisons with etcd, FoundationDB, CockroachDB, TiKV
+- [How do I build on tapirs?](docs/integrate/) — Rust client SDK, consistency levels, integration patterns
+- [How do I run a cluster?](docs/operate/) — Docker testbed, CLI reference, monitoring, troubleshooting
+- [How does it work?](docs/learn/) — consensus, concurrency control, architecture, protocol internals
+- [How do I contribute?](docs/learn/code-tour.md) — code tour, [paper map](docs/learn/paper-map.md)
 
 Full documentation: [docs/](docs/README.md) · [Roadmap](docs/roadmap.md) · [History](docs/history.md)
 
