@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::discovery::{RemoteShardDirectory, ShardStatus};
 use crate::tapir::shard_manager::ShardManager;
 use crate::testing::discovery::build_single_node_discovery;
 
@@ -69,16 +70,20 @@ async fn test_merge_two_shards() {
     txn.put(Sharded { shard: ShardNumber(0), key: 70 }, Some(700));
     assert!(txn.commit().await.is_some(), "write key=70 should succeed after merge");
 
-    // Verify: shard 1 is deregistered.
-    assert!(
-        manager.shard_client(ShardNumber(1)).is_none(),
-        "shard 1 should be deregistered after merge"
-    );
+    // Verify: shard 1 is tombstoned in remote discovery.
+    let record: Option<crate::discovery::ShardRecord<usize, i64>> =
+        manager.remote.strong_get_shard(ShardNumber(1)).await.unwrap();
+    assert_eq!(record.unwrap().status, ShardStatus::Tombstoned,
+        "shard 1 should be tombstoned after merge");
 
-    // Verify: shard 0 now covers [None, None).
-    let shard0 = manager.shards.get(&ShardNumber(0)).unwrap();
-    assert_eq!(shard0.key_range.start, None, "shard 0 start should be None");
-    assert_eq!(shard0.key_range.end, None, "shard 0 end should be None");
+    // Verify: shard 0 now covers [None, None) in remote discovery.
+    let record: Option<crate::discovery::ShardRecord<usize, i64>> =
+        manager.remote.strong_get_shard(ShardNumber(0)).await.unwrap();
+    let r = record.unwrap();
+    assert_eq!(r.status, ShardStatus::Active);
+    let range = r.key_range.unwrap();
+    assert_eq!(range.start, None, "shard 0 start should be None");
+    assert_eq!(range.end, None, "shard 0 end should be None");
 
     disc.shutdown().await;
     drop(_replicas_0);
@@ -173,11 +178,18 @@ async fn test_split_merge_two_shards() {
     txn.put(Sharded { shard: ShardNumber(0), key: 90 }, Some(900));
     assert!(txn.commit().await.is_some(), "write key=90 should succeed after merge");
 
-    // Verify: shard 1 is deregistered, shard 0 covers [None, None).
-    assert!(manager.shard_client(ShardNumber(1)).is_none());
-    let shard0 = manager.shards.get(&ShardNumber(0)).unwrap();
-    assert_eq!(shard0.key_range.start, None);
-    assert_eq!(shard0.key_range.end, None);
+    // Verify: shard 1 is tombstoned, shard 0 covers [None, None).
+    let record: Option<crate::discovery::ShardRecord<usize, i64>> =
+        manager.remote.strong_get_shard(ShardNumber(1)).await.unwrap();
+    assert_eq!(record.unwrap().status, ShardStatus::Tombstoned,
+        "shard 1 should be tombstoned after merge");
+    let record: Option<crate::discovery::ShardRecord<usize, i64>> =
+        manager.remote.strong_get_shard(ShardNumber(0)).await.unwrap();
+    let r = record.unwrap();
+    assert_eq!(r.status, ShardStatus::Active);
+    let range = r.key_range.unwrap();
+    assert_eq!(range.start, None);
+    assert_eq!(range.end, None);
 
     disc.shutdown().await;
     drop(_replicas_0);

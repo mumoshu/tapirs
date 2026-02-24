@@ -135,10 +135,10 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         new_shard: ShardNumber,
         new_membership: IrMembership<T::Address>,
     ) -> Result<(), ReshardError> {
-        let source_range = self.shards.get(&source)
-            .ok_or(ReshardError::ShardNotRegistered(source))?
-            .key_range
-            .clone();
+        let source_record = self.get_active_shard(source).await?;
+        let source_range = source_record.key_range
+            .ok_or(ReshardError::ShardNotRegistered(source))?;
+        let source_membership = source_record.membership;
 
         let new_range = KeyRange {
             start: Some(split_key.clone()),
@@ -149,16 +149,9 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
             end: Some(split_key.clone()),
         };
 
-        // Update source's key range in our map before creating the new shard
-        // client to avoid overlapping ranges in the directory.
-        if let Some(managed) = self.shards.get_mut(&source) {
-            managed.key_range = narrowed_range.clone();
-        }
-        // Use create_shard_client (not register_active_shard) to avoid publishing
-        // routing prematurely. Routing is published atomically at freeze
-        // (Phase 3a) with both narrowed source and new shard in one changeset.
         let new_membership_for_put = new_membership.clone();
-        self.create_shard_client(new_shard, new_membership, new_range.clone());
+        let source_client = self.make_shard_client(source, source_membership.clone());
+        let new_client = self.make_shard_client(new_shard, new_membership);
 
         let mut cursor = CdcCursor::new();
 
@@ -171,23 +164,22 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         // merge_responses algorithm in shard_client.rs merges fine-grained and
         // spanning deltas into a covering sequence.
         self.report_progress("split:bulk-copy");
-        let r = self.shards[&source].client.scan_changes(0).await;
+        let r = source_client.scan_changes(0).await;
         let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
         let filtered = filter_changes(&changes, &split_key);
-        ship_changes(&self.shards[&new_shard].client, new_shard, &filtered, &mut self.rng).await;
+        ship_changes(&new_client, new_shard, &filtered, &mut self.rng).await;
         cursor.advance(r.effective_end_view);
 
         // Phase 2: Catch-up tailing.
         self.report_progress("split:catch-up");
         for catchup_iter in 0..30u32 {
-            let r = self.shards[&source]
-                .client
+            let r = source_client
                 .scan_changes(cursor.next_from())
                 .await;
             let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
             let filtered = filter_changes(&changes, &split_key);
             if !filtered.is_empty() {
-                ship_changes(&self.shards[&new_shard].client, new_shard, &filtered, &mut self.rng).await;
+                ship_changes(&new_client, new_shard, &filtered, &mut self.rng).await;
             }
             let stabilized = cursor.stabilized(r.effective_end_view);
             self.report_progress(&format!(
@@ -207,7 +199,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
             phase: ShardPhase::ReadOnly,
         })
         .expect("serialize freeze config");
-        self.shards[&source].client.reconfigure(freeze);
+        source_client.reconfigure(freeze);
 
         // Source frozen — drain pending prepares.
 
@@ -218,20 +210,15 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         // IO::Commit for each resolution is captured in the current view.
         // Need one more view change after all prepares resolve to seal final commits.
         self.report_progress("split:drain-prepared");
-        let narrowed_range = KeyRange {
-            start: source_range.start.clone(),
-            end: Some(split_key.clone()),
-        };
         for drain_iter in 0..60u32 {
             T::sleep(Duration::from_secs(1)).await;
-            let r = self.shards[&source]
-                .client
+            let r = source_client
                 .scan_changes(cursor.next_from())
                 .await;
             let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
             let filtered = filter_changes(&changes, &split_key);
             if !filtered.is_empty() {
-                ship_changes(&self.shards[&new_shard].client, new_shard, &filtered, &mut self.rng).await;
+                ship_changes(&new_client, new_shard, &filtered, &mut self.rng).await;
             }
             cursor.advance(r.effective_end_view);
 
@@ -249,14 +236,13 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         }
         // One final poll after all prepares resolved to capture sealed commits.
         T::sleep(Duration::from_secs(3)).await;
-        let r = self.shards[&source]
-            .client
+        let r = source_client
             .scan_changes(cursor.next_from())
             .await;
         let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
         let filtered = filter_changes(&changes, &split_key);
         if !filtered.is_empty() {
-            ship_changes(&self.shards[&new_shard].client, new_shard, &filtered, &mut self.rng).await;
+            ship_changes(&new_client, new_shard, &filtered, &mut self.rng).await;
         }
 
         // Transfer read protection from the source to the new shard.
@@ -274,7 +260,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         // scan(start, end, snapshot_ts) only depend on version write-
         // timestamps (BTreeMap keys), which are identical.
         self.report_progress("split:transfer-read-protection");
-        self.transfer_read_protection(&self.shards[&source].client, &self.shards[&new_shard].client).await;
+        self.transfer_read_protection(&source_client, &new_client).await;
 
         // Phase 3c: Unfreeze source and narrow its key range.
         self.report_progress("split:switchover");
@@ -283,16 +269,11 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
             phase: ShardPhase::ReadWrite,
         })
         .expect("serialize unfreeze config");
-        self.shards[&source].client.reconfigure(unfreeze);
+        source_client.reconfigure(unfreeze);
 
         // Reconfigure the new shard with its key range.
         let new_config = serde_json::to_vec(&new_range).expect("serialize key range");
-        self.shards[&new_shard].client.reconfigure(new_config);
-
-        // Update the source shard's key range in our registry.
-        if let Some(managed) = self.shards.get_mut(&source) {
-            managed.key_range = narrowed_range.clone();
-        }
+        new_client.reconfigure(new_config);
 
         // Publish routing after drain + transfer + unfreeze. Both shards
         // are fully ready: source handles narrowed range, new shard handles
@@ -300,7 +281,6 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         // Single strong_atomic_update_shards atomically updates both shards'
         // key ranges and registers the new shard's membership.
         self.report_progress("split:publish-route");
-        let source_membership = self.shards[&source].membership.clone();
         let _ = self.remote.strong_atomic_update_shards(vec![
             ShardDirectoryChange::ActivateShard {
                 shard: source,
@@ -405,39 +385,41 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         absorbed: ShardNumber,
         surviving: ShardNumber,
     ) -> Result<(), ReshardError> {
-        let absorbed_range = self.shards.get(&absorbed)
-            .ok_or(ReshardError::ShardNotRegistered(absorbed))?
-            .key_range
-            .clone();
-        let surviving_range = self.shards.get(&surviving)
-            .ok_or(ReshardError::ShardNotRegistered(surviving))?
-            .key_range
-            .clone();
+        let absorbed_record = self.get_active_shard(absorbed).await?;
+        let absorbed_range = absorbed_record.key_range
+            .ok_or(ReshardError::ShardNotRegistered(absorbed))?;
+        let surviving_record = self.get_active_shard(surviving).await?;
+        let surviving_range = surviving_record.key_range
+            .ok_or(ReshardError::ShardNotRegistered(surviving))?;
+        let surviving_membership = surviving_record.membership.clone();
+
         if !absorbed_range.adjacent(&surviving_range) {
             return Err(ReshardError::RangesNotAdjacent(absorbed, surviving));
         }
         let merged_range = surviving_range.union(&absorbed_range);
 
+        let absorbed_client = self.make_shard_client(absorbed, absorbed_record.membership);
+        let surviving_client = self.make_shard_client(surviving, surviving_record.membership);
+
         let mut cursor = CdcCursor::new();
 
         // Phase 1: Bulk copy — ship all changes from absorbed to surviving.
         self.report_progress("merge:bulk-copy");
-        let r = self.shards[&absorbed].client.scan_changes(0).await;
+        let r = absorbed_client.scan_changes(0).await;
         let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
         // Bulk copy complete — ship all changes to surviving shard.
-        ship_changes(&self.shards[&surviving].client, surviving, &changes, &mut self.rng).await;
+        ship_changes(&surviving_client, surviving, &changes, &mut self.rng).await;
         cursor.advance(r.effective_end_view);
 
         // Phase 2: Catch-up tailing.
         self.report_progress("merge:catch-up");
         for catchup_iter in 0..30u32 {
-            let r = self.shards[&absorbed]
-                .client
+            let r = absorbed_client
                 .scan_changes(cursor.next_from())
                 .await;
             let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
             if !changes.is_empty() {
-                ship_changes(&self.shards[&surviving].client, surviving, &changes, &mut self.rng).await;
+                ship_changes(&surviving_client, surviving, &changes, &mut self.rng).await;
             }
             let stabilized = cursor.stabilized(r.effective_end_view);
             self.report_progress(&format!(
@@ -457,7 +439,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
             phase: ShardPhase::ReadOnly,
         })
         .expect("serialize freeze config");
-        self.shards[&absorbed].client.reconfigure(freeze);
+        absorbed_client.reconfigure(freeze);
 
         // Absorbed shard frozen — drain pending prepares.
 
@@ -465,13 +447,12 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         self.report_progress("merge:drain-prepared");
         for drain_iter in 0..60u32 {
             T::sleep(Duration::from_secs(1)).await;
-            let r = self.shards[&absorbed]
-                .client
+            let r = absorbed_client
                 .scan_changes(cursor.next_from())
                 .await;
             let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
             if !changes.is_empty() {
-                ship_changes(&self.shards[&surviving].client, surviving, &changes, &mut self.rng).await;
+                ship_changes(&surviving_client, surviving, &changes, &mut self.rng).await;
             }
             cursor.advance(r.effective_end_view);
 
@@ -489,13 +470,12 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         }
         // One final poll after all prepares resolved to capture sealed commits.
         T::sleep(Duration::from_secs(3)).await;
-        let r = self.shards[&absorbed]
-            .client
+        let r = absorbed_client
             .scan_changes(cursor.next_from())
             .await;
         let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
         if !changes.is_empty() {
-            ship_changes(&self.shards[&surviving].client, surviving, &changes, &mut self.rng).await;
+            ship_changes(&surviving_client, surviving, &changes, &mut self.rng).await;
         }
 
         // No route update for merge after drain: the existing router state is
@@ -518,7 +498,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         // transactions see the same data regardless of which shard
         // originally held the key — version timestamps are preserved.
         self.report_progress("merge:transfer-read-protection");
-        self.transfer_read_protection(&self.shards[&absorbed].client, &self.shards[&surviving].client).await;
+        self.transfer_read_protection(&absorbed_client, &surviving_client).await;
 
         // Phase 3c: Expand surviving shard's key range.
         self.report_progress("merge:switchover");
@@ -527,19 +507,13 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
             phase: ShardPhase::ReadWrite,
         })
         .expect("serialize expanded config");
-        self.shards[&surviving].client.reconfigure(expand);
+        surviving_client.reconfigure(expand);
 
         // Wait for view change to propagate.
         T::sleep(Duration::from_secs(5)).await;
 
-        // Update surviving shard's key range in our registry.
-        if let Some(managed) = self.shards.get_mut(&surviving) {
-            managed.key_range = merged_range.clone();
-        }
-
         // Publish route change: tombstone absorbed, set surviving's merged range.
         // Single strong_atomic_update_shards atomically updates both.
-        let surviving_membership = self.shards[&surviving].membership.clone();
         let _ = self.remote.strong_atomic_update_shards(vec![
             ShardDirectoryChange::TombstoneShard { shard: absorbed },
             ShardDirectoryChange::ActivateShard {
@@ -550,8 +524,6 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
             },
         ]).await;
 
-        // Remove absorbed shard from local registry.
-        self.shards.remove(&absorbed);
         // Merge complete.
         Ok(())
     }
@@ -792,27 +764,24 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         new_shard: ShardNumber,
         new_membership: IrMembership<T::Address>,
     ) -> Result<(), ReshardError> {
-        let source_range = self.shards.get(&source)
-            .ok_or(ReshardError::ShardNotRegistered(source))?
-            .key_range
-            .clone();
+        let source_record = self.get_active_shard(source).await?;
+        let source_range = source_record.key_range
+            .ok_or(ReshardError::ShardNotRegistered(source))?;
 
-        // Create a shard client for the new shard without touching the address
-        // directory. The new shard is invisible to cross-shard discovery during
-        // the entire migration. The atomic swap at the end makes it visible.
         let new_membership_for_swap = new_membership.clone();
-        self.create_shard_client(new_shard, new_membership, source_range);
+        let source_client = self.make_shard_client(source, source_record.membership);
+        let new_client = self.make_shard_client(new_shard, new_membership);
 
         let mut cursor = CdcCursor::new();
 
         // Phase 1: Bulk copy — ship all changes from source to new shard.
         self.report_progress("compact:bulk-copy");
         eprintln!("[compact] phase 1: scan_changes(0) on source={source:?}");
-        let r = self.shards[&source].client.scan_changes(0).await;
+        let r = source_client.scan_changes(0).await;
         eprintln!("[compact] phase 1: scan_changes done, {} deltas", r.deltas.len());
         let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
         eprintln!("[compact] phase 1: shipping {} changes to {new_shard:?}", changes.len());
-        ship_changes(&self.shards[&new_shard].client, new_shard, &changes, &mut self.rng).await;
+        ship_changes(&new_client, new_shard, &changes, &mut self.rng).await;
         eprintln!("[compact] phase 1: ship_changes done");
         cursor.advance(r.effective_end_view);
 
@@ -820,8 +789,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         self.report_progress("compact:catch-up");
         for catchup_iter in 0..30u32 {
             eprintln!("[compact] phase 2: catch-up iter={catchup_iter}, scan_changes({})", cursor.next_from());
-            let r = self.shards[&source]
-                .client
+            let r = source_client
                 .scan_changes(cursor.next_from())
                 .await;
             eprintln!("[compact] phase 2: scan_changes done");
@@ -830,7 +798,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
             eprintln!("[compact] phase 2: {} changes, effective_end_view={:?}, stabilized={stabilized}", changes.len(), r.effective_end_view);
             if !changes.is_empty() {
                 eprintln!("[compact] phase 2: shipping changes");
-                ship_changes(&self.shards[&new_shard].client, new_shard, &changes, &mut self.rng).await;
+                ship_changes(&new_client, new_shard, &changes, &mut self.rng).await;
                 eprintln!("[compact] phase 2: ship done");
             }
             self.report_progress(&format!(
@@ -852,7 +820,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
             phase: ShardPhase::ReadOnly,
         })
         .expect("serialize freeze config");
-        self.shards[&source].client.reconfigure(freeze);
+        source_client.reconfigure(freeze);
         eprintln!("[compact] phase 3a: freeze done");
 
         // Phase 3b: Drain — wait for pending_prepares == 0 + final seal.
@@ -861,14 +829,13 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         for drain_iter in 0..60u32 {
             eprintln!("[compact] phase 3b: drain iter={drain_iter}");
             T::sleep(Duration::from_secs(1)).await;
-            let r = self.shards[&source]
-                .client
+            let r = source_client
                 .scan_changes(cursor.next_from())
                 .await;
             eprintln!("[compact] phase 3b: scan done, pending_prepares={}", r.pending_prepares);
             let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
             if !changes.is_empty() {
-                ship_changes(&self.shards[&new_shard].client, new_shard, &changes, &mut self.rng).await;
+                ship_changes(&new_client, new_shard, &changes, &mut self.rng).await;
             }
             cursor.advance(r.effective_end_view);
 
@@ -888,13 +855,12 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         // One final poll after all prepares resolved to capture sealed commits.
         eprintln!("[compact] phase 3b: final poll");
         T::sleep(Duration::from_secs(3)).await;
-        let r = self.shards[&source]
-            .client
+        let r = source_client
             .scan_changes(cursor.next_from())
             .await;
         let changes: Vec<_> = r.deltas.into_iter().flat_map(|d| d.changes).collect();
         if !changes.is_empty() {
-            ship_changes(&self.shards[&new_shard].client, new_shard, &changes, &mut self.rng).await;
+            ship_changes(&new_client, new_shard, &changes, &mut self.rng).await;
         }
 
         eprintln!("[compact] phase 3c: transfer read protection");
@@ -913,7 +879,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         // prepared state, transaction_log). Read-only transactions at any
         // snapshot timestamp see the same version data.
         self.report_progress("compact:transfer-read-protection");
-        self.transfer_read_protection(&self.shards[&source].client, &self.shards[&new_shard].client).await;
+        self.transfer_read_protection(&source_client, &new_client).await;
 
         // Phase 3c: Atomic swap — source disappears, new shard appears in all
         // directories simultaneously. Single strong_atomic_update_shards atomically
@@ -921,7 +887,6 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         // membership, key range, and changelog entry.
         eprintln!("[compact] phase 3c: decommission (strong_atomic_update_shards)");
         self.report_progress("compact:decommission");
-        let source_range = self.shards[&new_shard].key_range.clone();
         let _ = self.remote.strong_atomic_update_shards(vec![
             ShardDirectoryChange::TombstoneShard { shard: source },
             ShardDirectoryChange::ActivateShard {
@@ -932,7 +897,6 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
             },
         ]).await;
         eprintln!("[compact] phase 3c: decommission done");
-        self.shards.remove(&source);
         // Compact complete.
         Ok(())
     }

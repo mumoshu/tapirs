@@ -898,6 +898,10 @@ async fn fuzz_tapir_transactions_inner(seed: u64) {
         let mut next_shard_idx = 0usize;
         let num_reshard_rounds = reshard_rng.gen_range(3..=5usize);
 
+        // Track shard topology locally since ShardManager no longer caches it.
+        let mut shard_ranges: std::collections::BTreeMap<ShardNumber, KeyRange<i64>> =
+            reshard_shard_entries.iter().map(|e| (e.shard, e.range.clone())).collect();
+
         // Random resharding loop — no guards, attempt anything.
         // No explicit view change forcing needed: split/merge/compact handle
         // CDC internally (freeze triggers view change → produces delta → drain
@@ -912,8 +916,7 @@ async fn fuzz_tapir_transactions_inner(seed: u64) {
                     phase: phase.to_string(),
                 });
             });
-            #[allow(clippy::disallowed_methods)] // Immediately sorted on next line
-            let mut shard_keys: Vec<_> = manager.shards.keys().cloned().collect();
+            let mut shard_keys: Vec<_> = shard_ranges.keys().cloned().collect();
             shard_keys.sort();
 
             // Try the preferred operation first, then rotate through alternatives.
@@ -928,7 +931,7 @@ async fn fuzz_tapir_transactions_inner(seed: u64) {
                 if op == 0 {
                     // Attempt split: random shard, midpoint key.
                     let source = shard_keys[reshard_rng.gen_range(0..shard_keys.len())];
-                    let range = &manager.shards[&source].key_range;
+                    let range = &shard_ranges[&source];
                     let start = range.start.unwrap_or(0);
                     let end = range.end.unwrap_or(num_keys);
                     if end - start >= 2 && next_shard_idx < new_shard_memberships.len() {
@@ -943,6 +946,11 @@ async fn fuzz_tapir_transactions_inner(seed: u64) {
                         match manager.split(source, split_key, new_shard_number, membership).await {
                             Ok(()) => {
                                 next_shard_idx += 1;
+                                // Update local topology tracking.
+                                let narrowed = KeyRange { start: range.start, end: Some(split_key) };
+                                let new_range = KeyRange { start: Some(split_key), end: range.end };
+                                shard_ranges.insert(source, narrowed);
+                                shard_ranges.insert(new_shard_number, new_range);
                                 reshard_event_log.record(FuzzEvent::ReshardSplitOk {
                                     round,
                                     wall_ms: op_wall_start.elapsed().as_millis(),
@@ -971,6 +979,11 @@ async fn fuzz_tapir_transactions_inner(seed: u64) {
                         let op_sim_start = tokio::time::Instant::now();
                         match manager.merge(absorbed, surviving).await {
                             Ok(()) => {
+                                // Update local topology tracking.
+                                let absorbed_range = shard_ranges.remove(&absorbed).unwrap();
+                                let surviving_range = shard_ranges.get(&surviving).unwrap();
+                                let merged = surviving_range.union(&absorbed_range);
+                                shard_ranges.insert(surviving, merged);
                                 reshard_event_log.record(FuzzEvent::ReshardMergeOk {
                                     round,
                                     wall_ms: op_wall_start.elapsed().as_millis(),
@@ -998,6 +1011,9 @@ async fn fuzz_tapir_transactions_inner(seed: u64) {
                     match manager.compact(source, new_shard_number, membership).await {
                         Ok(()) => {
                             next_shard_idx += 1;
+                            // Update local topology tracking.
+                            let r = shard_ranges.remove(&source).unwrap();
+                            shard_ranges.insert(new_shard_number, r);
                             reshard_event_log.record(FuzzEvent::ReshardCompactOk {
                                 round,
                                 wall_ms: op_wall_start.elapsed().as_millis(),
@@ -1020,7 +1036,9 @@ async fn fuzz_tapir_transactions_inner(seed: u64) {
         reshard_stop.store(true, Ordering::Relaxed);
 
         *reshard_final_shards.lock().unwrap() =
-            Some(manager.shard_entries());
+            Some(shard_ranges.iter()
+                .map(|(&shard, range)| ShardEntry { shard, range: range.clone() })
+                .collect());
     });
 
     // Wait for all workloads with overall timeout.
