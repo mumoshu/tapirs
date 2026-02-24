@@ -233,7 +233,7 @@ impl<
     /// Push-Pull Cycles".
     pub async fn deregister_shard(&mut self, shard: ShardNumber) {
         self.shards.remove(&shard);
-        let _ = self.remote.strong_remove(shard).await;
+        let _ = self.remote.strong_remove_shard(shard).await;
     }
 
     pub fn shard_client(&self, shard: ShardNumber) -> Option<&ShardClient<K, V, T>> {

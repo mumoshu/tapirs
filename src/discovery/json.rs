@@ -98,7 +98,7 @@ where
 }
 
 impl<A: Clone + Send + Sync + 'static, K: Clone + Send + Sync + 'static> RemoteShardDirectory<A, K> for JsonRemoteShardDirectory<A> {
-    async fn weak_get(
+    async fn weak_get_active_shard_membership(
         &self,
         shard: ShardNumber,
     ) -> Result<Option<(IrMembership<A>, u64)>, DiscoveryError> {
@@ -107,7 +107,7 @@ impl<A: Clone + Send + Sync + 'static, K: Clone + Send + Sync + 'static> RemoteS
     }
 
     /// No-op — JSON config is the authoritative source.
-    async fn strong_put(
+    async fn strong_put_shard_view_membership(
         &self,
         _shard: ShardNumber,
         _membership: IrMembership<A>,
@@ -117,12 +117,12 @@ impl<A: Clone + Send + Sync + 'static, K: Clone + Send + Sync + 'static> RemoteS
     }
 
     /// No-op — JSON config is the authoritative source.
-    async fn strong_remove(&self, _shard: ShardNumber) -> Result<(), DiscoveryError> {
+    async fn strong_remove_shard(&self, _shard: ShardNumber) -> Result<(), DiscoveryError> {
         Ok(())
     }
 
     #[allow(clippy::disallowed_methods)]
-    async fn weak_all(
+    async fn weak_all_shard_view_memberships(
         &self,
     ) -> Result<Vec<(ShardNumber, IrMembership<A>, u64)>, DiscoveryError> {
         let state = self.state.read().unwrap();

@@ -17,23 +17,23 @@ pub enum DiscoveryBackend {
 }
 
 impl RemoteShardDirectory<TcpAddress, String> for DiscoveryBackend {
-    async fn weak_get(
+    async fn weak_get_active_shard_membership(
         &self,
         shard: ShardNumber,
     ) -> Result<Option<(IrMembership<TcpAddress>, u64)>, DiscoveryError> {
         match self {
             Self::Json(c) => {
-                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::weak_get(c, shard)
+                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::weak_get_active_shard_membership(c, shard)
                     .await
             }
             Self::Tapir(c) => {
-                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::weak_get(c, shard)
+                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::weak_get_active_shard_membership(c, shard)
                     .await
             }
         }
     }
 
-    async fn strong_put(
+    async fn strong_put_shard_view_membership(
         &self,
         shard: ShardNumber,
         membership: IrMembership<TcpAddress>,
@@ -41,13 +41,13 @@ impl RemoteShardDirectory<TcpAddress, String> for DiscoveryBackend {
     ) -> Result<(), DiscoveryError> {
         match self {
             Self::Json(c) => {
-                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::strong_put(
+                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::strong_put_shard_view_membership(
                     c, shard, membership, view,
                 )
                 .await
             }
             Self::Tapir(c) => {
-                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::strong_put(
+                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::strong_put_shard_view_membership(
                     c, shard, membership, view,
                 )
                 .await
@@ -55,28 +55,28 @@ impl RemoteShardDirectory<TcpAddress, String> for DiscoveryBackend {
         }
     }
 
-    async fn strong_remove(&self, shard: ShardNumber) -> Result<(), DiscoveryError> {
+    async fn strong_remove_shard(&self, shard: ShardNumber) -> Result<(), DiscoveryError> {
         match self {
             Self::Json(c) => {
-                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::strong_remove(c, shard)
+                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::strong_remove_shard(c, shard)
                     .await
             }
             Self::Tapir(c) => {
-                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::strong_remove(c, shard)
+                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::strong_remove_shard(c, shard)
                     .await
             }
         }
     }
 
-    async fn weak_all(
+    async fn weak_all_shard_view_memberships(
         &self,
     ) -> Result<Vec<(ShardNumber, IrMembership<TcpAddress>, u64)>, DiscoveryError> {
         match self {
             Self::Json(c) => {
-                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::weak_all(c).await
+                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::weak_all_shard_view_memberships(c).await
             }
             Self::Tapir(c) => {
-                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::weak_all(c).await
+                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::weak_all_shard_view_memberships(c).await
             }
         }
     }

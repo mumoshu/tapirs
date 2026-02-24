@@ -76,26 +76,26 @@ impl std::error::Error for DiscoveryError {}
 /// Uses RPITIT (`impl Future`) — no dynamic dispatch. All consumers are generic
 /// over `T: RemoteShardDirectory<A>`.
 pub trait RemoteShardDirectory<A: Clone + Send + Sync + 'static, K: Clone + Send + Sync + 'static = ()>: Send + Sync + 'static {
-    fn weak_get(
+    fn weak_get_active_shard_membership(
         &self,
         shard: ShardNumber,
     ) -> impl std::future::Future<Output = Result<Option<(IrMembership<A>, u64)>, DiscoveryError>>
            + Send
            + '_;
 
-    fn strong_put(
+    fn strong_put_shard_view_membership(
         &self,
         shard: ShardNumber,
         membership: IrMembership<A>,
         view: u64,
     ) -> impl std::future::Future<Output = Result<(), DiscoveryError>> + Send + '_;
 
-    fn strong_remove(
+    fn strong_remove_shard(
         &self,
         shard: ShardNumber,
     ) -> impl std::future::Future<Output = Result<(), DiscoveryError>> + Send + '_;
 
-    fn weak_all(
+    fn weak_all_shard_view_memberships(
         &self,
     ) -> impl std::future::Future<Output = Result<Vec<(ShardNumber, IrMembership<A>, u64)>, DiscoveryError>>
            + Send
@@ -134,8 +134,8 @@ pub trait RemoteShardDirectory<A: Clone + Send + Sync + 'static, K: Clone + Send
 
     /// Atomically replace one shard with another.
     ///
-    /// Default: non-atomic `strong_remove` + `strong_put`. Implementations
-    /// should override for true atomicity.
+    /// Default: non-atomic `strong_remove_shard` + `strong_put_shard_view_membership`.
+    /// Implementations should override for true atomicity.
     fn strong_replace(
         &self,
         old: ShardNumber,
@@ -144,8 +144,8 @@ pub trait RemoteShardDirectory<A: Clone + Send + Sync + 'static, K: Clone + Send
         view: u64,
     ) -> impl std::future::Future<Output = Result<(), DiscoveryError>> + Send + '_ {
         async move {
-            let _ = self.strong_remove(old).await;
-            self.strong_put(new, membership, view).await
+            let _ = self.strong_remove_shard(old).await;
+            self.strong_put_shard_view_membership(new, membership, view).await
         }
     }
 }
@@ -366,7 +366,7 @@ where
                 // Alive replica's local (higher view) is never overwritten.
                 // Dead replica's local (lower view) gets overwritten by fresh remote data.
                 // Tombstoned shards are omitted by remote.all().
-                if let Ok(entries) = dir.remote.weak_all().await {
+                if let Ok(entries) = dir.remote.weak_all_shard_view_memberships().await {
                     for (shard, membership, remote_view) in entries {
                         dir.local.put(shard, membership, remote_view);
                     }
@@ -408,7 +408,7 @@ where
                 let own = dir.own_shards.read().unwrap().clone();
                 for (shard, membership, local_view) in dir.local.all() {
                     if own.contains(&shard) {
-                        let _ = dir.remote.strong_put(shard, membership, local_view).await;
+                        let _ = dir.remote.strong_put_shard_view_membership(shard, membership, local_view).await;
                     }
                 }
             }
@@ -653,14 +653,14 @@ mod tests {
         membership: IrMembership<usize>,
         view: u64,
     ) {
-        r.strong_put(shard, membership, view).await.unwrap();
+        r.strong_put_shard_view_membership(shard, membership, view).await.unwrap();
     }
 
     async fn remote_get(
         r: &impl RemoteShardDirectory<usize, ()>,
         shard: ShardNumber,
     ) -> Option<(IrMembership<usize>, u64)> {
-        r.weak_get(shard).await.unwrap()
+        r.weak_get_active_shard_membership(shard).await.unwrap()
     }
 
     async fn remote_replace(
