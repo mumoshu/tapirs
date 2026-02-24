@@ -8,7 +8,7 @@ use std::net::TcpStream;
 pub struct HttpShardManagerClient {
     addr: std::net::SocketAddr,
     #[cfg(feature = "tls")]
-    tls_connector: Option<tapirs::tls::ReloadableTlsConnector>,
+    tls_connector: Option<crate::tls::ReloadableTlsConnector>,
 }
 
 #[derive(Deserialize)]
@@ -38,7 +38,7 @@ impl HttpShardManagerClient {
     #[cfg(feature = "tls")]
     pub fn new_with_tls(
         shard_manager_url: &str,
-        tls_connector: tapirs::tls::ReloadableTlsConnector,
+        tls_connector: crate::tls::ReloadableTlsConnector,
     ) -> Self {
         let mut client = Self::new(shard_manager_url);
         client.tls_connector = Some(tls_connector);

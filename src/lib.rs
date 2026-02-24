@@ -6,6 +6,7 @@ mod mvcc;
 pub mod node;
 mod occ;
 mod rng;
+pub mod shard_manager_api;
 mod tapir;
 #[cfg(feature = "tls")]
 pub mod tls;

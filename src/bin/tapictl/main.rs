@@ -1,7 +1,5 @@
-mod shard_manager_client;
-
 use clap::{Parser, Subcommand};
-use shard_manager_client::HttpShardManagerClient;
+use tapirs::shard_manager_api::HttpShardManagerClient;
 use std::path::PathBuf;
 
 /// Shared TLS CLI flags for mTLS certificate configuration.
