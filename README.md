@@ -43,4 +43,4 @@ Full documentation: [docs/](docs/README.md) · [Roadmap](docs/roadmap.md) · [Hi
 
 Protocol complete and verified by deterministic simulation testing and Jepsen-compatible linearizability checks. Production hardening is ongoing. See [Roadmap](docs/roadmap.md) for what's planned next.
 
-Built by [@mumoshu](https://github.com/mumoshu), extended from [tapi-rs](https://github.com/finnbear/tapi-rs) by Finn Bear. See [History](docs/history.md).
+Built by [@mumoshu](https://github.com/mumoshu), extended from [tapi-rs](https://github.com/finnbear/tapi-rs) by Finn Bear, implementing the protocol from the [original TAPIR research](https://github.com/UWSysLab/tapir) by Irene Zhang, Dan Ports, et al. See [History](docs/history.md).

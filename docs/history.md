@@ -5,20 +5,23 @@
 <!-- Current tapirs:     fabf61c2e21e29b0da095b6847c687b91e0f130e -->
 
 ```
- 2023                     2025─2026                                   2026
-───────────────────────────────────────────────────────────────────────────
-  [tapi-rs]             [377 commits]                             [tapirs]
-  Foundation:           Extensions:                                Result:
-  IR consensus,         WiscKey-inspired replica storage,           Production-grade
-  TAPIR txns,           range scan, online resharding, CDC,        transactional KV
-  OCC, MVCC,            discovery, CLI, Docker,                    with linearizable
-  channel transport     K8s operator, TLS, sim testing             transactions
-───────────────────────────────────────────────────────────────────────────
+ 2014─2015              2023                     2025─2026                                   2026
+─────────────────────────────────────────────────────────────────────────────────────────────────────
+  [UWSysLab/tapir]       [tapi-rs]             [377 commits]                             [tapirs]
+  Research C++:          Foundation:           Extensions:                                Result:
+  IR consensus,          Async Rust port,      WiscKey-inspired replica storage,           Production-grade
+  TAPIR txns,            IR consensus,         range scan, online resharding, CDC,        transactional KV
+  OCC, NFS/YCSB          TAPIR txns,           discovery, CLI, Docker,                    with linearizable
+  benchmarks             OCC, MVCC,            K8s operator, TLS, sim testing             transactions
+                         channel transport
+─────────────────────────────────────────────────────────────────────────────────────────────────────
 ```
 
 ## Origin
 
 tapirs is built by [Yusuke Kuoka](https://github.com/mumoshu) ([@mumoshu](https://github.com/mumoshu)), starting from a fork of [tapi-rs](https://github.com/finnbear/tapi-rs) by Finn Bear.
+
+The TAPIR protocol was designed at the University of Washington Systems Lab by Irene Zhang, Naveen Kr. Sharma, Adriana Szekeres, Arvind Krishnamurthy, and Dan Ports. Their [C++ research implementation](https://github.com/UWSysLab/tapir) demonstrated IR consensus and TAPIR transactions with NFS and YCSB benchmarks. The [paper](https://syslab.cs.washington.edu/papers/tapir-tr-v2.pdf) was published at SOSP 2015.
 
 The original tapi-rs was a clean Rust implementation of the TAPIR protocol's core transaction lifecycle (get, put, prepare, commit, abort) with IR consensus, view changes, and recovery.
 
