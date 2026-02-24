@@ -19,7 +19,7 @@ type DiscTapirDir =
 
 /// Pin K=String so method calls are unambiguous (TapirRemoteShardDirectory
 /// implements RemoteShardDirectory for all K). String matches what
-/// publish_route_changes stores in key_range fields.
+/// strong_atomic_update_shards stores in key_range fields.
 fn disc(c: DiscTapirDir) -> impl RemoteShardDirectory<TcpAddress, String> {
     c
 }

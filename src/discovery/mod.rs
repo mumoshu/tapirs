@@ -19,7 +19,7 @@ use crate::{IrMembership, KeyRange, ShardNumber};
 /// never see intermediate states with overlapping key ranges.
 ///
 /// `ActivateShard` includes the shard's membership and view so that
-/// `publish_route_changes` can atomically update both the route changelog
+/// `strong_atomic_update_shards` can atomically update both the route changelog
 /// and the shard membership entries in a single write.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -106,16 +106,15 @@ pub trait RemoteShardDirectory<A: Clone + Send + Sync + 'static, K: Clone + Send
            + Send
            + '_;
 
-    /// Publish an atomic set of route changes (additions and removals).
+    /// Atomically update shard entries and the route changelog.
     ///
-    /// Atomically updates both the route changelog (for consumers polling via
-    /// [`weak_route_changes_since`]) and the shard membership entries. `ActivateShard`
-    /// puts the shard with its membership/view; `TombstoneShard` tombstones it.
-    ///
-    /// Each changeset is indexed sequentially (1-based).
+    /// Applies `ActivateShard` (puts the shard with membership/view) and
+    /// `TombstoneShard` (tombstones it) changes. Each changeset is indexed
+    /// sequentially (1-based) for consumers polling via
+    /// [`weak_route_changes_since`].
     ///
     /// Default: no-op. Implementations that support route changelog override this.
-    fn strong_publish_route_changes(
+    fn strong_atomic_update_shards(
         &self,
         _changes: Vec<ShardDirectoryChange<K, A>>,
     ) -> impl std::future::Future<Output = Result<(), DiscoveryError>> + Send + '_ {

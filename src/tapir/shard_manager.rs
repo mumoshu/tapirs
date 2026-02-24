@@ -157,7 +157,7 @@ impl<
         membership: IrMembership<T::Address>,
         key_range: KeyRange<K>,
     ) {
-        let _ = self.remote.strong_publish_route_changes(vec![
+        let _ = self.remote.strong_atomic_update_shards(vec![
             ShardDirectoryChange::ActivateShard {
                 shard,
                 range: key_range.clone(),

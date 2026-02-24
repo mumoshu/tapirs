@@ -293,11 +293,11 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         // Publish routing after drain + transfer + unfreeze. Both shards
         // are fully ready: source handles narrowed range, new shard handles
         // the split-off range with all committed data + read protection.
-        // Single publish_route_changes atomically updates both shards'
+        // Single strong_atomic_update_shards atomically updates both shards'
         // key ranges and registers the new shard's membership.
         self.report_progress("split:publish-route");
         let source_membership = self.shards[&source].membership.clone();
-        let _ = self.remote.strong_publish_route_changes(vec![
+        let _ = self.remote.strong_atomic_update_shards(vec![
             ShardDirectoryChange::ActivateShard {
                 shard: source,
                 range: narrowed_range,
@@ -535,9 +535,9 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         }
 
         // Publish route change: tombstone absorbed, set surviving's merged range.
-        // Single publish_route_changes atomically updates both.
+        // Single strong_atomic_update_shards atomically updates both.
         let surviving_membership = self.shards[&surviving].membership.clone();
-        let _ = self.remote.strong_publish_route_changes(vec![
+        let _ = self.remote.strong_atomic_update_shards(vec![
             ShardDirectoryChange::TombstoneShard { shard: absorbed },
             ShardDirectoryChange::ActivateShard {
                 shard: surviving,
@@ -914,13 +914,13 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         self.transfer_read_protection(source, new_shard).await;
 
         // Phase 3c: Atomic swap — source disappears, new shard appears in all
-        // directories simultaneously. Single publish_route_changes atomically
+        // directories simultaneously. Single strong_atomic_update_shards atomically
         // tombstones the source shard and registers the new shard with its
         // membership, key range, and changelog entry.
-        eprintln!("[compact] phase 3c: decommission (publish_route_changes)");
+        eprintln!("[compact] phase 3c: decommission (strong_atomic_update_shards)");
         self.report_progress("compact:decommission");
         let source_range = self.shards[&new_shard].key_range.clone();
-        let _ = self.remote.strong_publish_route_changes(vec![
+        let _ = self.remote.strong_atomic_update_shards(vec![
             ShardDirectoryChange::TombstoneShard { shard: source },
             ShardDirectoryChange::ActivateShard {
                 shard: new_shard,

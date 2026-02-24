@@ -262,7 +262,7 @@ async fn handle_request(
         };
         tracing::info!(?shard, ?key_range, "register: acquiring manager lock");
         let mut manager = state.manager.lock().await;
-        tracing::info!(?shard, "register: calling register_shard (publish_route_changes)");
+        tracing::info!(?shard, "register: calling register_shard (strong_atomic_update_shards)");
         manager.register_shard(shard, membership, key_range).await;
         drop(manager);
         tracing::info!(?shard, "register: completed successfully");

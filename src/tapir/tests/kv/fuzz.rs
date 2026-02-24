@@ -555,7 +555,7 @@ async fn fuzz_tapir_transactions_inner(seed: u64) {
 
     // Spawn background route-update task: poll CachingShardDirectory for key_range
     // changes and update the DynamicRouter. When ShardManager publishes route
-    // changes via publish_route_changes(), the CachingShardDirectory's next PULL
+    // changes via strong_atomic_update_shards(), the CachingShardDirectory's next PULL
     // cycle (≤200ms) picks them up, and this task propagates them to the router —
     // allowing clients to route to the new shard during the drain window.
     let route_poll_caching = Arc::clone(&client_cachings[0]);

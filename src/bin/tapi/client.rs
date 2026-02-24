@@ -266,7 +266,7 @@ async fn load_tapir_discovery(
     };
 
     // Replay the full route changelog to extract current key range
-    // assignments. publish_route_changes() writes atomic changesets during
+    // assignments. strong_atomic_update_shards() writes atomic changesets during
     // register_shard/split/merge/compact — replaying from index 0 gives us
     // the latest key ranges.
     //

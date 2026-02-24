@@ -104,16 +104,16 @@ impl RemoteShardDirectory<TcpAddress, String> for DiscoveryBackend {
         }
     }
 
-    async fn strong_publish_route_changes(
+    async fn strong_atomic_update_shards(
         &self,
         changes: Vec<ShardDirectoryChange<String, TcpAddress>>,
     ) -> Result<(), DiscoveryError> {
         match self {
             Self::Json(c) => {
-                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::strong_publish_route_changes(c, changes).await
+                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::strong_atomic_update_shards(c, changes).await
             }
             Self::Tapir(c) => {
-                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::strong_publish_route_changes(c, changes).await
+                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::strong_atomic_update_shards(c, changes).await
             }
         }
     }

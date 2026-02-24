@@ -42,7 +42,7 @@ struct ShardRecord<K> {
     membership: Vec<String>,
     view: u64,
     status: ShardStatus,
-    /// Typed key range (set by `publish_route_changes`, absent from `put`).
+    /// Typed key range (set by `strong_atomic_update_shards`, absent from `put`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     key_range: Option<KeyRange<K>>,
 }
@@ -541,23 +541,23 @@ where
         ))
     }
 
-    async fn strong_publish_route_changes(
+    async fn strong_atomic_update_shards(
         &self,
         changes: Vec<ShardDirectoryChange<K, A>>,
     ) -> Result<(), DiscoveryError> {
-        tracing::debug!(num_changes = changes.len(), "publish_route_changes: starting");
+        tracing::debug!(num_changes = changes.len(), "atomic_update_shards: starting");
         let changeset_json = serde_json::to_string(&changes)
             .map_err(|e| DiscoveryError::InvalidResponse(format!("serialize changeset: {e}")))?;
 
         // Consistent pre-read of last index.
-        tracing::debug!("publish_route_changes: reading last index");
+        tracing::debug!("atomic_update_shards: reading last index");
         let current_idx: u64 = match self.read_raw(ROUTE_CHANGE_LAST_INDEX).await? {
             Some(s) => s.parse().unwrap_or(0),
             None => 0,
         };
         let new_idx = current_idx + 1;
         let idx_key = route_change_key(new_idx);
-        tracing::debug!(current_idx, new_idx, "publish_route_changes: last index read ok");
+        tracing::debug!(current_idx, new_idx, "atomic_update_shards: last index read ok");
 
         // Pre-read shard entries and build JSON for each change.
         let mut shard_writes: Vec<(String, String)> = Vec::new();
@@ -565,7 +565,7 @@ where
             match change {
                 ShardDirectoryChange::ActivateShard { shard, range, membership, view } => {
                     let key = shard_key(*shard);
-                    tracing::debug!(%key, ?shard, "publish_route_changes: pre-reading shard entry");
+                    tracing::debug!(%key, ?shard, "atomic_update_shards: pre-reading shard entry");
                     if let Some(json) = self.read_raw(&key).await? {
                         let record = parse_record::<K>(&json)?;
                         if record.status == ShardStatus::Tombstoned {
@@ -599,18 +599,18 @@ where
         }
 
         for _attempt in 0..5 {
-            tracing::debug!(_attempt, "publish_route_changes: starting txn attempt");
+            tracing::debug!(_attempt, "atomic_update_shards: starting txn attempt");
             let txn = self.client.begin();
 
             // OCC-track the last-index key.
-            tracing::debug!("publish_route_changes: txn get(last_index)");
+            tracing::debug!("atomic_update_shards: txn get(last_index)");
             let _ = txn
                 .get(ROUTE_CHANGE_LAST_INDEX.to_string())
                 .await
                 .map_err(|e| DiscoveryError::ConnectionFailed(format!("{e:?}")))?;
 
             // OCC-track the changeset key.
-            tracing::debug!(%idx_key, "publish_route_changes: txn get(changeset_key)");
+            tracing::debug!(%idx_key, "atomic_update_shards: txn get(changeset_key)");
             let _ = txn
                 .get(idx_key.clone())
                 .await
@@ -624,7 +624,7 @@ where
 
             // Shard entry writes in the same transaction.
             for (key, json) in &shard_writes {
-                tracing::debug!(%key, "publish_route_changes: txn get(shard_key)");
+                tracing::debug!(%key, "atomic_update_shards: txn get(shard_key)");
                 let _ = txn
                     .get(key.clone())
                     .await
@@ -632,18 +632,18 @@ where
                 txn.put(key.clone(), Some(json.clone()));
             }
 
-            tracing::debug!("publish_route_changes: committing txn");
+            tracing::debug!("atomic_update_shards: committing txn");
             if txn.commit().await.is_some() {
-                tracing::debug!("publish_route_changes: txn committed successfully");
+                tracing::debug!("atomic_update_shards: txn committed successfully");
                 tokio::task::yield_now().await;
                 tokio::time::sleep(std::time::Duration::from_millis(1)).await;
                 return Ok(());
             }
-            tracing::debug!(_attempt, "publish_route_changes: txn commit failed, retrying");
+            tracing::debug!(_attempt, "atomic_update_shards: txn commit failed, retrying");
         }
 
         Err(DiscoveryError::ConnectionFailed(
-            "publish_route_changes failed after retries".to_string(),
+            "atomic_update_shards failed after retries".to_string(),
         ))
     }
 
