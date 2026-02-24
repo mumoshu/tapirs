@@ -274,7 +274,7 @@ fn make_sm_client(url: &str, #[cfg(feature = "tls")] tls: &TlsArgs) -> HttpShard
         };
         let connector = tapirs::tls::ReloadableTlsConnector::new(&tls_config)
             .unwrap_or_else(|e| panic!("TLS config error: {e}"));
-        return HttpShardManagerClient::new_with_tls(url, connector);
+        return HttpShardManagerClient::with_tls(url, connector, tls.tls_server_name.clone());
     }
     HttpShardManagerClient::new(url)
 }
