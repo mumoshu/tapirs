@@ -1,4 +1,4 @@
-.PHONY: test lint lock_server_stress_test coordinator_failure_stress_test_3 coordinator_failure_stress_test_7 bench fuzz fuzz100 maelstrom ci ci-full ci/operator-lint ci/operator-test ci/testbed-kube-operator ci/testbed-kube-operator-tls ci/testbed-kube ci/testbed-solo ci/testbed ci/fuzz-diagnose ci/fuzz-multi-seed
+.PHONY: test lint lock_server_stress_test coordinator_failure_stress_test_3 coordinator_failure_stress_test_7 bench fuzz fuzz100 maelstrom ci ci-full ci/operator-lint ci/operator-test ci/testbed-kube-operator ci/testbed-kube-operator-tls ci/testbed-kube ci/testbed-docker-compose ci/testbed-solo ci/testbed ci/fuzz-diagnose ci/fuzz-multi-seed
 
 lint:
 	cargo clippy --workspace --all-targets -- -D warnings -D clippy::iter_over_hash_type && ./scripts/check-determinism.sh
@@ -79,7 +79,10 @@ ci/testbed-kube:
 ci/testbed-solo:
 	scripts/testbed-solo.sh up && scripts/testbed-solo.sh down || { scripts/testbed-solo.sh down; exit 1; }
 
-ci/testbed: ci/testbed-solo ci/testbed-kube ci/testbed-kube-operator ci/testbed-kube-operator-tls
+ci/testbed-docker-compose:
+	scripts/testbed-docker-compose.sh up && scripts/testbed-docker-compose.sh down || { scripts/testbed-docker-compose.sh down; exit 1; }
+
+ci/testbed: ci/testbed-solo ci/testbed-docker-compose ci/testbed-kube ci/testbed-kube-operator ci/testbed-kube-operator-tls
 	@echo "All testbed checks passed."
 
 ci/fuzz-diagnose:

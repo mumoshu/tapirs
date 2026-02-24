@@ -1,0 +1,51 @@
+name: Testbed Docker Compose
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'scripts/testbed-docker-compose.sh'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'Makefile'
+      - 'Dockerfile'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'scripts/testbed-docker-compose.sh'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'Makefile'
+      - 'Dockerfile'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  testbed-docker-compose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.0
+      - name: Run testbed-docker-compose
+        run: make ci/testbed-docker-compose
+      - name: Collect logs
+        if: failure()
+        run: |
+          mkdir -p /tmp/ci-logs
+          cp .tapiadm/*.log /tmp/ci-logs/ 2>/dev/null || true
+          cp .tapiadm/*.toml /tmp/ci-logs/ 2>/dev/null || true
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: testbed-docker-compose-logs
+          path: /tmp/ci-logs/
+          retention-days: 14
