@@ -98,12 +98,18 @@ where
 }
 
 impl<A: Clone + Send + Sync + 'static, K: Clone + Send + Sync + 'static> RemoteShardDirectory<A, K> for JsonRemoteShardDirectory<A> {
+    /// JSON config backend does not support single-shard membership lookup.
+    ///
+    /// Returns an error to verify the assumption that this method is never
+    /// called on `JsonRemoteShardDirectory`. Use `weak_all_active_shard_view_memberships`
+    /// for bulk reads instead.
     async fn weak_get_active_shard_membership(
         &self,
-        shard: ShardNumber,
+        _shard: ShardNumber,
     ) -> Result<Option<(IrMembership<A>, u64)>, DiscoveryError> {
-        let state = self.state.read().unwrap();
-        Ok(state.get(&shard).map(|m| (m.clone(), 0)))
+        Err(DiscoveryError::ConnectionFailed(
+            "JsonRemoteShardDirectory does not support weak_get_active_shard_membership".into(),
+        ))
     }
 
     /// No-op — JSON config is the authoritative source.
