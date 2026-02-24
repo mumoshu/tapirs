@@ -107,7 +107,7 @@ impl<A: Clone + Send + Sync + 'static, K: Clone + Send + Sync + 'static> RemoteS
     }
 
     /// No-op — JSON config is the authoritative source.
-    async fn put(
+    async fn strong_put(
         &self,
         _shard: ShardNumber,
         _membership: IrMembership<A>,
@@ -117,7 +117,7 @@ impl<A: Clone + Send + Sync + 'static, K: Clone + Send + Sync + 'static> RemoteS
     }
 
     /// No-op — JSON config is the authoritative source.
-    async fn remove(&self, _shard: ShardNumber) -> Result<(), DiscoveryError> {
+    async fn strong_remove(&self, _shard: ShardNumber) -> Result<(), DiscoveryError> {
         Ok(())
     }
 
@@ -135,7 +135,7 @@ impl<A: Clone + Send + Sync + 'static, K: Clone + Send + Sync + 'static> RemoteS
     }
 
     /// No-op — JSON config is the authoritative source.
-    async fn replace(
+    async fn strong_replace(
         &self,
         _old: ShardNumber,
         _new: ShardNumber,

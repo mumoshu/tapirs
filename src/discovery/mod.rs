@@ -65,9 +65,13 @@ impl std::error::Error for DiscoveryError {}
 
 /// Async interface to a remote shard directory service.
 ///
-/// Mirrors [`ShardDirectory`] with the same method names (`put`, `remove`,
-/// `all`, `replace`) but with async operations and error handling, for
-/// network-based directory backends (HTTP discovery, etc.).
+/// Async counterpart of [`ShardDirectory`] for network-based directory
+/// backends (TAPIR discovery cluster, HTTP, etc.).
+///
+/// Write methods are prefixed with `strong_` — they always use quorum
+/// writes (RW transactions) for strong consistency. Read methods are
+/// prefixed with `weak_` — all current callers use eventual consistency
+/// (unlogged reads to 1 replica, retried until convergence).
 ///
 /// Uses RPITIT (`impl Future`) — no dynamic dispatch. All consumers are generic
 /// over `T: RemoteShardDirectory<A>`.
@@ -79,14 +83,14 @@ pub trait RemoteShardDirectory<A: Clone + Send + Sync + 'static, K: Clone + Send
            + Send
            + '_;
 
-    fn put(
+    fn strong_put(
         &self,
         shard: ShardNumber,
         membership: IrMembership<A>,
         view: u64,
     ) -> impl std::future::Future<Output = Result<(), DiscoveryError>> + Send + '_;
 
-    fn remove(
+    fn strong_remove(
         &self,
         shard: ShardNumber,
     ) -> impl std::future::Future<Output = Result<(), DiscoveryError>> + Send + '_;
@@ -100,13 +104,13 @@ pub trait RemoteShardDirectory<A: Clone + Send + Sync + 'static, K: Clone + Send
     /// Publish an atomic set of route changes (additions and removals).
     ///
     /// Atomically updates both the route changelog (for consumers polling via
-    /// [`route_changes_since`]) and the shard membership entries. `SetRange`
+    /// [`weak_route_changes_since`]) and the shard membership entries. `SetRange`
     /// puts the shard with its membership/view; `RemoveRange` tombstones it.
     ///
     /// Each changeset is indexed sequentially (1-based).
     ///
     /// Default: no-op. Implementations that support route changelog override this.
-    fn publish_route_changes(
+    fn strong_publish_route_changes(
         &self,
         _changes: Vec<ShardDirectoryChange<K, A>>,
     ) -> impl std::future::Future<Output = Result<(), DiscoveryError>> + Send + '_ {
@@ -130,9 +134,9 @@ pub trait RemoteShardDirectory<A: Clone + Send + Sync + 'static, K: Clone + Send
 
     /// Atomically replace one shard with another.
     ///
-    /// Default: non-atomic `remove` + `put`. Implementations should override
-    /// for true atomicity.
-    fn replace(
+    /// Default: non-atomic `strong_remove` + `strong_put`. Implementations
+    /// should override for true atomicity.
+    fn strong_replace(
         &self,
         old: ShardNumber,
         new: ShardNumber,
@@ -140,8 +144,8 @@ pub trait RemoteShardDirectory<A: Clone + Send + Sync + 'static, K: Clone + Send
         view: u64,
     ) -> impl std::future::Future<Output = Result<(), DiscoveryError>> + Send + '_ {
         async move {
-            let _ = self.remove(old).await;
-            self.put(new, membership, view).await
+            let _ = self.strong_remove(old).await;
+            self.strong_put(new, membership, view).await
         }
     }
 }
@@ -404,7 +408,7 @@ where
                 let own = dir.own_shards.read().unwrap().clone();
                 for (shard, membership, local_view) in dir.local.all() {
                     if own.contains(&shard) {
-                        let _ = dir.remote.put(shard, membership, local_view).await;
+                        let _ = dir.remote.strong_put(shard, membership, local_view).await;
                     }
                 }
             }
@@ -649,7 +653,7 @@ mod tests {
         membership: IrMembership<usize>,
         view: u64,
     ) {
-        r.put(shard, membership, view).await.unwrap();
+        r.strong_put(shard, membership, view).await.unwrap();
     }
 
     async fn remote_get(
@@ -666,7 +670,7 @@ mod tests {
         membership: IrMembership<usize>,
         view: u64,
     ) {
-        r.replace(old, new, membership, view).await.unwrap();
+        r.strong_replace(old, new, membership, view).await.unwrap();
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]

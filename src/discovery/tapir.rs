@@ -340,7 +340,7 @@ where
         }
     }
 
-    async fn put(
+    async fn strong_put(
         &self,
         shard: ShardNumber,
         membership: IrMembership<A>,
@@ -393,7 +393,7 @@ where
         ))
     }
 
-    async fn remove(&self, shard: ShardNumber) -> Result<(), DiscoveryError> {
+    async fn strong_remove(&self, shard: ShardNumber) -> Result<(), DiscoveryError> {
         let key = shard_key(shard);
 
         // Consistent pre-read to verify shard exists and isn't tombstoned.
@@ -484,7 +484,7 @@ where
         Ok(result)
     }
 
-    async fn replace(
+    async fn strong_replace(
         &self,
         old: ShardNumber,
         new: ShardNumber,
@@ -537,7 +537,7 @@ where
         ))
     }
 
-    async fn publish_route_changes(
+    async fn strong_publish_route_changes(
         &self,
         changes: Vec<ShardDirectoryChange<K, A>>,
     ) -> Result<(), DiscoveryError> {
@@ -689,16 +689,16 @@ mod tests {
 
     // Helpers to bind K=() for the blanket RemoteShardDirectory impl.
     async fn put(dir: &impl RemoteShardDirectory<usize, ()>, shard: ShardNumber, membership: IrMembership<usize>, view: u64) -> Result<(), DiscoveryError> {
-        dir.put(shard, membership, view).await
+        dir.strong_put(shard, membership, view).await
     }
     async fn get(dir: &impl RemoteShardDirectory<usize, ()>, shard: ShardNumber) -> Result<Option<(IrMembership<usize>, u64)>, DiscoveryError> {
         dir.get(shard).await
     }
     async fn remove(dir: &impl RemoteShardDirectory<usize, ()>, shard: ShardNumber) -> Result<(), DiscoveryError> {
-        dir.remove(shard).await
+        dir.strong_remove(shard).await
     }
     async fn replace(dir: &impl RemoteShardDirectory<usize, ()>, old: ShardNumber, new: ShardNumber, membership: IrMembership<usize>, view: u64) -> Result<(), DiscoveryError> {
-        dir.replace(old, new, membership, view).await
+        dir.strong_replace(old, new, membership, view).await
     }
     async fn all(dir: &impl RemoteShardDirectory<usize, ()>) -> Result<Vec<(ShardNumber, IrMembership<usize>, u64)>, DiscoveryError> {
         dir.all().await

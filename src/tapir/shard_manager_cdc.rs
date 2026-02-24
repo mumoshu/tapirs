@@ -297,7 +297,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         // key ranges and registers the new shard's membership.
         self.report_progress("split:publish-route");
         let source_membership = self.shards[&source].membership.clone();
-        let _ = self.remote.publish_route_changes(vec![
+        let _ = self.remote.strong_publish_route_changes(vec![
             ShardDirectoryChange::SetRange {
                 shard: source,
                 range: narrowed_range,
@@ -537,7 +537,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         // Publish route change: tombstone absorbed, set surviving's merged range.
         // Single publish_route_changes atomically updates both.
         let surviving_membership = self.shards[&surviving].membership.clone();
-        let _ = self.remote.publish_route_changes(vec![
+        let _ = self.remote.strong_publish_route_changes(vec![
             ShardDirectoryChange::RemoveRange { shard: absorbed },
             ShardDirectoryChange::SetRange {
                 shard: surviving,
@@ -920,7 +920,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         eprintln!("[compact] phase 3c: decommission (publish_route_changes)");
         self.report_progress("compact:decommission");
         let source_range = self.shards[&new_shard].key_range.clone();
-        let _ = self.remote.publish_route_changes(vec![
+        let _ = self.remote.strong_publish_route_changes(vec![
             ShardDirectoryChange::RemoveRange { shard: source },
             ShardDirectoryChange::SetRange {
                 shard: new_shard,

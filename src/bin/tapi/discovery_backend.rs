@@ -33,7 +33,7 @@ impl RemoteShardDirectory<TcpAddress, String> for DiscoveryBackend {
         }
     }
 
-    async fn put(
+    async fn strong_put(
         &self,
         shard: ShardNumber,
         membership: IrMembership<TcpAddress>,
@@ -41,13 +41,13 @@ impl RemoteShardDirectory<TcpAddress, String> for DiscoveryBackend {
     ) -> Result<(), DiscoveryError> {
         match self {
             Self::Json(c) => {
-                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::put(
+                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::strong_put(
                     c, shard, membership, view,
                 )
                 .await
             }
             Self::Tapir(c) => {
-                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::put(
+                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::strong_put(
                     c, shard, membership, view,
                 )
                 .await
@@ -55,14 +55,14 @@ impl RemoteShardDirectory<TcpAddress, String> for DiscoveryBackend {
         }
     }
 
-    async fn remove(&self, shard: ShardNumber) -> Result<(), DiscoveryError> {
+    async fn strong_remove(&self, shard: ShardNumber) -> Result<(), DiscoveryError> {
         match self {
             Self::Json(c) => {
-                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::remove(c, shard)
+                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::strong_remove(c, shard)
                     .await
             }
             Self::Tapir(c) => {
-                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::remove(c, shard)
+                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::strong_remove(c, shard)
                     .await
             }
         }
@@ -81,7 +81,7 @@ impl RemoteShardDirectory<TcpAddress, String> for DiscoveryBackend {
         }
     }
 
-    async fn replace(
+    async fn strong_replace(
         &self,
         old: ShardNumber,
         new: ShardNumber,
@@ -90,13 +90,13 @@ impl RemoteShardDirectory<TcpAddress, String> for DiscoveryBackend {
     ) -> Result<(), DiscoveryError> {
         match self {
             Self::Json(c) => {
-                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::replace(
+                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::strong_replace(
                     c, old, new, membership, view,
                 )
                 .await
             }
             Self::Tapir(c) => {
-                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::replace(
+                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::strong_replace(
                     c, old, new, membership, view,
                 )
                 .await
@@ -104,16 +104,16 @@ impl RemoteShardDirectory<TcpAddress, String> for DiscoveryBackend {
         }
     }
 
-    async fn publish_route_changes(
+    async fn strong_publish_route_changes(
         &self,
         changes: Vec<ShardDirectoryChange<String, TcpAddress>>,
     ) -> Result<(), DiscoveryError> {
         match self {
             Self::Json(c) => {
-                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::publish_route_changes(c, changes).await
+                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::strong_publish_route_changes(c, changes).await
             }
             Self::Tapir(c) => {
-                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::publish_route_changes(c, changes).await
+                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::strong_publish_route_changes(c, changes).await
             }
         }
     }

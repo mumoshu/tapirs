@@ -157,7 +157,7 @@ impl<
         membership: IrMembership<T::Address>,
         key_range: KeyRange<K>,
     ) {
-        let _ = self.remote.publish_route_changes(vec![
+        let _ = self.remote.strong_publish_route_changes(vec![
             ShardDirectoryChange::SetRange {
                 shard,
                 range: key_range.clone(),
@@ -223,7 +223,7 @@ impl<
         membership: IrMembership<T::Address>,
     ) {
         self.shards.remove(&old);
-        let _ = self.remote.replace(old, new, membership, 0).await;
+        let _ = self.remote.strong_replace(old, new, membership, 0).await;
     }
 
     /// Removes shard from local registry and tombstones in remote
@@ -233,7 +233,7 @@ impl<
     /// Push-Pull Cycles".
     pub async fn deregister_shard(&mut self, shard: ShardNumber) {
         self.shards.remove(&shard);
-        let _ = self.remote.remove(shard).await;
+        let _ = self.remote.strong_remove(shard).await;
     }
 
     pub fn shard_client(&self, shard: ShardNumber) -> Option<&ShardClient<K, V, T>> {
