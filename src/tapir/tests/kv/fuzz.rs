@@ -1111,7 +1111,7 @@ async fn fuzz_tapir_transactions_inner(seed: u64) {
     eprintln!("fuzz: verifying cluster_remote shards (seed={seed})");
 
     // Verify cluster_remote has all active shards.
-    use crate::discovery::RemoteShardDirectory;
+    use crate::discovery::{RemoteShardDirectory, ShardStatus};
     {
         let active_shards = final_shards.lock().unwrap().clone();
         if let Some(ref shard_entries) = active_shards {
@@ -1121,10 +1121,17 @@ async fn fuzz_tapir_transactions_inner(seed: u64) {
                 eprintln!("fuzz: checking cluster_remote shard {:?} (seed={seed})", entry.shard);
                 let result = timeout(
                     Duration::from_secs(5),
-                    RemoteShardDirectory::<usize, i64>::weak_get_active_shard_membership(&*cluster_remote, entry.shard),
+                    RemoteShardDirectory::<usize, i64>::strong_get_shard(&*cluster_remote, entry.shard),
                 ).await;
                 match result {
-                    Ok(Ok(Some(_))) => {
+                    Ok(Ok(Some(record))) => {
+                        assert_eq!(
+                            record.status,
+                            ShardStatus::Active,
+                            "shard {:?} should be Active but is {:?} (seed={seed})",
+                            entry.shard,
+                            record.status,
+                        );
                         event_log.record(FuzzEvent::VerifyClusterRemoteShardOk {
                             shard: entry.shard.0,
                             wall_ms: shard_wall_start.elapsed().as_millis(),
@@ -1167,10 +1174,16 @@ async fn fuzz_tapir_transactions_inner(seed: u64) {
                 let shard_num = ShardNumber(s);
                 let result = timeout(
                     Duration::from_secs(5),
-                    RemoteShardDirectory::<usize, i64>::weak_get_active_shard_membership(&*cluster_remote, shard_num),
+                    RemoteShardDirectory::<usize, i64>::strong_get_shard(&*cluster_remote, shard_num),
                 ).await;
                 match result {
-                    Ok(Ok(Some(_))) => {
+                    Ok(Ok(Some(record))) => {
+                        assert_eq!(
+                            record.status,
+                            ShardStatus::Active,
+                            "shard {s} should be Active but is {:?} (seed={seed})",
+                            record.status,
+                        );
                         event_log.record(FuzzEvent::VerifyClusterRemoteShardOk {
                             shard: s,
                             wall_ms: shard_wall_start.elapsed().as_millis(),

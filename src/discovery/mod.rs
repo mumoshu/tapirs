@@ -86,18 +86,18 @@ impl std::error::Error for DiscoveryError {}
 /// Async counterpart of [`ShardDirectory`] for network-based directory
 /// backends (TAPIR discovery cluster, HTTP, etc.).
 ///
-/// Write methods are prefixed with `strong_` — they always use quorum
-/// writes (RW transactions) for strong consistency. Read methods are
-/// prefixed with `weak_` — all current callers use eventual consistency
-/// (unlogged reads to 1 replica, retried until convergence).
+/// Methods prefixed with `strong_` use quorum operations for strong
+/// consistency — `strong_get_shard` uses RO transactions (linearizable
+/// reads), and write methods use RW transactions. Methods prefixed with
+/// `weak_` use eventual consistency (unlogged reads to 1 replica).
 ///
 /// Uses RPITIT (`impl Future`) — no dynamic dispatch. All consumers are generic
 /// over `T: RemoteShardDirectory<A>`.
 pub trait RemoteShardDirectory<A: Clone + Send + Sync + 'static, K: Clone + Send + Sync + 'static = ()>: Send + Sync + 'static {
-    fn weak_get_active_shard_membership(
+    fn strong_get_shard(
         &self,
         shard: ShardNumber,
-    ) -> impl std::future::Future<Output = Result<Option<(IrMembership<A>, u64)>, DiscoveryError>>
+    ) -> impl std::future::Future<Output = Result<Option<ShardRecord<A, K>>, DiscoveryError>>
            + Send
            + '_;
 
@@ -651,8 +651,8 @@ mod tests {
     async fn remote_get(
         r: &impl RemoteShardDirectory<usize, ()>,
         shard: ShardNumber,
-    ) -> Option<(IrMembership<usize>, u64)> {
-        r.weak_get_active_shard_membership(shard).await.unwrap()
+    ) -> Option<ShardRecord<usize, ()>> {
+        r.strong_get_shard(shard).await.unwrap()
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
@@ -690,11 +690,11 @@ mod tests {
         // Yield to let the background task run.
         tokio::task::yield_now().await;
 
-        let (pushed, _) = remote_get(&*remote_check, ShardNumber(1)).await.unwrap();
-        assert_eq!(pushed.len(), 3);
-        assert!(pushed.contains(10));
-        assert!(pushed.contains(20));
-        assert!(pushed.contains(30));
+        let pushed = remote_get(&*remote_check, ShardNumber(1)).await.unwrap();
+        assert_eq!(pushed.membership.len(), 3);
+        assert!(pushed.membership.contains(10));
+        assert!(pushed.membership.contains(20));
+        assert!(pushed.membership.contains(30));
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]

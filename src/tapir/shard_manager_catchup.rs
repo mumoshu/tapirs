@@ -1,4 +1,4 @@
-use crate::discovery::RemoteShardDirectory;
+use crate::discovery::{RemoteShardDirectory, ShardStatus};
 use crate::ir::{Record, SharedView, View, ViewNumber};
 use crate::tapir::shard_manager::ShardManager;
 use crate::tapir::{Key, Replica, ShardClient, ShardNumber, Value};
@@ -74,18 +74,24 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         shard: ShardNumber,
         new_address: T::Address,
     ) -> Result<(), String> {
-        let (membership, _view) = self
+        let record = self
             .remote
-            .weak_get_active_shard_membership(shard)
+            .strong_get_shard(shard)
             .await
             .map_err(|e| format!("failed to get shard {shard:?}: {e:?}"))?
             .ok_or_else(|| format!("shard {shard:?} not found in remote directory"))?;
+        if record.status != ShardStatus::Active {
+            return Err(format!(
+                "shard {shard:?} is {:?}, expected Active",
+                record.status
+            ));
+        }
 
         let existing_client = ShardClient::<K, V, T>::new(
             self.rng.fork(),
             IrClientId::new(&mut self.rng),
             shard,
-            membership,
+            record.membership,
             self.transport.clone(),
         );
 
@@ -132,19 +138,25 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         address: T::Address,
     ) -> Result<(), String> {
         eprintln!("[sm.leave] shard={shard:?} address={address:?}");
-        let (membership, _view) = self
+        let record = self
             .remote
-            .weak_get_active_shard_membership(shard)
+            .strong_get_shard(shard)
             .await
             .map_err(|e| format!("failed to get shard {shard:?}: {e:?}"))?
             .ok_or_else(|| format!("shard {shard:?} not found in remote directory"))?;
-        eprintln!("[sm.leave] remote.weak_get_active_shard_membership returned membership len={} view={_view}", membership.len());
+        if record.status != ShardStatus::Active {
+            return Err(format!(
+                "shard {shard:?} is {:?}, expected Active",
+                record.status
+            ));
+        }
+        eprintln!("[sm.leave] remote.strong_get_shard returned membership len={} view={}", record.membership.len(), record.view);
 
         let client = ShardClient::<K, V, T>::new(
             self.rng.fork(),
             IrClientId::new(&mut self.rng),
             shard,
-            membership,
+            record.membership,
             self.transport.clone(),
         );
         eprintln!("[sm.leave] broadcasting RemoveMember({address:?})");

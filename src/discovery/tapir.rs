@@ -346,18 +346,28 @@ where
     K: Clone + std::fmt::Debug + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
     T: TapirTransport<String, String>,
 {
-    async fn weak_get_active_shard_membership(
+    async fn strong_get_shard(
         &self,
         shard: ShardNumber,
-    ) -> Result<Option<(IrMembership<A>, u64)>, DiscoveryError> {
-        match self.read_raw(&shard_key(shard)).await? {
+    ) -> Result<Option<crate::discovery::ShardRecord<A, K>>, DiscoveryError> {
+        let key = shard_key(shard);
+        // Always use linearizable read (RO transaction) regardless of ReadMode.
+        let _sc = self.current_shard_client();
+        let ro = self.client.begin_read_only();
+        let json = ro
+            .get(key)
+            .await
+            .map_err(|e| DiscoveryError::ConnectionFailed(format!("{e:?}")))?;
+        match json {
             Some(json) => {
                 let record = parse_record::<K>(&json)?;
-                if record.status != ShardStatus::Active {
-                    return Ok(None);
-                }
                 let membership = parse_membership_from(&record)?;
-                Ok(Some((membership, record.view)))
+                Ok(Some(crate::discovery::ShardRecord {
+                    membership,
+                    view: record.view,
+                    status: record.status,
+                    key_range: record.key_range,
+                }))
             }
             None => Ok(None),
         }
@@ -615,8 +625,8 @@ mod tests {
     async fn put(dir: &impl RemoteShardDirectory<usize, ()>, shard: ShardNumber, membership: IrMembership<usize>, view: u64) -> Result<(), DiscoveryError> {
         dir.strong_put_active_shard_view_membership(shard, membership, view).await
     }
-    async fn get(dir: &impl RemoteShardDirectory<usize, ()>, shard: ShardNumber) -> Result<Option<(IrMembership<usize>, u64)>, DiscoveryError> {
-        dir.weak_get_active_shard_membership(shard).await
+    async fn get(dir: &impl RemoteShardDirectory<usize, ()>, shard: ShardNumber) -> Result<Option<crate::discovery::ShardRecord<usize, ()>>, DiscoveryError> {
+        dir.strong_get_shard(shard).await
     }
     async fn remove(dir: &impl RemoteShardDirectory<usize, ()>, shard: ShardNumber) -> Result<(), DiscoveryError> {
         dir.strong_atomic_update_shards(vec![ShardDirectoryChange::TombstoneShard { shard }]).await
@@ -634,10 +644,11 @@ mod tests {
         let membership = IrMembership::new(vec![10usize, 11, 12]);
         put(&*dir, ShardNumber(1), membership, 5).await.unwrap();
 
-        let (got, view) = get(&*dir, ShardNumber(1)).await.unwrap().unwrap();
-        assert_eq!(view, 5);
-        assert_eq!(got.len(), 3);
-        let addrs: Vec<usize> = got.iter().collect();
+        let record = get(&*dir, ShardNumber(1)).await.unwrap().unwrap();
+        assert_eq!(record.view, 5);
+        assert_eq!(record.status, ShardStatus::Active);
+        assert_eq!(record.membership.len(), 3);
+        let addrs: Vec<usize> = record.membership.iter().collect();
         assert_eq!(addrs, vec![10, 11, 12]);
     }
 
@@ -650,9 +661,10 @@ mod tests {
         let membership = IrMembership::new(vec![20usize, 21, 22]);
         put(&*dir, ShardNumber(2), membership, 3).await.unwrap();
 
-        let (got, view) = get(&*dir, ShardNumber(2)).await.unwrap().unwrap();
-        assert_eq!(view, 3);
-        let addrs: Vec<usize> = got.iter().collect();
+        let record = get(&*dir, ShardNumber(2)).await.unwrap().unwrap();
+        assert_eq!(record.view, 3);
+        assert_eq!(record.status, ShardStatus::Active);
+        let addrs: Vec<usize> = record.membership.iter().collect();
         assert_eq!(addrs, vec![20, 21, 22]);
     }
 
@@ -676,8 +688,9 @@ mod tests {
 
         remove(&*dir, ShardNumber(1)).await.unwrap();
 
-        // get returns None for tombstoned shards.
-        assert!(get(&*dir, ShardNumber(1)).await.unwrap().is_none());
+        // get returns the shard with Tombstoned status.
+        let record = get(&*dir, ShardNumber(1)).await.unwrap().unwrap();
+        assert_eq!(record.status, ShardStatus::Tombstoned);
     }
 
     #[tokio::test(start_paused = true)]
@@ -773,9 +786,9 @@ mod tests {
         put(&*dir, ShardNumber(1), membership_new, 3).await.unwrap();
 
         // View stays at 5, membership unchanged.
-        let (got, view) = get(&*dir, ShardNumber(1)).await.unwrap().unwrap();
-        assert_eq!(view, 5);
-        let addrs: Vec<usize> = got.iter().collect();
+        let record = get(&*dir, ShardNumber(1)).await.unwrap().unwrap();
+        assert_eq!(record.view, 5);
+        let addrs: Vec<usize> = record.membership.iter().collect();
         assert_eq!(addrs, vec![10, 11, 12]);
     }
 

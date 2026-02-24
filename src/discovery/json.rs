@@ -4,7 +4,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use crate::{IrMembership, ShardNumber};
-use super::{DiscoveryError, RemoteShardDirectory, ShardDirectoryChange};
+use super::{DiscoveryError, RemoteShardDirectory, ShardDirectoryChange, ShardRecord};
 
 /// Read-only [`RemoteShardDirectory`] backed by static membership data or
 /// DNS-resolved addresses.
@@ -98,17 +98,17 @@ where
 }
 
 impl<A: Clone + Send + Sync + 'static, K: Clone + Send + Sync + 'static> RemoteShardDirectory<A, K> for JsonRemoteShardDirectory<A> {
-    /// JSON config backend does not support single-shard membership lookup.
+    /// JSON config backend does not support single-shard lookup.
     ///
     /// Returns an error to verify the assumption that this method is never
     /// called on `JsonRemoteShardDirectory`. Use `weak_all_active_shard_view_memberships`
     /// for bulk reads instead.
-    async fn weak_get_active_shard_membership(
+    async fn strong_get_shard(
         &self,
         _shard: ShardNumber,
-    ) -> Result<Option<(IrMembership<A>, u64)>, DiscoveryError> {
+    ) -> Result<Option<ShardRecord<A, K>>, DiscoveryError> {
         Err(DiscoveryError::ConnectionFailed(
-            "JsonRemoteShardDirectory does not support weak_get_active_shard_membership".into(),
+            "JsonRemoteShardDirectory does not support strong_get_shard".into(),
         ))
     }
 

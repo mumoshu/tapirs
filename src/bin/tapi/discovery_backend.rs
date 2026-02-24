@@ -1,6 +1,6 @@
 use tapirs::discovery::json::JsonRemoteShardDirectory;
 use tapirs::discovery::tapir::TapirRemoteShardDirectory;
-use tapirs::discovery::{DiscoveryError, RemoteShardDirectory, ShardDirectoryChange, ShardDirectoryChangeSet};
+use tapirs::discovery::{DiscoveryError, RemoteShardDirectory, ShardDirectoryChange, ShardDirectoryChangeSet, ShardRecord};
 use tapirs::{IrMembership, ShardNumber, TapirReplica, TcpAddress, TcpTransport};
 
 type DiscoveryTapirDir =
@@ -17,17 +17,17 @@ pub enum DiscoveryBackend {
 }
 
 impl RemoteShardDirectory<TcpAddress, String> for DiscoveryBackend {
-    async fn weak_get_active_shard_membership(
+    async fn strong_get_shard(
         &self,
         shard: ShardNumber,
-    ) -> Result<Option<(IrMembership<TcpAddress>, u64)>, DiscoveryError> {
+    ) -> Result<Option<ShardRecord<TcpAddress, String>>, DiscoveryError> {
         match self {
             Self::Json(c) => {
-                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::weak_get_active_shard_membership(c, shard)
+                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::strong_get_shard(c, shard)
                     .await
             }
             Self::Tapir(c) => {
-                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::weak_get_active_shard_membership(c, shard)
+                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::strong_get_shard(c, shard)
                     .await
             }
         }
