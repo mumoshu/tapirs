@@ -323,7 +323,7 @@ where
     K: Clone + std::fmt::Debug + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
     T: TapirTransport<String, String>,
 {
-    async fn get(
+    async fn weak_get(
         &self,
         shard: ShardNumber,
     ) -> Result<Option<(IrMembership<A>, u64)>, DiscoveryError> {
@@ -436,7 +436,7 @@ where
         ))
     }
 
-    async fn all(
+    async fn weak_all(
         &self,
     ) -> Result<Vec<(ShardNumber, IrMembership<A>, u64)>, DiscoveryError> {
         // Refresh shard client cache (no-op if not DNS mode).
@@ -642,7 +642,7 @@ where
         ))
     }
 
-    async fn route_changes_since(
+    async fn weak_route_changes_since(
         &self,
         after_index: u64,
     ) -> Result<Vec<(u64, ShardDirectoryChangeSet<K, A>)>, DiscoveryError> {
@@ -692,7 +692,7 @@ mod tests {
         dir.strong_put(shard, membership, view).await
     }
     async fn get(dir: &impl RemoteShardDirectory<usize, ()>, shard: ShardNumber) -> Result<Option<(IrMembership<usize>, u64)>, DiscoveryError> {
-        dir.get(shard).await
+        dir.weak_get(shard).await
     }
     async fn remove(dir: &impl RemoteShardDirectory<usize, ()>, shard: ShardNumber) -> Result<(), DiscoveryError> {
         dir.strong_remove(shard).await
@@ -701,7 +701,7 @@ mod tests {
         dir.strong_replace(old, new, membership, view).await
     }
     async fn all(dir: &impl RemoteShardDirectory<usize, ()>) -> Result<Vec<(ShardNumber, IrMembership<usize>, u64)>, DiscoveryError> {
-        dir.all().await
+        dir.weak_all().await
     }
 
     #[tokio::test(start_paused = true)]

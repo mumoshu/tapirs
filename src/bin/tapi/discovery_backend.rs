@@ -17,17 +17,17 @@ pub enum DiscoveryBackend {
 }
 
 impl RemoteShardDirectory<TcpAddress, String> for DiscoveryBackend {
-    async fn get(
+    async fn weak_get(
         &self,
         shard: ShardNumber,
     ) -> Result<Option<(IrMembership<TcpAddress>, u64)>, DiscoveryError> {
         match self {
             Self::Json(c) => {
-                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::get(c, shard)
+                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::weak_get(c, shard)
                     .await
             }
             Self::Tapir(c) => {
-                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::get(c, shard)
+                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::weak_get(c, shard)
                     .await
             }
         }
@@ -68,15 +68,15 @@ impl RemoteShardDirectory<TcpAddress, String> for DiscoveryBackend {
         }
     }
 
-    async fn all(
+    async fn weak_all(
         &self,
     ) -> Result<Vec<(ShardNumber, IrMembership<TcpAddress>, u64)>, DiscoveryError> {
         match self {
             Self::Json(c) => {
-                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::all(c).await
+                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::weak_all(c).await
             }
             Self::Tapir(c) => {
-                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::all(c).await
+                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::weak_all(c).await
             }
         }
     }
@@ -118,16 +118,16 @@ impl RemoteShardDirectory<TcpAddress, String> for DiscoveryBackend {
         }
     }
 
-    async fn route_changes_since(
+    async fn weak_route_changes_since(
         &self,
         after_index: u64,
     ) -> Result<Vec<(u64, ShardDirectoryChangeSet<String, TcpAddress>)>, DiscoveryError> {
         match self {
             Self::Json(c) => {
-                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::route_changes_since(c, after_index).await
+                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::weak_route_changes_since(c, after_index).await
             }
             Self::Tapir(c) => {
-                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::route_changes_since(c, after_index).await
+                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::weak_route_changes_since(c, after_index).await
             }
         }
     }

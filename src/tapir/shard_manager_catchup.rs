@@ -76,7 +76,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
     ) -> Result<(), String> {
         let (membership, _view) = self
             .remote
-            .get(shard)
+            .weak_get(shard)
             .await
             .map_err(|e| format!("failed to get shard {shard:?}: {e:?}"))?
             .ok_or_else(|| format!("shard {shard:?} not found in remote directory"))?;
@@ -134,11 +134,11 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         eprintln!("[sm.leave] shard={shard:?} address={address:?}");
         let (membership, _view) = self
             .remote
-            .get(shard)
+            .weak_get(shard)
             .await
             .map_err(|e| format!("failed to get shard {shard:?}: {e:?}"))?
             .ok_or_else(|| format!("shard {shard:?} not found in remote directory"))?;
-        eprintln!("[sm.leave] remote.get returned membership len={} view={_view}", membership.len());
+        eprintln!("[sm.leave] remote.weak_get returned membership len={} view={_view}", membership.len());
 
         let client = ShardClient::<K, V, T>::new(
             self.rng.fork(),

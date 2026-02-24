@@ -76,7 +76,7 @@ impl std::error::Error for DiscoveryError {}
 /// Uses RPITIT (`impl Future`) — no dynamic dispatch. All consumers are generic
 /// over `T: RemoteShardDirectory<A>`.
 pub trait RemoteShardDirectory<A: Clone + Send + Sync + 'static, K: Clone + Send + Sync + 'static = ()>: Send + Sync + 'static {
-    fn get(
+    fn weak_get(
         &self,
         shard: ShardNumber,
     ) -> impl std::future::Future<Output = Result<Option<(IrMembership<A>, u64)>, DiscoveryError>>
@@ -95,7 +95,7 @@ pub trait RemoteShardDirectory<A: Clone + Send + Sync + 'static, K: Clone + Send
         shard: ShardNumber,
     ) -> impl std::future::Future<Output = Result<(), DiscoveryError>> + Send + '_;
 
-    fn all(
+    fn weak_all(
         &self,
     ) -> impl std::future::Future<Output = Result<Vec<(ShardNumber, IrMembership<A>, u64)>, DiscoveryError>>
            + Send
@@ -123,7 +123,7 @@ pub trait RemoteShardDirectory<A: Clone + Send + Sync + 'static, K: Clone + Send
     /// Consumers maintain a high watermark and pass it as `after_index`.
     ///
     /// Default: returns empty (no changelog support).
-    fn route_changes_since(
+    fn weak_route_changes_since(
         &self,
         _after_index: u64,
     ) -> impl std::future::Future<Output = Result<Vec<(u64, ShardDirectoryChangeSet<K, A>)>, DiscoveryError>>
@@ -366,7 +366,7 @@ where
                 // Alive replica's local (higher view) is never overwritten.
                 // Dead replica's local (lower view) gets overwritten by fresh remote data.
                 // Tombstoned shards are omitted by remote.all().
-                if let Ok(entries) = dir.remote.all().await {
+                if let Ok(entries) = dir.remote.weak_all().await {
                     for (shard, membership, remote_view) in entries {
                         dir.local.put(shard, membership, remote_view);
                     }
@@ -377,7 +377,7 @@ where
                 // Within each changeset, process RemoveRange before SetRange to
                 // avoid transient overlapping ranges when a shard is replaced.
                 let hwm = *dir.route_hwm.read().unwrap();
-                if let Ok(changesets) = dir.remote.route_changes_since(hwm).await {
+                if let Ok(changesets) = dir.remote.weak_route_changes_since(hwm).await {
                     let mut ranges = dir.key_ranges.write().unwrap();
                     let mut new_hwm = hwm;
                     for (idx, changes) in changesets {
@@ -660,7 +660,7 @@ mod tests {
         r: &impl RemoteShardDirectory<usize, ()>,
         shard: ShardNumber,
     ) -> Option<(IrMembership<usize>, u64)> {
-        r.get(shard).await.unwrap()
+        r.weak_get(shard).await.unwrap()
     }
 
     async fn remote_replace(

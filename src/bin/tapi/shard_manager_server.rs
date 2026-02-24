@@ -78,7 +78,7 @@ async fn handle_request(
 ) -> (u16, String) {
     if method == "GET" && path == "/healthz" {
         tracing::debug!("healthz: checking discovery connectivity");
-        match tokio::time::timeout(std::time::Duration::from_secs(3), state.remote.all()).await {
+        match tokio::time::timeout(std::time::Duration::from_secs(3), state.remote.weak_all()).await {
             Ok(Ok(_)) => {
                 return (200, r#"{"ok":true}"#.to_string());
             }
@@ -115,7 +115,7 @@ async fn handle_request(
         // Query discovery for existing membership.
         let existing = state
             .remote
-            .all()
+            .weak_all()
             .await
             .ok()
             .and_then(|entries| entries.into_iter().find(|(s, _, _)| *s == shard))
@@ -164,7 +164,7 @@ async fn handle_request(
         eprintln!("[leave-handler] querying discovery for shard={shard:?} to remove addr={addr:?}");
         let existing = state
             .remote
-            .all()
+            .weak_all()
             .await
             .ok()
             .and_then(|entries| entries.into_iter().find(|(s, _, _)| *s == shard))
@@ -233,7 +233,7 @@ async fn handle_request(
             tracing::info!(?shard, "register: querying discovery for membership");
             let existing = state
                 .remote
-                .all()
+                .weak_all()
                 .await
                 .ok()
                 .and_then(|entries| entries.into_iter().find(|(s, _, _)| *s == shard))

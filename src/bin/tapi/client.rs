@@ -236,7 +236,7 @@ async fn load_tapir_discovery(
         let mut backoff = DISCOVERY_INITIAL_BACKOFF;
         let mut entries = Vec::new();
         for attempt in 0..=DISCOVERY_MAX_RETRIES {
-            entries = <_ as RemoteShardDirectory<TcpAddress, String>>::all(&dir)
+            entries = <_ as RemoteShardDirectory<TcpAddress, String>>::weak_all(&dir)
                 .await
                 .unwrap_or_else(|e| {
                     panic!("failed to fetch topology from TAPIR discovery: {e}")
@@ -286,7 +286,7 @@ async fn load_tapir_discovery(
 
         for attempt in 0..=DISCOVERY_MAX_RETRIES {
             let changesets =
-                <_ as RemoteShardDirectory<TcpAddress, String>>::route_changes_since(&dir, 0)
+                <_ as RemoteShardDirectory<TcpAddress, String>>::weak_route_changes_since(&dir, 0)
                     .await
                     .unwrap_or_else(|e| {
                         eprintln!(

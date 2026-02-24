@@ -1121,7 +1121,7 @@ async fn fuzz_tapir_transactions_inner(seed: u64) {
                 eprintln!("fuzz: checking cluster_remote shard {:?} (seed={seed})", entry.shard);
                 let result = timeout(
                     Duration::from_secs(5),
-                    RemoteShardDirectory::<usize, i64>::get(&*cluster_remote, entry.shard),
+                    RemoteShardDirectory::<usize, i64>::weak_get(&*cluster_remote, entry.shard),
                 ).await;
                 match result {
                     Ok(Ok(Some(_))) => {
@@ -1167,7 +1167,7 @@ async fn fuzz_tapir_transactions_inner(seed: u64) {
                 let shard_num = ShardNumber(s);
                 let result = timeout(
                     Duration::from_secs(5),
-                    RemoteShardDirectory::<usize, i64>::get(&*cluster_remote, shard_num),
+                    RemoteShardDirectory::<usize, i64>::weak_get(&*cluster_remote, shard_num),
                 ).await;
                 match result {
                     Ok(Ok(Some(_))) => {
