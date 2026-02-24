@@ -46,6 +46,8 @@ pub enum DiscoveryError {
     NotFound,
     /// Shard was decommissioned (removed or replaced); put rejected.
     Tombstoned,
+    /// Shard is not in Active status (e.g. Pending); put rejected.
+    NotActive,
     ConnectionFailed(String),
     InvalidResponse(String),
 }
@@ -55,6 +57,7 @@ impl std::fmt::Display for DiscoveryError {
         match self {
             Self::NotFound => write!(f, "not found"),
             Self::Tombstoned => write!(f, "shard tombstoned"),
+            Self::NotActive => write!(f, "shard not active"),
             Self::ConnectionFailed(msg) => write!(f, "connection failed: {msg}"),
             Self::InvalidResponse(msg) => write!(f, "invalid response: {msg}"),
         }

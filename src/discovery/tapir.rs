@@ -357,6 +357,9 @@ where
             if record.status == ShardStatus::Tombstoned {
                 return Err(DiscoveryError::Tombstoned);
             }
+            if record.status == ShardStatus::Pending {
+                return Err(DiscoveryError::NotActive);
+            }
             if record.view >= view {
                 return Ok(());
             }
@@ -773,6 +776,29 @@ mod tests {
 
         let result = put(&*dir, ShardNumber(1), membership, 2).await;
         assert!(matches!(result, Err(DiscoveryError::Tombstoned)));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn put_on_pending_rejected() {
+        let mut rng = test_rng(53);
+        let disc = build_test_discovery(&mut rng, 3);
+        let dir = disc.create_remote_strong(&mut rng);
+
+        // Write a Pending-status entry directly via RW transaction.
+        let shard = ShardNumber(1);
+        let membership = IrMembership::new(vec![10usize, 11, 12]);
+        let key = shard_key(shard);
+        let pending_json = to_json::<_, ()>(&membership, 1, ShardStatus::Pending, None);
+        let txn = dir.client.begin();
+        let _ = txn.get(key.clone()).await.unwrap();
+        txn.put(key, Some(pending_json));
+        assert!(txn.commit().await.is_some());
+        tokio::task::yield_now().await;
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+
+        // Attempting to put on a Pending shard should fail with NotActive.
+        let result = put(&*dir, shard, membership, 2).await;
+        assert!(matches!(result, Err(DiscoveryError::NotActive)));
     }
 
     #[tokio::test(start_paused = true)]
