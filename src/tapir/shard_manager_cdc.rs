@@ -12,6 +12,7 @@ use std::time::Duration;
 pub enum ReshardError {
     ShardNotRegistered(ShardNumber),
     RangesNotAdjacent(ShardNumber, ShardNumber),
+    DiscoveryError(String),
 }
 
 /// CDC scan cursor that tracks the highest consumed `effective_end_view`.

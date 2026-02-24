@@ -2,7 +2,7 @@ use super::{
     dynamic_router::ShardEntry,
     Key, KeyRange, ShardClient, ShardNumber, Value,
 };
-use crate::discovery::{RemoteShardDirectory, ShardDirectoryChange};
+use crate::discovery::{RemoteShardDirectory, ShardDirectoryChange, ShardRecord, ShardStatus};
 use crate::transport::Transport;
 use crate::tapir::Replica;
 use crate::{IrClientId, IrMembership};
@@ -166,6 +166,25 @@ impl<
             membership,
             self.transport.clone(),
         )
+    }
+
+    /// Query remote discovery for an active shard's record.
+    ///
+    /// Returns `ShardRecord` if the shard exists and is `Active`.
+    /// Returns `ShardNotRegistered` if not found or not active.
+    /// Returns `DiscoveryError` on network/protocol failure.
+    pub(crate) async fn get_active_shard(
+        &self,
+        shard: ShardNumber,
+    ) -> Result<ShardRecord<T::Address, K>, super::shard_manager_cdc::ReshardError> {
+        use super::shard_manager_cdc::ReshardError;
+        let record = self.remote.strong_get_shard(shard).await
+            .map_err(|e| ReshardError::DiscoveryError(format!("{shard:?}: {e:?}")))?
+            .ok_or(ReshardError::ShardNotRegistered(shard))?;
+        if record.status != ShardStatus::Active {
+            return Err(ReshardError::ShardNotRegistered(shard));
+        }
+        Ok(record)
     }
 
     /// Registers an already configured and running shard's replicas with the
