@@ -22,6 +22,7 @@
 - [Getting Started: Single-Node Mode](getting-started-testbed-solo.md) -- no Docker, no network
 - [Getting Started: Kubernetes Testbed](getting-started-testbed-kube.md) -- Kind + StatefulSets
 - [Getting Started: Kubernetes Operator](getting-started-testbed-kube-operator.md) -- Helm + TAPIRCluster CR
+- [Testbed Prerequisites](getting-started-testbed-prerequisites.md) -- tools needed for each testbed variant
 - [CLI Reference](cli-reference.md) -- all three binaries and their subcommands
 - [Configuration](cli-config.md) -- TOML format and CLI flag precedence
 - [Requirements](requirements.md) -- hardware, cluster sizing
