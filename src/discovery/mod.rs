@@ -112,14 +112,10 @@ pub trait RemoteShardDirectory<A: Clone + Send + Sync + 'static, K: Clone + Send
     /// `TombstoneShard` (tombstones it) changes. Each changeset is indexed
     /// sequentially (1-based) for consumers polling via
     /// [`weak_route_changes_since`].
-    ///
-    /// Default: no-op. Implementations that support route changelog override this.
     fn strong_atomic_update_shards(
         &self,
-        _changes: Vec<ShardDirectoryChange<K, A>>,
-    ) -> impl std::future::Future<Output = Result<(), DiscoveryError>> + Send + '_ {
-        async { Ok(()) }
-    }
+        changes: Vec<ShardDirectoryChange<K, A>>,
+    ) -> impl std::future::Future<Output = Result<(), DiscoveryError>> + Send + '_;
 
     /// Read route changesets published after `after_index`.
     ///

@@ -4,7 +4,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use crate::{IrMembership, ShardNumber};
-use super::{DiscoveryError, RemoteShardDirectory};
+use super::{DiscoveryError, RemoteShardDirectory, ShardDirectoryChange};
 
 /// Read-only [`RemoteShardDirectory`] backed by static membership data or
 /// DNS-resolved addresses.
@@ -119,6 +119,19 @@ impl<A: Clone + Send + Sync + 'static, K: Clone + Send + Sync + 'static> RemoteS
     /// No-op — JSON config is the authoritative source.
     async fn strong_remove_shard(&self, _shard: ShardNumber) -> Result<(), DiscoveryError> {
         Ok(())
+    }
+
+    /// JSON config backend does not support atomic shard updates.
+    ///
+    /// Returns an error to verify the assumption that this method is never
+    /// called on `JsonRemoteShardDirectory`.
+    async fn strong_atomic_update_shards(
+        &self,
+        _changes: Vec<ShardDirectoryChange<K, A>>,
+    ) -> Result<(), DiscoveryError> {
+        Err(DiscoveryError::ConnectionFailed(
+            "JsonRemoteShardDirectory does not support atomic shard updates".into(),
+        ))
     }
 
     #[allow(clippy::disallowed_methods)]
