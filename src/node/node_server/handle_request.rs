@@ -1,8 +1,9 @@
-use super::Node;
-use tapirs::node::node_server::{AdminRequest, AdminResponse, ShardInfo};
-use tapirs::ShardNumber;
+use super::types::{AdminRequest, AdminResponse, ShardInfo};
+use crate::node::types::ReplicaConfig;
+use crate::node::Node;
+use crate::ShardNumber;
 
-pub(super) async fn handle_request(node: &Node, line: &str) -> AdminResponse {
+pub async fn handle_request(node: &Node, line: &str) -> AdminResponse {
     let req: AdminRequest = match serde_json::from_str(line) {
         Ok(r) => r,
         Err(e) => {
@@ -62,7 +63,7 @@ pub(super) async fn handle_request(node: &Node, line: &str) -> AdminResponse {
             };
             if let Some(membership_strs) = req.membership {
                 // Static add with explicit membership (no shard-manager).
-                let cfg = crate::config::ReplicaConfig {
+                let cfg = ReplicaConfig {
                     shard: shard_id,
                     listen_addr: listen_addr_str.clone(),
                     membership: membership_strs,
