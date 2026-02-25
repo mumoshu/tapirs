@@ -8,6 +8,7 @@
 
 mod backup_cluster;
 mod clone_shard;
+mod restore_cluster;
 mod types;
 
 pub use types::{CloneError, SoloClusterManager};
