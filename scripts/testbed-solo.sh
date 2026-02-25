@@ -64,22 +64,25 @@ run_client_capture() {
 # Locate or build binaries
 # ---------------------------------------------------------------------------
 TAPI=""
+TAPICTL=""
 
 find_or_build_binary() {
-    step "Locating tapi binary..."
+    step "Locating tapi and tapictl binaries..."
 
     for dir in "${PROJECT_ROOT}/target/release" "${PROJECT_ROOT}/target/debug"; do
-        if [[ -x "${dir}/tapi" ]]; then
+        if [[ -x "${dir}/tapi" ]] && [[ -x "${dir}/tapictl" ]]; then
             TAPI="${dir}/tapi"
-            ok "Found ${TAPI}"
+            TAPICTL="${dir}/tapictl"
+            ok "Found ${TAPI} and ${TAPICTL}"
             return
         fi
     done
 
     info "Not found. Building (this may take a few minutes)..."
-    run_cmd cargo build --release --bin tapi --manifest-path "${PROJECT_ROOT}/Cargo.toml"
+    run_cmd cargo build --release --bin tapi --bin tapictl --manifest-path "${PROJECT_ROOT}/Cargo.toml"
     TAPI="${PROJECT_ROOT}/target/release/tapi"
-    ok "Binary built."
+    TAPICTL="${PROJECT_ROOT}/target/release/tapictl"
+    ok "Binaries built."
 }
 
 # ---------------------------------------------------------------------------
@@ -288,10 +291,19 @@ demo_view_change() {
 }
 
 demo_backup() {
-    step "Demo: Backup not available in solo mode."
-    info "Backup requires a shard manager (CDC scan_changes)."
-    info "Use scripts/testbed-docker-compose.sh for full backup/restore support."
-    ok "Skipped."
+    step "Demo: Solo backup..."
+    local backup_dir="${WORK_DIR}/backup"
+    local admin_addrs="127.0.0.1:${ADMIN_PORTS[0]},127.0.0.1:${ADMIN_PORTS[1]},127.0.0.1:${ADMIN_PORTS[2]}"
+
+    run_cmd "${TAPICTL}" solo backup cluster \
+        --admin-addrs "${admin_addrs}" --output "${backup_dir}"
+
+    if [[ -f "${backup_dir}/cluster.json" ]] && [[ -f "${backup_dir}/shard_0_delta_0.bin" ]]; then
+        ok "Backup created: cluster.json + shard_0_delta_0.bin"
+    else
+        warn "Expected backup files not found in ${backup_dir}"
+        ls -la "${backup_dir}" 2>/dev/null || true
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -366,12 +378,17 @@ ${BOLD}4. VIEW CHANGES${RESET}
 
 ${BOLD}5. BACKUP & RESTORE${RESET}
 
-   Backup requires a shard manager (CDC scan_changes) which is not
-   available in solo mode. Use scripts/testbed-docker-compose.sh for
-   full backup/restore support:
+   Back up all shards via direct node access (no shard manager needed):
 
-     tapictl backup cluster --shard-manager-url URL --output DIR
-     tapictl restore cluster --shard-manager-url URL --admin-addrs A1,A2,A3 --input DIR
+     ${TAPICTL} solo backup cluster \\
+       --admin-addrs 127.0.0.1:${ADMIN_PORTS[0]},127.0.0.1:${ADMIN_PORTS[1]},127.0.0.1:${ADMIN_PORTS[2]} \\
+       --output /path/to/backup
+
+   Restore from backup to target nodes:
+
+     ${TAPICTL} solo restore cluster \\
+       --admin-addrs 127.0.0.1:${ADMIN_PORTS[0]},127.0.0.1:${ADMIN_PORTS[1]},127.0.0.1:${ADMIN_PORTS[2]} \\
+       --input /path/to/backup
 
 ${BOLD}6. SOLO CLONE (BLUE-GREEN COMPACTION)${RESET}
 
