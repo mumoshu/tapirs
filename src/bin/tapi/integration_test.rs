@@ -133,6 +133,8 @@ async fn bootstrap_cluster(
         Arc::new(sm_backend),
         #[cfg(feature = "tls")]
         None,
+        #[cfg(feature = "tls")]
+        None,
     ));
 
     // === Data nodes (one per num_nodes) ===

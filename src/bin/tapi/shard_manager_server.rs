@@ -1,30 +1,29 @@
-use crate::discovery_backend::DiscoveryBackend;
 use rand::{thread_rng, Rng as _};
 use serde::Deserialize;
 use std::sync::Arc;
 use tapirs::discovery::{
-    InMemoryShardDirectory, RemoteShardDirectory as _, ShardStatus,
+    InMemoryShardDirectory, RemoteShardDirectory, ShardStatus,
     strings_to_membership,
 };
 use tapirs::{IrMembership, KeyRange, ShardManager, ShardNumber, TapirReplica, TcpAddress, TcpTransport};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 
-type TapirShardManager = ShardManager<
+type TapirShardManager<RD> = ShardManager<
     String,
     String,
     TcpTransport<TapirReplica<String, String>>,
-    DiscoveryBackend,
+    RD,
 >;
 
-struct ShardManagerState {
-    manager: tokio::sync::Mutex<TapirShardManager>,
-    remote: Arc<DiscoveryBackend>,
+struct ShardManagerState<RD: RemoteShardDirectory<TcpAddress, String>> {
+    manager: tokio::sync::Mutex<TapirShardManager<RD>>,
+    remote: Arc<RD>,
 }
 
-impl ShardManagerState {
+impl<RD: RemoteShardDirectory<TcpAddress, String>> ShardManagerState<RD> {
     fn new(
-        remote: Arc<DiscoveryBackend>,
+        remote: Arc<RD>,
         #[cfg(feature = "tls")] tls_config: &Option<tapirs::tls::TlsConfig>,
     ) -> Self {
         let ephemeral_addr = {
@@ -68,8 +67,8 @@ struct JoinRequest {
     listen_addr: String,
 }
 
-async fn handle_request(
-    state: &ShardManagerState,
+async fn handle_request<RD: RemoteShardDirectory<TcpAddress, String>>(
+    state: &ShardManagerState<RD>,
     method: &str,
     path: &str,
     body: &str,
@@ -355,9 +354,9 @@ fn status_text(code: u16) -> &'static str {
     }
 }
 
-pub(crate) async fn serve(
+pub(crate) async fn serve<RD: RemoteShardDirectory<TcpAddress, String>>(
     listener: TcpListener,
-    remote: Arc<DiscoveryBackend>,
+    remote: Arc<RD>,
     #[cfg(feature = "tls")] tls_acceptor: Option<tapirs::tls::ReloadableTlsAcceptor>,
     #[cfg(feature = "tls")] tls_config: Option<tapirs::tls::TlsConfig>,
 ) {
@@ -402,10 +401,11 @@ pub(crate) async fn serve(
     }
 }
 
-async fn handle_connection<R, W>(reader: R, mut writer: W, state: &ShardManagerState)
+async fn handle_connection<R, W, RD>(reader: R, mut writer: W, state: &ShardManagerState<RD>)
 where
     R: tokio::io::AsyncRead + Unpin,
     W: tokio::io::AsyncWrite + Unpin,
+    RD: RemoteShardDirectory<TcpAddress, String>,
 {
     let mut buf_reader = BufReader::new(reader);
 
@@ -486,6 +486,8 @@ pub async fn run(
     discovery_tapir_endpoint: Option<String>,
     #[cfg(feature = "tls")] tls_config: Option<tapirs::tls::TlsConfig>,
 ) {
+    use crate::discovery_backend::DiscoveryBackend;
+
     let backend = if let Some(endpoint) = discovery_tapir_endpoint {
         // Create a separate transport for the discovery cluster.
         let ephemeral_addr = {
