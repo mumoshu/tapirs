@@ -1,11 +1,12 @@
-use super::Node;
+use super::connection::handle_admin_connection;
+use crate::node::Node;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
-pub(crate) async fn start(
+pub async fn start(
     addr: std::net::SocketAddr,
     node: Arc<Node>,
-    #[cfg(feature = "tls")] tls_acceptor: Option<tapirs::tls::ReloadableTlsAcceptor>,
+    #[cfg(feature = "tls")] tls_acceptor: Option<crate::tls::ReloadableTlsAcceptor>,
 ) {
     let listener = TcpListener::bind(addr)
         .await
@@ -26,7 +27,7 @@ pub(crate) async fn start(
                             match tls_acceptor.accept(stream).await {
                                 Ok(tls_stream) => {
                                     let (reader, writer) = tokio::io::split(tls_stream);
-                                    super::handle_admin_connection(reader, writer, &node).await;
+                                    handle_admin_connection(reader, writer, &node).await;
                                 }
                                 Err(e) => {
                                     tracing::warn!("admin TLS accept error: {e}");
@@ -36,7 +37,7 @@ pub(crate) async fn start(
                         }
 
                         let (reader, writer) = stream.into_split();
-                        super::handle_admin_connection(reader, writer, &node).await;
+                        handle_admin_connection(reader, writer, &node).await;
                     });
                 }
                 Err(e) => {
