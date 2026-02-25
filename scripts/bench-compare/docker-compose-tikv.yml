@@ -1,0 +1,123 @@
+# TiKV bench cluster: 1 PD + 3 TiKV nodes
+# Subnet 172.30.0.0/24, resource limits via env vars.
+
+networks:
+  tikv-bench-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+services:
+  pd:
+    image: bench-pd
+    build:
+      context: .
+      dockerfile: Dockerfile.pd
+    command: >
+      /entrypoint-delay.sh pd-server
+        --name pd
+        --client-urls http://0.0.0.0:2379
+        --peer-urls http://0.0.0.0:2380
+        --advertise-client-urls http://172.30.0.10:2379
+        --advertise-peer-urls http://172.30.0.10:2380
+        --data-dir /data/pd
+    environment:
+      - NETWORK_DELAY_MS=${NETWORK_DELAY_MS:-0}
+    cap_add:
+      - NET_ADMIN
+    deploy:
+      resources:
+        limits:
+          cpus: "${PD_CPUS:-0.25}"
+          memory: "${PD_MEM:-256m}"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:2379/health || exit 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    networks:
+      tikv-bench-net:
+        ipv4_address: 172.30.0.10
+
+  tikv1:
+    image: bench-tikv
+    build:
+      context: .
+      dockerfile: Dockerfile.tikv
+    command: >
+      /entrypoint-delay.sh tikv-server
+        --addr 0.0.0.0:20160
+        --advertise-addr 172.30.0.11:20160
+        --status-addr 0.0.0.0:20180
+        --pd 172.30.0.10:2379
+        --data-dir /data/tikv
+        --raftstore.region-split-size ${TIKV_REGION_SPLIT_SIZE:-96MB}
+    environment:
+      - NETWORK_DELAY_MS=${NETWORK_DELAY_MS:-0}
+    cap_add:
+      - NET_ADMIN
+    deploy:
+      resources:
+        limits:
+          cpus: "${TIKV_NODE_CPUS:-0.5}"
+          memory: "${TIKV_NODE_MEM:-512m}"
+    depends_on:
+      pd:
+        condition: service_healthy
+    networks:
+      tikv-bench-net:
+        ipv4_address: 172.30.0.11
+
+  tikv2:
+    image: bench-tikv
+    command: >
+      /entrypoint-delay.sh tikv-server
+        --addr 0.0.0.0:20160
+        --advertise-addr 172.30.0.12:20160
+        --status-addr 0.0.0.0:20180
+        --pd 172.30.0.10:2379
+        --data-dir /data/tikv
+        --raftstore.region-split-size ${TIKV_REGION_SPLIT_SIZE:-96MB}
+    environment:
+      - NETWORK_DELAY_MS=${NETWORK_DELAY_MS:-0}
+    cap_add:
+      - NET_ADMIN
+    deploy:
+      resources:
+        limits:
+          cpus: "${TIKV_NODE_CPUS:-0.5}"
+          memory: "${TIKV_NODE_MEM:-512m}"
+    depends_on:
+      pd:
+        condition: service_healthy
+    networks:
+      tikv-bench-net:
+        ipv4_address: 172.30.0.12
+
+  tikv3:
+    image: bench-tikv
+    command: >
+      /entrypoint-delay.sh tikv-server
+        --addr 0.0.0.0:20160
+        --advertise-addr 172.30.0.13:20160
+        --status-addr 0.0.0.0:20180
+        --pd 172.30.0.10:2379
+        --data-dir /data/tikv
+        --raftstore.region-split-size ${TIKV_REGION_SPLIT_SIZE:-96MB}
+    environment:
+      - NETWORK_DELAY_MS=${NETWORK_DELAY_MS:-0}
+    cap_add:
+      - NET_ADMIN
+    deploy:
+      resources:
+        limits:
+          cpus: "${TIKV_NODE_CPUS:-0.5}"
+          memory: "${TIKV_NODE_MEM:-512m}"
+    depends_on:
+      pd:
+        condition: service_healthy
+    networks:
+      tikv-bench-net:
+        ipv4_address: 172.30.0.13
