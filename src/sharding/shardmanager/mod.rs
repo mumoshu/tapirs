@@ -2,6 +2,7 @@
 pub(crate) mod cdc;
 #[allow(dead_code)]
 mod catchup;
+pub mod scan_changes_types;
 
 use crate::tapir::{Key, KeyRange, ShardClient, ShardNumber, Value};
 use crate::discovery::{RemoteShardDirectory, ShardDirectoryChange, ShardRecord, ShardStatus};
@@ -181,6 +182,23 @@ impl<
             return Err(ReshardError::ShardNotRegistered(shard));
         }
         Ok(record)
+    }
+
+    /// Ship CDC deltas to a shard via a ShardClient.
+    ///
+    /// Creates a ShardClient from the provided membership (same pattern as
+    /// split Phase 1 bulk copy), then calls `ship_changes()` for each delta's
+    /// changes. Used by the `/v1/apply-changes` endpoint during restore.
+    pub(crate) async fn apply_changes(
+        &mut self,
+        shard: ShardNumber,
+        membership: IrMembership<T::Address>,
+        deltas: &[crate::tapir::LeaderRecordDelta<K, V>],
+    ) {
+        let client = self.make_shard_client(shard, membership);
+        for delta in deltas {
+            cdc::ship_changes(&client, shard, &delta.changes, &mut self.rng).await;
+        }
     }
 
     /// Registers an already configured and running shard's replicas with the
