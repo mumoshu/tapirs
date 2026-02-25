@@ -2,14 +2,16 @@
 
 mod cluster;
 mod executor;
-mod workload_gen;
 mod mixed;
 mod ops;
 mod ro_get;
 mod ro_scan;
 mod runner;
 mod rw;
+mod tapir_impl;
+mod traits;
 mod workload;
+mod workload_gen;
 
 pub use cluster::{bootstrap_cluster, external_target, BenchCluster, BenchTarget};
 

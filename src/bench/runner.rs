@@ -1,9 +1,9 @@
 #![allow(dead_code, unused_imports)]
 
+use super::tapir_impl::{TapirResolver, TapirWorkload};
+use super::traits::{BenchWorkload, TargetResolver};
 use super::workload::{prepopulate, workload_loop};
-use super::{
-    bootstrap_cluster, BenchConfig, BenchTarget, ClusterConfig, WorkloadConfig, WorkloadType,
-};
+use super::{bootstrap_cluster, BenchConfig, ClusterConfig, WorkloadConfig, WorkloadType};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,13 +14,18 @@ struct WorkloadCounters {
     committed: Arc<AtomicU64>,
 }
 
-pub async fn run_bench(target: &BenchTarget, config: &WorkloadConfig) {
+pub async fn run_bench<R, W>(connection_str: &str, config: &WorkloadConfig)
+where
+    R: TargetResolver,
+    W: BenchWorkload<R::Target>,
+{
     crate::testing::init_tracing();
     let mut rng = crate::Rng::from_seed(42);
+    let target = R::resolve(connection_str);
 
-    let client = target.create_client();
+    let client = W::create_client(&target);
     eprintln!("prepopulating {} keys...", config.key_space_size);
-    prepopulate(&client, config.key_space_size).await;
+    prepopulate::<R::Target, W>(&client, config.key_space_size).await;
     eprintln!("prepopulate done, sleeping 1s for FINALIZE propagation");
     tokio::time::sleep(Duration::from_secs(1)).await;
 
@@ -42,7 +47,7 @@ pub async fn run_bench(target: &BenchTarget, config: &WorkloadConfig) {
         });
 
         for _ in 0..*num_clients {
-            let c = target.create_client();
+            let c = W::create_client(&target);
             let wt = workload_type.clone();
             let ks = config.key_space_size;
             let att = Arc::clone(&attempted);
@@ -50,7 +55,7 @@ pub async fn run_bench(target: &BenchTarget, config: &WorkloadConfig) {
             let ms = config.max_sleep_ms;
             let task_rng = rng.fork();
             handles.push(tokio::spawn(async move {
-                workload_loop(c, wt, ks, att, com, ms, task_rng).await;
+                workload_loop::<R::Target, W>(c, wt, ks, att, com, ms, task_rng).await;
             }));
         }
     }
@@ -83,13 +88,18 @@ pub async fn run_bench(target: &BenchTarget, config: &WorkloadConfig) {
 
 pub async fn bootstrap_and_run_bench(config: BenchConfig) {
     let (target, _cluster) = bootstrap_cluster(&config.cluster).await;
-    run_bench(&target, &config.workload).await;
+    let addrs = target
+        .replica_addrs
+        .iter()
+        .map(|a| a.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    run_bench::<TapirResolver, TapirWorkload>(&addrs, &config.workload).await;
 }
 
 pub async fn run_bench_auto(cluster_config: ClusterConfig, workload: WorkloadConfig) {
     if let Ok(addrs) = std::env::var("BENCH_CLUSTER") {
-        let target = super::external_target(&addrs);
-        run_bench(&target, &workload).await;
+        run_bench::<TapirResolver, TapirWorkload>(&addrs, &workload).await;
     } else {
         bootstrap_and_run_bench(BenchConfig {
             cluster: cluster_config,
