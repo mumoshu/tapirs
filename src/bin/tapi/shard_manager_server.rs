@@ -507,15 +507,14 @@ pub async fn run(
         let disc_transport = TcpTransport::with_directory(ephemeral_addr, persist_dir, disc_dir);
 
         // Consistency: The shard-manager is the authority for shard membership
-        // and route changes. It uses ReadMode::Strong (linearizable reads via
-        // read-only TAPIR transactions with quorum validation) to ensure it
-        // always reads the latest committed state. This is critical for
-        // correctness: split/merge/compact decisions must be based on the
-        // current shard layout, not stale data.
+        // and route changes. strong_* methods use linearizable reads (RO
+        // transactions with quorum validation) to ensure they always read the
+        // latest committed state. This is critical for correctness:
+        // split/merge/compact decisions must be based on the current shard
+        // layout, not stale data.
         let rng = tapirs::Rng::from_seed(thread_rng().r#gen());
         let dir = tapirs::discovery::tapir::parse_tapir_endpoint::<TcpAddress, _>(
             &endpoint,
-            tapirs::discovery::tapir::ReadMode::Strong,
             disc_transport,
             rng,
         )

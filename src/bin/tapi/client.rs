@@ -178,7 +178,7 @@ const DISCOVERY_MAX_RETRIES: u32 = 10;
 ///
 /// The shard-manager writes shard membership and route changes to the TAPIR
 /// discovery cluster via **strongly-consistent** transactions (quorum writes).
-/// The client reads them via **eventually-consistent** reads (`ReadMode::Eventual`
+/// The client reads them via **eventually-consistent** reads (`weak_*` methods
 /// = unlogged scan to 1 random replica) for lower latency and load.
 ///
 /// Because of this asymmetry, the client may read stale data right after the
@@ -217,7 +217,6 @@ async fn load_tapir_discovery(
     let rng = tapirs::Rng::from_seed(thread_rng().r#gen());
     let dir = tapir::parse_tapir_endpoint::<TcpAddress, _>(
         endpoint,
-        tapir::ReadMode::Eventual,
         disc_transport,
         rng,
     )
@@ -227,9 +226,10 @@ async fn load_tapir_discovery(
         std::process::exit(1);
     });
 
-    // Consistency: all() uses ReadMode::Eventual (unlogged scan to 1 random
-    // replica). The shard-manager writes membership via strongly-consistent
-    // transactions, but this client reads eventually consistently. Right after
+    // Consistency: weak_all_active_shard_view_memberships() uses eventual reads
+    // (unlogged scan to 1 random replica). The shard-manager writes membership
+    // via strongly-consistent transactions, but this client reads eventually
+    // consistently. Right after
     // cluster bootstrap or shard-manager operations, a replica may not yet
     // have the latest writes. Retry with exponential backoff until non-empty.
     let entries = {
@@ -270,8 +270,8 @@ async fn load_tapir_discovery(
     // register_active_shard/split/merge/compact — replaying from index 0 gives us
     // the latest key ranges.
     //
-    // Consistency: route_changes_since() uses ReadMode::Eventual (unlogged
-    // scan to 1 random replica). The shard-manager writes route changes via
+    // Consistency: weak_route_changes_since() uses eventual reads (unlogged
+    // read to 1 random replica). The shard-manager writes route changes via
     // strongly-consistent TAPIR transactions, but the client reads them
     // eventually consistently — the read replica may not yet have the latest
     // changesets. With multiple shards, every shard MUST have an explicit key

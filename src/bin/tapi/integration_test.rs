@@ -50,20 +50,20 @@ fn env_or(var: &str, default: u32) -> u32 {
 }
 
 /// Create a standalone TapirRemoteShardDirectory client for direct discovery access.
-async fn create_disc_remote(endpoint: &str, mode: tapir::ReadMode) -> DiscTapirDir {
+async fn create_disc_remote(endpoint: &str) -> DiscTapirDir {
     let addr = TcpAddress(alloc_addr());
     let dir = Arc::new(InMemoryShardDirectory::new());
     let persist_dir = format!("/tmp/tapi_test_disc_{}", thread_rng().r#gen::<u32>());
     let transport = TcpTransport::with_directory(addr, persist_dir, dir);
     let rng = tapirs::Rng::from_seed(thread_rng().r#gen());
-    tapir::parse_tapir_endpoint::<TcpAddress, _>(endpoint, mode, transport, rng)
+    tapir::parse_tapir_endpoint::<TcpAddress, _>(endpoint, transport, rng)
         .await
         .expect("create discovery client")
 }
 
 /// Create a DiscoveryBackend::Tapir from an endpoint string.
-async fn create_disc_backend(endpoint: &str, mode: tapir::ReadMode) -> DiscoveryBackend {
-    DiscoveryBackend::Tapir(create_disc_remote(endpoint, mode).await)
+async fn create_disc_backend(endpoint: &str) -> DiscoveryBackend {
+    DiscoveryBackend::Tapir(create_disc_remote(endpoint).await)
 }
 
 struct TestCluster {
@@ -127,7 +127,7 @@ async fn bootstrap_cluster(
     // === Shard manager ===
     let mgr_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mgr_addr = mgr_listener.local_addr().unwrap();
-    let sm_backend = create_disc_backend(&disc_endpoint, tapir::ReadMode::Strong).await;
+    let sm_backend = create_disc_backend(&disc_endpoint).await;
     tokio::spawn(crate::shard_manager_server::serve(
         mgr_listener,
         Arc::new(sm_backend),
@@ -141,7 +141,7 @@ async fn bootstrap_cluster(
     let mut temp_dirs = Vec::new();
     for _ in 0..num_nodes {
         let td = TempDir::new().unwrap();
-        let backend = create_disc_backend(&disc_endpoint, tapir::ReadMode::Eventual).await;
+        let backend = create_disc_backend(&disc_endpoint).await;
         let node = Arc::new(Node::with_discovery_backend_and_shard_manager(
             td.path().to_str().unwrap().to_string(),
             backend,
@@ -239,7 +239,7 @@ async fn create_test_client(
     let dir = Arc::new(InMemoryShardDirectory::new());
 
     // CachingShardDirectory auto-syncs shard->membership from discovery, populating dir.
-    let backend = create_disc_backend(disc_endpoint, tapir::ReadMode::Eventual).await;
+    let backend = create_disc_backend(disc_endpoint).await;
     let disc_client = Arc::new(backend);
     let discovery_dir = tapirs::discovery::CachingShardDirectory::<TcpAddress, String, _>::new(
         Arc::clone(&dir),
@@ -466,7 +466,7 @@ async fn test_rolling_membership_replacement() {
 
     let cluster = bootstrap_cluster(1, 3, 3).await;
     let client = &cluster.client;
-    let disc_client = disc(create_disc_remote(&cluster.disc_endpoint, tapir::ReadMode::Eventual).await);
+    let disc_client = disc(create_disc_remote(&cluster.disc_endpoint).await);
     let shard = ShardNumber(0);
 
     // Write initial data and verify R/W.
@@ -514,7 +514,7 @@ async fn test_rolling_membership_replacement() {
 
         // === ADD new replica ===
         let td = TempDir::new().unwrap();
-        let backend = create_disc_backend(&cluster.disc_endpoint, tapir::ReadMode::Eventual).await;
+        let backend = create_disc_backend(&cluster.disc_endpoint).await;
         let new_node = Arc::new(Node::with_discovery_backend_and_shard_manager(
             td.path().to_str().unwrap().to_string(),
             backend,
@@ -700,7 +700,7 @@ async fn test_disaster_recovery_backup_restore() {
     // 1. Bootstrap cluster: 1 shard, 3 replicas, 3 nodes.
     let cluster = bootstrap_cluster(1, 3, 3).await;
     let client = &cluster.client;
-    let disc_client = disc(create_disc_remote(&cluster.disc_endpoint, tapir::ReadMode::Eventual).await);
+    let disc_client = disc(create_disc_remote(&cluster.disc_endpoint).await);
     let shard = ShardNumber(0);
 
     // 2. Write test data.
@@ -762,7 +762,7 @@ async fn test_disaster_recovery_backup_restore() {
     for _ in 0..3 {
         new_listeners.push(alloc_listener());
         let td = TempDir::new().unwrap();
-        let backend = create_disc_backend(&cluster.disc_endpoint, tapir::ReadMode::Eventual).await;
+        let backend = create_disc_backend(&cluster.disc_endpoint).await;
         let node = Arc::new(Node::with_discovery_backend_and_shard_manager(
             td.path().to_str().unwrap().to_string(),
             backend,
@@ -856,7 +856,7 @@ async fn test_cluster_backup_restore_via_admin() {
     // 1. Bootstrap cluster: 2 shards, 3 replicas, 3 nodes.
     let cluster = bootstrap_cluster(2, 3, 3).await;
     let client = &cluster.client;
-    let disc_client = disc(create_disc_remote(&cluster.disc_endpoint, tapir::ReadMode::Eventual).await);
+    let disc_client = disc(create_disc_remote(&cluster.disc_endpoint).await);
 
     // 2. Write test data -- keys distributed across both shards.
     //    With 2 shards: shard 0 = [a..n), shard 1 = [n..z).
@@ -980,7 +980,7 @@ async fn test_cluster_backup_restore_via_admin() {
 
     for _ in 0..3 {
         let td = TempDir::new().unwrap();
-        let backend = create_disc_backend(&cluster.disc_endpoint, tapir::ReadMode::Eventual).await;
+        let backend = create_disc_backend(&cluster.disc_endpoint).await;
         let node = Arc::new(Node::with_discovery_backend_and_shard_manager(
             td.path().to_str().unwrap().to_string(),
             backend,

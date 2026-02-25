@@ -235,7 +235,6 @@ async fn get_topology(endpoint: &str) -> Result<(), String> {
     let rng = tapirs::Rng::from_seed(thread_rng().r#gen());
     let dir = tapir::parse_tapir_endpoint::<TcpAddress, _>(
         endpoint,
-        tapir::ReadMode::Eventual,
         disc_transport,
         rng,
     )

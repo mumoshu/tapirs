@@ -56,7 +56,7 @@ pub enum ShardStatus {
 }
 
 /// Whether reads use linearizable or eventual consistency.
-pub enum ReadMode {
+enum ReadMode {
     /// RO transactions for linearizable reads. For ShardManager.
     Strong,
     /// Unlogged reads to 1 random replica. For clients/nodes.
@@ -66,19 +66,15 @@ pub enum ReadMode {
 /// [`RemoteShardDirectory`] backed by a single-shard TAPIR cluster.
 ///
 /// Stores shard metadata as `"shard:{id}"` → JSON in a TAPIR discovery
-/// cluster (shard 0). Two constructors select the read mode:
-/// - **Strong** (`with_strong_consistent_read`): RO transactions for
-///   linearizable reads. Used by ShardManager.
-/// - **Eventual** (`with_eventual_consistent_read`): unlogged reads to
-///   1 random replica. Used by clients/nodes via `CachingShardDirectory`.
+/// cluster (shard 0). Read consistency is determined per method:
+/// - **`strong_*` methods**: RO transactions for linearizable reads.
+/// - **`weak_*` methods**: unlogged reads to 1 random replica.
 ///
-/// Writes always use RW transactions regardless of read mode.
+/// Writes always use RW transactions.
 pub struct TapirRemoteShardDirectory<A, T: TapirTransport<String, String>> {
     client: TapirClient<String, String, T>,
     shard_client: ShardClient<String, String, T>,
     dns_client: Option<DnsRefreshingShardClient<String, String, T>>,
-    #[allow(dead_code)] // removed in next commit
-    read_mode: ReadMode,
     _phantom: PhantomData<A>,
 }
 
@@ -137,7 +133,6 @@ where
             client,
             shard_client,
             dns_client: None,
-            read_mode: ReadMode::Strong,
             _phantom: PhantomData,
         }
     }
@@ -163,7 +158,6 @@ where
             client,
             shard_client,
             dns_client: None,
-            read_mode: ReadMode::Eventual,
             _phantom: PhantomData,
         }
     }
@@ -246,7 +240,7 @@ where
     /// The `mode` parameter selects the consistency level for the scan:
     /// Strong (RO transaction) or Eventual (unlogged read to 1 replica).
     /// Results are sorted by shard number.
-    pub(crate) async fn all_active_shard_view_membership_with_consistency_mode<
+    async fn all_active_shard_view_membership_with_consistency_mode<
         K: serde::de::DeserializeOwned,
     >(
         &self,
@@ -315,7 +309,6 @@ where
         dns_host: String,
         port: u16,
         resolve_interval: Duration,
-        read_mode: ReadMode,
         transport: T,
         mut rng: crate::Rng,
     ) -> Result<Self, DnsResolveError> {
@@ -337,7 +330,6 @@ where
             client,
             shard_client,
             dns_client: Some(dns_client),
-            read_mode,
             _phantom: PhantomData,
         })
     }
@@ -352,7 +344,6 @@ where
 /// DNS mode resolves every 30 seconds via [`DnsRefreshingShardClient`].
 pub async fn parse_tapir_endpoint<A, T>(
     endpoint: &str,
-    mode: ReadMode,
     transport: T,
     rng: crate::Rng,
 ) -> Result<TapirRemoteShardDirectory<A, T>, String>
@@ -373,7 +364,6 @@ where
             host.to_string(),
             port,
             Duration::from_secs(30),
-            mode,
             transport,
             rng,
         )
@@ -389,14 +379,7 @@ where
             })
             .collect::<Result<_, _>>()?;
         let membership = IrMembership::new(addrs.into_iter().map(T::Address::from).collect());
-        Ok(match mode {
-            ReadMode::Strong => {
-                TapirRemoteShardDirectory::with_strong_consistent_read(rng, membership, transport)
-            }
-            ReadMode::Eventual => {
-                TapirRemoteShardDirectory::with_eventual_consistent_read(rng, membership, transport)
-            }
-        })
+        Ok(TapirRemoteShardDirectory::with_strong_consistent_read(rng, membership, transport))
     }
 }
 
@@ -412,7 +395,7 @@ where
         shard: ShardNumber,
     ) -> Result<Option<crate::discovery::ShardRecord<A, K>>, DiscoveryError> {
         let key = shard_key(shard);
-        // Always use linearizable read (RO transaction) regardless of ReadMode.
+        // Always use linearizable read (RO transaction).
         let _sc = self.current_shard_client();
         let ro = self.client.begin_read_only();
         let json = ro
