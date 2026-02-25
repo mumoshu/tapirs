@@ -358,6 +358,29 @@ print_report() {
     echo "================================================================"
 }
 
+# ── Wait for TiKV stores to register ──────────────────────────────────
+# Polls PD's store API until the expected number of TiKV stores are Up.
+wait_tikv_stores() {
+    local target="$1" timeout=90 elapsed=0
+    while [ $elapsed -lt $timeout ]; do
+        local count
+        count=$(curl -sf "http://${TIKV_PD_IP}:2379/pd/api/v1/stores" \
+            | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+up = sum(1 for s in data.get('stores', []) if s.get('store', {}).get('state_name') == 'Up')
+print(up)
+" 2>/dev/null || echo 0)
+        if [ "$count" -ge "$target" ]; then
+            echo "  $count TiKV store(s) registered and Up."
+            return 0
+        fi
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+    echo "  WARN: only $count TiKV store(s) Up after ${timeout}s (expected $target)" >&2
+}
+
 # ── TiKV region pre-splitting ─────────────────────────────────────────
 PD_SPLIT_DIR="$COMPOSE_DIR/pd-split"
 PD_SPLIT_BIN="$PD_SPLIT_DIR/pd-split"
@@ -503,8 +526,8 @@ main() {
 
     echo "  Waiting for PD..."
     wait_tcp "$TIKV_PD_IP" 2379 60
-    echo "  Waiting for TiKV nodes..."
-    sleep 10  # TiKV needs time to register with PD
+    echo "  Waiting for TiKV stores to register with PD..."
+    wait_tikv_stores "$BENCH_REPLICAS"
     echo "  TiKV cluster ready."
 
     # Pre-split TiKV regions if multiple shards requested.
