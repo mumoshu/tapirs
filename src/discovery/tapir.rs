@@ -235,6 +235,62 @@ where
             None => Err(DiscoveryError::NotFound),
         }
     }
+
+    /// Scan all active shards and return their membership and view.
+    ///
+    /// The `mode` parameter selects the consistency level for the scan:
+    /// Strong (RO transaction) or Eventual (unlogged read to 1 replica).
+    /// Results are sorted by shard number.
+    pub(crate) async fn all_active_shard_view_membership_with_consistency_mode<
+        K: serde::de::DeserializeOwned,
+    >(
+        &self,
+        mode: &ReadMode,
+    ) -> Result<Vec<(ShardNumber, IrMembership<A>, u64)>, DiscoveryError> {
+        // Refresh shard client cache (no-op if not DNS mode).
+        let sc = self.current_shard_client();
+        let entries = match mode {
+            ReadMode::Strong => {
+                let ro = self.client.begin_read_only();
+                let start = Sharded {
+                    shard: DISCOVERY_SHARD,
+                    key: SCAN_START.to_string(),
+                };
+                let end = Sharded {
+                    shard: DISCOVERY_SHARD,
+                    key: SCAN_END.to_string(),
+                };
+                ro.scan(start, end)
+                    .await
+                    .map_err(|e| DiscoveryError::ConnectionFailed(format!("{e:?}")))?
+            }
+            ReadMode::Eventual => {
+                let (results, _ts) = sc
+                    .scan(SCAN_START.to_string(), SCAN_END.to_string(), None)
+                    .await
+                    .map_err(|e| DiscoveryError::ConnectionFailed(format!("{e:?}")))?;
+                results
+                    .into_iter()
+                    .filter_map(|(k, v)| v.map(|v| (k, v)))
+                    .collect()
+            }
+        };
+
+        let mut result = Vec::new();
+        for (key, json) in entries {
+            let Some(shard) = parse_shard_number(&key) else {
+                continue;
+            };
+            let record = parse_record::<K>(&json)?;
+            if record.status != ShardStatus::Active {
+                continue;
+            }
+            let membership = parse_membership_from(&record)?;
+            result.push((shard, membership, record.view));
+        }
+        result.sort_by_key(|(s, _, _)| *s);
+        Ok(result)
+    }
 }
 
 impl<A, T> TapirRemoteShardDirectory<A, T>
@@ -432,49 +488,8 @@ where
     async fn weak_all_active_shard_view_memberships(
         &self,
     ) -> Result<Vec<(ShardNumber, IrMembership<A>, u64)>, DiscoveryError> {
-        // Refresh shard client cache (no-op if not DNS mode).
-        let sc = self.current_shard_client();
-        let entries = match self.read_mode {
-            ReadMode::Strong => {
-                let ro = self.client.begin_read_only();
-                let start = Sharded {
-                    shard: DISCOVERY_SHARD,
-                    key: SCAN_START.to_string(),
-                };
-                let end = Sharded {
-                    shard: DISCOVERY_SHARD,
-                    key: SCAN_END.to_string(),
-                };
-                ro.scan(start, end)
-                    .await
-                    .map_err(|e| DiscoveryError::ConnectionFailed(format!("{e:?}")))?
-            }
-            ReadMode::Eventual => {
-                let (results, _ts) = sc
-                    .scan(SCAN_START.to_string(), SCAN_END.to_string(), None)
-                    .await
-                    .map_err(|e| DiscoveryError::ConnectionFailed(format!("{e:?}")))?;
-                results
-                    .into_iter()
-                    .filter_map(|(k, v)| v.map(|v| (k, v)))
-                    .collect()
-            }
-        };
-
-        let mut result = Vec::new();
-        for (key, json) in entries {
-            let Some(shard) = parse_shard_number(&key) else {
-                continue;
-            };
-            let record = parse_record::<K>(&json)?;
-            if record.status != ShardStatus::Active {
-                continue;
-            }
-            let membership = parse_membership_from(&record)?;
-            result.push((shard, membership, record.view));
-        }
-        result.sort_by_key(|(s, _, _)| *s);
-        Ok(result)
+        self.all_active_shard_view_membership_with_consistency_mode::<K>(&self.read_mode)
+            .await
     }
 
     async fn strong_atomic_update_shards(
