@@ -48,7 +48,7 @@ pub use tapir::{
 pub use nodecluster::{CloneError, SoloClusterManager};
 pub use tapir::dns_shard_client::DnsRefreshingShardClient;
 pub use tapir::dynamic_router::{DynamicRouter, ShardDirectory, ShardEntry};
-pub use tapir::shard_manager::ShardManager;
+pub use sharding::shardmanager::ShardManager;
 pub use transport::{
     Channel as ChannelTransport, ChannelRegistry, Message as TransportMessage, TapirTransport,
     Transport,

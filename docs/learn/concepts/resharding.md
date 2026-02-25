@@ -25,8 +25,8 @@
 
 | Term | Definition in tapirs | Where it appears |
 |------|---------------------|-----------------|
-| CDC Cursor | View-based cursor tracking consumed deltas during resharding. Uses view numbers (monotonic) not timestamps (non-monotonic) | `tapir/shard_manager_cdc.rs` — `CdcCursor` |
-| Prepared-Drain | Source shard goes read-only, blocks new prepares, waits for in-flight (potentially cross-shard) transactions to resolve before transferring data | `tapir/shard_manager_cdc.rs` |
+| CDC Cursor | View-based cursor tracking consumed deltas during resharding. Uses view numbers (monotonic) not timestamps (non-monotonic) | `sharding/shardmanager/cdc.rs` — `CdcCursor` |
+| Prepared-Drain | Source shard goes read-only, blocks new prepares, waits for in-flight (potentially cross-shard) transactions to resolve before transferring data | `sharding/shardmanager/cdc.rs` |
 | LeaderRecordDelta | Per-view change record of committed transactions — used by CDC to replicate changes incrementally | `tapir/message.rs` |
-| effective_end_view | `Option<u64>` — highest base_view with a delta. None = no deltas, Some(0) = delta at view 0 | `tapir/shard_manager_cdc.rs` |
-| Read-Protection Transfer | Before decommissioning source, range_reads and max_read_commit_time watermarks transferred to target shard | `tapir/shard_manager_cdc.rs` |
+| effective_end_view | `Option<u64>` — highest base_view with a delta. None = no deltas, Some(0) = delta at view 0 | `sharding/shardmanager/cdc.rs` |
+| Read-Protection Transfer | Before decommissioning source, range_reads and max_read_commit_time watermarks transferred to target shard | `sharding/shardmanager/cdc.rs` |

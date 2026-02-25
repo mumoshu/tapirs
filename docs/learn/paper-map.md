@@ -32,5 +32,5 @@
 | Fig. 10 | TAPIR-DECIDE | `src/tapir/client.rs` (tapir_decide) | [Protocol](internals/protocol-tapir.md) |
 | Fig. 13 | Recovery DECIDE | `src/tapir/replica.rs` | [Paper Extensions](internals/protocol-tapir-paper-extensions.md) |
 | &mdash; | Range Scan (beyond paper) | `src/occ/store.rs`, `src/tapir/routing_client.rs` | [Custom Extensions](internals/protocol-tapir-custom-extensions.md) |
-| &mdash; | Online Resharding (beyond paper) | `src/tapir/shard_manager_cdc.rs` | [Resharding](internals/resharding.md) |
+| &mdash; | Online Resharding (beyond paper) | `src/sharding/shardmanager/cdc.rs` | [Resharding](internals/resharding.md) |
 | &mdash; | Discovery (beyond paper) | `src/discovery/mod.rs`, `src/discovery/tapir.rs` | [Discovery](internals/discovery.md) |

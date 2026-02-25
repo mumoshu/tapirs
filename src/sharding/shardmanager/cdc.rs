@@ -1,7 +1,7 @@
-use super::replica::{ShardConfig, ShardPhase};
-use super::{Change, Key, KeyRange, ShardClient, ShardNumber, Value};
+use crate::tapir::replica::{ShardConfig, ShardPhase};
+use crate::tapir::{Change, Key, KeyRange, ShardClient, ShardNumber, Value};
 use crate::discovery::{RemoteShardDirectory, ShardDirectoryChange};
-use crate::tapir::shard_manager::ShardManager;
+use super::ShardManager;
 use crate::tapir::{Replica, Sharded};
 use crate::transport::Transport;
 use crate::{IrClientId, IrMembership, OccTransaction, OccTransactionId};
@@ -914,7 +914,7 @@ fn filter_changes<K: Ord + Clone, V: Clone>(
 
 /// Ship a set of changes to a target shard by wrapping each as an IO::Commit.
 pub(crate) async fn ship_changes<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>>(
-    client: &super::ShardClient<K, V, T>,
+    client: &crate::tapir::ShardClient<K, V, T>,
     shard: ShardNumber,
     changes: &[Change<K, V>],
     rng: &mut crate::Rng,

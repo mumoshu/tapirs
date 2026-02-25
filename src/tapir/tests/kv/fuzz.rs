@@ -871,7 +871,7 @@ async fn fuzz_tapir_transactions_inner(seed: u64) {
     let reshard_final_shards = Arc::clone(&final_shards);
     let reshard_stop = Arc::clone(&stop_flag);
     let reshard_handle = tokio::spawn(async move {
-        use crate::tapir::shard_manager::ShardManager;
+        use crate::ShardManager;
 
         // Seed manager's local directory with known memberships.
         // ShardManager initiates all membership changes (join/leave), so its

@@ -27,7 +27,7 @@ Source Shard                                        Target Shard
 
 **CDC cursor design:** CDC uses view-based cursors (monotonic) rather than timestamps (non-monotonic in TAPIR -- clients pick from system clocks). Each IR view change fires the `on_install_leader_record_delta` upcall, producing a delta of changes accumulated during that view. The cursor tracks `last_view: Option<u64>` and queries `from_view = last_view + 1`. `scan_changes()` merges responses from f+1 replicas -- by quorum intersection, at least one has fine-grained deltas for each view transition.
 
-**Related docs:** See [Resharding concepts](../concepts/resharding.md) for term definitions, [Protocol](protocol-tapir.md) for how Prepare interacts with ReadOnly phase, and [Discovery](discovery.md) for how shard registration updates during resharding. Key files: `src/tapir/shard_manager_cdc.rs`, `src/tapir/shard_manager_catchup.rs`, `src/tapir/shard_manager.rs`.
+**Related docs:** See [Resharding concepts](../concepts/resharding.md) for term definitions, [Protocol](protocol-tapir.md) for how Prepare interacts with ReadOnly phase, and [Discovery](discovery.md) for how shard registration updates during resharding. Key files: `src/sharding/shardmanager/cdc.rs`, `src/sharding/shardmanager/catchup.rs`, `src/sharding/shardmanager/mod.rs`.
 
 | Phase | What happens | Key constraint |
 |-------|-------------|----------------|

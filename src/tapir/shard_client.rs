@@ -396,7 +396,7 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
     /// transactions via `recover_coordination()`. Only after `pending_prepares`
     /// reaches 0 and the final view change seals the resolutions does
     /// `scan_changes` capture the complete state. This is Phase 3
-    /// freeze+drain in `shard_manager_cdc.rs`.
+    /// freeze+drain in `sharding/shardmanager/cdc.rs`.
     ///
     /// # Backup use case
     ///

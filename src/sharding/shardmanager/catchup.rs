@@ -1,5 +1,5 @@
 use crate::discovery::{RemoteShardDirectory, ShardStatus};
-use crate::tapir::shard_manager::ShardManager;
+use super::ShardManager;
 use crate::tapir::{Key, Replica, ShardClient, ShardNumber, Value};
 use crate::transport::Transport;
 use crate::{IrClientId, IrMembership};

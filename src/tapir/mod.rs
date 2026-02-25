@@ -8,12 +8,6 @@ pub(crate) mod replica;
 mod routing_client;
 #[allow(dead_code)]
 mod shard_client;
-#[allow(dead_code)]
-pub mod shard_manager;
-#[allow(dead_code)]
-mod shard_manager_catchup;
-#[allow(dead_code)]
-pub(crate) mod shard_manager_cdc;
 pub mod shard_router;
 mod timestamp;
 

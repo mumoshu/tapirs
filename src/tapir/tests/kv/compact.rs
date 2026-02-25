@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::tapir::shard_manager::ShardManager;
+use crate::ShardManager;
 use crate::tapir::ShardClient;
 use crate::testing::discovery::build_single_node_discovery;
 use crate::IrClientId;

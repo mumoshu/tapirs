@@ -33,4 +33,4 @@ tapirs Custom Extensions (beyond the paper)
 | Range scan | Multi-key ordered read within `[start_key, end_key]` | `tapir/routing_client.rs`, `tapir/shard_client.rs` |
 | Phantom-write protection | `range_reads` tracking + scan-set OCC check at prepare time | `occ/store.rs` |
 | Multi-shard scan merge | RoutingClient splits range per shard, merges results | `tapir/routing_client.rs` |
-| Scan protection transfer | range_reads watermarks transferred during resharding | `tapir/shard_manager_cdc.rs` |
+| Scan protection transfer | range_reads watermarks transferred during resharding | `sharding/shardmanager/cdc.rs` |

@@ -1,6 +1,9 @@
-use super::{
-    Key, KeyRange, ShardClient, ShardNumber, Value,
-};
+#[allow(dead_code)]
+pub(crate) mod cdc;
+#[allow(dead_code)]
+mod catchup;
+
+use crate::tapir::{Key, KeyRange, ShardClient, ShardNumber, Value};
 use crate::discovery::{RemoteShardDirectory, ShardDirectoryChange, ShardRecord, ShardStatus};
 use crate::transport::Transport;
 use crate::tapir::Replica;
@@ -169,8 +172,8 @@ impl<
     pub(crate) async fn get_active_shard(
         &self,
         shard: ShardNumber,
-    ) -> Result<ShardRecord<T::Address, K>, super::shard_manager_cdc::ReshardError> {
-        use super::shard_manager_cdc::ReshardError;
+    ) -> Result<ShardRecord<T::Address, K>, cdc::ReshardError> {
+        use cdc::ReshardError;
         let record = self.remote.strong_get_shard(shard).await
             .map_err(|e| ReshardError::DiscoveryError(format!("{shard:?}: {e:?}")))?
             .ok_or(ReshardError::ShardNotRegistered(shard))?;

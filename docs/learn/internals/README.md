@@ -50,7 +50,7 @@
 | How range scan + phantom protection work | `src/occ/store.rs` | [Custom Extensions](protocol-tapir-custom-extensions.md) |
 | How IR record representation and compaction work | `src/ir/record.rs`, `src/ir/replica.rs` | [IR Custom Extensions](ir-custom-extensions.md) |
 | How data is persisted to disk | `src/mvcc/disk/` | [Storage](storage.md) |
-| How shards split, merge, and compact online | `src/tapir/shard_manager_cdc.rs` | [Resharding](resharding.md) |
+| How shards split, merge, and compact online | `src/sharding/shardmanager/cdc.rs` | [Resharding](resharding.md) |
 | How nodes discover each other | `src/discovery/mod.rs`, `src/discovery/tapir.rs` | [Discovery](discovery.md) |
 | How tests achieve deterministic reproduction | `tests/`, `src/transport/faulty_channel.rs` | [Testing](testing.md) |
 | Why specific architectural choices were made | -- | [Architecture Decisions](architecture-decisions.md) |

@@ -514,7 +514,7 @@ impl Node {
 
         // Clone the replica's transport and create a temporary IrClient
         // to send BootstrapRecord — same pattern as join()
-        // in shard_manager_catchup.rs.
+        // in sharding/shardmanager/catchup.rs.
         let transport = {
             let replicas = self.replicas.lock().unwrap();
             let handle = replicas.get(&shard)

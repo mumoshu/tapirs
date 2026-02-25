@@ -62,7 +62,7 @@ and R0+R1 participate in the next view change:
   → stale prepared entry, inconsistent state
 ```
 
-**Shard replacement (the only safe compaction):** For compaction (removing all resolved entries, transaction_log, ancient MVCC versions), the CDC-based shard replacement in `shard_manager_cdc.rs` starts a fresh shard with only committed state -- no IR record history needed. This is the only safe mechanism because it rebuilds from scratch rather than selectively removing entries from a live record.
+**Shard replacement (the only safe compaction):** For compaction (removing all resolved entries, transaction_log, ancient MVCC versions), the CDC-based shard replacement in `sharding/shardmanager/cdc.rs` starts a fresh shard with only committed state -- no IR record history needed. This is the only safe mechanism because it rebuilds from scratch rather than selectively removing entries from a live record.
 
 **Related docs:** Back to [IR Custom Extensions](ir-custom-extensions.md). See [Protocol](protocol-tapir.md) for the base view change flow, [Resharding](resharding.md) for CDC-based shard replacement, and [IR concepts](../concepts/ir.md) for record terminology. Key files: `src/tapir/shard_manager_cdc.rs` (shard replacement).
 
@@ -70,4 +70,4 @@ and R0+R1 participate in the next view change:
 |-------|---------|----------|
 | Why CO::Prepare can't be compacted in-place | Write set loss + ambiguous transaction fate | (this doc) |
 | Why per-replica compaction fails | Single replica's view is not quorum-agreed truth | (this doc) |
-| Shard replacement (safe compaction) | CDC-based fresh shard, no IR history | `tapir/shard_manager_cdc.rs` |
+| Shard replacement (safe compaction) | CDC-based fresh shard, no IR history | `sharding/shardmanager/cdc.rs` |

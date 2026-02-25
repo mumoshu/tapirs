@@ -1,6 +1,6 @@
 use super::types::{CloneError, SoloClusterManager};
 use crate::tapir::replica::{ShardConfig, ShardPhase};
-use crate::tapir::shard_manager_cdc::{ship_changes, CdcCursor};
+use crate::sharding::shardmanager::cdc::{ship_changes, CdcCursor};
 use crate::tapir::{Key, Replica, ShardNumber, Value};
 use crate::transport::Transport;
 use std::time::Duration;
@@ -12,7 +12,7 @@ impl SoloClusterManager {
     /// ShardClients with correct membership. Used by tests (ChannelTransport)
     /// and by `clone_shard_direct()` internally.
     ///
-    /// # Algorithm (adapted from compact() in shard_manager_cdc.rs)
+    /// # Algorithm (adapted from compact() in sharding/shardmanager/cdc.rs)
     ///
     /// | Phase | Action |
     /// |-------|--------|

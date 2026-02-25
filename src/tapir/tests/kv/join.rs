@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::tapir::shard_manager::ShardManager;
+use crate::ShardManager;
 use crate::testing::discovery::build_single_node_discovery;
 
 #[tokio::test(start_paused = true)]
