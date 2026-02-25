@@ -5,6 +5,7 @@ mod join;
 mod leave;
 mod merge;
 mod register;
+mod scan_changes;
 mod split;
 
 use serde::Deserialize;
