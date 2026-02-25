@@ -81,6 +81,11 @@ enum Command {
         #[command(subcommand)]
         resource: BackupResource,
     },
+    /// Restore cluster data from a backup directory.
+    Restore {
+        #[command(subcommand)]
+        resource: RestoreResource,
+    },
     /// Operations via direct node access (no ShardManager required).
     ///
     /// These commands communicate directly with node admin APIs to discover
@@ -106,6 +111,25 @@ enum BackupResource {
         /// Output directory for backup files.
         #[arg(long)]
         output: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum RestoreResource {
+    /// Restore all shards from a backup directory to a target cluster.
+    ///
+    /// Creates replicas on target nodes, ships delta data via shard manager,
+    /// and registers shards in discovery.
+    Cluster {
+        /// Shard-manager URL of the target cluster.
+        #[arg(long, default_value = "http://127.0.0.1:9001")]
+        shard_manager_url: String,
+        /// Comma-separated admin API addresses of target nodes.
+        #[arg(long)]
+        admin_addrs: String,
+        /// Input directory containing backup files.
+        #[arg(long)]
+        input: String,
     },
 }
 
@@ -418,6 +442,26 @@ fn main() {
             let mgr = tapirs::backup::BackupManager::new(client);
             mgr.backup_cluster(&output)
                 .map(|()| println!("Backup completed to {output}"))
+        }
+        Command::Restore {
+            resource:
+                RestoreResource::Cluster {
+                    shard_manager_url,
+                    admin_addrs,
+                    input,
+                },
+        } => {
+            let client = make_sm_client(&shard_manager_url, #[cfg(feature = "tls")] &cli.tls);
+            let mgr = tapirs::backup::BackupManager::new(client);
+            let addrs: Vec<String> = admin_addrs
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .collect();
+            let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");
+            rt.block_on(async {
+                mgr.restore_cluster(&addrs, &input).await
+            })
+            .map(|()| println!("Restore completed from {input}"))
         }
         Command::Solo {
             command:
