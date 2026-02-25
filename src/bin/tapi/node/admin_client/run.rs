@@ -18,7 +18,7 @@ pub(crate) async fn run(
         } => {
             let addrs: Vec<String> =
                 admin_addrs.split(',').map(|s| s.trim().to_string()).collect();
-            if let Err(e) = super::backup_cluster::backup_cluster(
+            if let Err(e) = tapirs::node::node_client::backup_cluster::backup_cluster(
                 addrs,
                 output,
                 #[cfg(feature = "tls")]
@@ -38,7 +38,7 @@ pub(crate) async fn run(
         } => {
             let addrs: Vec<String> =
                 admin_addrs.split(',').map(|s| s.trim().to_string()).collect();
-            if let Err(e) = super::restore_cluster::restore_cluster(
+            if let Err(e) = tapirs::node::node_client::restore_cluster::restore_cluster(
                 addrs,
                 backup_dir,
                 *base_port,
@@ -114,7 +114,7 @@ pub(crate) async fn run(
             let deadline =
                 std::time::Instant::now() + std::time::Duration::from_secs(timeout);
             loop {
-                if let Ok(Some(resp)) = super::raw_admin_exchange::raw_admin_exchange(
+                if let Ok(Some(resp)) = tapirs::node::node_client::raw_admin_exchange(
                     &admin_listen_addr,
                     r#"{"command":"status"}"#,
                     #[cfg(feature = "tls")]
@@ -139,7 +139,7 @@ pub(crate) async fn run(
         AdminAction::Backup { .. } | AdminAction::Restore { .. } => unreachable!(),
     };
 
-    match super::raw_admin_exchange::raw_admin_exchange(
+    match tapirs::node::node_client::raw_admin_exchange(
         &addr,
         &request,
         #[cfg(feature = "tls")]

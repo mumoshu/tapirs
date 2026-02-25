@@ -1,4 +1,3 @@
-pub mod admin_client;
 #[allow(clippy::module_inception)]
 mod node;
 pub mod node_client;

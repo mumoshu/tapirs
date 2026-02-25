@@ -165,7 +165,7 @@ impl SoloClusterManager {
         dest_base_port: u16,
     ) -> Result<(), CloneError> {
         use crate::discovery::InMemoryShardDirectory;
-        use crate::node::admin_client::send_admin_request;
+        use crate::node::node_client::send_admin_request;
         use crate::{IrClientId, IrMembership, TapirReplica, TcpAddress, TcpTransport};
         use std::sync::Arc;
 

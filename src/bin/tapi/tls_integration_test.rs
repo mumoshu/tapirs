@@ -222,7 +222,7 @@ async fn test_tls_admin_server() {
 
     // Send status request via TLS.
     let tls_connector = tapirs::tls::ReloadableTlsConnector::new(&tls_config).unwrap();
-    let resp = tapirs::node::admin_client::send_admin_request_tls(
+    let resp = tapirs::node::node_client::send_admin_request_tls(
         &admin_addr.to_string(),
         r#"{"command":"status"}"#,
         &tls_connector,
