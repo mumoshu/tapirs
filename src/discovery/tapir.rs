@@ -112,35 +112,12 @@ where
     <A as FromStr>::Err: Display,
     T: TapirTransport<String, String>,
 {
-    /// Create with linearizable reads (RO transactions).
+    /// Create a new directory client with the given membership and transport.
     ///
-    /// Used by ShardManager for linearizable shard authority reads.
-    pub fn with_strong_consistent_read(
-        mut rng: crate::Rng,
-        membership: IrMembership<T::Address>,
-        transport: T,
-    ) -> Self {
-        let shard_client = ShardClient::new(
-            rng.fork(),
-            IrClientId::new(&mut rng),
-            DISCOVERY_SHARD,
-            membership,
-            transport.clone(),
-        );
-        let client = TapirClient::new(rng, transport);
-        client.set_shard_client(DISCOVERY_SHARD, shard_client.clone());
-        Self {
-            client,
-            shard_client,
-            dns_client: None,
-            _phantom: PhantomData,
-        }
-    }
-
-    /// Create with eventual consistent reads (unlogged to 1 random replica).
-    ///
-    /// Used by clients/nodes via `CachingShardDirectory` PULL.
-    pub fn with_eventual_consistent_read(
+    /// Read consistency is determined per method: `strong_*` methods use
+    /// linearizable reads (RO transactions), `weak_*` methods use eventual
+    /// reads (unlogged to 1 random replica).
+    pub fn new(
         mut rng: crate::Rng,
         membership: IrMembership<T::Address>,
         transport: T,
@@ -379,7 +356,7 @@ where
             })
             .collect::<Result<_, _>>()?;
         let membership = IrMembership::new(addrs.into_iter().map(T::Address::from).collect());
-        Ok(TapirRemoteShardDirectory::with_strong_consistent_read(rng, membership, transport))
+        Ok(TapirRemoteShardDirectory::new(rng, membership, transport))
     }
 }
 

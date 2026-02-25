@@ -50,7 +50,7 @@ impl TestDiscoveryCluster {
             .registry
             .channel(move |_, _| None, Arc::clone(&self.directory));
         let membership = IrMembership::new((0..self.num_replicas).collect());
-        Arc::new(TapirRemoteShardDirectory::with_eventual_consistent_read(
+        Arc::new(TapirRemoteShardDirectory::new(
             rng.fork(),
             membership,
             channel,
@@ -68,7 +68,7 @@ impl TestDiscoveryCluster {
             .registry
             .channel(move |_, _| None, Arc::clone(&self.directory));
         let membership = IrMembership::new((0..self.num_replicas).collect());
-        Arc::new(TapirRemoteShardDirectory::with_strong_consistent_read(
+        Arc::new(TapirRemoteShardDirectory::new(
             rng.fork(),
             membership,
             channel,
