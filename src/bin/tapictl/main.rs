@@ -196,6 +196,31 @@ enum SoloCommand {
         #[arg(long)]
         dest_base_port: u16,
     },
+    /// Back up all shards via direct node access.
+    ///
+    /// Queries admin APIs to discover shard membership, creates ephemeral
+    /// ShardClients, and writes delta files + cluster.json. Supports
+    /// incremental backup when an existing cluster.json is present.
+    Backup {
+        /// Comma-separated admin API addresses of nodes (host:port).
+        #[arg(long)]
+        admin_addrs: String,
+        /// Output directory for backup files.
+        #[arg(long)]
+        output: String,
+    },
+    /// Restore all shards from a backup directory via direct node access.
+    ///
+    /// Creates replicas on target nodes and ships delta data directly.
+    /// No shard manager or discovery registration required.
+    Restore {
+        /// Comma-separated admin API addresses of target nodes (host:port).
+        #[arg(long)]
+        admin_addrs: String,
+        /// Input directory containing backup files.
+        #[arg(long)]
+        input: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -504,6 +529,56 @@ fn main() {
                         source_shard, dest_shard
                     )
                 })
+            })
+        }
+        Command::Solo {
+            command:
+                SoloCommand::Backup {
+                    admin_addrs,
+                    output,
+                },
+        } => {
+            let addrs: Vec<String> = admin_addrs
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .collect();
+            let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");
+            rt.block_on(async {
+                use rand::{thread_rng, Rng as _};
+                let rng = tapirs::Rng::from_seed(thread_rng().r#gen());
+                let mut mgr = tapirs::SoloClusterManager::new(rng);
+                mgr.set_progress_callback(|phase| {
+                    eprintln!("[solo backup] {phase}");
+                });
+                mgr.backup_cluster_direct(&addrs, &output)
+                    .await
+                    .map_err(|e| format!("{e:?}"))
+                    .map(|()| println!("Backup completed to {output}"))
+            })
+        }
+        Command::Solo {
+            command:
+                SoloCommand::Restore {
+                    admin_addrs,
+                    input,
+                },
+        } => {
+            let addrs: Vec<String> = admin_addrs
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .collect();
+            let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");
+            rt.block_on(async {
+                use rand::{thread_rng, Rng as _};
+                let rng = tapirs::Rng::from_seed(thread_rng().r#gen());
+                let mut mgr = tapirs::SoloClusterManager::new(rng);
+                mgr.set_progress_callback(|phase| {
+                    eprintln!("[solo restore] {phase}");
+                });
+                mgr.restore_cluster_direct(&addrs, &input)
+                    .await
+                    .map_err(|e| format!("{e:?}"))
+                    .map(|()| println!("Restore completed from {input}"))
             })
         }
     };
