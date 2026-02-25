@@ -1,4 +1,4 @@
-.PHONY: test lint lock_server_stress_test coordinator_failure_stress_test_3 coordinator_failure_stress_test_7 bench bench/ro bench/rw bench/mix fuzz fuzz100 maelstrom ci ci-full ci/operator-lint ci/operator-test ci/testbed-kube-operator ci/testbed-kube-operator-tls ci/testbed-kube ci/testbed-docker-compose ci/testbed-solo ci/testbed ci/fuzz-diagnose ci/fuzz-multi-seed
+.PHONY: test lint lock_server_stress_test coordinator_failure_stress_test_3 coordinator_failure_stress_test_7 bench bench/ro bench/rw bench/mix fuzz fuzz100 maelstrom ci ci-full ci/operator-lint ci/operator-test ci/bench-solo ci/testbed-kube-operator ci/testbed-kube-operator-tls ci/testbed-kube ci/testbed-docker-compose ci/testbed-solo ci/testbed ci/fuzz-diagnose ci/fuzz-multi-seed
 
 lint:
 	cargo clippy --workspace --all-targets -- -D warnings -D clippy::iter_over_hash_type && ./scripts/check-determinism.sh
@@ -84,6 +84,13 @@ ci/testbed-kube:
 	TAPIR_KIND=1 scripts/testbed-kube.sh up
 	scripts/testbed-kube.sh demo
 	scripts/testbed-kube.sh down
+
+ci/bench-solo:
+	scripts/testbed-solo.sh up
+	BENCH_CLUSTER=127.0.0.1:6000,127.0.0.1:6001,127.0.0.1:6002 \
+	  timeout -k 10s 120s cargo test bench_rw --release -- --nocapture --include-ignored \
+	  || { scripts/testbed-solo.sh down; exit 1; }
+	scripts/testbed-solo.sh down
 
 ci/testbed-solo:
 	scripts/testbed-solo.sh up && scripts/testbed-solo.sh down || { scripts/testbed-solo.sh down; exit 1; }
