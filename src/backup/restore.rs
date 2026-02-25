@@ -57,7 +57,7 @@ impl super::BackupManager {
                 let request_json = request.to_string();
 
                 #[cfg(feature = "tls")]
-                {
+                let resp = {
                     crate::node::node_client::admin_request(
                         admin_addr,
                         &request_json,
@@ -69,11 +69,11 @@ impl super::BackupManager {
                             "create replica on {admin_addr} for shard {}: {e}",
                             shard_hist.shard
                         )
-                    })?;
-                }
+                    })?
+                };
 
                 #[cfg(not(feature = "tls"))]
-                {
+                let resp = {
                     crate::node::node_client::send_admin_request(admin_addr, &request_json)
                         .await
                         .map_err(|e| {
@@ -81,7 +81,15 @@ impl super::BackupManager {
                                 "create replica on {admin_addr} for shard {}: {e}",
                                 shard_hist.shard
                             )
-                        })?;
+                        })?
+                };
+
+                if !resp.ok {
+                    return Err(format!(
+                        "create replica on {admin_addr} for shard {}: {}",
+                        shard_hist.shard,
+                        resp.message.as_deref().unwrap_or("unknown error")
+                    ));
                 }
             }
         }

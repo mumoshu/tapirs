@@ -677,3 +677,281 @@ async fn test_rolling_membership_replacement() {
         assert_eq!(val, Some(format!("removed_{i}")));
     }
 }
+
+/// Rewrite cluster.json to replace old replica addresses with fresh ones.
+///
+/// Returns the new per-shard replica addresses (same shape as shards in cluster.json).
+fn rewrite_cluster_json_addrs(
+    backup_path: &str,
+    num_replicas_per_shard: usize,
+) -> Vec<Vec<SocketAddr>> {
+    use tapirs::backup::types::ClusterMetadata;
+
+    let cluster_json = format!("{backup_path}/cluster.json");
+    let data = std::fs::read_to_string(&cluster_json).unwrap();
+    let mut meta: ClusterMetadata = serde_json::from_str(&data).unwrap();
+
+    let mut fresh_addrs_per_shard = Vec::new();
+    for shard_hist in &mut meta.shards {
+        let mut fresh = Vec::new();
+        for _ in 0..num_replicas_per_shard {
+            fresh.push(alloc_addr());
+        }
+        let fresh_strings: Vec<String> = fresh.iter().map(|a| a.to_string()).collect();
+        // Update all deltas with fresh addresses (restore uses the last delta's addresses).
+        for delta in &mut shard_hist.deltas {
+            delta.replicas_on_backup_taken = fresh_strings.clone();
+        }
+        fresh_addrs_per_shard.push(fresh);
+    }
+
+    let json = serde_json::to_string_pretty(&meta).unwrap();
+    std::fs::write(&cluster_json, json).unwrap();
+    fresh_addrs_per_shard
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_cluster_backup_restore_via_admin() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init();
+
+    let cluster = bootstrap_cluster(2, 3, 3).await;
+    let client = &cluster.client;
+
+    // Write data to shard 0 (keys a-m).
+    let txn = client.begin();
+    txn.put("apple".to_string(), Some("red".to_string()));
+    txn.put("banana".to_string(), Some("yellow".to_string()));
+    assert!(txn.commit().await.is_some(), "initial put should commit");
+
+    // Write data to shard 1 (keys n-z).
+    let txn = client.begin();
+    txn.put("plum".to_string(), Some("purple".to_string()));
+    assert!(txn.commit().await.is_some(), "shard 1 put should commit");
+
+    // Force view change on both shards to seal CDC deltas.
+    for shard_idx in 0..2u32 {
+        let shard = ShardNumber(shard_idx);
+        let shard_nodes: Vec<&Arc<Node>> = cluster
+            .nodes
+            .iter()
+            .filter(|n| n.shard_view_number(shard).is_some())
+            .collect();
+        let old_view = quorum_view_number(&shard_nodes, shard);
+        cluster.nodes[0].force_view_change(shard);
+        wait_for_view_change(
+            client,
+            &shard_nodes,
+            shard,
+            old_view,
+            &format!("vc_seal_{shard_idx}"),
+        )
+        .await;
+    }
+
+    // Backup.
+    let backup_dir = TempDir::new().unwrap();
+    let backup_path = backup_dir.path().to_str().unwrap();
+    let sm_url = format!("http://{}", cluster.shard_manager_addr);
+    let sm_client = HttpShardManagerClient::new(&sm_url);
+    let mgr = tapirs::backup::BackupManager::new(sm_client);
+    mgr.backup_cluster(backup_path).unwrap();
+
+    // Verify backup files exist.
+    assert!(
+        std::path::Path::new(&format!("{backup_path}/cluster.json")).exists(),
+        "cluster.json should exist"
+    );
+    assert!(
+        std::path::Path::new(&format!("{backup_path}/shard_0_delta_0.bin")).exists(),
+        "shard_0_delta_0.bin should exist"
+    );
+    assert!(
+        std::path::Path::new(&format!("{backup_path}/shard_1_delta_0.bin")).exists(),
+        "shard_1_delta_0.bin should exist"
+    );
+
+    // Rewrite cluster.json with fresh addresses (old ports remain bound by
+    // accept_loop tasks even after remove_replica — port reuse would fail).
+    let _fresh_addrs = rewrite_cluster_json_addrs(backup_path, 3);
+
+    // Create fresh Node objects for restored replicas (old nodes still hold
+    // the original ports, so restored replicas need separate nodes).
+    let mut restore_nodes = Vec::new();
+    let mut restore_temp_dirs = Vec::new();
+    let mut admin_addrs = Vec::new();
+    for _ in 0..3u32 {
+        let td = TempDir::new().unwrap();
+        let backend = create_disc_backend(&cluster.disc_endpoint).await;
+        let node = Arc::new(Node::with_discovery_backend_and_shard_manager(
+            td.path().to_str().unwrap().to_string(),
+            backend,
+            &sm_url,
+            production_rng,
+        ));
+        let admin_addr = alloc_addr();
+        tapirs::node::node_server::start(
+            admin_addr,
+            Arc::clone(&node),
+            #[cfg(feature = "tls")]
+            None,
+        )
+        .await;
+        admin_addrs.push(admin_addr.to_string());
+        restore_nodes.push(node);
+        restore_temp_dirs.push(td);
+    }
+
+    // Restore.
+    let restore_sm_client = HttpShardManagerClient::new(&sm_url);
+    let restore_mgr = tapirs::backup::BackupManager::new(restore_sm_client);
+    restore_mgr
+        .restore_cluster(&admin_addrs, backup_path)
+        .await
+        .unwrap();
+
+    // Wait for restored replicas to settle.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Create a new client for the restored cluster.
+    let (restored_client, _td, _disc_dir) =
+        create_test_client(&cluster.disc_endpoint, 2).await;
+
+    // Verify all data is readable.
+    let val = rw_get(&restored_client, "apple", "apple_verify").await;
+    assert_eq!(val, Some("red".to_string()));
+    let val = rw_get(&restored_client, "banana", "banana_verify").await;
+    assert_eq!(val, Some("yellow".to_string()));
+    let val = rw_get(&restored_client, "plum", "plum_verify").await;
+    assert_eq!(val, Some("purple".to_string()));
+
+    // Verify new writes work on restored cluster.
+    let txn = restored_client.begin();
+    txn.put("cherry".to_string(), Some("dark".to_string()));
+    assert!(
+        txn.commit().await.is_some(),
+        "new write on restored cluster should commit"
+    );
+
+    // Keep temp dirs alive until end of test.
+    drop(restore_temp_dirs);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_backup_restore_incremental() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init();
+
+    let cluster = bootstrap_cluster(1, 3, 3).await;
+    let client = &cluster.client;
+    let shard = ShardNumber(0);
+    let sm_url = format!("http://{}", cluster.shard_manager_addr);
+
+    // Write initial data.
+    let txn = client.begin();
+    txn.put("alpha".to_string(), Some("1".to_string()));
+    txn.put("bravo".to_string(), Some("2".to_string()));
+    assert!(txn.commit().await.is_some(), "initial put should commit");
+
+    // Force view change to seal CDC deltas.
+    let shard_nodes: Vec<&Arc<Node>> = cluster
+        .nodes
+        .iter()
+        .filter(|n| n.shard_view_number(shard).is_some())
+        .collect();
+    let old_view = quorum_view_number(&shard_nodes, shard);
+    cluster.nodes[0].force_view_change(shard);
+    wait_for_view_change(client, &shard_nodes, shard, old_view, "vc_incr_1").await;
+
+    // Full backup.
+    let backup_dir = TempDir::new().unwrap();
+    let backup_path = backup_dir.path().to_str().unwrap();
+    let sm_client = HttpShardManagerClient::new(&sm_url);
+    let mgr = tapirs::backup::BackupManager::new(sm_client);
+    mgr.backup_cluster(backup_path).unwrap();
+
+    assert!(
+        std::path::Path::new(&format!("{backup_path}/shard_0_delta_0.bin")).exists(),
+        "delta 0 should exist after full backup"
+    );
+
+    // Write more data.
+    let txn = client.begin();
+    txn.put("charlie".to_string(), Some("3".to_string()));
+    txn.put("delta".to_string(), Some("4".to_string()));
+    assert!(txn.commit().await.is_some(), "second put should commit");
+
+    // Force another view change for the second batch.
+    let old_view = quorum_view_number(&shard_nodes, shard);
+    cluster.nodes[0].force_view_change(shard);
+    wait_for_view_change(client, &shard_nodes, shard, old_view, "vc_incr_2").await;
+
+    // Incremental backup (reads last_backup_views from cluster.json).
+    let sm_client2 = HttpShardManagerClient::new(&sm_url);
+    let mgr2 = tapirs::backup::BackupManager::new(sm_client2);
+    mgr2.backup_cluster(backup_path).unwrap();
+
+    assert!(
+        std::path::Path::new(&format!("{backup_path}/shard_0_delta_1.bin")).exists(),
+        "delta 1 should exist after incremental backup"
+    );
+
+    // Rewrite cluster.json with fresh addresses for restore.
+    let _fresh_addrs = rewrite_cluster_json_addrs(backup_path, 3);
+
+    // Create fresh Node objects for restore.
+    let mut restore_nodes = Vec::new();
+    let mut restore_temp_dirs = Vec::new();
+    let mut admin_addrs = Vec::new();
+    for _ in 0..3u32 {
+        let td = TempDir::new().unwrap();
+        let backend = create_disc_backend(&cluster.disc_endpoint).await;
+        let node = Arc::new(Node::with_discovery_backend_and_shard_manager(
+            td.path().to_str().unwrap().to_string(),
+            backend,
+            &sm_url,
+            production_rng,
+        ));
+        let admin_addr = alloc_addr();
+        tapirs::node::node_server::start(
+            admin_addr,
+            Arc::clone(&node),
+            #[cfg(feature = "tls")]
+            None,
+        )
+        .await;
+        admin_addrs.push(admin_addr.to_string());
+        restore_nodes.push(node);
+        restore_temp_dirs.push(td);
+    }
+
+    // Restore (applies both delta files).
+    let restore_sm_client = HttpShardManagerClient::new(&sm_url);
+    let restore_mgr = tapirs::backup::BackupManager::new(restore_sm_client);
+    restore_mgr
+        .restore_cluster(&admin_addrs, backup_path)
+        .await
+        .unwrap();
+
+    // Wait for restored replicas to settle.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Create a new client.
+    let (restored_client, _td, _disc_dir) =
+        create_test_client(&cluster.disc_endpoint, 1).await;
+
+    // Verify all 4 keys.
+    let val = rw_get(&restored_client, "alpha", "alpha_verify").await;
+    assert_eq!(val, Some("1".to_string()));
+    let val = rw_get(&restored_client, "bravo", "bravo_verify").await;
+    assert_eq!(val, Some("2".to_string()));
+    let val = rw_get(&restored_client, "charlie", "charlie_verify").await;
+    assert_eq!(val, Some("3".to_string()));
+    let val = rw_get(&restored_client, "delta", "delta_verify").await;
+    assert_eq!(val, Some("4".to_string()));
+
+    // Keep temp dirs alive until end of test.
+    drop(restore_temp_dirs);
+}
