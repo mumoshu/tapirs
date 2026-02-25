@@ -67,6 +67,10 @@ mod ro_scan;
 mod runner;
 mod rw;
 mod tapir_impl;
+#[cfg(feature = "tikv")]
+mod tikv_impl;
+#[cfg(feature = "tikv")]
+mod tikv_rw;
 mod traits;
 mod workload;
 mod workload_gen;

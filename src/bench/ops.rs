@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 /// A single operation within a transaction.
+#[derive(Clone)]
 pub enum Op {
     Get { key: String },
     Put { key: String, value: String },
@@ -8,6 +9,7 @@ pub enum Op {
 }
 
 /// A complete transaction's operations.
+#[derive(Clone)]
 pub struct TxnOps {
     pub read_only: bool,
     pub ops: Vec<Op>,
