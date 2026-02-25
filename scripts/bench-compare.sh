@@ -52,12 +52,25 @@ compute_tapir_resources() {
 
 # TiKV: 1 PD (small fixed) + N TiKV nodes
 PD_CPUS="0.50"
-PD_MEM="1.00"  # GB
+PD_MEM="0.25"  # GB
+
+TIKV_MIN_NODE_MEM="1.00"  # GB — TiKV OOMs below ~1GB (RocksDB + gRPC + threads)
 
 compute_tikv_resources() {
     local total_cpu="$1" total_mem="$2" n_replicas="$3"
     TIKV_NODE_CPUS=$(echo "scale=2; ($total_cpu - $PD_CPUS) / $n_replicas" | bc)
     TIKV_NODE_MEM=$(echo "scale=2; ($total_mem - $PD_MEM) / $n_replicas" | bc)
+    # Enforce minimum memory per TiKV node — TiKV OOMs below ~1GB
+    local below
+    below=$(echo "$TIKV_NODE_MEM < $TIKV_MIN_NODE_MEM" | bc)
+    if [ "$below" = "1" ]; then
+        local min_total
+        min_total=$(echo "scale=1; $PD_MEM + $n_replicas * $TIKV_MIN_NODE_MEM" | bc)
+        echo "ERROR: TiKV node memory ${TIKV_NODE_MEM}GB < minimum ${TIKV_MIN_NODE_MEM}GB." >&2
+        echo "  Increase BENCH_MEM to at least ${min_total}GB for ${n_replicas} TiKV replicas." >&2
+        echo "  (PD=${PD_MEM}GB + ${n_replicas}x${TIKV_MIN_NODE_MEM}GB)" >&2
+        exit 1
+    fi
 }
 
 # Format GB to docker memory string (e.g. 3.67 -> 3670m)
@@ -156,6 +169,38 @@ membership = ${membership}
 EOF
     done
     echo "  Generated discovery configs in $GENERATED_DIR/"
+}
+
+# ── Generate TiKV config with memory-appropriate settings ────────────
+generate_tikv_config() {
+    mkdir -p "$GENERATED_DIR"
+    # Compute block-cache capacity: ~40% of TiKV node memory, at least 64MB
+    local mem_mb
+    mem_mb=$(echo "$TIKV_NODE_MEM" | awk '{printf "%d", $1 * 1000}')
+    local block_cache_mb=$((mem_mb * 40 / 100))
+    if [ "$block_cache_mb" -lt 64 ]; then
+        block_cache_mb=64
+    fi
+    cat > "$GENERATED_DIR/tikv.toml" <<EOF
+[storage.block-cache]
+capacity = "${block_cache_mb}MB"
+
+[rocksdb.defaultcf]
+write-buffer-size = "4MB"
+max-write-buffer-number = 2
+
+[rocksdb.writecf]
+write-buffer-size = "4MB"
+max-write-buffer-number = 2
+
+[rocksdb.lockcf]
+write-buffer-size = "4MB"
+max-write-buffer-number = 2
+
+[raftdb.defaultcf]
+write-buffer-size = "4MB"
+max-write-buffer-number = 2
+EOF
 }
 
 # ── TAPIR bootstrap (mirrors tapiadm docker.rs lines 278-340) ────────
@@ -510,17 +555,11 @@ main() {
 
     # ── 7. Start TiKV cluster and run bench ───────────────────────────
     echo "[7/8] Starting TiKV cluster..."
-    # If multi-shard and pd-split helper isn't available, use small
-    # region-split-size for auto-splitting fallback.
-    local tikv_region_split_size="96MB"
-    if [ "$BENCH_SHARDS" -gt 1 ] && [ ! -x "$PD_SPLIT_BIN" ]; then
-        tikv_region_split_size="1MB"
-    fi
+    generate_tikv_config
     PD_CPUS="$PD_CPUS" \
     PD_MEM="$pd_mem_docker" \
     TIKV_NODE_CPUS="$TIKV_NODE_CPUS" \
     TIKV_NODE_MEM="$tikv_node_mem_docker" \
-    TIKV_REGION_SPLIT_SIZE="$tikv_region_split_size" \
     NETWORK_DELAY_MS="$BENCH_DELAY_MS" \
     tikv_compose up -d
 

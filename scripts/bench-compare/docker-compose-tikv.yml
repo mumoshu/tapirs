@@ -51,9 +51,11 @@ services:
         --addr 0.0.0.0:20160
         --advertise-addr 172.30.0.11:20160
         --status-addr 0.0.0.0:20180
-        --pd 172.30.0.10:2379
+        --pd-endpoints 172.30.0.10:2379
         --data-dir /data/tikv
-        --raftstore.region-split-size ${TIKV_REGION_SPLIT_SIZE:-96MB}
+        --config /etc/tikv/tikv.toml
+    volumes:
+      - ./generated/tikv.toml:/etc/tikv/tikv.toml:ro
     environment:
       - NETWORK_DELAY_MS=${NETWORK_DELAY_MS:-0}
     cap_add:
@@ -77,9 +79,11 @@ services:
         --addr 0.0.0.0:20160
         --advertise-addr 172.30.0.12:20160
         --status-addr 0.0.0.0:20180
-        --pd 172.30.0.10:2379
+        --pd-endpoints 172.30.0.10:2379
         --data-dir /data/tikv
-        --raftstore.region-split-size ${TIKV_REGION_SPLIT_SIZE:-96MB}
+        --config /etc/tikv/tikv.toml
+    volumes:
+      - ./generated/tikv.toml:/etc/tikv/tikv.toml:ro
     environment:
       - NETWORK_DELAY_MS=${NETWORK_DELAY_MS:-0}
     cap_add:
@@ -103,9 +107,11 @@ services:
         --addr 0.0.0.0:20160
         --advertise-addr 172.30.0.13:20160
         --status-addr 0.0.0.0:20180
-        --pd 172.30.0.10:2379
+        --pd-endpoints 172.30.0.10:2379
         --data-dir /data/tikv
-        --raftstore.region-split-size ${TIKV_REGION_SPLIT_SIZE:-96MB}
+        --config /etc/tikv/tikv.toml
+    volumes:
+      - ./generated/tikv.toml:/etc/tikv/tikv.toml:ro
     environment:
       - NETWORK_DELAY_MS=${NETWORK_DELAY_MS:-0}
     cap_add:
