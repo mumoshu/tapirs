@@ -8,71 +8,19 @@ use std::time::Duration;
 
 /// Membership-change operations for adding/removing replicas from shards.
 ///
-/// Two methods exist for adding a replica:
+/// [`join`](Self::join) is the sole entry point for adding a replica. It
+/// auto-discovers the existing membership from the remote discovery
+/// directory and retries `fetch_leader_record` up to 5 times with 1s
+/// backoff. Exposed via HTTP `/v1/join`, called from
+/// `Node::create_replica()` during runtime scaling.
 ///
-/// - [`add_replica`](Self::add_replica) — Test-only low-level helper. The
-///   caller provides `new_membership` for bootstrapping. No retry on
-///   `fetch_leader_record` failure. Not exposed via any API.
+/// Both `join` and `leave` follow the same pattern:
+/// 1. Query the remote discovery directory for current membership
+/// 2. Send AddMember/RemoveMember to trigger a view change
 ///
-/// - [`join`](Self::join) — Sole production entry point. Auto-discovers the
-///   existing membership from the remote discovery directory and retries
-///   `fetch_leader_record` up to 5 times with 1s backoff. Exposed via HTTP
-///   `/v1/join`, called from `Node::create_replica()` during runtime scaling.
-///
-/// Both follow the same three-step protocol:
-/// 1. Fetch the leader_record from existing replicas
-/// 2. Bootstrap the new replica with that record
-/// 3. Send AddMember to trigger a view change
+/// `join` additionally fetches the leader_record and bootstraps the new
+/// replica before sending AddMember.
 impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteShardDirectory<T::Address, K>> ShardManager<K, V, T, RD> {
-    /// Low-level method to add a replica with caller-provided membership.
-    ///
-    /// The caller must supply `new_membership` for the bootstrap client that
-    /// pre-loads the new replica. No retry on `fetch_leader_record` failure —
-    /// returns `Err` immediately. Not exposed via any HTTP or admin API;
-    /// used only in tests where membership is pre-known.
-    ///
-    /// For production use, see [`join`](Self::join) which auto-discovers
-    /// membership and retries transient failures.
-    ///
-    /// **Requires**: The shard must already be registered in the remote discovery
-    /// cluster with `Active` status via `register_active_shard()`.
-    pub async fn add_replica(
-        &mut self,
-        shard: ShardNumber,
-        new_address: T::Address,
-        new_membership: IrMembership<T::Address>,
-    ) -> Result<(), String> {
-        let record = self.remote.strong_get_shard(shard).await
-            .map_err(|e| format!("failed to get shard {shard:?}: {e:?}"))?
-            .ok_or_else(|| format!("shard {shard:?} not found in remote directory"))?;
-        if record.status != ShardStatus::Active {
-            return Err(format!("shard {shard:?} is {:?}, expected Active", record.status));
-        }
-
-        let existing_client = self.make_shard_client(shard, record.membership);
-
-        // 1. Fetch the stable leader_record from any replica in the shard.
-        let (view, leader_record) = existing_client
-            .fetch_leader_record()
-            .await
-            .ok_or_else(|| format!("shard {shard:?} has no leader_record"))?;
-
-        // 2. Bootstrap the new replica via a standalone client.
-        //    Client sends BootstrapRecord → new replica converts to self-directed StartView.
-        let standalone = ShardClient::<K, V, T>::new(
-            self.rng.fork(),
-            IrClientId::new(&mut self.rng),
-            shard,
-            new_membership,
-            self.transport.clone(),
-        );
-        standalone.bootstrap_record((*leader_record).clone(), view);
-
-        // 3. Trigger AddMember → view change N → N+3.
-        existing_client.add_member(new_address);
-        Ok(())
-    }
-
     /// Bootstrap a shard with a single replica.
     ///
     /// Sends BootstrapRecord with an empty record at view 1. The replica
@@ -94,13 +42,11 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         client.bootstrap_record(Record::<Replica<K, V>>::default(), view);
     }
 
-    /// Sole production entry point for adding a replica to a shard.
+    /// Add a replica to a shard.
     ///
-    /// Unlike [`add_replica`](Self::add_replica) (test-only, caller-provided
-    /// membership), this method auto-discovers the existing membership from
-    /// the remote directory and retries `fetch_leader_record` up to 5 times
-    /// with 1s backoff for transient cases where a recent bootstrap hasn't
-    /// fully propagated.
+    /// Auto-discovers the existing membership from the remote directory and
+    /// retries `fetch_leader_record` up to 5 times with 1s backoff for
+    /// transient cases where a recent bootstrap hasn't fully propagated.
     ///
     /// Exposed via HTTP `/v1/join`. Called from `Node::create_replica()` during
     /// runtime scaling (Go operator `scale.go` sends

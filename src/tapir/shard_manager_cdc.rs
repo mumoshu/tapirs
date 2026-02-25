@@ -535,7 +535,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
     /// The IR record stores every operation ever proposed (Prepare,
     /// Commit, Abort, RaiseMinPrepareTime) and grows as O(total_ops). Naive
     /// truncation of Finalized entries is unsafe because new replicas joining
-    /// via `add_replica()` → `fetch_leader_record()` → `bootstrap_record()` →
+    /// via `join()` → `fetch_leader_record()` → `bootstrap_record()` →
     /// view change reconstruct their full TAPIR state by replaying the record
     /// through `sync()`. Truncating old entries means new replicas would miss
     /// old prepared entries and MVCC writes.
