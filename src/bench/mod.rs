@@ -1,3 +1,61 @@
+//! Configurable benchmark framework for transactional KV stores.
+//!
+//! The framework separates workload generation from execution so the same
+//! workloads (RW, RO GET, RO SCAN, mixed) can run against any database.
+//!
+//! # Running TAPIR benchmarks
+//!
+//! Smoke tests (included in `make test`, ~3s each):
+//!
+//! ```bash
+//! cargo test bench_rw_smoke --release -- --nocapture
+//! cargo test bench_ro --release -- --nocapture
+//! cargo test bench_mixed --release -- --nocapture
+//! ```
+//!
+//! Full benchmarks (10s, hundreds of clients):
+//!
+//! ```bash
+//! make bench/rw   # 1000 RW clients, 10k keys
+//! make bench/ro   # 500 RO GET + 500 RO SCAN clients
+//! make bench/mix  # 400 RO GET + 100 RO SCAN + 500 RW clients
+//! ```
+//!
+//! Against an external cluster (e.g. testbed-solo):
+//!
+//! ```bash
+//! BENCH_CLUSTER=127.0.0.1:6000,127.0.0.1:6001,127.0.0.1:6002 \
+//!   cargo test bench_rw --release -- --nocapture --include-ignored
+//! ```
+//!
+//! # Adding a new target
+//!
+//! Implement [`traits::TargetResolver`] and [`traits::BenchWorkload`], then
+//! call [`runner::run_bench`] with your types. Workload generation
+//! ([`workload_gen::WorkloadGen`]) produces target-agnostic [`ops::TxnOps`],
+//! so only the execution layer needs a new implementation.
+//!
+//! ```rust,ignore
+//! struct PgResolver;
+//! impl TargetResolver for PgResolver {
+//!     type Target = PgPool;
+//!     fn resolve(connection_str: &str) -> PgPool {
+//!         PgPool::connect(connection_str)
+//!     }
+//! }
+//!
+//! struct PgWorkload;
+//! impl BenchWorkload<PgPool> for PgWorkload {
+//!     type Client = PgClient;
+//!     fn create_client(target: &PgPool) -> Arc<PgClient> { /* ... */ }
+//!     async fn execute_txn(client: &PgClient, ops: TxnOps) -> bool { /* ... */ }
+//!     async fn prepopulate(client: &PgClient, ops: Vec<TxnOps>) { /* ... */ }
+//! }
+//!
+//! // Then run:
+//! run_bench::<PgResolver, PgWorkload>("postgresql://localhost/bench", &config).await;
+//! ```
+
 #![allow(dead_code, unused_imports)]
 
 mod cluster;
