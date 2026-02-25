@@ -397,21 +397,21 @@ where
             }
         }
 
-        let new_json = to_json::<_, K>(&membership, view, ShardStatus::Active, None);
-
         for _attempt in 0..5 {
             let txn = self.client.begin();
 
-            // RW get for OCC read-set tracking. May return stale data
-            // (routed to a replica outside the quorum that committed the
-            // latest value, or FINALIZE not yet applied). OCC validates
-            // the read at commit time — stale read → commit aborts → retry.
-            let _ = txn
+            // RW get for OCC read-set tracking. Also extract existing
+            // key_range so membership-only updates don't lose it.
+            let existing_key_range = txn
                 .get(key.clone())
                 .await
-                .map_err(|e| DiscoveryError::ConnectionFailed(format!("{e:?}")))?;
+                .map_err(|e| DiscoveryError::ConnectionFailed(format!("{e:?}")))?
+                .and_then(|json| parse_record::<K>(&json).ok())
+                .and_then(|record| record.key_range);
 
-            txn.put(key.clone(), Some(new_json.clone()));
+            let new_json = to_json::<_, K>(&membership, view, ShardStatus::Active, existing_key_range);
+
+            txn.put(key.clone(), Some(new_json));
 
             if txn.commit().await.is_some() {
                 // Allow spawned FINALIZE tasks to apply MVCC writes
@@ -807,5 +807,69 @@ mod tests {
         assert_eq!(entries[0].2, 1);
         assert_eq!(entries[1].0, ShardNumber(2));
         assert_eq!(entries[1].2, 2);
+    }
+
+    // Helpers that bind K=String (for tests that need key_range).
+    async fn put_str(
+        dir: &impl RemoteShardDirectory<usize, String>,
+        shard: ShardNumber,
+        membership: IrMembership<usize>,
+        view: u64,
+    ) -> Result<(), DiscoveryError> {
+        dir.strong_put_active_shard_view_membership(shard, membership, view).await
+    }
+    async fn get_str(
+        dir: &impl RemoteShardDirectory<usize, String>,
+        shard: ShardNumber,
+    ) -> Result<Option<crate::discovery::ShardRecord<usize, String>>, DiscoveryError> {
+        dir.strong_get_shard(shard).await
+    }
+
+    /// Verify that `strong_put_active_shard_view_membership` preserves the
+    /// key_range that was set by `strong_atomic_update_shards`. This
+    /// reproduces the testbed-docker-compose CI failure where
+    /// CachingShardDirectory PUSH after a view change overwrote the
+    /// key_range with None, causing split to fail with ShardNotRegistered.
+    #[tokio::test(start_paused = true)]
+    async fn put_preserves_key_range() {
+        let mut rng = test_rng(55);
+        let disc = build_test_discovery(&mut rng, 3);
+        let dir = disc.create_remote_strong(&mut rng);
+
+        let shard = ShardNumber(1);
+        let membership = IrMembership::new(vec![10usize, 11, 12]);
+
+        // Register shard with a key_range via strong_atomic_update_shards.
+        let range = crate::tapir::KeyRange {
+            start: None,
+            end: Some("n".to_string()),
+        };
+        dir.strong_atomic_update_shards(vec![
+            ShardDirectoryChange::ActivateShard {
+                shard,
+                range: range.clone(),
+                membership: membership.clone(),
+                view: 0,
+            },
+        ]).await.unwrap();
+
+        // Verify key_range is set.
+        let record = get_str(&*dir, shard).await.unwrap().unwrap();
+        assert_eq!(record.key_range.as_ref().unwrap().end, Some("n".to_string()));
+
+        // Simulate CachingShardDirectory PUSH after a view change:
+        // membership updated, view advanced, but key_range must survive.
+        let new_membership = IrMembership::new(vec![10usize, 11, 13]);
+        put_str(&*dir, shard, new_membership, 3).await.unwrap();
+
+        // Verify key_range is preserved, view and membership updated.
+        let record = get_str(&*dir, shard).await.unwrap().unwrap();
+        assert_eq!(record.view, 3);
+        assert!(record.membership.contains(13));
+        assert_eq!(
+            record.key_range.as_ref().unwrap().end,
+            Some("n".to_string()),
+            "key_range must survive membership-only put"
+        );
     }
 }
