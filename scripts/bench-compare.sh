@@ -37,9 +37,9 @@ REPLICA_BASE_PORT=6000
 # ── Resource allocation ───────────────────────────────────────────────
 # TAPIR: 3 discovery (small fixed) + 1 shard-mgr (small fixed) + N data nodes
 TAPIR_DISC_CPUS="0.20"
-TAPIR_DISC_MEM="0.30"  # GB
+TAPIR_DISC_MEM="0.064"  # GB — 3 disc + 1 mgr = 256MB total (matches PD budget)
 TAPIR_MGR_CPUS="0.20"
-TAPIR_MGR_MEM="0.30"   # GB
+TAPIR_MGR_MEM="0.064"   # GB
 
 compute_tapir_resources() {
     local total_cpu="$1" total_mem="$2" n_replicas="$3"
