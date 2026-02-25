@@ -39,26 +39,8 @@ impl TestDiscoveryCluster {
         }
     }
 
-    /// Create a TapirRemoteShardDirectory client with eventual consistent reads.
+    /// Create a TapirRemoteShardDirectory client.
     pub fn create_remote(
-        &self,
-        rng: &mut crate::Rng,
-    ) -> Arc<
-        TapirRemoteShardDirectory<usize, ChannelTransport<TapirReplica<String, String>>>,
-    > {
-        let channel = self
-            .registry
-            .channel(move |_, _| None, Arc::clone(&self.directory));
-        let membership = IrMembership::new((0..self.num_replicas).collect());
-        Arc::new(TapirRemoteShardDirectory::new(
-            rng.fork(),
-            membership,
-            channel,
-        ))
-    }
-
-    /// Create a TapirRemoteShardDirectory client with strong consistent reads.
-    pub fn create_remote_strong(
         &self,
         rng: &mut crate::Rng,
     ) -> Arc<

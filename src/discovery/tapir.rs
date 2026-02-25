@@ -626,7 +626,7 @@ mod tests {
     async fn put_get_strong() {
         let mut rng = test_rng(42);
         let disc = build_test_discovery(&mut rng, 3);
-        let dir = disc.create_remote_strong(&mut rng);
+        let dir = disc.create_remote(&mut rng);
 
         let membership = IrMembership::new(vec![10usize, 11, 12]);
         put(&*dir, ShardNumber(1), membership, 5).await.unwrap();
@@ -659,7 +659,7 @@ mod tests {
     async fn get_nonexistent() {
         let mut rng = test_rng(44);
         let disc = build_test_discovery(&mut rng, 3);
-        let dir = disc.create_remote_strong(&mut rng);
+        let dir = disc.create_remote(&mut rng);
 
         assert!(get(&*dir, ShardNumber(99)).await.unwrap().is_none());
     }
@@ -668,7 +668,7 @@ mod tests {
     async fn remove_tombstone() {
         let mut rng = test_rng(45);
         let disc = build_test_discovery(&mut rng, 3);
-        let dir = disc.create_remote_strong(&mut rng);
+        let dir = disc.create_remote(&mut rng);
 
         let membership = IrMembership::new(vec![10usize, 11, 12]);
         put(&*dir, ShardNumber(1), membership, 1).await.unwrap();
@@ -684,7 +684,7 @@ mod tests {
     async fn put_on_tombstoned_rejected() {
         let mut rng = test_rng(46);
         let disc = build_test_discovery(&mut rng, 3);
-        let dir = disc.create_remote_strong(&mut rng);
+        let dir = disc.create_remote(&mut rng);
 
         let membership = IrMembership::new(vec![10usize, 11, 12]);
         put(&*dir, ShardNumber(1), membership.clone(), 1).await.unwrap();
@@ -698,7 +698,7 @@ mod tests {
     async fn put_on_pending_rejected() {
         let mut rng = test_rng(53);
         let disc = build_test_discovery(&mut rng, 3);
-        let dir = disc.create_remote_strong(&mut rng);
+        let dir = disc.create_remote(&mut rng);
 
         // Write a Pending-status entry directly via RW transaction.
         let shard = ShardNumber(1);
@@ -721,7 +721,7 @@ mod tests {
     async fn remove_nonexistent() {
         let mut rng = test_rng(47);
         let disc = build_test_discovery(&mut rng, 3);
-        let dir = disc.create_remote_strong(&mut rng);
+        let dir = disc.create_remote(&mut rng);
 
         let result = remove(&*dir, ShardNumber(99)).await;
         assert!(matches!(result, Err(DiscoveryError::NotFound)));
@@ -731,7 +731,7 @@ mod tests {
     async fn remove_already_tombstoned() {
         let mut rng = test_rng(48);
         let disc = build_test_discovery(&mut rng, 3);
-        let dir = disc.create_remote_strong(&mut rng);
+        let dir = disc.create_remote(&mut rng);
 
         let membership = IrMembership::new(vec![10usize, 11, 12]);
         put(&*dir, ShardNumber(1), membership, 1).await.unwrap();
@@ -745,7 +745,7 @@ mod tests {
     async fn all_omits_tombstoned() {
         let mut rng = test_rng(50);
         let disc = build_test_discovery(&mut rng, 3);
-        let dir = disc.create_remote_strong(&mut rng);
+        let dir = disc.create_remote(&mut rng);
 
         put(&*dir, ShardNumber(1), IrMembership::new(vec![10usize, 11, 12]), 1).await.unwrap();
         put(&*dir, ShardNumber(2), IrMembership::new(vec![20usize, 21, 22]), 1).await.unwrap();
@@ -763,7 +763,7 @@ mod tests {
     async fn monotonic_view() {
         let mut rng = test_rng(51);
         let disc = build_test_discovery(&mut rng, 3);
-        let dir = disc.create_remote_strong(&mut rng);
+        let dir = disc.create_remote(&mut rng);
 
         let membership = IrMembership::new(vec![10usize, 11, 12]);
         put(&*dir, ShardNumber(1), membership.clone(), 5).await.unwrap();
@@ -821,7 +821,7 @@ mod tests {
     async fn put_preserves_key_range() {
         let mut rng = test_rng(55);
         let disc = build_test_discovery(&mut rng, 3);
-        let dir = disc.create_remote_strong(&mut rng);
+        let dir = disc.create_remote(&mut rng);
 
         let shard = ShardNumber(1);
         let membership = IrMembership::new(vec![10usize, 11, 12]);

@@ -682,7 +682,7 @@ mod tests {
         let mut rng = test_rng(43);
         let disc = build_single_node_discovery(&mut rng);
         let remote = disc.create_remote(&mut rng);
-        let remote_check = disc.create_remote_strong(&mut rng);
+        let remote_check = disc.create_remote(&mut rng);
         let local = Arc::new(InMemoryShardDirectory::new());
         let dir =
             CachingShardDirectory::<usize, (), _>::new(local, remote, Duration::from_millis(100));
