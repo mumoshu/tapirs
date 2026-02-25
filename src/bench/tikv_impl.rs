@@ -75,7 +75,9 @@ async fn execute_tikv_txn(
             }
         }
     }
-    if !ops.read_only {
+    if ops.read_only {
+        txn.rollback().await?;
+    } else {
         txn.commit().await?;
     }
     Ok(())
