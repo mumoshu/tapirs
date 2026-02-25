@@ -90,7 +90,7 @@ pub async fn run(
         let metrics_addr: SocketAddr = metrics_addr_str
             .parse()
             .unwrap_or_else(|e| panic!("invalid metrics_listen_addr '{metrics_addr_str}': {e}"));
-        crate::metrics_server::start(metrics_addr, Arc::clone(&node)).await;
+        tapirs::node::nodemetrics_server::start(metrics_addr, Arc::clone(&node)).await;
     }
 
     tracing::info!(%admin_listen_addr, "node ready, press Ctrl-C to stop");

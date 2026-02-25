@@ -1,7 +1,6 @@
 mod client;
 mod config;
 mod discovery_backend;
-mod metrics_server;
 mod node;
 mod repl;
 mod shard_manager_server;
