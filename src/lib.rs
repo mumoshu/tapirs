@@ -18,6 +18,9 @@ pub mod util;
 #[cfg(test)]
 pub mod testing;
 
+#[cfg(test)]
+mod bench;
+
 pub use rng::Rng;
 
 pub use ir::{
