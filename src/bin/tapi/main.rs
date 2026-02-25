@@ -1,4 +1,3 @@
-mod admin_client;
 mod client;
 mod config;
 mod discovery_backend;
@@ -372,7 +371,7 @@ async fn main() {
         }
         Command::Admin { tls, action } => {
             tls.validate();
-            admin_client::run(
+            node::admin_client::run(
                 action,
                 #[cfg(feature = "tls")]
                 tls.to_tls_config(),

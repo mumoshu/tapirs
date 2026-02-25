@@ -1,3 +1,4 @@
+pub(crate) mod admin_client;
 pub(crate) mod admin_server;
 
 use crate::config::{NodeConfig, ReplicaConfig};
