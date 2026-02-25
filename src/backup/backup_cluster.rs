@@ -4,7 +4,7 @@ use super::types::{ClusterMetadata, ShardBackupHistory, ShardDeltaInfo};
 /// Format the current UTC time as an ISO 8601 string (e.g. "2025-01-15T10:30:00Z").
 ///
 /// Uses the Howard Hinnant civil_from_days algorithm to avoid a chrono dependency.
-fn utc_now_iso8601() -> String {
+pub(crate) fn utc_now_iso8601() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()

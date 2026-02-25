@@ -6,6 +6,7 @@
 //! is required. This makes them suitable for standalone single-shard
 //! clusters (e.g. the discovery store itself) where no ShardManager exists.
 
+mod backup_cluster;
 mod clone_shard;
 mod types;
 

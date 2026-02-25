@@ -3,6 +3,8 @@ mod list_backups;
 mod restore;
 pub mod types;
 
+pub(crate) use backup_cluster::utc_now_iso8601;
+
 use crate::sharding::shardmanager_client::HttpShardManagerClient;
 
 /// Cross-cluster backup and restore orchestrator.
