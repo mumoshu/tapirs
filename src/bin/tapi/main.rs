@@ -426,19 +426,19 @@ async fn main() {
                                     eprintln!("TLS setup error: {e}");
                                     std::process::exit(1);
                                 });
-                        tapirs::shard_manager_api::HttpShardManagerClient::with_tls(
+                        tapirs::sharding::shardmanager_client::HttpShardManagerClient::with_tls(
                             &shard_manager_url,
                             connector,
                             tls.tls_server_name.clone(),
                         )
                     } else {
-                        tapirs::shard_manager_api::HttpShardManagerClient::new(
+                        tapirs::sharding::shardmanager_client::HttpShardManagerClient::new(
                             &shard_manager_url,
                         )
                     }
                 }
                 #[cfg(not(feature = "tls"))]
-                tapirs::shard_manager_api::HttpShardManagerClient::new(&shard_manager_url)
+                tapirs::sharding::shardmanager_client::HttpShardManagerClient::new(&shard_manager_url)
             };
             match client.healthz() {
                 Ok(()) => {

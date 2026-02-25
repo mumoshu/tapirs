@@ -6,7 +6,7 @@ use rand::{thread_rng, Rng as _};
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 use tapirs::discovery::{tapir, InMemoryShardDirectory, RemoteShardDirectory};
-use tapirs::shard_manager_api::HttpShardManagerClient;
+use tapirs::sharding::shardmanager_client::HttpShardManagerClient;
 use tapirs::{
     DynamicRouter, KeyRange, RoutingClient, ShardDirectory, ShardEntry, ShardNumber, TapirClient,
     TapirReplica, TcpAddress, TcpTransport,
