@@ -1,4 +1,3 @@
-use crate::node::ShardBackup;
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
@@ -10,8 +9,6 @@ pub struct AdminRequest {
     pub listen_addr: Option<String>,
     #[serde(default)]
     pub storage: Option<String>,
-    #[serde(default)]
-    pub backup: Option<ShardBackup>,
     #[serde(default)]
     pub new_membership: Option<Vec<String>>,
     /// Static membership for add_replica. When provided, creates the replica
@@ -28,8 +25,6 @@ pub struct AdminResponse {
     pub message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub shards: Option<Vec<ShardInfo>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub backup: Option<ShardBackup>,
 }
 
 #[derive(Serialize, Deserialize)]

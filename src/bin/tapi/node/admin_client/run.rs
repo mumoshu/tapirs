@@ -10,52 +10,7 @@ pub(crate) async fn run(
             .unwrap_or_else(|e| panic!("admin TLS config error: {e}"))
     });
 
-    // Multi-node operations with their own orchestration.
-    match &action {
-        AdminAction::Backup {
-            admin_addrs,
-            output,
-        } => {
-            let addrs: Vec<String> =
-                admin_addrs.split(',').map(|s| s.trim().to_string()).collect();
-            if let Err(e) = tapirs::node::node_client::backup_cluster::backup_cluster(
-                addrs,
-                output,
-                #[cfg(feature = "tls")]
-                &tls_connector,
-            )
-            .await
-            {
-                eprintln!("Backup failed: {e}");
-                std::process::exit(1);
-            }
-            return;
-        }
-        AdminAction::Restore {
-            backup_dir,
-            admin_addrs,
-            base_port,
-        } => {
-            let addrs: Vec<String> =
-                admin_addrs.split(',').map(|s| s.trim().to_string()).collect();
-            if let Err(e) = tapirs::node::node_client::restore_cluster::restore_cluster(
-                addrs,
-                backup_dir,
-                *base_port,
-                #[cfg(feature = "tls")]
-                &tls_connector,
-            )
-            .await
-            {
-                eprintln!("Restore failed: {e}");
-                std::process::exit(1);
-            }
-            return;
-        }
-        _ => {}
-    }
-
-    // Single-node operations (existing code).
+    // Single-node operations.
     let (addr, request) = match action {
         AdminAction::Status { admin_listen_addr } => (
             admin_listen_addr,
@@ -136,7 +91,6 @@ pub(crate) async fn run(
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             }
         }
-        AdminAction::Backup { .. } | AdminAction::Restore { .. } => unreachable!(),
     };
 
     match tapirs::node::node_client::raw_admin_exchange(

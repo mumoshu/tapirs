@@ -297,27 +297,6 @@ enum AdminAction {
         #[arg(long, default_value = "60")]
         timeout: u64,
     },
-    /// Take a full cluster backup.
-    Backup {
-        /// Comma-separated admin server addresses (e.g. "127.0.0.1:9000,127.0.0.1:9001").
-        #[arg(long)]
-        admin_addrs: String,
-        /// Output directory for backup files.
-        #[arg(long)]
-        output: String,
-    },
-    /// Restore a cluster from backup.
-    Restore {
-        /// Directory containing backup files (cluster.json + shard_N.json).
-        #[arg(long)]
-        backup_dir: String,
-        /// Comma-separated admin server addresses for target nodes.
-        #[arg(long)]
-        admin_addrs: String,
-        /// Base port for restored shard replicas (each node allocates ports sequentially from here).
-        #[arg(long)]
-        base_port: u16,
-    },
 }
 
 #[tokio::main]

@@ -1,9 +1,7 @@
 mod add_replica;
 mod add_replica_join;
-mod backup_shard;
 mod leave_shard;
 mod remove_replica;
-mod restore_shard;
 mod shard_manager_http;
 
 use crate::discovery::backend::DiscoveryBackend;
