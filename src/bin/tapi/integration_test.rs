@@ -128,8 +128,9 @@ async fn bootstrap_cluster(
     let mgr_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mgr_addr = mgr_listener.local_addr().unwrap();
     let sm_backend = create_disc_backend(&disc_endpoint).await;
-    tokio::spawn(crate::shard_manager_server::serve(
+    tokio::spawn(tapirs::sharding::shardmanager_server::serve(
         mgr_listener,
+        tapirs::Rng::from_seed(thread_rng().r#gen()),
         Arc::new(sm_backend),
         #[cfg(feature = "tls")]
         None,

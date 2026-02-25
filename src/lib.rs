@@ -7,6 +7,7 @@ pub mod node;
 mod occ;
 mod rng;
 pub mod shard_manager_api;
+pub mod sharding;
 mod tapir;
 #[cfg(feature = "tls")]
 pub mod tls;
