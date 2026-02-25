@@ -6,6 +6,7 @@ use rand::{thread_rng, Rng as _};
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 use tapirs::discovery::{tapir, InMemoryShardDirectory, RemoteShardDirectory};
+use tapirs::shard_manager_api::HttpShardManagerClient;
 use tapirs::{
     DynamicRouter, KeyRange, RoutingClient, ShardDirectory, ShardEntry, ShardNumber, TapirClient,
     TapirReplica, TcpAddress, TcpTransport,
@@ -156,7 +157,6 @@ async fn bootstrap_cluster(
     // same view number and membership form an operational shard at view 0
     // without any view change ceremony. Matches the operator workflow:
     //   `tapi admin add-replica --membership addr1,addr2,addr3`
-    let disc_client = disc(create_disc_remote(&disc_endpoint, tapir::ReadMode::Eventual).await);
     // Keep listeners alive to prevent TOCTOU port races.
     let mut replica_listeners: Vec<Vec<(SocketAddr, std::net::TcpListener)>> =
         (0..num_shards).map(|_| Vec::new()).collect();
@@ -170,6 +170,7 @@ async fn bootstrap_cluster(
         .map(|shard| shard.iter().map(|(a, _)| *a).collect())
         .collect();
 
+    let shard_entries = build_shard_entries(num_shards);
     for shard_idx in 0..num_shards {
         let membership: Vec<String> = replica_addrs[shard_idx as usize]
             .iter()
@@ -192,12 +193,15 @@ async fn bootstrap_cluster(
                 });
         }
 
-        // Register shard membership in discovery.
-        let m = tapirs::discovery::strings_to_membership::<TcpAddress>(&membership)
-            .expect("parse membership");
-        disc_client
-            .strong_put_active_shard_view_membership(ShardNumber(shard_idx), m, 0)
-            .await
+        // Register shard via shard-manager HTTP API (matches operator workflow).
+        let entry = &shard_entries[shard_idx as usize];
+        HttpShardManagerClient::new(&shard_manager_url)
+            .register(
+                shard_idx,
+                entry.range.start.as_deref(),
+                entry.range.end.as_deref(),
+                Some(&membership),
+            )
             .unwrap();
     }
 

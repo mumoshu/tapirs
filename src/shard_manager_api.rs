@@ -162,7 +162,16 @@ impl HttpShardManagerClient {
         self.parse_response(&resp)
     }
 
-    #[allow(dead_code)]
+    /// Register and activate a shard with the given membership and key range.
+    ///
+    /// Sends `POST /v1/register` to the shard-manager server, which calls
+    /// `ShardManager::register_active_shard()` → `strong_atomic_update_shards(ActivateShard)`
+    /// to make the shard visible in discovery with its membership and key range.
+    ///
+    /// `replicas` is `Option` for historical reasons but should always be provided.
+    /// Activating a shard without members makes it visible but unreachable. When
+    /// `None`, the server falls back to querying discovery for existing membership,
+    /// which only works if the shard was previously registered.
     pub fn register(
         &self,
         shard: u32,
