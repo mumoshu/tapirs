@@ -1088,3 +1088,149 @@ async fn test_solo_backup_restore() {
 
     drop(restore_temp_dirs);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_solo_backup_restore_incremental() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init();
+
+    let cluster = bootstrap_cluster(1, 3, 3).await;
+    let client = &cluster.client;
+    let shard = ShardNumber(0);
+
+    // Start admin servers on source nodes.
+    let mut source_admin_addrs = Vec::new();
+    for node in &cluster.nodes {
+        let admin_addr = alloc_addr();
+        tapirs::node::node_server::start(
+            admin_addr,
+            Arc::clone(node),
+            #[cfg(feature = "tls")]
+            None,
+        )
+        .await;
+        source_admin_addrs.push(admin_addr.to_string());
+    }
+
+    // Write initial data.
+    let txn = client.begin();
+    txn.put("alpha".to_string(), Some("1".to_string()));
+    txn.put("bravo".to_string(), Some("2".to_string()));
+    assert!(txn.commit().await.is_some(), "initial put should commit");
+
+    // Force view change to seal CDC deltas.
+    let shard_nodes: Vec<&Arc<Node>> = cluster
+        .nodes
+        .iter()
+        .filter(|n| n.shard_view_number(shard).is_some())
+        .collect();
+    let old_view = quorum_view_number(&shard_nodes, shard);
+    cluster.nodes[0].force_view_change(shard);
+    wait_for_view_change(client, &shard_nodes, shard, old_view, "vc_solo_incr_1").await;
+
+    // Full solo backup.
+    let backup_dir = TempDir::new().unwrap();
+    let backup_path = backup_dir.path().to_str().unwrap();
+    let mut mgr = tapirs::SoloClusterManager::new(tapirs::Rng::from_seed(thread_rng().r#gen()));
+    mgr.backup_cluster_direct(&source_admin_addrs, backup_path)
+        .await
+        .unwrap();
+
+    assert!(
+        std::path::Path::new(&format!("{backup_path}/shard_0_delta_0.bin")).exists(),
+        "delta 0 should exist after full backup"
+    );
+
+    // Write more data.
+    let txn = client.begin();
+    txn.put("charlie".to_string(), Some("3".to_string()));
+    txn.put("delta_key".to_string(), Some("4".to_string()));
+    assert!(txn.commit().await.is_some(), "second put should commit");
+
+    // Force another view change for the second batch.
+    let old_view = quorum_view_number(&shard_nodes, shard);
+    cluster.nodes[0].force_view_change(shard);
+    wait_for_view_change(client, &shard_nodes, shard, old_view, "vc_solo_incr_2").await;
+
+    // Incremental solo backup (reads last_backup_views from cluster.json).
+    let mut mgr2 = tapirs::SoloClusterManager::new(tapirs::Rng::from_seed(thread_rng().r#gen()));
+    mgr2.backup_cluster_direct(&source_admin_addrs, backup_path)
+        .await
+        .unwrap();
+
+    assert!(
+        std::path::Path::new(&format!("{backup_path}/shard_0_delta_1.bin")).exists(),
+        "delta 1 should exist after incremental backup"
+    );
+
+    // Rewrite cluster.json with fresh addresses for restore.
+    let fresh_addrs = rewrite_cluster_json_addrs(backup_path, 3);
+
+    // Create fresh Node objects for restore (no discovery needed for solo).
+    let mut restore_nodes = Vec::new();
+    let mut restore_temp_dirs = Vec::new();
+    let mut restore_admin_addrs = Vec::new();
+    for _ in 0..3u32 {
+        let td = TempDir::new().unwrap();
+        let node = Arc::new(Node::new(
+            td.path().to_str().unwrap().to_string(),
+            production_rng,
+        ));
+        let admin_addr = alloc_addr();
+        tapirs::node::node_server::start(
+            admin_addr,
+            Arc::clone(&node),
+            #[cfg(feature = "tls")]
+            None,
+        )
+        .await;
+        restore_admin_addrs.push(admin_addr.to_string());
+        restore_nodes.push(node);
+        restore_temp_dirs.push(td);
+    }
+
+    // Solo restore (applies both delta files).
+    let mut restore_mgr =
+        tapirs::SoloClusterManager::new(tapirs::Rng::from_seed(thread_rng().r#gen()));
+    restore_mgr
+        .restore_cluster_direct(&restore_admin_addrs, backup_path)
+        .await
+        .unwrap();
+
+    // Wait for restored replicas to settle.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Create a client pointing directly to restored replicas (no discovery).
+    let local_addr = alloc_addr();
+    let td_client = TempDir::new().unwrap();
+    let dir = Arc::new(InMemoryShardDirectory::new());
+    let transport: TestTransport = TcpTransport::with_directory(
+        TcpAddress(local_addr),
+        td_client.path().to_str().unwrap().to_string(),
+        dir,
+    );
+    let shard_addrs: Vec<TcpAddress> =
+        fresh_addrs[0].iter().map(|a| TcpAddress(*a)).collect();
+    transport.set_shard_addresses(ShardNumber(0), tapirs::IrMembership::new(shard_addrs));
+    let entries = build_shard_entries(1);
+    let directory = Arc::new(RwLock::new(ShardDirectory::new(entries)));
+    let router = Arc::new(DynamicRouter::new(directory));
+    let tapir_client = Arc::new(TapirClient::new(
+        tapirs::Rng::from_seed(thread_rng().r#gen()),
+        transport,
+    ));
+    let restored_client = Arc::new(RoutingClient::new(tapir_client, router));
+
+    // Verify all 4 keys.
+    let val = rw_get(&restored_client, "alpha", "alpha_solo_incr_verify").await;
+    assert_eq!(val, Some("1".to_string()));
+    let val = rw_get(&restored_client, "bravo", "bravo_solo_incr_verify").await;
+    assert_eq!(val, Some("2".to_string()));
+    let val = rw_get(&restored_client, "charlie", "charlie_solo_incr_verify").await;
+    assert_eq!(val, Some("3".to_string()));
+    let val = rw_get(&restored_client, "delta_key", "delta_key_solo_incr_verify").await;
+    assert_eq!(val, Some("4".to_string()));
+
+    drop(restore_temp_dirs);
+}

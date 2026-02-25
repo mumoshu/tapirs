@@ -295,14 +295,46 @@ demo_backup() {
     local backup_dir="${WORK_DIR}/backup"
     local admin_addrs="127.0.0.1:${ADMIN_PORTS[0]},127.0.0.1:${ADMIN_PORTS[1]},127.0.0.1:${ADMIN_PORTS[2]}"
 
+    # --- Full backup ---
+    info "Running full backup..."
     run_cmd "${TAPICTL}" solo backup \
         --admin-addrs "${admin_addrs}" --output "${backup_dir}"
 
     if [[ -f "${backup_dir}/cluster.json" ]] && [[ -f "${backup_dir}/shard_0_delta_0.bin" ]]; then
-        ok "Backup created: cluster.json + shard_0_delta_0.bin"
+        ok "Full backup created: cluster.json + shard_0_delta_0.bin"
     else
         warn "Expected backup files not found in ${backup_dir}"
         ls -la "${backup_dir}" 2>/dev/null || true
+    fi
+
+    # --- Write additional data for incremental backup ---
+    info "Writing additional data for incremental backup..."
+    run_client "begin; put incr_key1 value1; put incr_key2 value2; commit"
+
+    info "Triggering view change to seal new CDC deltas..."
+    "${TAPI}" admin view-change \
+        --admin-listen-addr "127.0.0.1:${ADMIN_PORTS[0]}" --shard 0 > /dev/null 2>&1
+    sleep 3
+
+    # --- Incremental backup ---
+    info "Running incremental backup (only new changes since full backup)..."
+    run_cmd "${TAPICTL}" solo backup \
+        --admin-addrs "${admin_addrs}" --output "${backup_dir}"
+
+    if [[ -f "${backup_dir}/shard_0_delta_1.bin" ]]; then
+        ok "Incremental backup created: shard_0_delta_1.bin"
+    else
+        warn "Expected shard_0_delta_1.bin not found in ${backup_dir}"
+        ls -la "${backup_dir}" 2>/dev/null || true
+    fi
+
+    info "Verifying incremental data is still accessible..."
+    local output
+    output=$(run_client_capture "begin ro; get incr_key1") || true
+    if echo "${output}" | grep -q "value1"; then
+        ok "Incremental backup demo complete. Both delta files present."
+    else
+        warn "Expected 'value1', got: ${output}"
     fi
 }
 
