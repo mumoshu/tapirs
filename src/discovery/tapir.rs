@@ -183,21 +183,25 @@ where
         }
     }
 
-    /// Consistent read of a key's raw JSON value.
+    /// Consistent read of a key's raw JSON value with an explicit read mode.
     ///
-    /// Uses the configured read mode: RO transaction for strong (linearizable),
-    /// unlogged read for eventual. This is the correct way to read committed
-    /// data — RW transaction `get()` is inconsistent (reaches 1 replica,
-    /// validated at commit time via OCC, not at read time).
-    async fn read_raw(&self, key: &str) -> Result<Option<String>, DiscoveryError> {
+    /// RO transaction for strong (linearizable), unlogged read for eventual.
+    /// This is the correct way to read committed data — RW transaction `get()`
+    /// is inconsistent (reaches 1 replica, validated at commit time via OCC,
+    /// not at read time).
+    async fn read_raw_with_consistency_mode(
+        &self,
+        key: &str,
+        mode: &ReadMode,
+    ) -> Result<Option<String>, DiscoveryError> {
         // Refresh shard client cache (no-op if not DNS mode).
         let sc = self.current_shard_client();
-        let mode_str = match self.read_mode {
+        let mode_str = match mode {
             ReadMode::Strong => "strong",
             ReadMode::Eventual => "eventual",
         };
         tracing::debug!(key, mode = mode_str, "discovery read_raw: starting");
-        let result = match self.read_mode {
+        let result = match mode {
             ReadMode::Strong => {
                 let ro = self.client.begin_read_only();
                 ro.get(key.to_string())
@@ -212,6 +216,12 @@ where
         };
         tracing::debug!(key, mode = mode_str, ok = result.is_ok(), "discovery read_raw: completed");
         result
+    }
+
+    /// Consistent read of a key's raw JSON value using the configured read mode.
+    async fn read_raw(&self, key: &str) -> Result<Option<String>, DiscoveryError> {
+        self.read_raw_with_consistency_mode(key, &self.read_mode)
+            .await
     }
 
     /// Pre-reads shard entry, verifies it exists and is not already tombstoned,
