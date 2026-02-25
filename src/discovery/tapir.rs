@@ -77,6 +77,7 @@ pub struct TapirRemoteShardDirectory<A, T: TapirTransport<String, String>> {
     client: TapirClient<String, String, T>,
     shard_client: ShardClient<String, String, T>,
     dns_client: Option<DnsRefreshingShardClient<String, String, T>>,
+    #[allow(dead_code)] // removed in next commit
     read_mode: ReadMode,
     _phantom: PhantomData<A>,
 }
@@ -218,12 +219,6 @@ where
         result
     }
 
-    /// Consistent read of a key's raw JSON value using the configured read mode.
-    async fn read_raw(&self, key: &str) -> Result<Option<String>, DiscoveryError> {
-        self.read_raw_with_consistency_mode(key, &self.read_mode)
-            .await
-    }
-
     /// Pre-reads shard entry, verifies it exists and is not already tombstoned,
     /// and returns `(key, tombstone_json)`. Returns `Err(NotFound)` if the shard
     /// does not exist or is already tombstoned.
@@ -232,7 +227,7 @@ where
         shard: ShardNumber,
     ) -> Result<(String, String), DiscoveryError> {
         let key = shard_key(shard);
-        match self.read_raw(&key).await? {
+        match self.read_raw_with_consistency_mode(&key, &ReadMode::Strong).await? {
             Some(json) => {
                 let mut record = parse_record::<K>(&json)?;
                 if record.status == ShardStatus::Tombstoned {
@@ -449,8 +444,8 @@ where
 
         // Consistent pre-read: check tombstone and monotonic view.
         // RW transaction get() is inconsistent (1 replica, OCC-validated
-        // at commit), so we must use read_raw() for correctness checks.
-        if let Some(json) = self.read_raw(&key).await? {
+        // at commit), so we must use a strong read for correctness checks.
+        if let Some(json) = self.read_raw_with_consistency_mode(&key, &ReadMode::Strong).await? {
             let record = parse_record::<K>(&json)?;
             if record.status == ShardStatus::Tombstoned {
                 return Err(DiscoveryError::Tombstoned);
@@ -498,7 +493,7 @@ where
     async fn weak_all_active_shard_view_memberships(
         &self,
     ) -> Result<Vec<(ShardNumber, IrMembership<A>, u64)>, DiscoveryError> {
-        self.all_active_shard_view_membership_with_consistency_mode::<K>(&self.read_mode)
+        self.all_active_shard_view_membership_with_consistency_mode::<K>(&ReadMode::Eventual)
             .await
     }
 
@@ -519,7 +514,7 @@ where
 
         // Consistent pre-read of last index.
         tracing::debug!("atomic_update_shards: reading last index");
-        let current_idx: u64 = match self.read_raw(ROUTE_CHANGE_LAST_INDEX).await? {
+        let current_idx: u64 = match self.read_raw_with_consistency_mode(ROUTE_CHANGE_LAST_INDEX, &ReadMode::Strong).await? {
             Some(s) => s.parse().unwrap_or(0),
             None => 0,
         };
@@ -534,7 +529,7 @@ where
                 ShardDirectoryChange::ActivateShard { shard, range, membership, view } => {
                     let key = shard_key(*shard);
                     tracing::debug!(%key, ?shard, "atomic_update_shards: pre-reading shard entry");
-                    if let Some(json) = self.read_raw(&key).await? {
+                    if let Some(json) = self.read_raw_with_consistency_mode(&key, &ReadMode::Strong).await? {
                         let record = parse_record::<K>(&json)?;
                         if record.status == ShardStatus::Tombstoned {
                             // Tombstoned shards cannot be revived through route changes.
@@ -613,7 +608,7 @@ where
         after_index: u64,
     ) -> Result<Vec<(u64, ShardDirectoryChangeSet<K, A>)>, DiscoveryError> {
         // Read last index (eventual — 1 replica).
-        let last_idx: u64 = match self.read_raw(ROUTE_CHANGE_LAST_INDEX).await? {
+        let last_idx: u64 = match self.read_raw_with_consistency_mode(ROUTE_CHANGE_LAST_INDEX, &ReadMode::Eventual).await? {
             Some(s) => s.parse().unwrap_or(0),
             None => return Ok(vec![]),
         };
@@ -625,7 +620,7 @@ where
         let mut result = Vec::new();
         for idx in (after_index + 1)..=last_idx {
             let key = route_change_key(idx);
-            match self.read_raw(&key).await? {
+            match self.read_raw_with_consistency_mode(&key, &ReadMode::Eventual).await? {
                 Some(json) => {
                     let changeset: ShardDirectoryChangeSet<K, A> = serde_json::from_str(&json)
                         .map_err(|e| {
