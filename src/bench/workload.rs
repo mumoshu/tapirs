@@ -55,7 +55,22 @@ pub async fn workload_loop(
                 }
                 txn.commit().await.is_some()
             }
-            _ => unreachable!("workload type not yet implemented"),
+            WorkloadType::ReadOnlyGet { reads_per_txn } => {
+                let txn = client.begin_read_only();
+                for _ in 0..*reads_per_txn {
+                    let k = key(rng.random_index(key_space_size));
+                    let _ = txn.get(k).await;
+                }
+                true
+            }
+            WorkloadType::ReadOnlyScan { scan_range_size } => {
+                let max_start = key_space_size.saturating_sub(*scan_range_size);
+                let start = if max_start > 0 { rng.random_index(max_start) } else { 0 };
+                let end = (start + scan_range_size).min(key_space_size);
+                let txn = client.begin_read_only();
+                let _ = txn.scan(key(start), key(end)).await;
+                true
+            }
         };
         attempted.fetch_add(1, Ordering::Relaxed);
         committed.fetch_add(ok as u64, Ordering::Relaxed);

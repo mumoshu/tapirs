@@ -1,6 +1,8 @@
 #![allow(dead_code, unused_imports)]
 
 mod cluster;
+mod ro_get;
+mod ro_scan;
 mod runner;
 mod rw;
 mod workload;
