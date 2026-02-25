@@ -85,3 +85,16 @@ pub async fn bootstrap_and_run_bench(config: BenchConfig) {
     let (target, _cluster) = bootstrap_cluster(&config.cluster).await;
     run_bench(&target, &config.workload).await;
 }
+
+pub async fn run_bench_auto(cluster_config: ClusterConfig, workload: WorkloadConfig) {
+    if let Ok(addrs) = std::env::var("BENCH_CLUSTER") {
+        let target = super::external_target(&addrs);
+        run_bench(&target, &workload).await;
+    } else {
+        bootstrap_and_run_bench(BenchConfig {
+            cluster: cluster_config,
+            workload,
+        })
+        .await;
+    }
+}

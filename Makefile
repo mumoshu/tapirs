@@ -1,4 +1,4 @@
-.PHONY: test lint lock_server_stress_test coordinator_failure_stress_test_3 coordinator_failure_stress_test_7 bench fuzz fuzz100 maelstrom ci ci-full ci/operator-lint ci/operator-test ci/testbed-kube-operator ci/testbed-kube-operator-tls ci/testbed-kube ci/testbed-docker-compose ci/testbed-solo ci/testbed ci/fuzz-diagnose ci/fuzz-multi-seed
+.PHONY: test lint lock_server_stress_test coordinator_failure_stress_test_3 coordinator_failure_stress_test_7 bench bench/ro bench/rw bench/mix fuzz fuzz100 maelstrom ci ci-full ci/operator-lint ci/operator-test ci/testbed-kube-operator ci/testbed-kube-operator-tls ci/testbed-kube ci/testbed-docker-compose ci/testbed-solo ci/testbed ci/fuzz-diagnose ci/fuzz-multi-seed
 
 lint:
 	cargo clippy --workspace --all-targets -- -D warnings -D clippy::iter_over_hash_type && ./scripts/check-determinism.sh
@@ -17,6 +17,15 @@ coordinator_failure_stress_test_7:
 
 bench:
 	timeout -k 10s 180s cargo test throughput_3_ser --release -- --nocapture --include-ignored
+
+bench/ro:
+	timeout -k 10s 300s cargo test bench_ro_ --release -- --nocapture --include-ignored
+
+bench/rw:
+	timeout -k 10s 300s cargo test bench_rw --release -- --nocapture --include-ignored
+
+bench/mix:
+	timeout -k 10s 300s cargo test bench_mixed --release -- --nocapture --include-ignored
 
 fuzz:
 	./scripts/fuzz-multi-seed.sh
