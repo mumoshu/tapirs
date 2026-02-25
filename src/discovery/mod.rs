@@ -1,3 +1,4 @@
+pub mod backend;
 pub mod json;
 pub mod tapir;
 
