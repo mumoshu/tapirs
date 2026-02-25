@@ -358,6 +358,50 @@ print_report() {
     echo "================================================================"
 }
 
+# ── TiKV region pre-splitting ─────────────────────────────────────────
+PD_SPLIT_DIR="$COMPOSE_DIR/pd-split"
+PD_SPLIT_BIN="$PD_SPLIT_DIR/pd-split"
+
+build_pd_split() {
+    if [ -x "$PD_SPLIT_BIN" ]; then
+        return 0
+    fi
+    echo "  Building pd-split helper..."
+    if ! (cd "$PD_SPLIT_DIR" && go build -o pd-split . 2>&1); then
+        echo "  WARN: failed to build pd-split helper" >&2
+        return 1
+    fi
+}
+
+presplit_tikv_regions() {
+    local pd_addr="$1" split_keys="$2"
+    if [ -x "$PD_SPLIT_BIN" ]; then
+        echo "  Pre-splitting TiKV regions at keys: ${split_keys}"
+        if "$PD_SPLIT_BIN" --pd-addr "${pd_addr}" --split-keys "${split_keys}"; then
+            return 0
+        fi
+        echo "  WARN: pd-split failed, falling back to auto-split" >&2
+    fi
+    return 1
+}
+
+# Fallback: wait for TiKV to auto-split via small region-split-size.
+wait_tikv_regions() {
+    local target="$1" timeout=60 elapsed=0
+    while [ $elapsed -lt $timeout ]; do
+        local count
+        count=$(curl -sf "http://${TIKV_PD_IP}:2379/pd/api/v1/stats/region" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['count'])" 2>/dev/null || echo 0)
+        if [ "$count" -ge "$target" ]; then
+            echo "  TiKV region count: $count (target: $target)"
+            return 0
+        fi
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+    echo "  WARN: TiKV region count $count < target $target after ${timeout}s" >&2
+}
+
 # ══════════════════════════════════════════════════════════════════════
 #  Main
 # ══════════════════════════════════════════════════════════════════════
@@ -443,10 +487,17 @@ main() {
 
     # ── 7. Start TiKV cluster and run bench ───────────────────────────
     echo "[7/8] Starting TiKV cluster..."
+    # If multi-shard and pd-split helper isn't available, use small
+    # region-split-size for auto-splitting fallback.
+    local tikv_region_split_size="96MB"
+    if [ "$BENCH_SHARDS" -gt 1 ] && [ ! -x "$PD_SPLIT_BIN" ]; then
+        tikv_region_split_size="1MB"
+    fi
     PD_CPUS="$PD_CPUS" \
     PD_MEM="$pd_mem_docker" \
     TIKV_NODE_CPUS="$TIKV_NODE_CPUS" \
     TIKV_NODE_MEM="$tikv_node_mem_docker" \
+    TIKV_REGION_SPLIT_SIZE="$tikv_region_split_size" \
     NETWORK_DELAY_MS="$BENCH_DELAY_MS" \
     tikv_compose up -d
 
@@ -455,6 +506,17 @@ main() {
     echo "  Waiting for TiKV nodes..."
     sleep 10  # TiKV needs time to register with PD
     echo "  TiKV cluster ready."
+
+    # Pre-split TiKV regions if multiple shards requested.
+    if [ "$BENCH_SHARDS" -gt 1 ]; then
+        local split_keys
+        split_keys=$(compute_split_keys "$BENCH_SHARDS")
+        build_pd_split || true
+        if ! presplit_tikv_regions "${TIKV_PD_IP}:2379" "$split_keys"; then
+            echo "  Falling back to auto-split via small region-split-size..."
+            wait_tikv_regions "$BENCH_SHARDS"
+        fi
+    fi
 
     echo "[8/8] Running TiKV benchmark..."
     run_tikv_bench "$tikv_out"
