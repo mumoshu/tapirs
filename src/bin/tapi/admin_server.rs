@@ -20,7 +20,7 @@ struct AdminRequest {
     new_membership: Option<Vec<String>>,
     /// Static membership for add_replica. When provided, creates the replica
     /// with the specified membership directly (no shard-manager involvement).
-    /// When absent, uses create_replica() which coordinates via shard-manager.
+    /// When absent, uses add_replica_join() which coordinates via shard-manager.
     #[serde(default)]
     membership: Option<Vec<String>>,
 }
@@ -183,7 +183,7 @@ async fn handle_request(node: &Node, line: &str) -> AdminResponse {
             } else {
                 // Dynamic add via shard-manager.
                 let storage_str = req.storage.as_deref().unwrap_or("memory");
-                match node.create_replica(ShardNumber(shard_id), listen_addr, storage_str).await {
+                match node.add_replica_join(ShardNumber(shard_id), listen_addr, storage_str).await {
                     Ok(()) => AdminResponse {
                         ok: true,
                         message: Some(format!("replica for shard {shard_id} created")),
@@ -192,7 +192,7 @@ async fn handle_request(node: &Node, line: &str) -> AdminResponse {
                     },
                     Err(e) => AdminResponse {
                         ok: false,
-                        message: Some(format!("create_replica failed: {e}")),
+                        message: Some(format!("add_replica_join failed: {e}")),
                         shards: None,
                         backup: None,
                     },

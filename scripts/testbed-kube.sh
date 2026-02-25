@@ -1060,7 +1060,7 @@ cmd_demo() {
 # already has shard memberships from the initial bootstrap's
 # CachingShardDirectory push.
 #
-# Flow: tapi admin add-replica (no --membership) → Node::create_replica()
+# Flow: tapi admin add-replica (no --membership) → Node::add_replica_join()
 # → shard_manager_join() → POST /v1/join → discovery found → manager.join()
 # → AddMember view change on existing replicas.
 cmd_add_node() {
@@ -1094,7 +1094,7 @@ cmd_add_node() {
 
     # Add replicas for each shard via the dynamic shard-manager path.
     # Discovery already has shard membership from the initial bootstrap,
-    # so create_replica → shard_manager_join → /v1/join finds the shard
+    # so add_replica_join → shard_manager_join → /v1/join finds the shard
     # and coordinates AddMember with existing replicas.
     local shards="${TAPIR_SHARDS}"
     for (( s=0; s<shards; s++ )); do

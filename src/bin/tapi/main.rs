@@ -240,7 +240,7 @@ enum AdminAction {
     // would eliminate the need for --membership entirely, simplifying the
     // operator workflow to always use add-replica without flags.
     //
-    // Current state: create_replica() (no --membership) calls
+    // Current state: add_replica_join() (no --membership) calls
     // shard_manager_join() which POSTs /v1/join. The /v1/join handler queries
     // discovery for the shard's membership — if the shard isn't found, it
     // returns 400 "shard N not found in discovery".

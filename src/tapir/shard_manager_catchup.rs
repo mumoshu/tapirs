@@ -11,7 +11,7 @@ use std::time::Duration;
 /// auto-discovers the existing membership from the remote discovery
 /// directory and retries `fetch_leader_record` up to 5 times with 1s
 /// backoff. Exposed via HTTP `/v1/join`, called from
-/// `Node::create_replica()` during runtime scaling.
+/// `Node::add_replica_join()` during runtime scaling.
 ///
 /// Both `join` and `leave` follow the same pattern:
 /// 1. Query the remote discovery directory for current membership
@@ -26,10 +26,10 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
     /// retries `fetch_leader_record` up to 5 times with 1s backoff for
     /// transient cases where a recent bootstrap hasn't fully propagated.
     ///
-    /// Exposed via HTTP `/v1/join`. Called from `Node::create_replica()` during
+    /// Exposed via HTTP `/v1/join`. Called from `Node::add_replica_join()` during
     /// runtime scaling (Go operator `scale.go` sends
     /// `AdminClient.AddReplica(membership=nil)` → admin server dynamic path
-    /// → `Node::create_replica()` → POST `/v1/join`).
+    /// → `Node::add_replica_join()` → POST `/v1/join`).
     ///
     /// **Requires**: The shard must already be registered in the remote discovery
     /// cluster with `Active` status — i.e., `register_active_shard()` (or the

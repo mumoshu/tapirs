@@ -192,12 +192,12 @@ impl Node {
         Ok(())
     }
 
-    /// Create a replica and coordinate bootstrap/join via the shard-manager.
+    /// Add a replica and coordinate bootstrap/join via the shard-manager.
     ///
-    /// 1. Create a local replica with membership=[self].
+    /// 1. Add a local replica with membership=[self] via [`add_replica`](Self::add_replica).
     /// 2. POST /v1/join to the shard-manager, which decides whether to
     ///    bootstrap (first replica) or join (subsequent).
-    pub async fn create_replica(
+    pub async fn add_replica_join(
         &self,
         shard: ShardNumber,
         listen_addr: SocketAddr,
