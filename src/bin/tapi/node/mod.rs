@@ -1,7 +1,7 @@
 pub(crate) mod admin_client;
 pub(crate) mod admin_server;
 
-pub use tapirs::node::{Node, ShardBackup};
+pub use tapirs::node::Node;
 
 use crate::config::NodeConfig;
 use crate::discovery_backend::DiscoveryBackend;

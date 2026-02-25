@@ -1,4 +1,5 @@
-use super::{AdminRequest, AdminResponse, Node, ShardInfo};
+use super::Node;
+use tapirs::node::node_server::{AdminRequest, AdminResponse, ShardInfo};
 use tapirs::ShardNumber;
 
 pub(super) async fn handle_request(node: &Node, line: &str) -> AdminResponse {

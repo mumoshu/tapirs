@@ -10,19 +10,4 @@ pub use send_request::{admin_request, send_admin_request};
 pub use send_request::send_admin_request_tls;
 pub use types::{ClusterMetadata, RestoreRequest};
 
-use crate::node::ShardBackup;
-use serde::Deserialize;
-
-#[derive(Deserialize)]
-pub struct AdminStatusResponse {
-    pub ok: bool,
-    pub message: Option<String>,
-    pub shards: Option<Vec<ShardInfoResponse>>,
-    pub backup: Option<ShardBackup>,
-}
-
-#[derive(Deserialize)]
-pub struct ShardInfoResponse {
-    pub shard: u32,
-    pub listen_addr: String,
-}
+pub use super::node_server::{AdminResponse, ShardInfo};

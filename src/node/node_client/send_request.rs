@@ -1,11 +1,11 @@
-use super::AdminStatusResponse;
+use super::AdminResponse;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
 pub async fn send_admin_request(
     addr: &str,
     request_json: &str,
-) -> Result<AdminStatusResponse, String> {
+) -> Result<AdminResponse, String> {
     send_admin_request_inner(
         addr,
         request_json,
@@ -20,7 +20,7 @@ pub async fn send_admin_request_tls(
     addr: &str,
     request_json: &str,
     tls_connector: &crate::tls::ReloadableTlsConnector,
-) -> Result<AdminStatusResponse, String> {
+) -> Result<AdminResponse, String> {
     send_admin_request_inner(addr, request_json, Some(tls_connector)).await
 }
 
@@ -28,7 +28,7 @@ async fn send_admin_request_inner(
     addr: &str,
     request_json: &str,
     #[cfg(feature = "tls")] tls_connector: Option<&crate::tls::ReloadableTlsConnector>,
-) -> Result<AdminStatusResponse, String> {
+) -> Result<AdminResponse, String> {
     let stream = TcpStream::connect(addr)
         .await
         .map_err(|e| format!("connect to {addr}: {e}"))?;
@@ -56,7 +56,7 @@ async fn send_and_recv<R, W>(
     request_json: &str,
     reader: R,
     mut writer: W,
-) -> Result<AdminStatusResponse, String>
+) -> Result<AdminResponse, String>
 where
     R: tokio::io::AsyncRead + Unpin,
     W: tokio::io::AsyncWrite + Unpin,
@@ -83,7 +83,7 @@ pub async fn admin_request(
     addr: &str,
     request_json: &str,
     #[cfg(feature = "tls")] tls_connector: &Option<crate::tls::ReloadableTlsConnector>,
-) -> Result<AdminStatusResponse, String> {
+) -> Result<AdminResponse, String> {
     #[cfg(feature = "tls")]
     if let Some(connector) = tls_connector {
         return send_admin_request_tls(addr, request_json, connector).await;
