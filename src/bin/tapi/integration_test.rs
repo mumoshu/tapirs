@@ -1,7 +1,7 @@
 use crate::config::ReplicaConfig;
 use crate::discovery_backend::DiscoveryBackend;
 use crate::helpers::{quorum_view_number, wait_for_operational, wait_for_view_change};
-use crate::node::Node;
+use crate::node::{production_rng, Node};
 use rand::{thread_rng, Rng as _};
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
@@ -105,7 +105,7 @@ async fn bootstrap_cluster(
 
     for (disc_addr, listener) in disc_listeners {
         let td = TempDir::new().unwrap();
-        let node = Arc::new(Node::new(td.path().to_str().unwrap().to_string()));
+        let node = Arc::new(Node::new(td.path().to_str().unwrap().to_string(), production_rng));
         node.add_replica_with_listener(
             &ReplicaConfig {
                 shard: 0,
@@ -149,6 +149,7 @@ async fn bootstrap_cluster(
             td.path().to_str().unwrap().to_string(),
             backend,
             &shard_manager_url,
+            production_rng,
         ));
         nodes.push(node);
         temp_dirs.push(td);
@@ -522,6 +523,7 @@ async fn test_rolling_membership_replacement() {
             td.path().to_str().unwrap().to_string(),
             backend,
             &shard_manager_url,
+            production_rng,
         ));
 
         // Record view number before AddMember.
@@ -770,6 +772,7 @@ async fn test_disaster_recovery_backup_restore() {
             td.path().to_str().unwrap().to_string(),
             backend,
             &shard_manager_url,
+            production_rng,
         ));
         new_nodes.push(node);
         _new_temp_dirs.push(td);
@@ -988,6 +991,7 @@ async fn test_cluster_backup_restore_via_admin() {
             td.path().to_str().unwrap().to_string(),
             backend,
             &shard_manager_url,
+            production_rng,
         ));
         let admin_addr = alloc_addr();
         crate::node::admin_server::start(

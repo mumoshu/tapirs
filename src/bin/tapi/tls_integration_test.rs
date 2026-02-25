@@ -100,7 +100,7 @@ async fn test_tls_read_write() {
 
     for (addr, listener) in listeners {
         let td = TempDir::new().unwrap();
-        let mut node = Node::new(td.path().to_str().unwrap().to_string());
+        let mut node = Node::new(td.path().to_str().unwrap().to_string(), crate::node::production_rng);
         node.tls_config = Some(tls_config.clone());
         let node = Arc::new(node);
 
@@ -186,7 +186,7 @@ async fn test_tls_admin_server() {
     let tls_config = generate_test_certs(cert_dir.path());
 
     let td = TempDir::new().unwrap();
-    let mut node = Node::new(td.path().to_str().unwrap().to_string());
+    let mut node = Node::new(td.path().to_str().unwrap().to_string(), crate::node::production_rng);
     node.tls_config = Some(tls_config.clone());
     let node = Arc::new(node);
 
