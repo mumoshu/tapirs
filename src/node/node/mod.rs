@@ -129,3 +129,9 @@ impl Node {
             .collect()
     }
 }
+
+impl super::nodemetrics_server::MetricsCollector for Node {
+    fn collect_metrics(&self) -> Vec<(ShardNumber, IrReplicaMetrics)> {
+        Node::collect_metrics(self)
+    }
+}
