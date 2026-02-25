@@ -76,6 +76,11 @@ enum Command {
         #[command(subcommand)]
         resource: GetResource,
     },
+    /// Back up cluster data to a directory.
+    Backup {
+        #[command(subcommand)]
+        resource: BackupResource,
+    },
     /// Operations via direct node access (no ShardManager required).
     ///
     /// These commands communicate directly with node admin APIs to discover
@@ -85,6 +90,22 @@ enum Command {
     Solo {
         #[command(subcommand)]
         command: SoloCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum BackupResource {
+    /// Back up all active shards via the shard manager.
+    ///
+    /// Performs a full backup if the output directory is empty, or an
+    /// incremental backup if a previous cluster.json exists.
+    Cluster {
+        /// Shard-manager URL.
+        #[arg(long, default_value = "http://127.0.0.1:9001")]
+        shard_manager_url: String,
+        /// Output directory for backup files.
+        #[arg(long)]
+        output: String,
     },
 }
 
@@ -365,6 +386,18 @@ fn main() {
             rt.block_on(async {
                 get_topology(&discovery_tapir_endpoint).await
             })
+        }
+        Command::Backup {
+            resource:
+                BackupResource::Cluster {
+                    shard_manager_url,
+                    output,
+                },
+        } => {
+            let client = make_sm_client(&shard_manager_url, #[cfg(feature = "tls")] &cli.tls);
+            let mgr = tapirs::backup::BackupManager::new(client);
+            mgr.backup_cluster(&output)
+                .map(|()| println!("Backup completed to {output}"))
         }
         Command::Solo {
             command:
