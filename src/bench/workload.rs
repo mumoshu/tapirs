@@ -1,35 +1,14 @@
 #![allow(dead_code, unused_imports)]
 
-use super::{BenchRoutingClient, WorkloadType};
+use super::workload_gen::WorkloadGen;
+use super::{executor, BenchRoutingClient, WorkloadType};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-pub fn key(i: usize) -> String {
-    format!("{:06}", i)
-}
-
 pub async fn prepopulate(client: &Arc<BenchRoutingClient>, key_space_size: usize) {
-    let batch_size: usize = std::env::var("BENCH_PREPOPULATE_BATCH_SIZE")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(100);
-    let mut i = 0;
-    while i < key_space_size {
-        let end = (i + batch_size).min(key_space_size);
-        let txn = client.begin();
-        for j in i..end {
-            // Read each key first (OCC requires read before write for new keys).
-            let _ = txn.get(key(j)).await;
-            txn.put(key(j), Some(format!("init_{j}")));
-        }
-        let result = txn.commit().await;
-        if result.is_none() {
-            // Retry this batch on OCC conflict.
-            continue;
-        }
-        i = end;
-    }
+    let batches = super::workload_gen::prepopulate_ops(key_space_size);
+    executor::prepopulate(client, batches).await;
 }
 
 pub async fn workload_loop(
@@ -41,37 +20,11 @@ pub async fn workload_loop(
     max_sleep_ms: u64,
     mut rng: crate::Rng,
 ) {
+    let gen_rng = rng.fork();
+    let mut wgen = WorkloadGen::new(gen_rng, workload_type, key_space_size);
     loop {
-        let ok = match &workload_type {
-            WorkloadType::ReadWrite { reads_per_txn, writes_per_txn } => {
-                let txn = client.begin();
-                for _ in 0..*reads_per_txn {
-                    let k = key(rng.random_index(key_space_size));
-                    let _ = txn.get(k).await;
-                }
-                for _ in 0..*writes_per_txn {
-                    let k = key(rng.random_index(key_space_size));
-                    txn.put(k, Some(format!("{}", rng.random_u64())));
-                }
-                txn.commit().await.is_some()
-            }
-            WorkloadType::ReadOnlyGet { reads_per_txn } => {
-                let txn = client.begin_read_only();
-                for _ in 0..*reads_per_txn {
-                    let k = key(rng.random_index(key_space_size));
-                    let _ = txn.get(k).await;
-                }
-                true
-            }
-            WorkloadType::ReadOnlyScan { scan_range_size } => {
-                let max_start = key_space_size.saturating_sub(*scan_range_size);
-                let start = if max_start > 0 { rng.random_index(max_start) } else { 0 };
-                let end = (start + scan_range_size).min(key_space_size);
-                let txn = client.begin_read_only();
-                let _ = txn.scan(key(start), key(end)).await;
-                true
-            }
-        };
+        let ops = wgen.next().unwrap();
+        let ok = executor::execute_txn(&client, ops).await;
         attempted.fetch_add(1, Ordering::Relaxed);
         committed.fetch_add(ok as u64, Ordering::Relaxed);
         let sleep_ms = (rng.random_u64() % max_sleep_ms).max(1);

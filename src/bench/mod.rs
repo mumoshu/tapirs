@@ -1,7 +1,10 @@
 #![allow(dead_code, unused_imports)]
 
 mod cluster;
+mod executor;
+mod workload_gen;
 mod mixed;
+mod ops;
 mod ro_get;
 mod ro_scan;
 mod runner;
