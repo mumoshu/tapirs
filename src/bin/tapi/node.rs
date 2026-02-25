@@ -78,7 +78,7 @@ impl Node {
         node
     }
 
-    pub async fn add_replica(&self, cfg: &ReplicaConfig) -> Result<(), String> {
+    pub async fn add_replica_no_join(&self, cfg: &ReplicaConfig) -> Result<(), String> {
         self.add_replica_inner(cfg, None).await
     }
 
@@ -215,7 +215,7 @@ impl Node {
             listen_addr: listen_addr.to_string(),
             membership: vec![listen_addr.to_string()],
         };
-        self.add_replica(&cfg).await?;
+        self.add_replica_no_join(&cfg).await?;
 
         // Shard-manager handles both bootstrap (first replica) and join (subsequent).
         self.shard_manager_join(shard, listen_addr).await?;
@@ -580,7 +580,7 @@ pub async fn run(
     };
 
     for replica_cfg in &cfg.replicas {
-        node.add_replica(replica_cfg).await.unwrap();
+        node.add_replica_no_join(replica_cfg).await.unwrap();
     }
 
     let admin_addr: SocketAddr = admin_listen_addr

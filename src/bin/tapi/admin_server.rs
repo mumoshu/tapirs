@@ -166,7 +166,7 @@ async fn handle_request(node: &Node, line: &str) -> AdminResponse {
                     listen_addr: listen_addr_str.clone(),
                     membership: membership_strs,
                 };
-                match node.add_replica(&cfg).await {
+                match node.add_replica_no_join(&cfg).await {
                     Ok(()) => AdminResponse {
                         ok: true,
                         message: Some(format!("replica for shard {shard_id} added with static membership")),
