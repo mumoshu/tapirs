@@ -14,12 +14,7 @@ pub struct NodeConfig {
     pub replicas: Vec<ReplicaConfig>,
 }
 
-#[derive(Deserialize)]
-pub struct ReplicaConfig {
-    pub shard: u32,
-    pub listen_addr: String,
-    pub membership: Vec<String>,
-}
+pub use tapirs::node::ReplicaConfig;
 
 #[derive(Default, Deserialize)]
 pub struct ClientConfig {
