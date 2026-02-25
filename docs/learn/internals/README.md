@@ -53,5 +53,6 @@
 | How shards split, merge, and compact online | `src/sharding/shardmanager/cdc.rs` | [Resharding](resharding.md) |
 | How nodes discover each other | `src/discovery/mod.rs`, `src/discovery/tapir.rs` | [Discovery](discovery.md) |
 | How tests achieve deterministic reproduction | `tests/`, `src/transport/faulty_channel.rs` | [Testing](testing.md) |
+| What invariants are easy to violate when implementing or extending IR/TAPIR | -- | [IR/TAPIR Gotchas](ir-tapir-gotchas.md) |
 | Why specific architectural choices were made | -- | [Architecture Decisions](architecture-decisions.md) |
 | How the cluster is laid out (clients, shards, discovery) | -- | [Cluster Topology](topology.md) |
