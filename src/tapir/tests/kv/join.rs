@@ -4,7 +4,7 @@ use crate::tapir::shard_manager::ShardManager;
 use crate::testing::discovery::build_single_node_discovery;
 
 #[tokio::test(start_paused = true)]
-async fn test_add_replica_with_preload() {
+async fn test_join_with_preload() {
     init_tracing();
 
     let mut rng = test_rng(42);
@@ -72,9 +72,8 @@ async fn test_add_replica_with_preload() {
         end: None,
     }).await;
 
-    // add_replica: fetch leader_record → bootstrap R4 → AddMember.
-    let new_membership = IrMembership::new(vec![new_address]);
-    manager.add_replica(shard, new_address, new_membership).await.unwrap();
+    // join: discover membership from remote → fetch leader_record → bootstrap R4 → AddMember.
+    manager.join(shard, new_address).await.unwrap();
 
     // Wait for the view change (AddMember → N+3) to complete.
     tokio::time::sleep(Duration::from_secs(10)).await;
@@ -83,7 +82,7 @@ async fn test_add_replica_with_preload() {
     // The 4th replica should have the committed data from the bootstrap.
     let txn = routing_client.begin();
     let val = txn.get(1_i64).await.unwrap();
-    assert_eq!(val, Some(42), "key=1 should be readable after add_replica");
+    assert_eq!(val, Some(42), "key=1 should be readable after join");
     assert!(txn.commit().await.is_some(), "read-only txn should commit");
 
     // Verify: new write succeeds through the 4-replica group.
@@ -91,7 +90,7 @@ async fn test_add_replica_with_preload() {
     txn.put(2_i64, Some(99_i64));
     assert!(
         txn.commit().await.is_some(),
-        "new write should succeed after add_replica"
+        "new write should succeed after join"
     );
 
     // In IR, invoke_inconsistent only delivers the propose to f+1 replicas

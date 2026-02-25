@@ -1,4 +1,4 @@
-mod add_replica;
+mod join;
 mod cdc;
 mod clone_shard;
 mod compact;
