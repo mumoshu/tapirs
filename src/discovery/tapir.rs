@@ -492,6 +492,13 @@ where
             .await
     }
 
+    async fn strong_all_active_shard_view_memberships(
+        &self,
+    ) -> Result<Vec<(ShardNumber, IrMembership<A>, u64)>, DiscoveryError> {
+        self.all_active_shard_view_membership_with_consistency_mode::<K>(&ReadMode::Strong)
+            .await
+    }
+
     async fn strong_atomic_update_shards(
         &self,
         changes: Vec<ShardDirectoryChange<K, A>>,

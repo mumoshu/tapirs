@@ -68,6 +68,19 @@ impl RemoteShardDirectory<TcpAddress, String> for DiscoveryBackend {
         }
     }
 
+    async fn strong_all_active_shard_view_memberships(
+        &self,
+    ) -> Result<Vec<(ShardNumber, IrMembership<TcpAddress>, u64)>, DiscoveryError> {
+        match self {
+            Self::Json(c) => {
+                <JsonRemoteShardDirectory<TcpAddress> as RemoteShardDirectory<TcpAddress, String>>::strong_all_active_shard_view_memberships(c).await
+            }
+            Self::Tapir(c) => {
+                <DiscoveryTapirDir as RemoteShardDirectory<TcpAddress, String>>::strong_all_active_shard_view_memberships(c).await
+            }
+        }
+    }
+
     async fn strong_atomic_update_shards(
         &self,
         changes: Vec<ShardDirectoryChange<String, TcpAddress>>,

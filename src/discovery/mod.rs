@@ -114,6 +114,12 @@ pub trait RemoteShardDirectory<A: Clone + Send + Sync + 'static, K: Clone + Send
            + Send
            + '_;
 
+    fn strong_all_active_shard_view_memberships(
+        &self,
+    ) -> impl std::future::Future<Output = Result<Vec<(ShardNumber, IrMembership<A>, u64)>, DiscoveryError>>
+           + Send
+           + '_;
+
     /// Atomically update shard entries and the route changelog.
     ///
     /// Applies `ActivateShard` (puts the shard with membership/view) and

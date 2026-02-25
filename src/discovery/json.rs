@@ -135,6 +135,14 @@ impl<A: Clone + Send + Sync + 'static, K: Clone + Send + Sync + 'static> RemoteS
         ))
     }
 
+    async fn strong_all_active_shard_view_memberships(
+        &self,
+    ) -> Result<Vec<(ShardNumber, IrMembership<A>, u64)>, DiscoveryError> {
+        Err(DiscoveryError::ConnectionFailed(
+            "JsonRemoteShardDirectory does not support strong_all_active_shard_view_memberships".into(),
+        ))
+    }
+
     #[allow(clippy::disallowed_methods)]
     async fn weak_all_active_shard_view_memberships(
         &self,
