@@ -1,0 +1,6 @@
+FROM tapiadm-tapi
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends iproute2 && rm -rf /var/lib/apt/lists/*
+COPY entrypoint-delay.sh /entrypoint-delay.sh
+RUN chmod +x /entrypoint-delay.sh
+ENTRYPOINT ["/entrypoint-delay.sh"]

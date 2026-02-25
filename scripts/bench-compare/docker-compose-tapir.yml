@@ -1,0 +1,226 @@
+# TAPIR bench cluster: 3 discovery + 1 shard-manager + 3 data nodes
+# Subnet 172.30.1.0/24, resource limits via env vars.
+#
+# Discovery TOML configs must be generated into ./generated/ before starting.
+# Shard bootstrap (add_replica + /v1/register) is done by bench-compare.sh
+# after containers are healthy.
+
+networks:
+  tapir-bench-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.1.0/24
+
+services:
+  # --- Discovery tier (always 3 replicas, small fixed overhead) ---
+  discovery1:
+    image: tapir-bench
+    build:
+      context: .
+      dockerfile: Dockerfile.tapir-bench
+    command: ["tapi", "node", "--config", "/etc/tapi/discovery.toml"]
+    volumes:
+      - ./generated/discovery1.toml:/etc/tapi/discovery.toml:ro
+    environment:
+      - NETWORK_DELAY_MS=${NETWORK_DELAY_MS:-0}
+    cap_add:
+      - NET_ADMIN
+    deploy:
+      resources:
+        limits:
+          cpus: "${TAPIR_DISC_CPUS:-0.1}"
+          memory: "${TAPIR_DISC_MEM:-128m}"
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/127.0.0.1/9000' 2>/dev/null || exit 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    networks:
+      tapir-bench-net:
+        ipv4_address: 172.30.1.4
+
+  discovery2:
+    image: tapir-bench
+    command: ["tapi", "node", "--config", "/etc/tapi/discovery.toml"]
+    volumes:
+      - ./generated/discovery2.toml:/etc/tapi/discovery.toml:ro
+    environment:
+      - NETWORK_DELAY_MS=${NETWORK_DELAY_MS:-0}
+    cap_add:
+      - NET_ADMIN
+    deploy:
+      resources:
+        limits:
+          cpus: "${TAPIR_DISC_CPUS:-0.1}"
+          memory: "${TAPIR_DISC_MEM:-128m}"
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/127.0.0.1/9000' 2>/dev/null || exit 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    networks:
+      tapir-bench-net:
+        ipv4_address: 172.30.1.5
+
+  discovery3:
+    image: tapir-bench
+    command: ["tapi", "node", "--config", "/etc/tapi/discovery.toml"]
+    volumes:
+      - ./generated/discovery3.toml:/etc/tapi/discovery.toml:ro
+    environment:
+      - NETWORK_DELAY_MS=${NETWORK_DELAY_MS:-0}
+    cap_add:
+      - NET_ADMIN
+    deploy:
+      resources:
+        limits:
+          cpus: "${TAPIR_DISC_CPUS:-0.1}"
+          memory: "${TAPIR_DISC_MEM:-128m}"
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/127.0.0.1/9000' 2>/dev/null || exit 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    networks:
+      tapir-bench-net:
+        ipv4_address: 172.30.1.6
+
+  # --- Shard manager ---
+  shard-manager:
+    image: tapir-bench
+    command: >
+      tapi shard-manager
+        --listen-addr 0.0.0.0:9001
+        --discovery-tapir-endpoint 172.30.1.4:6000,172.30.1.5:6000,172.30.1.6:6000
+    environment:
+      - NETWORK_DELAY_MS=${NETWORK_DELAY_MS:-0}
+    cap_add:
+      - NET_ADMIN
+    deploy:
+      resources:
+        limits:
+          cpus: "${TAPIR_MGR_CPUS:-0.1}"
+          memory: "${TAPIR_MGR_MEM:-128m}"
+    depends_on:
+      discovery1:
+        condition: service_healthy
+      discovery2:
+        condition: service_healthy
+      discovery3:
+        condition: service_healthy
+    networks:
+      tapir-bench-net:
+        ipv4_address: 172.30.1.3
+
+  # --- Data nodes ---
+  node1:
+    image: tapir-bench
+    command: >
+      tapi node
+        --admin-listen-addr 0.0.0.0:9000
+        --persist-dir /data
+        --discovery-tapir-endpoint 172.30.1.4:6000,172.30.1.5:6000,172.30.1.6:6000
+        --shard-manager-url http://172.30.1.3:9001
+    environment:
+      - NETWORK_DELAY_MS=${NETWORK_DELAY_MS:-0}
+    cap_add:
+      - NET_ADMIN
+    deploy:
+      resources:
+        limits:
+          cpus: "${TAPIR_NODE_CPUS:-0.5}"
+          memory: "${TAPIR_NODE_MEM:-512m}"
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/127.0.0.1/9000' 2>/dev/null || exit 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    depends_on:
+      discovery1:
+        condition: service_healthy
+      discovery2:
+        condition: service_healthy
+      discovery3:
+        condition: service_healthy
+      shard-manager:
+        condition: service_started
+    networks:
+      tapir-bench-net:
+        ipv4_address: 172.30.1.11
+
+  node2:
+    image: tapir-bench
+    command: >
+      tapi node
+        --admin-listen-addr 0.0.0.0:9000
+        --persist-dir /data
+        --discovery-tapir-endpoint 172.30.1.4:6000,172.30.1.5:6000,172.30.1.6:6000
+        --shard-manager-url http://172.30.1.3:9001
+    environment:
+      - NETWORK_DELAY_MS=${NETWORK_DELAY_MS:-0}
+    cap_add:
+      - NET_ADMIN
+    deploy:
+      resources:
+        limits:
+          cpus: "${TAPIR_NODE_CPUS:-0.5}"
+          memory: "${TAPIR_NODE_MEM:-512m}"
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/127.0.0.1/9000' 2>/dev/null || exit 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    depends_on:
+      discovery1:
+        condition: service_healthy
+      discovery2:
+        condition: service_healthy
+      discovery3:
+        condition: service_healthy
+      shard-manager:
+        condition: service_started
+    networks:
+      tapir-bench-net:
+        ipv4_address: 172.30.1.12
+
+  node3:
+    image: tapir-bench
+    command: >
+      tapi node
+        --admin-listen-addr 0.0.0.0:9000
+        --persist-dir /data
+        --discovery-tapir-endpoint 172.30.1.4:6000,172.30.1.5:6000,172.30.1.6:6000
+        --shard-manager-url http://172.30.1.3:9001
+    environment:
+      - NETWORK_DELAY_MS=${NETWORK_DELAY_MS:-0}
+    cap_add:
+      - NET_ADMIN
+    deploy:
+      resources:
+        limits:
+          cpus: "${TAPIR_NODE_CPUS:-0.5}"
+          memory: "${TAPIR_NODE_MEM:-512m}"
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/127.0.0.1/9000' 2>/dev/null || exit 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    depends_on:
+      discovery1:
+        condition: service_healthy
+      discovery2:
+        condition: service_healthy
+      discovery3:
+        condition: service_healthy
+      shard-manager:
+        condition: service_started
+    networks:
+      tapir-bench-net:
+        ipv4_address: 172.30.1.13
