@@ -886,7 +886,7 @@ async fn test_cluster_backup_restore_via_admin() {
     let mut admin_addrs: Vec<SocketAddr> = Vec::new();
     for node in &cluster.nodes {
         let addr = alloc_addr();
-        crate::admin_server::start(
+        crate::node::admin_server::start(
                 addr,
                 Arc::clone(node),
                 #[cfg(feature = "tls")]
@@ -990,7 +990,7 @@ async fn test_cluster_backup_restore_via_admin() {
             &shard_manager_url,
         ));
         let admin_addr = alloc_addr();
-        crate::admin_server::start(
+        crate::node::admin_server::start(
             admin_addr,
             Arc::clone(&node),
             #[cfg(feature = "tls")]

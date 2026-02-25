@@ -210,7 +210,7 @@ async fn test_tls_admin_server() {
     drop(admin_listener);
 
     let tls_acceptor = tapirs::tls::ReloadableTlsAcceptor::new(&tls_config).unwrap();
-    tokio::spawn(crate::admin_server::start(
+    tokio::spawn(crate::node::admin_server::start(
         admin_addr,
         Arc::clone(&node),
         #[cfg(feature = "tls")]

@@ -1,5 +1,4 @@
 mod admin_client;
-mod admin_server;
 mod client;
 mod config;
 mod discovery_backend;

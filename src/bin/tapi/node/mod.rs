@@ -1,3 +1,5 @@
+pub(crate) mod admin_server;
+
 use crate::config::{NodeConfig, ReplicaConfig};
 use crate::discovery_backend::DiscoveryBackend;
 use rand::{thread_rng, Rng as _};
@@ -593,7 +595,7 @@ pub async fn run(
             .unwrap_or_else(|e| panic!("admin server TLS config error: {e}"))
     });
 
-    crate::admin_server::start(
+    admin_server::start(
         admin_addr,
         Arc::clone(&node),
         #[cfg(feature = "tls")]
