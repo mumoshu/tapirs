@@ -288,25 +288,10 @@ demo_view_change() {
 }
 
 demo_backup() {
-    step "Demo: Full cluster backup..."
-    local backup_dir="${WORK_DIR}/backup"
-    local admin_addrs="127.0.0.1:${ADMIN_PORTS[0]},127.0.0.1:${ADMIN_PORTS[1]},127.0.0.1:${ADMIN_PORTS[2]}"
-
-    info "Backing up all shards to ${backup_dir}..."
-    info "(This triggers a view change on shard 0 for consistency.)"
-    run_cmd "${TAPI}" admin backup \
-        --admin-addrs "${admin_addrs}" \
-        --output "${backup_dir}"
-
-    info "Verifying backup files..."
-    for f in "${backup_dir}/cluster.json" "${backup_dir}/shard_0.json"; do
-        if [[ -f "${f}" ]]; then
-            ok "Found $(basename "${f}") ($(wc -c < "${f}") bytes)"
-        else
-            warn "Missing $(basename "${f}")"
-        fi
-    done
-    ok "Backup complete."
+    step "Demo: Backup not available in solo mode."
+    info "Backup requires a shard manager (CDC scan_changes)."
+    info "Use scripts/testbed-docker-compose.sh for full backup/restore support."
+    ok "Skipped."
 }
 
 # ---------------------------------------------------------------------------
@@ -381,18 +366,12 @@ ${BOLD}4. VIEW CHANGES${RESET}
 
 ${BOLD}5. BACKUP & RESTORE${RESET}
 
-   Full cluster backup (triggers a view change for consistency):
+   Backup requires a shard manager (CDC scan_changes) which is not
+   available in solo mode. Use scripts/testbed-docker-compose.sh for
+   full backup/restore support:
 
-     ${TAPI} admin backup \\
-       --admin-addrs 127.0.0.1:${ADMIN_PORTS[0]},127.0.0.1:${ADMIN_PORTS[1]},127.0.0.1:${ADMIN_PORTS[2]} \\
-       --output ${WORK_DIR}/backup
-
-   Restore from backup onto fresh nodes:
-
-     ${TAPI} admin restore \\
-       --admin-addrs 127.0.0.1:${ADMIN_PORTS[0]},127.0.0.1:${ADMIN_PORTS[1]},127.0.0.1:${ADMIN_PORTS[2]} \\
-       --backup-dir ${WORK_DIR}/backup \\
-       --base-port ${TAPIR_PORTS[0]}
+     tapictl backup cluster --shard-manager-url URL --output DIR
+     tapictl restore cluster --shard-manager-url URL --admin-addrs A1,A2,A3 --input DIR
 
 ${BOLD}6. SOLO CLONE (BLUE-GREEN COMPACTION)${RESET}
 

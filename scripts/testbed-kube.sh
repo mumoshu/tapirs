@@ -745,18 +745,26 @@ ${BOLD}6. VIEW CHANGES${RESET}
 
 ${BOLD}7. BACKUP & RESTORE${RESET}
 
-   Full cluster backup (run from inside a node pod):
+   Full cluster backup (run from inside the shard-manager pod):
+
+     SM_POD=\$(kubectl get pods -n ${NS} -l app=tapir-shard-manager -o jsonpath='{.items[0].metadata.name}')
+     kubectl exec -n ${NS} \$SM_POD -- tapictl backup cluster \\
+       --shard-manager-url http://127.0.0.1:${SHARD_MANAGER_PORT} \\
+       --output /tmp/backup
+
+   Restore from backup:
 
      NODE0_IP=\$(kubectl get pod -n ${NS} tapir-node-0 -o jsonpath='{.status.podIP}')
      NODE1_IP=\$(kubectl get pod -n ${NS} tapir-node-1 -o jsonpath='{.status.podIP}')
      NODE2_IP=\$(kubectl get pod -n ${NS} tapir-node-2 -o jsonpath='{.status.podIP}')
-     kubectl exec -n ${NS} tapir-node-0 -- tapi admin backup \\
+     kubectl exec -n ${NS} \$SM_POD -- tapictl restore cluster \\
+       --shard-manager-url http://127.0.0.1:${SHARD_MANAGER_PORT} \\
        --admin-addrs \${NODE0_IP}:${ADMIN_PORT},\${NODE1_IP}:${ADMIN_PORT},\${NODE2_IP}:${ADMIN_PORT} \\
-       --output /tmp/backup
+       --input /tmp/backup
 
    Verify backup files:
 
-     kubectl exec -n ${NS} tapir-node-0 -- ls -la /tmp/backup/
+     kubectl exec -n ${NS} \$SM_POD -- ls -la /tmp/backup/
 
 ${BOLD}8. FULL DEMO${RESET}
 
@@ -1007,28 +1015,19 @@ cmd_demo() {
     # --- Backup ---
     step "Demo: Full cluster backup..."
     local backup_dir="/tmp/tapir-backup"
+    local sm_pod
+    sm_pod=$(kube get pods -l app=tapir-shard-manager -o jsonpath='{.items[0].metadata.name}')
 
-    # Collect admin addresses (pod IPs:admin_port) for all nodes.
-    local admin_addrs=""
-    local total_nodes
-    total_nodes=$(kube get statefulset tapir-node -o jsonpath='{.spec.replicas}')
-    for (( n=0; n<total_nodes; n++ )); do
-        local ip
-        ip=$(pod_ip "tapir-node-${n}")
-        if [[ -n "${admin_addrs}" ]]; then admin_addrs="${admin_addrs},"; fi
-        admin_addrs="${admin_addrs}${ip}:${ADMIN_PORT}"
-    done
-
-    info "Backing up all shards to ${backup_dir} on tapir-node-0..."
-    info "(This triggers view changes on each shard for consistency.)"
-    exec_tapi "tapir-node-0" admin backup \
-        --admin-addrs "${admin_addrs}" \
+    info "Backing up all shards to ${backup_dir} on ${sm_pod}..."
+    info "(Uses CDC scan_changes via shard manager.)"
+    exec_tapictl "${sm_pod}" backup cluster \
+        --shard-manager-url "http://127.0.0.1:${SHARD_MANAGER_PORT}" \
         --output "${backup_dir}"
 
     info "Verifying backup files..."
     local backup_files
-    backup_files=$(kube exec "tapir-node-0" -- ls "${backup_dir}/" 2>/dev/null) || true
-    for f in cluster.json shard_0.json shard_1.json shard_2.json; do
+    backup_files=$(kube exec "${sm_pod}" -- ls "${backup_dir}/" 2>/dev/null) || true
+    for f in cluster.json shard_0_delta_0.bin shard_1_delta_0.bin shard_2_delta_0.bin; do
         if echo "${backup_files}" | grep -q "${f}"; then
             ok "Found ${f}"
         else

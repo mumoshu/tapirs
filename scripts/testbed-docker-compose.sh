@@ -268,20 +268,16 @@ cmd_up() {
     # --- Backup ---
     step "Demo: Full cluster backup..."
     BACKUP_DIR="${WORK_DIR}/backup"
-    ADMIN_ADDRS="127.0.0.1:9011,127.0.0.1:9012,127.0.0.1:9013"
-    if [[ -n "${NODE4_ADMIN_PORT:-}" ]]; then
-        ADMIN_ADDRS="${ADMIN_ADDRS},127.0.0.1:${NODE4_ADMIN_PORT}"
-    fi
 
     info "Backing up all shards to ${BACKUP_DIR}..."
-    info "(This triggers view changes on each shard for consistency.)"
-    run_cmd "${TAPI}" admin backup \
-        --admin-addrs "${ADMIN_ADDRS}" \
+    info "(Uses CDC scan_changes via shard manager.)"
+    run_cmd "${TAPICTL}" backup cluster \
+        --shard-manager-url "http://127.0.0.1:9001" \
         --output "${BACKUP_DIR}"
 
     info "Verifying backup files..."
-    for f in "${BACKUP_DIR}/cluster.json" "${BACKUP_DIR}/shard_0.json" \
-             "${BACKUP_DIR}/shard_1.json" "${BACKUP_DIR}/shard_2.json"; do
+    for f in "${BACKUP_DIR}/cluster.json" "${BACKUP_DIR}/shard_0_delta_0.bin" \
+             "${BACKUP_DIR}/shard_1_delta_0.bin" "${BACKUP_DIR}/shard_2_delta_0.bin"; do
         if [[ -f "${f}" ]]; then
             ok "Found $(basename "${f}") ($(wc -c < "${f}") bytes)"
         else
@@ -468,15 +464,16 @@ ${BOLD}6. SHARD OPERATIONS${RESET}
 
 ${BOLD}7. BACKUP & RESTORE${RESET}
 
-   Full cluster backup (triggers view changes for consistency):
+   Full cluster backup (uses CDC scan_changes via shard manager):
 
-     ${rel_bin}/tapi admin backup \\
-       --admin-addrs 127.0.0.1:9011,127.0.0.1:9012,127.0.0.1:9013 \\
+     ${rel_bin}/tapictl backup cluster \\
+       --shard-manager-url http://127.0.0.1:9001 \\
        --output .tapiadm/backup
 
    Restore from backup:
 
-     ${rel_bin}/tapi admin restore \\
+     ${rel_bin}/tapictl restore cluster \\
+       --shard-manager-url http://127.0.0.1:9001 \\
        --admin-addrs 127.0.0.1:9011,127.0.0.1:9012,127.0.0.1:9013 \\
        --input .tapiadm/backup
 
