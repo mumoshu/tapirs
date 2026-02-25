@@ -1,6 +1,9 @@
 #![allow(dead_code, unused_imports)]
 
 mod cluster;
+mod runner;
+mod rw;
+mod workload;
 
 pub use cluster::{bootstrap_cluster, external_target, BenchCluster, BenchTarget};
 
