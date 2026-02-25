@@ -295,7 +295,7 @@ demo_backup() {
     local backup_dir="${WORK_DIR}/backup"
     local admin_addrs="127.0.0.1:${ADMIN_PORTS[0]},127.0.0.1:${ADMIN_PORTS[1]},127.0.0.1:${ADMIN_PORTS[2]}"
 
-    run_cmd "${TAPICTL}" solo backup cluster \
+    run_cmd "${TAPICTL}" solo backup \
         --admin-addrs "${admin_addrs}" --output "${backup_dir}"
 
     if [[ -f "${backup_dir}/cluster.json" ]] && [[ -f "${backup_dir}/shard_0_delta_0.bin" ]]; then
@@ -380,13 +380,13 @@ ${BOLD}5. BACKUP & RESTORE${RESET}
 
    Back up all shards via direct node access (no shard manager needed):
 
-     ${TAPICTL} solo backup cluster \\
+     ${TAPICTL} solo backup \\
        --admin-addrs 127.0.0.1:${ADMIN_PORTS[0]},127.0.0.1:${ADMIN_PORTS[1]},127.0.0.1:${ADMIN_PORTS[2]} \\
        --output /path/to/backup
 
    Restore from backup to target nodes:
 
-     ${TAPICTL} solo restore cluster \\
+     ${TAPICTL} solo restore \\
        --admin-addrs 127.0.0.1:${ADMIN_PORTS[0]},127.0.0.1:${ADMIN_PORTS[1]},127.0.0.1:${ADMIN_PORTS[2]} \\
        --input /path/to/backup
 
