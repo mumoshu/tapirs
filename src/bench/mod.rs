@@ -1,6 +1,7 @@
 #![allow(dead_code, unused_imports)]
 
 mod cluster;
+mod mixed;
 mod ro_get;
 mod ro_scan;
 mod runner;
