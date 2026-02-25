@@ -9,6 +9,28 @@
 #   scripts/bench-compare.sh
 #   BENCH_CPUS=6 BENCH_MEM=12 BENCH_DELAY_MS=2 scripts/bench-compare.sh
 #
+# Resource allocation:
+#   Both systems share the same total CPU + memory budget (BENCH_CPUS /
+#   BENCH_MEM) and run sequentially so each gets the full host during its
+#   bench run.  The budget is split into a small fixed "coordination" slice
+#   and the remainder divided equally among N data replicas.
+#
+#   The coordination budgets are set to be roughly equal so the comparison
+#   is fair — each system's architectural overhead consumes the same share
+#   of the total resources, leaving data nodes with nearly identical
+#   allocations:
+#
+#     TAPIR coordination  256 MB total  (3 discovery × 64m + 1 shard-mgr × 64m)
+#     TiKV coordination   250 MB total  (1 PD × 250m)
+#
+#   Example with BENCH_MEM=4, 3 replicas:
+#     TAPIR data nodes  (4 − 0.256) / 3 ≈ 1.25 GB each
+#     TiKV data nodes   (4 − 0.250) / 3 ≈ 1.25 GB each
+#
+#   TiKV requires ≥1 GB per data node (RocksDB + gRPC + thread stacks).
+#   The script exits with an error if the computed per-node memory falls
+#   below this minimum and suggests the required BENCH_MEM value.
+#
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
