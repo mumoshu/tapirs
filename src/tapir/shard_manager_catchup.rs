@@ -1,5 +1,4 @@
 use crate::discovery::{RemoteShardDirectory, ShardStatus};
-use crate::ir::{Record, SharedView, View, ViewNumber};
 use crate::tapir::shard_manager::ShardManager;
 use crate::tapir::{Key, Replica, ShardClient, ShardNumber, Value};
 use crate::transport::Transport;
@@ -21,27 +20,6 @@ use std::time::Duration;
 /// `join` additionally fetches the leader_record and bootstraps the new
 /// replica before sending AddMember.
 impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteShardDirectory<T::Address, K>> ShardManager<K, V, T, RD> {
-    /// Bootstrap a shard with a single replica.
-    ///
-    /// Sends BootstrapRecord with an empty record at view 1. The replica
-    /// converts it to a self-directed StartView, which sets leader_record
-    /// and transitions to Normal status. Unconditional — no discovery lookup.
-    pub fn bootstrap(&mut self, shard: ShardNumber, address: T::Address) {
-        let client = ShardClient::<K, V, T>::new(
-            self.rng.fork(),
-            IrClientId::new(&mut self.rng),
-            shard,
-            IrMembership::new(vec![address]),
-            self.transport.clone(),
-        );
-        let view = SharedView::new(View {
-            membership: IrMembership::new(vec![address]),
-            number: ViewNumber(1),
-            app_config: None,
-        });
-        client.bootstrap_record(Record::<Replica<K, V>>::default(), view);
-    }
-
     /// Add a replica to a shard.
     ///
     /// Auto-discovers the existing membership from the remote directory and
