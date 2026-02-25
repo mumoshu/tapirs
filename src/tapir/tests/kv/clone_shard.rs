@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::tapir::clustermanager::SoloClusterManager;
+use crate::nodecluster::SoloClusterManager;
 use crate::tapir::ShardClient;
 use crate::IrClientId;
 

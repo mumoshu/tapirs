@@ -1,11 +1,10 @@
 mod client;
-pub mod clustermanager;
 pub mod dns_shard_client;
 pub mod dynamic_router;
 pub mod key_range;
 mod key_value;
 mod message;
-mod replica;
+pub(crate) mod replica;
 mod routing_client;
 #[allow(dead_code)]
 mod shard_client;
@@ -14,7 +13,7 @@ pub mod shard_manager;
 #[allow(dead_code)]
 mod shard_manager_catchup;
 #[allow(dead_code)]
-mod shard_manager_cdc;
+pub(crate) mod shard_manager_cdc;
 pub mod shard_router;
 mod timestamp;
 
