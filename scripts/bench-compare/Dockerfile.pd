@@ -1,7 +1,7 @@
 ARG PD_TAG=latest
 FROM pingcap/pd:${PD_TAG}
 USER root
-RUN dnf install -y iproute && dnf clean all
+RUN dnf install -y iproute iproute-tc && dnf clean all
 COPY entrypoint-delay.sh /entrypoint-delay.sh
 RUN chmod +x /entrypoint-delay.sh
 ENTRYPOINT ["/entrypoint-delay.sh"]
