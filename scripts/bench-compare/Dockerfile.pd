@@ -1,7 +1,7 @@
 ARG PD_TAG=latest
 FROM pingcap/pd:${PD_TAG}
 USER root
-RUN apt-get update && apt-get install -y --no-install-recommends iproute2 && rm -rf /var/lib/apt/lists/*
+RUN dnf install -y iproute && dnf clean all
 COPY entrypoint-delay.sh /entrypoint-delay.sh
 RUN chmod +x /entrypoint-delay.sh
 ENTRYPOINT ["/entrypoint-delay.sh"]
