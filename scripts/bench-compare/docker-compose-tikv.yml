@@ -15,7 +15,7 @@ services:
       context: .
       dockerfile: Dockerfile.pd
     command: >
-      /entrypoint-delay.sh pd-server
+      /entrypoint-delay.sh /pd-server
         --name pd
         --client-urls http://0.0.0.0:2379
         --peer-urls http://0.0.0.0:2380
@@ -47,7 +47,7 @@ services:
       context: .
       dockerfile: Dockerfile.tikv
     command: >
-      /entrypoint-delay.sh tikv-server
+      /entrypoint-delay.sh /tikv-server
         --addr 0.0.0.0:20160
         --advertise-addr 172.30.0.11:20160
         --status-addr 0.0.0.0:20180
@@ -73,7 +73,7 @@ services:
   tikv2:
     image: bench-tikv
     command: >
-      /entrypoint-delay.sh tikv-server
+      /entrypoint-delay.sh /tikv-server
         --addr 0.0.0.0:20160
         --advertise-addr 172.30.0.12:20160
         --status-addr 0.0.0.0:20180
@@ -99,7 +99,7 @@ services:
   tikv3:
     image: bench-tikv
     command: >
-      /entrypoint-delay.sh tikv-server
+      /entrypoint-delay.sh /tikv-server
         --addr 0.0.0.0:20160
         --advertise-addr 172.30.0.13:20160
         --status-addr 0.0.0.0:20180
