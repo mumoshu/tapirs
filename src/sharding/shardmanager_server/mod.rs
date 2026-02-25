@@ -1,5 +1,7 @@
+mod handle_apply_changes;
 mod handle_connection;
 mod handle_request;
+mod handle_scan_changes;
 pub mod run;
 mod serve;
 
