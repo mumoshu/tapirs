@@ -5,6 +5,7 @@ use crate::{
     transport::Transport, IrClient, IrClientId, IrMembership, IrRecord, IrSharedView,
     OccPrepareResult, OccSharedTransaction, OccTransaction, OccTransactionId,
 };
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::Arc;
@@ -582,6 +583,11 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "K: Serialize, V: Serialize",
+    deserialize = "K: serde::de::DeserializeOwned, V: serde::de::DeserializeOwned"
+))]
 pub struct ScanChangesResult<K, V> {
     pub deltas: Vec<LeaderRecordDelta<K, V>>,
     /// The highest base_view for which any replica returned a delta, or
@@ -694,4 +700,45 @@ fn merge_responses<K, V>(
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tapir::message::Change;
+
+    #[test]
+    fn scan_changes_result_bitcode_round_trip() {
+        let original = ScanChangesResult::<String, String> {
+            deltas: vec![LeaderRecordDelta {
+                from_view: 0,
+                to_view: 1,
+                changes: vec![Change {
+                    transaction_id: crate::OccTransactionId {
+                        client_id: crate::IrClientId(0),
+                        number: 1,
+                    },
+                    key: "key1".to_string(),
+                    value: Some("val1".to_string()),
+                    timestamp: crate::tapir::Timestamp {
+                        time: 100,
+                        client_id: crate::IrClientId(0),
+                    },
+                }],
+            }],
+            effective_end_view: Some(1),
+            pending_prepares: 0,
+        };
+        let bytes = bitcode::serialize(&original).expect("serialize");
+        let decoded: ScanChangesResult<String, String> =
+            bitcode::deserialize(&bytes).expect("deserialize");
+        assert_eq!(decoded.deltas.len(), 1);
+        assert_eq!(decoded.effective_end_view, Some(1));
+        assert_eq!(decoded.pending_prepares, 0);
+        assert_eq!(decoded.deltas[0].from_view, 0);
+        assert_eq!(decoded.deltas[0].to_view, 1);
+        assert_eq!(decoded.deltas[0].changes.len(), 1);
+        assert_eq!(decoded.deltas[0].changes[0].key, "key1");
+        assert_eq!(decoded.deltas[0].changes[0].value, Some("val1".to_string()));
+    }
 }

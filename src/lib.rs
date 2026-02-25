@@ -43,7 +43,7 @@ pub use occ::{
 pub use tapir::{
     Client as TapirClient, KeyRange, ReadOnlyTransaction, Replica as TapirReplica,
     RoutingClient, RoutingReadOnlyTransaction, RoutingTransaction,
-    Sharded, ShardNumber, Timestamp as TapirTimestamp, TransactionError,
+    ScanChangesResult, Sharded, ShardNumber, Timestamp as TapirTimestamp, TransactionError,
 };
 pub use nodecluster::{CloneError, SoloClusterManager};
 pub use tapir::dns_shard_client::DnsRefreshingShardClient;

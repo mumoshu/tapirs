@@ -22,7 +22,7 @@ pub use message::{Change, LeaderRecordDelta, CO, CR, IO, IR, UO, UR};
 pub use replica::Replica;
 pub use routing_client::{RoutingClient, RoutingReadOnlyTransaction, RoutingTransaction};
 pub use shard::{Number as ShardNumber, Sharded};
-pub use shard_client::ShardClient;
+pub use shard_client::{ScanChangesResult, ShardClient};
 pub use timestamp::Timestamp;
 
 /// Errors that can occur during transaction operations.
