@@ -1,4 +1,5 @@
 mod backup_cluster;
+mod list_backups;
 pub mod types;
 
 use crate::sharding::shardmanager_client::HttpShardManagerClient;

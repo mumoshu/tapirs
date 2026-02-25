@@ -234,6 +234,12 @@ enum GetResource {
         #[arg(long)]
         discovery_tapir_endpoint: String,
     },
+    /// List available backups in a directory.
+    Backups {
+        /// Directory to scan for backup cluster.json files.
+        #[arg(long)]
+        dir: String,
+    },
 }
 
 async fn get_topology(endpoint: &str) -> Result<(), String> {
@@ -385,6 +391,20 @@ fn main() {
             let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");
             rt.block_on(async {
                 get_topology(&discovery_tapir_endpoint).await
+            })
+        }
+        Command::Get {
+            resource: GetResource::Backups { dir },
+        } => {
+            tapirs::backup::BackupManager::list_backups(&dir).map(|backups| {
+                if backups.is_empty() {
+                    println!("No backups found in {dir}");
+                } else {
+                    println!("{:<30} {:<8} {:<8} PATH", "TIMESTAMP", "SHARDS", "DELTAS");
+                    for b in &backups {
+                        println!("{:<30} {:<8} {:<8} {}", b.timestamp, b.shard_count, b.delta_count, b.path);
+                    }
+                }
             })
         }
         Command::Backup {
