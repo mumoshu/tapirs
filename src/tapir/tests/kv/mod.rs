@@ -5,6 +5,7 @@ mod compact;
 mod coordinator_recovery;
 mod fuzz;
 mod increment;
+mod prepare_conflict;
 mod read_only;
 mod resharding;
 mod rwr;
