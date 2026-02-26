@@ -2,8 +2,36 @@ use super::*;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 impl Node {
-    /// Send an HTTP POST to the shard-manager, handling both plain TCP and TLS.
+    /// Send an HTTP POST to the shard-manager with retry for transient errors.
+    ///
+    /// Retries up to 5 times with exponential backoff (100ms base, 2x) when
+    /// the shard-manager returns a transient error such as "not found in
+    /// discovery" (async FINALIZE propagation delay) or "discovery unavailable"
+    /// (transient connection issue to the discovery tier).
     pub(crate) async fn shard_manager_http_post(
+        &self,
+        path: &str,
+        shard: ShardNumber,
+        listen_addr: SocketAddr,
+    ) -> Result<(), String> {
+        let mut backoff = std::time::Duration::from_millis(100);
+
+        for attempt in 0..5u32 {
+            match self.shard_manager_http_post_once(path, shard, listen_addr).await {
+                Ok(()) => return Ok(()),
+                Err(e) if Self::is_retryable_shard_manager_error(&e) && attempt < 4 => {
+                    tracing::debug!(attempt, %e, "shard-manager {path} transient error, retrying");
+                    tokio::time::sleep(backoff).await;
+                    backoff *= 2;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        unreachable!()
+    }
+
+    /// Single-attempt HTTP POST to the shard-manager.
+    async fn shard_manager_http_post_once(
         &self,
         path: &str,
         shard: ShardNumber,
@@ -101,6 +129,13 @@ impl Node {
         }
 
         Ok(())
+    }
+
+    /// Check if a shard-manager error is transient and worth retrying.
+    fn is_retryable_shard_manager_error(err: &str) -> bool {
+        err.contains("not found in discovery")
+            || err.contains("discovery unavailable")
+            || err.contains("PrepareConflict")
     }
 
     pub(crate) async fn shard_manager_join(
