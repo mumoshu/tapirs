@@ -101,3 +101,39 @@ async fn time_travel_scan_basic() {
 
     drop(_replicas);
 }
+
+#[tokio::test(start_paused = true)]
+async fn time_travel_routing_multi_shard_scan() {
+    let (_shards, clients) = build_sharded_kv(true, 2, 3, 2);
+
+    let txn = clients[0].begin();
+    txn.put(Sharded { shard: ShardNumber(0), key: 10 }, Some(100));
+    txn.put(Sharded { shard: ShardNumber(1), key: 110 }, Some(1100));
+    let commit_ts = txn.commit().await.unwrap();
+
+    // Let FINALIZE propagate so the writes are applied to MVCC.
+    tokio::time::advance(Duration::from_millis(1)).await;
+
+    let shard_dir = ShardDirectory::new(vec![
+        ShardEntry {
+            shard: ShardNumber(0),
+            range: KeyRange { start: None, end: Some(100) },
+        },
+        ShardEntry {
+            shard: ShardNumber(1),
+            range: KeyRange { start: Some(100), end: None },
+        },
+    ]);
+    let router = Arc::new(DynamicRouter::new(Arc::new(RwLock::new(shard_dir))));
+    let routing_client = RoutingClient::new(Arc::clone(&clients[1]), Arc::clone(&router));
+
+    let tt = routing_client.begin_time_travel(commit_ts);
+
+    let val = tt.get(10).await.unwrap();
+    assert_eq!(val, Some(100));
+
+    let results = tt.scan(10, 110).await.unwrap();
+    assert_eq!(results, vec![(10, 100), (110, 1100)]);
+
+    drop(_shards);
+}

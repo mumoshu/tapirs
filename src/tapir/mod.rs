@@ -17,7 +17,7 @@ mod shard;
 mod tests;
 
 pub use client::{Client, ReadOnlyTransaction};
-pub use timetravel::TimeTravelTransaction;
+pub use timetravel::{RoutingTimeTravelTransaction, TimeTravelTransaction};
 pub use key_range::KeyRange;
 pub use key_value::{Key, Value};
 pub use message::{Change, LeaderRecordDelta, CO, CR, IO, IR, UO, UR};

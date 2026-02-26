@@ -45,7 +45,7 @@ impl Default for RetryConfig {
 ///
 /// The `op` closure should re-read the routing directory on each call —
 /// the directory may have been updated during the backoff sleep.
-async fn retry_out_of_range<F, Fut, R, Sl, SlFut>(
+pub(crate) async fn retry_out_of_range<F, Fut, R, Sl, SlFut>(
     config: &RetryConfig,
     on_retry: &Option<Arc<dyn Fn(&str) + Send + Sync>>,
     op_name: &str,
@@ -140,6 +140,22 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>, R: ShardRouter<K>> RoutingClient
     pub fn begin_read_only(&self) -> RoutingReadOnlyTransaction<K, V, T, R> {
         RoutingReadOnlyTransaction {
             inner: self.inner.begin_read_only(),
+            router: Arc::clone(&self.router),
+            retry_config: self.retry_config.clone(),
+            on_retry: self.on_retry.clone(),
+        }
+    }
+
+    /// Begin a time-travel query at the given timestamp.
+    ///
+    /// See [`crate::RoutingTimeTravelTransaction`] for full documentation on
+    /// use cases, consistency guarantees, and limitations.
+    pub fn begin_time_travel(
+        &self,
+        timestamp: Timestamp,
+    ) -> crate::tapir::timetravel::RoutingTimeTravelTransaction<K, V, T, R> {
+        crate::tapir::timetravel::RoutingTimeTravelTransaction {
+            inner: self.inner.begin_time_travel(timestamp),
             router: Arc::clone(&self.router),
             retry_config: self.retry_config.clone(),
             on_retry: self.on_retry.clone(),
