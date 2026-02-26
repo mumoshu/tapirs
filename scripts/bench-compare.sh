@@ -531,7 +531,7 @@ main() {
 
     # ── 1. Build TAPIR base image ─────────────────────────────────────
     echo "[1/8] Building TAPIR base image..."
-    (cd "$PROJECT_ROOT" && docker build -f .tapiadm/Dockerfile -t tapiadm-tapi . -q) >/dev/null
+    (cd "$PROJECT_ROOT" && docker build -f src/bin/tapiadm/docker/Dockerfile -t tapiadm-tapi . -q) >/dev/null
     echo "  tapiadm-tapi image built."
 
     # ── 2. Build bench images ─────────────────────────────────────────
