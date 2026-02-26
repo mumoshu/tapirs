@@ -37,4 +37,8 @@ pub enum TransactionError {
     /// The shard's replicas are temporarily unreachable (e.g. view change
     /// in progress, network partition). The caller should retry later.
     Unavailable,
+    /// A prepared-but-uncommitted write overlaps the read's snapshot
+    /// timestamp. The caller should retry with backoff — the prepare
+    /// will resolve (commit or abort) shortly.
+    PrepareConflict,
 }

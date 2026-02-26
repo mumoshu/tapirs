@@ -127,6 +127,11 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
         &self.inner.transport
     }
 
+    /// Returns the current membership size (for computing f+1 thresholds).
+    pub fn membership_size(&self) -> MembershipSize {
+        self.inner.sync.lock().unwrap().view.membership.size()
+    }
+
     /// Updates own view and those of lagging replicas.
     ///
     /// `Index`'s in `views` must correspond to `sync.view`.
