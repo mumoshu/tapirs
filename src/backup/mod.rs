@@ -1,4 +1,6 @@
 pub mod local;
+#[cfg(feature = "s3")]
+pub mod s3backup;
 pub mod storage;
 mod backup_cluster;
 mod list_backups;
