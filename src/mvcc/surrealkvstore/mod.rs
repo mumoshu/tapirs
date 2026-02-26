@@ -5,7 +5,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::fmt::{self, Debug};
 use std::path::PathBuf;
-use surrealkv::{LSMIterator, Mode, ReadOptions, Tree, TreeBuilder};
+use surrealkv::{LSMIterator, Mode, Tree, TreeBuilder};
 
 #[derive(Debug)]
 pub enum SurrealKvError {
@@ -74,6 +74,9 @@ where
             .enable_all()
             .build()
             .map_err(|e| SurrealKvError::Codec(e.to_string()))?;
+        // Enter runtime context — surrealkv's TaskManager spawns background
+        // tokio tasks during Tree construction.
+        let _guard = runtime.enter();
         let tree = TreeBuilder::new().with_path(path.clone()).build()?;
         let mut store = Self {
             runtime,
@@ -89,7 +92,10 @@ where
     fn rebuild_index(&mut self) -> Result<(), SurrealKvError> {
         self.index.clear();
         let txn = self.tree.begin_with_mode(Mode::ReadOnly)?;
-        let mut iter = txn.range_with_options(&ReadOptions::default())?;
+        // Use explicit bounds covering all possible keys. surrealkv's
+        // range_with_options(ReadOptions::default()) converts None bounds
+        // to empty slices, producing an empty range.
+        let mut iter = txn.range(vec![0u8], vec![0xff; 1024])?;
         if !iter.seek_first()? {
             return Ok(());
         }
@@ -286,6 +292,16 @@ where
     }
 }
 
+impl<K, V, TS> Drop for SurrealKvStore<K, V, TS> {
+    fn drop(&mut self) {
+        // Explicitly close the tree within our runtime before both are dropped.
+        // Tree::drop only spawns an async close task without awaiting it,
+        // which races with runtime shutdown. Block on close to ensure
+        // WAL/memtable flush completes.
+        let _ = self.runtime.block_on(self.tree.close());
+    }
+}
+
 impl<K, V, TS> Serialize for SurrealKvStore<K, V, TS> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let _ = self.tree.flush_wal(true);
@@ -312,3 +328,6 @@ where
         Self::open(path).map_err(serde::de::Error::custom)
     }
 }
+
+#[cfg(test)]
+mod tests;
