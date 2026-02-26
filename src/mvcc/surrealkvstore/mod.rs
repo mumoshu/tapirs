@@ -91,6 +91,11 @@ where
 
     fn rebuild_index(&mut self) -> Result<(), SurrealKvError> {
         self.index.clear();
+        // Use begin_with_mode(Mode::ReadOnly), not begin_with_opts(TransactionOptions).
+        // TransactionOptions controls both Mode (ReadOnly/ReadWrite/WriteOnly) and
+        // Durability (Eventual/Immediate), but durability is irrelevant for reads.
+        // begin_with_mode() is the simpler API — it delegates to begin_with_opts()
+        // with default Eventual durability.
         let txn = self.tree.begin_with_mode(Mode::ReadOnly)?;
         // Use explicit bounds covering all possible keys. surrealkv's
         // range_with_options(ReadOptions::default()) converts None bounds
