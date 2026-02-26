@@ -337,4 +337,14 @@ pub enum IR<K, V> {
         Vec<(K, Option<V>, Timestamp)>,
     ),
     OutOfRange,
+    /// QuorumRead or QuorumScan conflicted with a prepared-but-uncommitted
+    /// write at `commit_ts <= snapshot_ts` (see [`crate::occ::PrepareConflict`]).
+    ///
+    /// This is a tapirs extension to TAPIR, not an original TAPIR primitive.
+    /// The original paper relies on piggybacking Finalize on the next Propose,
+    /// but that is unreliable because IR Finalize is fire-and-forget. Instead,
+    /// tapirs uses the OCC `prepared_writes` list to detect the conflict at
+    /// the replica, and the ShardClient retries with exponential backoff until
+    /// the prepare resolves (committed to MVCC or aborted).
+    PrepareConflict,
 }

@@ -127,6 +127,24 @@ pub enum PrepareResult<TS: Timestamp> {
     OutOfRange,
 }
 
+/// Returned by [`Store::quorum_read`] and [`Store::quorum_scan`] when the
+/// read conflicts with a prepared-but-uncommitted write at `commit_ts <=
+/// snapshot_ts`.
+///
+/// This is a tapirs extension to TAPIR — the original paper uses
+/// piggybacking to ensure Finalize ordering, but piggybacking is
+/// fundamentally unreliable because IR Finalize is fire-and-forget.
+/// Instead, tapirs detects the conflict via the OCC `prepared_writes`
+/// list and the ShardClient retries with backoff until the prepare
+/// resolves (committed to MVCC or aborted).
+///
+/// Without this check, a QuorumRead starting immediately after an RW
+/// commit could return the stale pre-commit value — a linearizability
+/// violation — because the IO::Commit Finalize may not have reached
+/// the overlapping replica yet.
+#[derive(Debug)]
+pub struct PrepareConflict;
+
 impl<TS: Timestamp> PrepareResult<TS> {
     pub fn is_ok(&self) -> bool {
         matches!(self, Self::Ok)
