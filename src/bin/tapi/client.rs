@@ -170,7 +170,7 @@ async fn load_discovery_json(json_path: &str) -> Vec<ShardConfig> {
 /// Backoff constants for waiting on eventually-consistent discovery reads.
 const DISCOVERY_INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_millis(500);
 const DISCOVERY_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(5);
-const DISCOVERY_MAX_RETRIES: u32 = 10;
+const DISCOVERY_MAX_RETRIES: u32 = 20;
 
 /// Fetch shard topology from a TAPIR discovery cluster endpoint.
 ///
