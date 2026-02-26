@@ -41,12 +41,12 @@ async fn test_merge_two_shards() {
         ShardNumber(0),
         IrMembership::new(vec![0, 1, 2]),
         KeyRange { start: None, end: Some(50) },
-    ).await;
+    ).await.unwrap();
     manager.register_active_shard(
         ShardNumber(1),
         IrMembership::new(vec![3, 4, 5]),
         KeyRange { start: Some(50), end: None },
-    ).await;
+    ).await.unwrap();
 
     // Merge: shard 1 absorbed into shard 0.
     manager.merge(ShardNumber(1), ShardNumber(0)).await.unwrap();
@@ -122,7 +122,7 @@ async fn test_split_merge_two_shards() {
         ShardNumber(0),
         IrMembership::new(vec![0, 1, 2]),
         KeyRange { start: None, end: None },
-    ).await;
+    ).await.unwrap();
 
     // Split at key=50: shard 0 gets [None, 50), shard 1 gets [50, None).
     let _replicas_1 = build_shard(&mut rng, ShardNumber(1), false, 3, &registry, &dir);

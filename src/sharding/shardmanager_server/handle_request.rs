@@ -172,7 +172,11 @@ pub(crate) async fn handle_request<RD: RemoteShardDirectory<TcpAddress, String>>
         tracing::info!(?shard, ?key_range, "register: acquiring manager lock");
         let manager = state.manager.lock().await;
         tracing::info!(?shard, "register: calling register_active_shard (strong_atomic_update_shards)");
-        manager.register_active_shard(shard, membership, key_range).await;
+        if let Err(e) = manager.register_active_shard(shard, membership, key_range).await {
+            drop(manager);
+            tracing::error!(?shard, %e, "register: failed");
+            return (500, format!(r#"{{"ok":false,"error":"registration failed: {e}"}}"#));
+        }
         drop(manager);
         tracing::info!(?shard, "register: completed successfully");
         (200, r#"{"ok":true}"#.to_string())

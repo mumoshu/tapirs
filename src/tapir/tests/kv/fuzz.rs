@@ -896,7 +896,7 @@ async fn fuzz_tapir_transactions_inner(seed: u64) {
         for (i, entry) in reshard_shard_entries.iter().enumerate() {
             manager.register_active_shard(
                 entry.shard, initial_memberships[i].clone(), entry.range.clone(),
-            ).await;
+            ).await.unwrap();
         }
 
         let mut reshard_rng = StdRng::seed_from_u64(reshard_seed);

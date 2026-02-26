@@ -70,7 +70,7 @@ async fn test_join_with_preload() {
     manager.register_active_shard(shard, original_membership, KeyRange {
         start: None,
         end: None,
-    }).await;
+    }).await.unwrap();
 
     // join: discover membership from remote → fetch leader_record → bootstrap R4 → AddMember.
     manager.join(shard, new_address).await.unwrap();

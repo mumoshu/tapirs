@@ -60,7 +60,7 @@ async fn test_compact_new_shard_rejects_old_prepare_after_range_scan_on_old_shar
         ShardNumber(0),
         IrMembership::new(vec![0, 1, 2]),
         KeyRange { start: None, end: None },
-    ).await;
+    ).await.unwrap();
     eprintln!("[compact-test] register_active_shard done");
 
     // Addresses assigned: shard 0 = [0,1,2], clients = [3], shard_client_0 = [4],
@@ -157,7 +157,7 @@ async fn test_compact_new_shard_rejects_old_prepare_after_quorum_read_on_old_sha
         ShardNumber(0),
         IrMembership::new(vec![0, 1, 2]),
         KeyRange { start: None, end: None },
-    ).await;
+    ).await.unwrap();
 
     // Addresses assigned: shard 0 = [0,1,2], clients = [3], shard_client_0 = [4],
     // shard 1 = [5,6,7].

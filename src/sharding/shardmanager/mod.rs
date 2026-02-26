@@ -5,7 +5,7 @@ mod catchup;
 pub mod scan_changes_types;
 
 use crate::tapir::{Key, KeyRange, ShardClient, ShardNumber, Value};
-use crate::discovery::{RemoteShardDirectory, ShardDirectoryChange, ShardRecord, ShardStatus};
+use crate::discovery::{DiscoveryError, RemoteShardDirectory, ShardDirectoryChange, ShardRecord, ShardStatus};
 use crate::transport::Transport;
 use crate::tapir::Replica;
 use crate::{IrClientId, IrMembership};
@@ -212,14 +212,14 @@ impl<
         shard: ShardNumber,
         membership: IrMembership<T::Address>,
         key_range: KeyRange<K>,
-    ) {
-        let _ = self.remote.strong_atomic_update_shards(vec![
+    ) -> Result<(), DiscoveryError> {
+        self.remote.strong_atomic_update_shards(vec![
             ShardDirectoryChange::ActivateShard {
                 shard,
                 range: key_range,
                 membership,
                 view: 0,
             },
-        ]).await;
+        ]).await
     }
 }
