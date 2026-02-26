@@ -37,15 +37,16 @@ impl Default for RetryConfig {
     }
 }
 
-/// Retry an operation that may fail with `TransactionError::OutOfRange`.
+/// Retry an operation that may fail with transient `TransactionError`s.
 ///
 /// Calls `op()` up to `config.max_retries + 1` times. On each `OutOfRange`
-/// failure (except the last attempt), sleeps for exponential backoff via
-/// `sleep_fn`, invokes the retry callback, then calls `op()` again.
+/// or `PrepareConflict` failure (except the last attempt), sleeps for
+/// exponential backoff via `sleep_fn`, invokes the retry callback, then
+/// calls `op()` again.
 ///
 /// The `op` closure should re-read the routing directory on each call —
 /// the directory may have been updated during the backoff sleep.
-pub(crate) async fn retry_out_of_range<F, Fut, R, Sl, SlFut>(
+pub(crate) async fn retry_transient<F, Fut, R, Sl, SlFut>(
     config: &RetryConfig,
     on_retry: &Option<Arc<dyn Fn(&str) + Send + Sync>>,
     op_name: &str,
@@ -63,11 +64,13 @@ where
     for attempt in 0..=config.max_retries {
         match op().await {
             Ok(v) => return Ok(v),
-            Err(TransactionError::OutOfRange) if attempt < config.max_retries => {
+            Err(TransactionError::OutOfRange | TransactionError::PrepareConflict)
+                if attempt < config.max_retries =>
+            {
                 sleep_fn(backoff).await;
                 if let Some(cb) = on_retry {
                     cb(&format!(
-                        "{op_name}: OutOfRange, retry attempt={} backoff={backoff:?}",
+                        "{op_name}: transient error, retry attempt={} backoff={backoff:?}",
                         attempt + 1,
                     ));
                 }
@@ -190,7 +193,7 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>, R: ShardRouter<K>> RoutingTransa
         let on_retry = self.on_retry.clone();
 
         async move {
-            retry_out_of_range(&config, &on_retry, "get", T::sleep, || {
+            retry_transient(&config, &on_retry, "get", T::sleep, || {
                 let shard = router.route(&key);
                 let key = key.clone();
                 async move {
@@ -229,7 +232,7 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>, R: ShardRouter<K>> RoutingTransa
         let on_retry = self.on_retry.clone();
 
         async move {
-            retry_out_of_range(&config, &on_retry, "scan", T::sleep, || {
+            retry_transient(&config, &on_retry, "scan", T::sleep, || {
                 let ranges = router.scan_ranges(&start, &end);
 
                 let shard_scans: Vec<_> = ranges
@@ -278,7 +281,7 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>, R: ShardRouter<K>>
         let on_retry = self.on_retry.clone();
 
         async move {
-            retry_out_of_range(&config, &on_retry, "get", T::sleep, || {
+            retry_transient(&config, &on_retry, "get", T::sleep, || {
                 let shard = router.route(&key);
                 let key = key.clone();
                 async move {
@@ -298,7 +301,7 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>, R: ShardRouter<K>>
         let on_retry = self.on_retry.clone();
 
         async move {
-            retry_out_of_range(&config, &on_retry, "scan", T::sleep, || {
+            retry_transient(&config, &on_retry, "scan", T::sleep, || {
                 let ranges = router.scan_ranges(&start, &end);
 
                 let shard_scans: Vec<_> = ranges

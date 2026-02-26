@@ -1,5 +1,5 @@
 use super::TimeTravelTransaction;
-use crate::tapir::routing_client::{retry_out_of_range, RetryConfig};
+use crate::tapir::routing_client::{retry_transient, RetryConfig};
 use crate::tapir::shard_router::ShardRouter;
 use crate::tapir::{Key, Sharded, Value};
 use crate::{TapirTransport, TransactionError};
@@ -88,7 +88,7 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>, R: ShardRouter<K>>
         let on_retry = self.on_retry.clone();
 
         async move {
-            retry_out_of_range(&config, &on_retry, "get", T::sleep, || {
+            retry_transient(&config, &on_retry, "get", T::sleep, || {
                 let shard = router.route(&key);
                 let key = key.clone();
                 async move {
@@ -112,7 +112,7 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>, R: ShardRouter<K>>
         let on_retry = self.on_retry.clone();
 
         async move {
-            retry_out_of_range(&config, &on_retry, "scan", T::sleep, || {
+            retry_transient(&config, &on_retry, "scan", T::sleep, || {
                 let ranges = router.scan_ranges(&start, &end);
 
                 let shard_scans: Vec<_> = ranges
