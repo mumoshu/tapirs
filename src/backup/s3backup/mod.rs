@@ -25,8 +25,13 @@ impl S3BackupStorage {
         endpoint_url: Option<&str>,
     ) -> Self {
         let mut config_loader = aws_config::defaults(aws_config::BehaviorVersion::latest());
-        if let Some(r) = region {
-            config_loader = config_loader.region(aws_config::Region::new(r.to_string()));
+        // S3 requires a region. When using a custom endpoint (MinIO etc.)
+        // without an explicit region, default to us-east-1.
+        let effective_region = region
+            .map(|r| r.to_string())
+            .or_else(|| endpoint_url.map(|_| "us-east-1".to_string()));
+        if let Some(r) = effective_region {
+            config_loader = config_loader.region(aws_config::Region::new(r));
         }
         if let Some(ep) = endpoint_url {
             config_loader = config_loader.endpoint_url(ep);
@@ -194,7 +199,7 @@ mod tests {
         assert!(S3BackupStorage::parse_s3_uri("s3://").is_err());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn s3_storage_roundtrip() {
         let endpoint = match std::env::var("TAPI_TEST_S3_ENDPOINT") {
             Ok(ep) => ep,
