@@ -46,9 +46,14 @@ pub(crate) async fn handle_request<RD: RemoteShardDirectory<TcpAddress, String>>
         };
 
         // Strong read: check shard exists and is Active before calling join().
-        let exists = state.remote.strong_get_shard(shard).await
-            .ok().flatten()
-            .is_some_and(|r| r.status == ShardStatus::Active && r.membership.len() > 0);
+        let exists = match state.remote.strong_get_shard(shard).await {
+            Ok(record) => record
+                .is_some_and(|r| r.status == ShardStatus::Active && r.membership.len() > 0),
+            Err(e) => {
+                tracing::warn!(?shard, %e, "join: discovery read failed");
+                return (503, format!(r#"{{"error":"discovery unavailable: {e}"}}"#));
+            }
+        };
 
         if exists {
             match state.manager.lock().await.join(shard, new_addr).await {
@@ -87,9 +92,14 @@ pub(crate) async fn handle_request<RD: RemoteShardDirectory<TcpAddress, String>>
 
         // Strong read: check shard exists and address is in membership.
         eprintln!("[leave-handler] querying discovery for shard={shard:?} to remove addr={addr:?}");
-        let record = state.remote.strong_get_shard(shard).await
-            .ok().flatten()
-            .filter(|r| r.status == ShardStatus::Active && r.membership.len() > 0);
+        let record = match state.remote.strong_get_shard(shard).await {
+            Ok(record) => record
+                .filter(|r| r.status == ShardStatus::Active && r.membership.len() > 0),
+            Err(e) => {
+                tracing::warn!(?shard, %e, "leave: discovery read failed");
+                return (503, format!(r#"{{"error":"discovery unavailable: {e}"}}"#));
+            }
+        };
 
         let Some(record) = record else {
             eprintln!("[leave-handler] shard {shard:?} not found in discovery");
