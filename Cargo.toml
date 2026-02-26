@@ -23,6 +23,7 @@ default = []
 io-uring = ["dep:io-uring", "dep:socket2"]
 tls = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile"]
 tikv = ["dep:tikv-client"]
+surrealkv = ["dep:surrealkv"]
 
 [dependencies]
 bitcode = { version = "0.4.0", features = ["serde"] }
@@ -51,6 +52,7 @@ rustls = { version = "0.23", features = ["ring", "std"], default-features = fals
 tokio-rustls = { version = "0.26", optional = true }
 rustls-pemfile = { version = "2", optional = true }
 tikv-client = { version = "0.3", optional = true, default-features = false }
+surrealkv = { path = "../surrealkv", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 io-uring = { version = "0.7", optional = true }
