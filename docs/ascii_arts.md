@@ -14,6 +14,8 @@
 - [Compare: VersionedRecord vs Original IR Record](#compare-versionedrecord-vs-original-ir-record)
 - [View Change](#view-change)
 - [Sharding & Routing](#sharding--routing)
+- [Backup & Restore](#backup--restore)
+- [Resharding — CDC Shard Splitting](#resharding--cdc-shard-splitting)
 - [Transport Options](#transport-options)
 - [Read-Only vs Read-Write Transactions](#read-only-vs-read-write-transactions)
 - [Project Structure](#project-structure)
@@ -517,6 +519,240 @@
 
   Data migrated via Change Data Capture (CDC).
   View-based cursors ensure consistency.
+```
+
+## Backup & Restore
+
+```
+  Incremental backup via CDC deltas. Restore replays to a fresh cluster.
+
+
+  BACKUP
+  ======
+
+  tapictl backup cluster --output /backups/
+
+                                       Shard 0            Shard 1
+                                      R0  R1  R2         R0  R1  R2
+                                       |   |   |          |   |   |
+  ShardManager ----scan_changes------->|   |   |          |   |   |
+  (HTTP POST       (from_view=N)       |   |   |          |   |   |
+   /v1/scan-changes)                   |   |   |          |   |   |
+               <--CDC deltas-----------'   |   |          |   |   |
+               <--CDC deltas---------------'   |          |   |   |
+               <--CDC deltas-------------------'          |   |   |
+                                                          |   |   |
+  ShardManager ----scan_changes-------------------------->|   |   |
+               <--CDC deltas------------------------------'   |   |
+               <--CDC deltas----------------------------------'   |
+               <--CDC deltas--------------------------------------'
+       |
+       |  merge f+1 replica deltas (quorum coverage)
+       v
+  /backups/
+    cluster.json                        (metadata + view cursors)
+    shard_0_delta_0.bin                 (initial full)
+    shard_0_delta_1.bin                 (incremental)
+    shard_1_delta_0.bin
+    ...
+
+  Next backup resumes from last effective_end_view (incremental).
+
+
+  RESTORE
+  =======
+
+  tapictl restore cluster --input /backups/ --admin-addrs n0:9000,n1:9000,...
+
+  Phase 1: Create empty replicas on target nodes
+  ===============================================
+
+  Admin Client ---- add_replica(shard=0) ----> Node 0 :9000
+  Admin Client ---- add_replica(shard=0) ----> Node 1 :9000
+  Admin Client ---- add_replica(shard=0) ----> Node 2 :9000
+                                                  |
+                                          Fresh replicas at
+                                          view 0, empty MVCC
+
+  Phase 2: Replay CDC deltas into each shard
+  ===========================================
+
+  /backups/shard_0_delta_0.bin -.
+  /backups/shard_0_delta_1.bin --+---> ShardManager
+                                       /v1/apply-changes
+                                            |
+                                            |  ship_changes()
+                                            |  (each delta -> IO::Commit)
+                                            v
+                                       Shard 0
+                                      R0  R1  R2
+                                       |   |   |
+                                       v   v   v
+                                      MVCC stores
+                                      rebuilt!
+
+  Phase 3: Register shards in discovery
+  ======================================
+
+  ShardManager ---- /v1/register ----> Discovery
+                                       Shard 0: [0x00, 0x80) -> {R0,R1,R2}
+                                       Shard 1: [0x80, 0xFF] -> {R3,R4,R5}
+                                            |
+                                            v
+                                       Clients can now
+                                       discover and query
+```
+
+## Resharding — CDC Shard Splitting
+
+```
+  All resharding (split, merge, compact) follows the same 3-phase pattern:
+  bulk copy -> catch-up tailing -> freeze + drain.
+
+
+  SHARD SPLIT EXAMPLE
+  ====================
+
+  Goal: Split Shard 0 [a-z) into Shard 0 [a-m) + Shard 1 [m-z)
+
+  Phase 1: Bulk Copy
+  ==================
+
+  Shard 0 (source)                         Shard 1 (target)
+  [a ................. z)                  [m ........... z)
+  R0  R1  R2                               R0  R1  R2
+   |   |   |                                |   |   |
+   |   |   |   scan_changes(from_view=0)    |   |   |
+   |   |   |   ========================    |   |   |
+   |   |   |                                |   |   |
+   '---+---'----> CDC deltas                |   |   |
+                    |                        |   |   |
+                    |  filter: key >= "m"    |   |   |
+                    |                        |   |   |
+                    '--- ship_changes() ---->|   |   |
+                         (IO::Commit)        |   |   |
+
+
+  Phase 2: Catch-up Tailing (up to 30 iterations)
+  ================================================
+
+  Clients keep writing to Shard 0 during bulk copy.
+  Catch-up loop tails the CDC stream to close the gap.
+
+  Shard 0                cursor             Shard 1
+   |                       |                  |
+   |  scan_changes(v=5)    |                  |
+   |   new deltas -------->|                  |
+   |                       |--- ship -------->|
+   |  scan_changes(v=8)    |                  |
+   |   new deltas -------->|                  |
+   |                       |--- ship -------->|
+   |  scan_changes(v=10)   |                  |
+   |   (no changes,        |                  |
+   |    cursor stabilized) |                  |
+   |                       v                  |
+   |                   done tailing           |
+
+
+  Phase 3: Freeze + Drain Prepared
+  =================================
+
+  Can't switch over yet! In-flight transactions might have
+  CO::Prepare on Shard 0 that haven't resolved.
+  If we decommission now, their write sets are lost.
+
+  Step 3a: Freeze source shard
+
+  Shard 0 (FROZEN)
+  R0  R1  R2
+   |   |   |
+   X   X   X <-- new Prepare requests rejected (Fail)
+   |   |   |
+   v   v   v
+   Existing prepared txns continue resolving
+   via tick() -> recover_coordination()
+
+  Step 3b: Drain until pending_prepares == 0
+
+  time ------>
+  pending:  5 .... 3 .... 1 .... 0    done!
+              |       |       |
+              v       v       v
+         scan_changes + ship to Shard 1
+         (captures resolved Commit/Abort)
+
+  Final 3s wait: tick fires (~2s), forces view change,
+  seals last resolved txns into CDC delta.
+  One final scan_changes() captures them.
+
+  Step 3c: Atomic switchover
+
+  BEFORE:
+    Shard 0: [a .................. z)
+
+  strong_atomic_update_shards([
+    ActivateShard { shard=0, range=[a,m) },     narrow source
+    ActivateShard { shard=1, range=[m,z) },     activate target
+  ])
+  ^^^ single atomic write, no transient overlap
+
+  AFTER:
+    Shard 0: [a ........ m)
+    Shard 1:             [m ........ z)
+
+
+  WHY VIEW-BASED CURSORS?
+  ========================
+
+  TAPIR timestamps are NOT monotonic across replicas.
+  Views ARE monotonic (0, 1, 2, 3, ...).
+
+  Timestamp-based cursor (WRONG):
+
+  R0 commits: t=100, t=95, t=110    out of order!
+                          ^
+              cursor at t=100 would miss t=95
+
+  View-based cursor (CORRECT):
+
+  View 5: ops sealed by view change    cursor: view=5
+  View 6: ops sealed by view change    cursor: view=6
+                                       never misses ops
+
+
+  MERGE DELTA ALGORITHM
+  =====================
+
+  f+1 replicas may have different delta granularity.
+  Merge picks the finest available, falls back to spanning.
+
+  R0:  delta(0->1)  delta(1->2)  delta(2->3)     fine-grained
+  R1:  delta(0->1)  delta(1->3)                   spanning (got Full)
+  R2:  delta(0->2)               delta(2->3)      spanning (got Full)
+
+  Merged:
+    view 0->1: from R0 (or R1)   finest available
+    view 1->2: from R0            finest available
+    view 2->3: from R0 (or R2)    finest available
+
+  Result: complete coverage, prefer fine-grained deltas.
+
+
+  COMPACTION (memory reclamation)
+  ===============================
+
+  IR record grows forever. Compaction resets it.
+
+  Before compaction:                    After compaction:
+
+  Shard 0                               Shard 0'
+  IR record: [op1...op10000]            IR record: []  (empty!)
+  CDC deltas: [v0...v500]               CDC deltas: [] (empty!)
+  MVCC: {a=1, b=2, c=3, ...}           MVCC: {a=1, b=2, c=3, ...}
+                                             ^
+  Same data, fresh IR record.               copied via CDC
+  New replicas joining via sync()
+  no longer replay 10,000 ops.
 ```
 
 ## Transport Options
