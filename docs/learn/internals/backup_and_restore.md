@@ -1,5 +1,7 @@
 # Backup and Restore
 
+> For operator usage guide, see [Backup & Restore](../../operate/backup-restore.md).
+
 ## Overview
 
 Backup and restore uses the same CDC (Change Data Capture) mechanism as
