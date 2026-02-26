@@ -52,7 +52,7 @@ rustls = { version = "0.23", features = ["ring", "std"], default-features = fals
 tokio-rustls = { version = "0.26", optional = true }
 rustls-pemfile = { version = "2", optional = true }
 tikv-client = { version = "0.3", optional = true, default-features = false }
-surrealkv = { path = "../surrealkv", optional = true }
+surrealkv = { version = "0.20", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 io-uring = { version = "0.7", optional = true }
