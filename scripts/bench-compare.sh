@@ -534,15 +534,17 @@ main() {
     (cd "$PROJECT_ROOT" && docker build -f src/bin/tapiadm/docker/Dockerfile -t tapiadm-tapi . -q) >/dev/null
     echo "  tapiadm-tapi image built."
 
-    # ── 2. Build bench images ─────────────────────────────────────────
-    echo "[2/8] Building bench images..."
-    tapir_compose build -q 2>/dev/null
-    tikv_compose build -q 2>/dev/null
-    echo "  All bench images built."
-
-    # ── 3. Generate TAPIR discovery configs ───────────────────────────
-    echo "[3/8] Generating TAPIR discovery configs..."
+    # ── 2. Generate configs (needed before compose build for bind-mount validation) ──
+    echo "[2/8] Generating configs..."
     generate_discovery_configs
+    generate_tikv_config
+    echo "  All configs generated."
+
+    # ── 3. Build bench images ─────────────────────────────────────────
+    echo "[3/8] Building bench images..."
+    tapir_compose build -q
+    tikv_compose build -q
+    echo "  All bench images built."
 
     # ── 4. Start TAPIR cluster ────────────────────────────────────────
     echo "[4/8] Starting TAPIR cluster..."
@@ -581,7 +583,6 @@ main() {
 
     # ── 7. Start TiKV cluster and run bench ───────────────────────────
     echo "[7/8] Starting TiKV cluster..."
-    generate_tikv_config
     PD_CPUS="$PD_CPUS" \
     PD_MEM="$pd_mem_docker" \
     TIKV_NODE_CPUS="$TIKV_NODE_CPUS" \
