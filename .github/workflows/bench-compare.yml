@@ -1,0 +1,47 @@
+name: Bench Compare
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'scripts/bench-compare.sh'
+      - 'scripts/bench-compare/**'
+      - '.tapiadm/Dockerfile'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'Makefile'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'scripts/bench-compare.sh'
+      - 'scripts/bench-compare/**'
+      - '.tapiadm/Dockerfile'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'Makefile'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  bench-compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.0
+      - name: Run bench-compare (smoke test)
+        run: make ci/bench-compare
+      - name: Upload raw output
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: bench-compare-output
+          path: /tmp/bench-compare.*/
+          retention-days: 14
