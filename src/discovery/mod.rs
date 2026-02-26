@@ -17,7 +17,7 @@ pub struct ShardRecord<A, K> {
     pub key_range: Option<KeyRange<K>>,
 }
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Display;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
@@ -318,7 +318,7 @@ pub struct CachingShardDirectory<A, K, T> {
     own_shards: RwLock<HashSet<ShardNumber>>,
     /// Key ranges managed via route changelog.
     /// Updated by applying changesets from `route_changes_since()`.
-    key_ranges: RwLock<HashMap<ShardNumber, KeyRange<K>>>,
+    key_ranges: RwLock<BTreeMap<ShardNumber, KeyRange<K>>>,
     /// High watermark for route changelog consumption (1-based index).
     /// Never regresses — stale eventual reads are ignored.
     route_hwm: RwLock<u64>,
@@ -348,7 +348,7 @@ where
             local,
             remote,
             own_shards: RwLock::new(HashSet::new()),
-            key_ranges: RwLock::new(HashMap::new()),
+            key_ranges: RwLock::new(BTreeMap::new()),
             route_hwm: RwLock::new(0),
         });
 
@@ -417,7 +417,7 @@ where
     }
 
     /// Return the current cached key ranges (pulled from remote).
-    pub fn key_ranges(&self) -> HashMap<ShardNumber, KeyRange<K>> {
+    pub fn key_ranges(&self) -> BTreeMap<ShardNumber, KeyRange<K>> {
         self.key_ranges.read().unwrap().clone()
     }
 
