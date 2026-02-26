@@ -10,12 +10,14 @@ mod routing_client;
 mod shard_client;
 pub mod shard_router;
 mod timestamp;
+pub mod timetravel;
 
 mod shard;
 #[cfg(test)]
 mod tests;
 
 pub use client::{Client, ReadOnlyTransaction};
+pub use timetravel::TimeTravelTransaction;
 pub use key_range::KeyRange;
 pub use key_value::{Key, Value};
 pub use message::{Change, LeaderRecordDelta, CO, CR, IO, IR, UO, UR};

@@ -10,6 +10,7 @@ mod resharding;
 mod rwr;
 mod single_replica;
 mod throughput;
+mod time_travel;
 
 use super::fuzz_event_log::{FuzzEvent, FuzzEventLog};
 use super::invariant_checker::{InvariantChecker, TxnOutcome, TxnRecord};

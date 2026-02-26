@@ -18,7 +18,7 @@ use futures::future::Either;
 use tracing::{debug, trace};
 
 pub struct Client<K: Key, V: Value, T: TapirTransport<K, V>> {
-    inner: Arc<Mutex<Inner<K, V, T>>>,
+    pub(crate) inner: Arc<Mutex<Inner<K, V, T>>>,
     next_transaction_number: AtomicU64,
 }
 
@@ -30,7 +30,7 @@ pub struct Inner<K: Key, V: Value, T: TapirTransport<K, V>> {
 }
 
 impl<K: Key, V: Value, T: TapirTransport<K, V>> Inner<K, V, T> {
-    fn shard_client(
+    pub(crate) fn shard_client(
         this: &Arc<Mutex<Self>>,
         shard: ShardNumber,
     ) -> impl Future<Output = ShardClient<K, V, T>> + Send + 'static {
