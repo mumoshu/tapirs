@@ -1,7 +1,4 @@
-// HashMap used for lookup-only data (no iteration affecting execution order).
-#![allow(clippy::disallowed_types)]
-
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use crate::discovery::RemoteShardDirectory;
 use crate::TcpAddress;
 use super::{ShardManagerState, status_text};
@@ -32,7 +29,7 @@ where
 
     // Read headers into a map, tracking Content-Length.
     let mut content_length: usize = 0;
-    let mut headers = HashMap::new();
+    let mut headers = BTreeMap::new();
     loop {
         let mut header_line = String::new();
         if buf_reader.read_line(&mut header_line).await.is_err() {

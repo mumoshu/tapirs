@@ -1,15 +1,12 @@
-// HashMap used for lookup-only data (no iteration affecting execution order).
-#![allow(clippy::disallowed_types)]
-
 use crate::discovery::{RemoteShardDirectory, strings_to_membership};
 use crate::tapir::LeaderRecordDelta;
 use crate::{ShardNumber, TcpAddress};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use super::ShardManagerState;
 
 pub(crate) async fn handle_apply_changes<RD: RemoteShardDirectory<TcpAddress, String>>(
     state: &ShardManagerState<RD>,
-    headers: &HashMap<String, String>,
+    headers: &BTreeMap<String, String>,
     body: &[u8],
 ) -> (u16, String) {
     // Parse shard number from X-Shard header.

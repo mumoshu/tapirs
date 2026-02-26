@@ -1,7 +1,4 @@
-// HashMap used for lookup-only data (no iteration affecting execution order).
-#![allow(clippy::disallowed_types)]
-
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use super::storage::BackupStorage;
 use super::types::{ClusterMetadata, ShardBackupHistory, ShardDeltaInfo};
@@ -62,7 +59,7 @@ impl super::BackupManager {
             };
 
         // Derive last_backup_views from existing history.
-        let mut last_backup_views: HashMap<u32, u64> = HashMap::new();
+        let mut last_backup_views: BTreeMap<u32, u64> = BTreeMap::new();
         if let Some(ref meta) = existing {
             for shard_hist in &meta.shards {
                 if let Some(last_delta) = shard_hist.deltas.last() {
@@ -75,7 +72,7 @@ impl super::BackupManager {
         let response = self.shard_manager_client.scan_changes(&last_backup_views)?;
 
         // Calculate next delta sequence number per shard.
-        let mut shard_delta_counts: HashMap<u32, usize> = HashMap::new();
+        let mut shard_delta_counts: BTreeMap<u32, usize> = BTreeMap::new();
         if let Some(ref meta) = existing {
             for shard_hist in &meta.shards {
                 shard_delta_counts.insert(shard_hist.shard, shard_hist.deltas.len());

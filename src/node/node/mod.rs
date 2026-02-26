@@ -1,6 +1,3 @@
-// HashMap used for lookup-only data (no iteration affecting execution order).
-#![allow(clippy::disallowed_types)]
-
 mod add_replica;
 mod add_replica_join;
 mod leave_shard;
@@ -12,7 +9,7 @@ use crate::discovery::{CachingShardDirectory, InMemoryShardDirectory};
 use crate::{
     IrReplica, IrReplicaMetrics, ShardNumber, TapirReplica, TcpAddress, TcpTransport,
 };
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
@@ -24,7 +21,7 @@ pub struct ReplicaHandle {
 }
 
 pub struct Node {
-    pub replicas: Mutex<HashMap<ShardNumber, ReplicaHandle>>,
+    pub replicas: Mutex<BTreeMap<ShardNumber, ReplicaHandle>>,
     pub(crate) persist_dir: String,
     pub(crate) directory: Arc<InMemoryShardDirectory<TcpAddress>>,
     /// Holds the CachingShardDirectory alive so its background sync task
@@ -42,7 +39,7 @@ pub struct Node {
 impl Node {
     pub fn new(persist_dir: String, new_rng: fn() -> crate::Rng) -> Self {
         Self {
-            replicas: Mutex::new(HashMap::new()),
+            replicas: Mutex::new(BTreeMap::new()),
             persist_dir,
             directory: Arc::new(InMemoryShardDirectory::new()),
             discovery_dir: None,
@@ -65,7 +62,7 @@ impl Node {
             std::time::Duration::from_secs(10),
         );
         Self {
-            replicas: Mutex::new(HashMap::new()),
+            replicas: Mutex::new(BTreeMap::new()),
             persist_dir,
             directory,
             discovery_dir: Some(discovery_dir),
@@ -107,7 +104,6 @@ impl Node {
         replicas.get(&shard).map(|h| h.replica.view_number())
     }
 
-    #[allow(clippy::disallowed_methods)] // output order unspecified; used for display only
     pub fn shard_list(&self) -> Vec<(ShardNumber, SocketAddr)> {
         self.replicas
             .lock()
@@ -118,7 +114,6 @@ impl Node {
     }
 
     /// Collect metrics from all replicas on this node for Prometheus exposition.
-    #[allow(clippy::disallowed_methods)] // iteration order unimportant for metrics
     pub fn collect_metrics(&self) -> Vec<(ShardNumber, IrReplicaMetrics)> {
         self.replicas
             .lock()

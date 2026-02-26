@@ -1,7 +1,4 @@
-// HashMap used for lookup-only data (no iteration affecting execution order).
-#![allow(clippy::disallowed_types)]
-
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use crate::discovery::{RemoteShardDirectory, membership_to_strings};
 use crate::sharding::shardmanager::scan_changes_types::{ScanChangesResponse, ShardScanChangesData};
@@ -12,7 +9,7 @@ use super::ShardManagerState;
 #[derive(Deserialize)]
 struct ScanChangesRequest {
     #[serde(default)]
-    last_backup_views: HashMap<u32, u64>,
+    last_backup_views: BTreeMap<u32, u64>,
 }
 
 pub(crate) async fn handle_scan_changes<RD: RemoteShardDirectory<TcpAddress, String>>(
@@ -21,7 +18,7 @@ pub(crate) async fn handle_scan_changes<RD: RemoteShardDirectory<TcpAddress, Str
 ) -> (u16, Vec<u8>) {
     // Parse JSON request body (empty body = full backup from view 0).
     let req: ScanChangesRequest = if body.is_empty() {
-        ScanChangesRequest { last_backup_views: HashMap::new() }
+        ScanChangesRequest { last_backup_views: BTreeMap::new() }
     } else {
         match serde_json::from_slice(body) {
             Ok(r) => r,

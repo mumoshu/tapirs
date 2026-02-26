@@ -186,13 +186,11 @@ const DISCOVERY_MAX_RETRIES: u32 = 20;
 /// `route_changes_since()` (key range changelog) are retried with exponential
 /// backoff until the reads are complete. The client never fabricates key
 /// ranges — it uses discovery-provided ranges or fails.
-// HashMap used for local key_range accumulation (binary code, no determinism concern).
-#[allow(clippy::disallowed_types)]
 async fn load_tapir_discovery(
     endpoint: &str,
     #[cfg(feature = "tls")] tls_config: Option<&tapirs::tls::TlsConfig>,
 ) -> Vec<ShardConfig> {
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
     use tapirs::discovery::{tapir, RemoteShardDirectory, ShardDirectoryChange};
 
     let ephemeral_addr = {
@@ -284,7 +282,7 @@ async fn load_tapir_discovery(
 
     let key_ranges = {
         let mut backoff = DISCOVERY_INITIAL_BACKOFF;
-        let mut key_ranges: HashMap<ShardNumber, KeyRange<String>> = HashMap::new();
+        let mut key_ranges: BTreeMap<ShardNumber, KeyRange<String>> = BTreeMap::new();
 
         for attempt in 0..=DISCOVERY_MAX_RETRIES {
             let changesets =

@@ -1,7 +1,4 @@
-// HashMap used for lookup-only data (no iteration affecting execution order).
-#![allow(clippy::disallowed_types)]
-
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use crate::sharding::shardmanager::scan_changes_types::ScanChangesResponse;
 
 impl super::HttpShardManagerClient {
@@ -12,7 +9,7 @@ impl super::HttpShardManagerClient {
     /// `ScanChangesResponse` with per-shard delta data.
     pub fn scan_changes(
         &self,
-        last_backup_views: &HashMap<u32, u64>,
+        last_backup_views: &BTreeMap<u32, u64>,
     ) -> Result<ScanChangesResponse, String> {
         let json_body = serde_json::to_string(&serde_json::json!({
             "last_backup_views": last_backup_views,
