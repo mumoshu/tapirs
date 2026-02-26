@@ -1,5 +1,3 @@
-// HashMap used for lookup-only data (no iteration affecting execution order).
-#![allow(clippy::disallowed_types)]
 
 use super::{
     message::{BootstrapRecord, FinalizeInconsistentReply, LeaderRecordReply, RecordPayload, Reconfigure, StatusBroadcast, ViewChangeAddendum},
@@ -12,7 +10,7 @@ use super::{
 use crate::{Transport, TransportMessage};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
-    collections::{btree_map::Entry, BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{btree_map::Entry, BTreeMap, BTreeSet, HashSet},
     fmt::Debug,
     hash::Hash,
     sync::{atomic::{AtomicU64, Ordering}, Arc, Mutex},
@@ -144,9 +142,9 @@ struct SyncInner<U: Upcalls, T: Transport<U>> {
     record: VersionedRecord<U::IO, U::CO, U::CR>,
     outstanding_do_view_changes: BTreeMap<T::Address, DoViewChange<U::IO, U::CO, U::CR, T::Address>>,
     /// Last time received message from each peer replica.
-    peer_liveness: HashMap<T::Address, Instant>,
+    peer_liveness: BTreeMap<T::Address, Instant>,
     /// Latest normal-view number confirmed by each peer via periodic status broadcasts.
-    peer_normal_views: HashMap<T::Address, ViewNumber>,
+    peer_normal_views: BTreeMap<T::Address, ViewNumber>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -200,8 +198,8 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                     record: VersionedRecord::default(),
                     record_base_view: None,
                     outstanding_do_view_changes: BTreeMap::new(),
-                    peer_liveness: HashMap::new(),
-                    peer_normal_views: HashMap::new(),
+                    peer_liveness: BTreeMap::new(),
+                    peer_normal_views: BTreeMap::new(),
                 }),
             }),
         };

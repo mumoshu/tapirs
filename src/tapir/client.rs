@@ -1,5 +1,3 @@
-// HashMap used for lookup-only data (no iteration affecting execution order).
-#![allow(clippy::disallowed_types)]
 
 use super::{Key, ShardClient, ShardNumber, Sharded, Timestamp, TransactionError, Value};
 use crate::{
@@ -8,7 +6,7 @@ use crate::{
 };
 use futures::future::join_all;
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::BTreeMap,
     future::Future,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -27,7 +25,7 @@ pub struct Client<K: Key, V: Value, T: TapirTransport<K, V>> {
 
 pub struct Inner<K: Key, V: Value, T: TapirTransport<K, V>> {
     id: IrClientId,
-    clients: HashMap<ShardNumber, ShardClient<K, V, T>>,
+    clients: BTreeMap<ShardNumber, ShardClient<K, V, T>>,
     transport: T,
     rng: crate::Rng,
 }
@@ -75,7 +73,7 @@ pub struct Transaction<K: Key, V: Value, T: TapirTransport<K, V>> {
 
 struct TransactionInner<K: Key, V: Value> {
     inner: OccTransaction<K, V, Timestamp>,
-    read_cache: HashMap<Sharded<K>, Option<V>>,
+    read_cache: BTreeMap<Sharded<K>, Option<V>>,
 }
 
 impl<K: Key, V: Value, T: TapirTransport<K, V>> Client<K, V, T> {
@@ -504,7 +502,7 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Transaction<K, V, T> {
 pub struct ReadOnlyTransaction<K: Key, V: Value, T: TapirTransport<K, V>> {
     snapshot_ts: Timestamp,
     client: Arc<Mutex<Inner<K, V, T>>>,
-    read_cache: Arc<Mutex<HashMap<Sharded<K>, Option<V>>>>,
+    read_cache: Arc<Mutex<BTreeMap<Sharded<K>, Option<V>>>>,
 }
 
 impl<K: Key, V: Value, T: TapirTransport<K, V>> Client<K, V, T> {
@@ -517,7 +515,7 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Client<K, V, T> {
         ReadOnlyTransaction {
             snapshot_ts,
             client: Arc::clone(&self.inner),
-            read_cache: Arc::new(Mutex::new(HashMap::new())),
+            read_cache: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 }
