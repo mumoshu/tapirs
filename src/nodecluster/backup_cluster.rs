@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::types::{CloneError, SoloClusterManager};
+use crate::backup::storage::BackupStorage;
 use crate::backup::types::{ClusterMetadata, ShardBackupHistory, ShardDeltaInfo};
 
 impl SoloClusterManager {
@@ -13,18 +14,20 @@ impl SoloClusterManager {
     ///
     /// Supports incremental backup: reads existing `cluster.json` from
     /// `output_dir` to derive `last_backup_views` per shard.
-    pub async fn backup_cluster_direct(
+    pub async fn backup_cluster_direct<S: BackupStorage>(
         &mut self,
         admin_addrs: &[String],
-        output_dir: &str,
+        storage: &S,
     ) -> Result<(), CloneError> {
         use crate::discovery::InMemoryShardDirectory;
         use crate::node::node_client::send_admin_request;
         use crate::{IrClientId, IrMembership, TapirReplica, TcpAddress, TcpTransport};
         use std::sync::Arc;
 
-        std::fs::create_dir_all(output_dir)
-            .map_err(|e| CloneError::AdminError(format!("create output dir: {e}")))?;
+        storage
+            .init()
+            .await
+            .map_err(CloneError::AdminError)?;
 
         // 1. Query all admin nodes to discover shard → listen_addrs.
         self.report_progress("backup-direct:discover-shards");
@@ -64,12 +67,9 @@ impl SoloClusterManager {
         }
 
         // 2. Load existing cluster.json for incremental backup.
-        let cluster_json_path = format!("{output_dir}/cluster.json");
         let mut existing: Option<ClusterMetadata> =
-            if std::path::Path::new(&cluster_json_path).exists() {
-                let data = std::fs::read_to_string(&cluster_json_path).map_err(|e| {
-                    CloneError::AdminError(format!("read cluster.json: {e}"))
-                })?;
+            if storage.exists("cluster.json").await.map_err(CloneError::AdminError)? {
+                let data = storage.read_string("cluster.json").await.map_err(CloneError::AdminError)?;
                 Some(serde_json::from_str(&data).map_err(|e| {
                     CloneError::AdminError(format!("parse cluster.json: {e}"))
                 })?)
@@ -139,14 +139,11 @@ impl SoloClusterManager {
 
             let seq = shard_delta_counts.get(shard_num).copied().unwrap_or(0);
             let file_name = format!("shard_{shard_num}_delta_{seq}.bin");
-            let file_path = format!("{output_dir}/{file_name}");
 
             let delta_bytes = bitcode::serialize(&result.deltas).map_err(|e| {
                 CloneError::AdminError(format!("serialize deltas for shard {shard_num}: {e}"))
             })?;
-            std::fs::write(&file_path, &delta_bytes).map_err(|e| {
-                CloneError::AdminError(format!("write {file_name}: {e}"))
-            })?;
+            storage.write(&file_name, &delta_bytes).await.map_err(CloneError::AdminError)?;
 
             let effective_end_view = result.effective_end_view.unwrap_or(from_view);
 
@@ -186,9 +183,7 @@ impl SoloClusterManager {
         let json = serde_json::to_string_pretty(&metadata).map_err(|e| {
             CloneError::AdminError(format!("serialize cluster.json: {e}"))
         })?;
-        std::fs::write(&cluster_json_path, json).map_err(|e| {
-            CloneError::AdminError(format!("write cluster.json: {e}"))
-        })?;
+        storage.write("cluster.json", json.as_bytes()).await.map_err(CloneError::AdminError)?;
 
         self.report_progress("backup-direct:complete");
         Ok(())

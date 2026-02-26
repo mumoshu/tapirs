@@ -1006,7 +1006,8 @@ async fn test_solo_backup_restore() {
     let backup_dir = TempDir::new().unwrap();
     let backup_path = backup_dir.path().to_str().unwrap();
     let mut mgr = tapirs::SoloClusterManager::new(tapirs::Rng::from_seed(thread_rng().r#gen()));
-    mgr.backup_cluster_direct(&source_admin_addrs, backup_path)
+    let solo_storage = LocalBackupStorage::new(backup_path);
+    mgr.backup_cluster_direct(&source_admin_addrs, &solo_storage)
         .await
         .unwrap();
 
@@ -1049,8 +1050,9 @@ async fn test_solo_backup_restore() {
     // Solo restore.
     let mut restore_mgr =
         tapirs::SoloClusterManager::new(tapirs::Rng::from_seed(thread_rng().r#gen()));
+    let solo_restore_storage = LocalBackupStorage::new(backup_path);
     restore_mgr
-        .restore_cluster_direct(&restore_admin_addrs, backup_path)
+        .restore_cluster_direct(&restore_admin_addrs, &solo_restore_storage)
         .await
         .unwrap();
 
@@ -1139,7 +1141,8 @@ async fn test_solo_backup_restore_incremental() {
     let backup_dir = TempDir::new().unwrap();
     let backup_path = backup_dir.path().to_str().unwrap();
     let mut mgr = tapirs::SoloClusterManager::new(tapirs::Rng::from_seed(thread_rng().r#gen()));
-    mgr.backup_cluster_direct(&source_admin_addrs, backup_path)
+    let solo_storage = LocalBackupStorage::new(backup_path);
+    mgr.backup_cluster_direct(&source_admin_addrs, &solo_storage)
         .await
         .unwrap();
 
@@ -1161,7 +1164,8 @@ async fn test_solo_backup_restore_incremental() {
 
     // Incremental solo backup (reads last_backup_views from cluster.json).
     let mut mgr2 = tapirs::SoloClusterManager::new(tapirs::Rng::from_seed(thread_rng().r#gen()));
-    mgr2.backup_cluster_direct(&source_admin_addrs, backup_path)
+    let solo_storage2 = LocalBackupStorage::new(backup_path);
+    mgr2.backup_cluster_direct(&source_admin_addrs, &solo_storage2)
         .await
         .unwrap();
 
@@ -1199,8 +1203,9 @@ async fn test_solo_backup_restore_incremental() {
     // Solo restore (applies both delta files).
     let mut restore_mgr =
         tapirs::SoloClusterManager::new(tapirs::Rng::from_seed(thread_rng().r#gen()));
+    let solo_restore_storage = LocalBackupStorage::new(backup_path);
     restore_mgr
-        .restore_cluster_direct(&restore_admin_addrs, backup_path)
+        .restore_cluster_direct(&restore_admin_addrs, &solo_restore_storage)
         .await
         .unwrap();
 

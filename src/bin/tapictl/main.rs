@@ -561,7 +561,8 @@ fn main() {
                 mgr.set_progress_callback(|phase| {
                     eprintln!("[solo backup] {phase}");
                 });
-                mgr.backup_cluster_direct(&addrs, &output)
+                let storage = LocalBackupStorage::new(&output);
+                mgr.backup_cluster_direct(&addrs, &storage)
                     .await
                     .map_err(|e| format!("{e:?}"))
                     .map(|()| println!("Backup completed to {output}"))
@@ -586,7 +587,8 @@ fn main() {
                 mgr.set_progress_callback(|phase| {
                     eprintln!("[solo restore] {phase}");
                 });
-                mgr.restore_cluster_direct(&addrs, &input)
+                let storage = LocalBackupStorage::new(&input);
+                mgr.restore_cluster_direct(&addrs, &storage)
                     .await
                     .map_err(|e| format!("{e:?}"))
                     .map(|()| println!("Restore completed from {input}"))

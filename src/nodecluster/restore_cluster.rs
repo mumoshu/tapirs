@@ -1,4 +1,5 @@
 use super::types::{CloneError, SoloClusterManager};
+use crate::backup::storage::BackupStorage;
 use crate::backup::types::ClusterMetadata;
 
 impl SoloClusterManager {
@@ -10,10 +11,10 @@ impl SoloClusterManager {
     ///
     /// Same pattern as `clone_shard_direct` for transport creation, combined
     /// with the restore logic from `BackupManager::restore_cluster`.
-    pub async fn restore_cluster_direct(
+    pub async fn restore_cluster_direct<S: BackupStorage>(
         &mut self,
         admin_addrs: &[String],
-        backup_dir: &str,
+        storage: &S,
     ) -> Result<(), CloneError> {
         use crate::discovery::InMemoryShardDirectory;
         use crate::node::node_client::send_admin_request;
@@ -23,9 +24,10 @@ impl SoloClusterManager {
         use std::sync::Arc;
 
         // Read cluster.json.
-        let cluster_json_path = format!("{backup_dir}/cluster.json");
-        let data = std::fs::read_to_string(&cluster_json_path)
-            .map_err(|e| CloneError::AdminError(format!("read cluster.json: {e}")))?;
+        let data = storage
+            .read_string("cluster.json")
+            .await
+            .map_err(CloneError::AdminError)?;
         let meta: ClusterMetadata = serde_json::from_str(&data)
             .map_err(|e| CloneError::AdminError(format!("parse cluster.json: {e}")))?;
 
@@ -119,10 +121,7 @@ impl SoloClusterManager {
             );
 
             for delta in &shard_hist.deltas {
-                let file_path = format!("{backup_dir}/{}", delta.file);
-                let delta_bytes = std::fs::read(&file_path).map_err(|e| {
-                    CloneError::AdminError(format!("read {}: {e}", delta.file))
-                })?;
+                let delta_bytes = storage.read(&delta.file).await.map_err(CloneError::AdminError)?;
 
                 let deltas: Vec<LeaderRecordDelta<String, String>> =
                     bitcode::deserialize(&delta_bytes).map_err(|e| {
