@@ -1,3 +1,6 @@
+// HashMap used for lookup-only data (no iteration affecting execution order).
+#![allow(clippy::disallowed_types)]
+
 use async_maelstrom::msg::Body::{self};
 use async_maelstrom::msg::{Error, LinKv, Msg, MsgId};
 use async_maelstrom::process::{ProcNet, Process};

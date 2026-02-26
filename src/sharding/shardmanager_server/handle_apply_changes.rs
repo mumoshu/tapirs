@@ -1,3 +1,6 @@
+// HashMap used for lookup-only data (no iteration affecting execution order).
+#![allow(clippy::disallowed_types)]
+
 use crate::discovery::{RemoteShardDirectory, strings_to_membership};
 use crate::tapir::LeaderRecordDelta;
 use crate::{ShardNumber, TcpAddress};

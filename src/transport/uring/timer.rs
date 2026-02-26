@@ -1,3 +1,6 @@
+// HashMap used for lookup-only data (no iteration affecting execution order).
+#![allow(clippy::disallowed_types)]
+
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::pin::Pin;

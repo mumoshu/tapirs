@@ -1,3 +1,6 @@
+// HashMap/HashSet used for lookup-only data (no iteration affecting execution order).
+#![allow(clippy::disallowed_types)]
+
 use super::aligned_buf::AlignedBuf;
 use super::disk_io::{DiskIo, OpenFlags};
 use super::error::StorageError;

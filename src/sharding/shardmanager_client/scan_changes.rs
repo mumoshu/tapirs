@@ -1,3 +1,6 @@
+// HashMap used for lookup-only data (no iteration affecting execution order).
+#![allow(clippy::disallowed_types)]
+
 use std::collections::HashMap;
 use crate::sharding::shardmanager::scan_changes_types::ScanChangesResponse;
 

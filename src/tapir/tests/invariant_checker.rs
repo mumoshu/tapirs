@@ -9,7 +9,8 @@
 //! key to two different shards, (shard, key) tracking would treat them as
 //! separate items and miss the conflict; logical key tracking catches it.
 
-#![allow(dead_code)]
+// HashMap used for lookup-only tracking data (order-independent per-key processing).
+#![allow(dead_code, clippy::disallowed_types)]
 
 use crate::TapirTimestamp;
 use std::collections::{BTreeMap, HashMap};

@@ -1,3 +1,6 @@
+// HashMap/HashSet used for lookup-only data (no iteration affecting execution order).
+#![allow(clippy::disallowed_types)]
+
 pub mod backend;
 pub mod json;
 pub mod tapir;

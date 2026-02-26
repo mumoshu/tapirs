@@ -1,3 +1,6 @@
+// HashMap used for lookup-only data (no iteration affecting execution order).
+#![allow(clippy::disallowed_types)]
+
 use super::address::TcpAddress;
 use super::wire::TcpIrMessage;
 use crate::discovery::{InMemoryShardDirectory, ShardDirectory as _};

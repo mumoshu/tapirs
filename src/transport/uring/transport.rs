@@ -1,3 +1,6 @@
+// HashMap used for lookup-only data (no iteration affecting execution order).
+#![allow(clippy::disallowed_types)]
+
 use super::address::UringAddress;
 use super::codec::{FrameCodec, FrameReader};
 use super::conn_pool::ConnectionPool;

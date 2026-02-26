@@ -1,3 +1,6 @@
+// HashMap used for lookup-only data (no iteration affecting execution order).
+#![allow(clippy::disallowed_types)]
+
 mod add_replica;
 mod add_replica_join;
 mod leave_shard;
