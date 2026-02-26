@@ -23,9 +23,13 @@
 #     TAPIR coordination  256 MB total  (3 discovery × 64m + 1 shard-mgr × 64m)
 #     TiKV coordination   250 MB total  (1 PD × 250m)
 #
-#   Example with BENCH_MEM=4, 3 replicas:
-#     TAPIR data nodes  (4 − 0.256) / 3 ≈ 1.25 GB each
-#     TiKV data nodes   (4 − 0.250) / 3 ≈ 1.25 GB each
+#   Default (BENCH_CPUS=6, BENCH_MEM=12, 3 replicas):
+#     TAPIR  coord 256 MB + 3 data × 3.91 GB  (CPU: 0.80 coord + 3 × 1.73)
+#     TiKV   coord 250 MB + 3 data × 3.92 GB  (CPU: 0.50 coord + 3 × 1.83)
+#
+#   Minimum (BENCH_CPUS=2, BENCH_MEM=4, 3 replicas):
+#     TAPIR  coord 256 MB + 3 data × 1.25 GB  (CPU: 0.80 coord + 3 × 0.40)
+#     TiKV   coord 250 MB + 3 data × 1.25 GB  (CPU: 0.50 coord + 3 × 0.50)
 #
 #   TiKV requires ≥1 GB per data node (RocksDB + gRPC + thread stacks).
 #   The script exits with an error if the computed per-node memory falls
