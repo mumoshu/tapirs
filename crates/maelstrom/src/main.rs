@@ -1,5 +1,3 @@
-// HashMap used for lookup-only data (no iteration affecting execution order).
-#![allow(clippy::disallowed_types)]
 
 use async_maelstrom::msg::Body::{self};
 use async_maelstrom::msg::{Error, LinKv, Msg, MsgId};
@@ -9,7 +7,7 @@ use async_maelstrom::{Id, Status};
 use async_trait::async_trait;
 use rand::{thread_rng, Rng};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::env;
 use std::fmt::Display;
 use std::str::FromStr;
@@ -59,7 +57,7 @@ struct Wrapper {
 }
 
 struct Inner {
-    requests: Mutex<HashMap<u64, tokio::sync::oneshot::Sender<Message>>>,
+    requests: Mutex<BTreeMap<u64, tokio::sync::oneshot::Sender<Message>>>,
     msg_id: AtomicU64,
     net: ProcNet<LinKv, Wrapper>,
 }

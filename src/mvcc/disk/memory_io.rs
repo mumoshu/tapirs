@@ -1,11 +1,8 @@
-// HashMap/HashSet used for lookup-only data (no iteration affecting execution order).
-#![allow(clippy::disallowed_types)]
-
 use super::aligned_buf::AlignedBuf;
 use super::disk_io::{DiskIo, OpenFlags};
 use super::error::StorageError;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::future::{Ready, ready};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -13,14 +10,14 @@ use std::sync::{Arc, Mutex};
 
 /// In-memory virtual filesystem shared by all `MemoryIo` handles on the same thread.
 struct MemoryFsInner {
-    files: HashMap<PathBuf, Vec<u8>>,
+    files: BTreeMap<PathBuf, Vec<u8>>,
     dirs: HashSet<PathBuf>,
 }
 
 impl MemoryFsInner {
     fn new() -> Self {
         Self {
-            files: HashMap::new(),
+            files: BTreeMap::new(),
             dirs: HashSet::new(),
         }
     }
