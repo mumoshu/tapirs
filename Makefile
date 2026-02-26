@@ -1,4 +1,4 @@
-.PHONY: test lint lock_server_stress_test coordinator_failure_stress_test_3 coordinator_failure_stress_test_7 bench bench/ro bench/rw bench/mix bench/compare fuzz fuzz100 maelstrom ci ci-full ci/operator-lint ci/operator-test ci/bench-solo ci/bench-compare ci/testbed-kube-operator ci/testbed-kube-operator-tls ci/testbed-kube ci/testbed-docker-compose ci/testbed-solo ci/testbed ci/fuzz-diagnose ci/fuzz-multi-seed ci/test-surrealkv
+.PHONY: test lint lock_server_stress_test coordinator_failure_stress_test_3 coordinator_failure_stress_test_7 bench bench/ro bench/rw bench/mix bench/compare fuzz fuzz100 maelstrom ci ci-full ci/operator-lint ci/operator-test ci/bench-solo ci/bench-compare ci/testbed-kube-operator ci/testbed-kube-operator-tls ci/testbed-kube ci/testbed-docker-compose ci/testbed-solo ci/testbed ci/fuzz-diagnose ci/fuzz-multi-seed ci/test-surrealkv ci/test-s3
 
 lint:
 	cargo clippy --workspace --all-targets -- -D warnings -D clippy::iter_over_hash_type && ./scripts/check-determinism.sh
@@ -116,3 +116,19 @@ ci/fuzz-multi-seed:
 ci/test-surrealkv:
 	cargo clippy --features surrealkv --all-targets -- -D warnings
 	cargo test --features surrealkv --release -- surrealkvstore
+
+ci/test-s3:
+	docker run -d --name tapi-minio -p 9100:9000 \
+	  -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+	  minio/minio server /data
+	sleep 2
+	docker run --rm --network host \
+	  -e AWS_ACCESS_KEY_ID=minioadmin -e AWS_SECRET_ACCESS_KEY=minioadmin \
+	  amazon/aws-cli --endpoint-url http://localhost:9100 s3 mb s3://tapi-test \
+	  || { docker rm -f tapi-minio; exit 1; }
+	AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
+	  cargo clippy --features s3 --all-targets -- -D warnings \
+	  && AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
+	  TAPI_TEST_S3_ENDPOINT=http://localhost:9100 \
+	  cargo test --features s3 --release -- s3backup \
+	  ; EXIT=$$?; docker rm -f tapi-minio; exit $$EXIT
