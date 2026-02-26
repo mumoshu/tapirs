@@ -5,7 +5,7 @@
 # - thread_rng() usage in library code (binaries excluded)
 #
 # Not checked (handled elsewhere):
-# - HashMap/HashSet iteration: clippy::iter_over_hash_type (Makefile)
+# - HashMap: clippy::disallowed_types + disallowed_methods + iter_over_hash_type (clippy.toml + Makefile)
 # - select! without biased: not an issue with Builder::rng_seed()
 set -euo pipefail
 

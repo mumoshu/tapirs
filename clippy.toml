@@ -11,6 +11,11 @@ disallowed-methods = [
     { path = "std::collections::HashSet::drain", reason = "HashSet drain order is non-deterministic. Use BTreeSet if you need ordered drain." },
     # Note: HashMap::into_iter and HashSet::into_iter are IntoIterator trait methods,
     # not inherent methods, so clippy disallowed_methods cannot catch them.
-    # The clippy::iter_over_hash_type lint (enabled via -D in Makefile) covers this gap
-    # with full type awareness, catching all forms of hash iteration including IntoIterator.
+    # clippy::iter_over_hash_type (Makefile -D) catches for-in loops but NOT explicit
+    # .into_iter() calls. HashMap is additionally banned via disallowed-types below
+    # to close this gap entirely.
+]
+
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "HashMap iteration order is non-deterministic (random SipHash seed). Use BTreeMap, or add #[allow(clippy::disallowed_types)] with a comment explaining why iteration order doesn't matter." },
 ]
