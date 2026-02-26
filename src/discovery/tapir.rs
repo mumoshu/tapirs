@@ -514,7 +514,7 @@ where
             }
         }
 
-        for _attempt in 0..5 {
+        for _attempt in 0..10 {
             tracing::debug!(_attempt, "atomic_update_shards: starting txn attempt");
             let txn = self.client.begin();
 
@@ -556,6 +556,9 @@ where
                 return Ok(());
             }
             tracing::debug!(_attempt, "atomic_update_shards: txn commit failed, retrying");
+            // Backoff before retry — give view changes time to settle.
+            let delay = std::time::Duration::from_millis(100 * (1 << _attempt.min(4)));
+            tokio::time::sleep(delay).await;
         }
 
         Err(DiscoveryError::ConnectionFailed(
