@@ -4,6 +4,7 @@ pub mod dynamic_router;
 pub mod key_range;
 mod key_value;
 mod message;
+mod quorum_read;
 pub(crate) mod replica;
 mod routing_client;
 #[allow(dead_code)]
