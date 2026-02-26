@@ -1,5 +1,3 @@
-// HashMap/HashSet used for lookup-only data (no iteration affecting execution order).
-#![allow(clippy::disallowed_types)]
 
 pub mod backend;
 pub mod json;
@@ -20,7 +18,7 @@ pub struct ShardRecord<A, K> {
     pub key_range: Option<KeyRange<K>>,
 }
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::fmt::Display;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
@@ -175,7 +173,7 @@ pub trait RemoteShardDirectory<A: Clone + Send + Sync + 'static, K: Clone + Send
 ///    The discovery service becomes stale without bidirectional sync.
 ///
 /// Two implementations:
-/// - [`InMemoryShardDirectory`]: Pure in-memory HashMap. Drop-in replacement
+/// - [`InMemoryShardDirectory`]: Pure in-memory BTreeMap. Drop-in replacement
 ///   for the previous transport-internal shard storage.
 /// - [`CachingShardDirectory`]: Wraps `InMemoryShardDirectory` + spawns a
 ///   background sync task that periodically pushes local state to a
@@ -217,18 +215,18 @@ impl<A: Clone + Send + Sync + 'static, T: ShardDirectory<A>> ShardDirectory<A> f
 
 // ---- InMemoryShardDirectory ----
 
-/// Pure in-memory shard directory backed by a `HashMap` behind `RwLock`.
+/// Pure in-memory shard directory backed by a `BTreeMap` behind `RwLock`.
 ///
 /// Drop-in replacement for the previous `Inner::shards` in channel transport
 /// and `shard_directory` in TCP transport.
 pub struct InMemoryShardDirectory<A> {
-    shards: RwLock<HashMap<ShardNumber, (IrMembership<A>, u64)>>,
+    shards: RwLock<BTreeMap<ShardNumber, (IrMembership<A>, u64)>>,
 }
 
 impl<A> Default for InMemoryShardDirectory<A> {
     fn default() -> Self {
         Self {
-            shards: RwLock::new(HashMap::new()),
+            shards: RwLock::new(BTreeMap::new()),
         }
     }
 }
@@ -256,7 +254,6 @@ impl<A: Clone + Send + Sync + 'static> ShardDirectory<A> for InMemoryShardDirect
         self.shards.write().unwrap().remove(&shard);
     }
 
-    #[allow(clippy::disallowed_methods)] // output order is unspecified; callers must not depend on it
     fn all(&self) -> Vec<(ShardNumber, IrMembership<A>, u64)> {
         self.shards
             .read()

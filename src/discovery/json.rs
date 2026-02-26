@@ -1,7 +1,4 @@
-// HashMap used for lookup-only data (no iteration affecting execution order).
-#![allow(clippy::disallowed_types)]
-
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -20,14 +17,14 @@ use super::{DiscoveryError, RemoteShardDirectory, ShardDirectoryChange, ShardRec
 /// For DNS mode, a background task periodically re-resolves hostnames and
 /// updates the in-memory state so `get()`/`all()` return current addresses.
 pub struct JsonRemoteShardDirectory<A> {
-    state: Arc<RwLock<HashMap<ShardNumber, IrMembership<A>>>>,
+    state: Arc<RwLock<BTreeMap<ShardNumber, IrMembership<A>>>>,
     _dns_tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl<A: Clone + Send + Sync + 'static> JsonRemoteShardDirectory<A> {
     /// Create from pre-parsed static membership entries.
     pub fn new(shards: Vec<(ShardNumber, IrMembership<A>)>) -> Self {
-        let mut map = HashMap::new();
+        let mut map = BTreeMap::new();
         for (shard, membership) in shards {
             map.insert(shard, membership);
         }
@@ -61,7 +58,7 @@ where
         dns_shards: Vec<(ShardNumber, String, u16)>,
         resolve_interval: Duration,
     ) -> Result<Self, String> {
-        let state = Arc::new(RwLock::new(HashMap::new()));
+        let state = Arc::new(RwLock::new(BTreeMap::new()));
         let mut dns_tasks = Vec::new();
 
         for (shard, host, port) in dns_shards {
@@ -146,7 +143,6 @@ impl<A: Clone + Send + Sync + 'static, K: Clone + Send + Sync + 'static> RemoteS
         ))
     }
 
-    #[allow(clippy::disallowed_methods)]
     async fn weak_all_active_shard_view_memberships(
         &self,
     ) -> Result<Vec<(ShardNumber, IrMembership<A>, u64)>, DiscoveryError> {
