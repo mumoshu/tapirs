@@ -31,6 +31,8 @@ pub use ir::{
     SharedView as IrSharedView, View as IrView, ViewNumber as IrViewNumber,
 };
 pub use mvcc::MvccBackend;
+#[cfg(feature = "surrealkv")]
+pub use mvcc::surrealkvstore::SurrealKvStore;
 pub use mvcc::disk::{DiskStore as MvccDiskStore, StorageError};
 pub use mvcc::disk::disk_io::{BufferedIo, OpenFlags as DiskOpenFlags};
 #[cfg(test)]
