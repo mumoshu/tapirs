@@ -11,7 +11,7 @@ use crate::discovery::{
     ShardDirectoryChange, ShardDirectoryChangeSet,
 };
 use crate::tapir::dns_shard_client::{DnsRefreshingShardClient, DnsResolveError};
-use crate::tapir::{Client as TapirClient, KeyRange, ShardClient, ShardNumber, Sharded};
+use crate::tapir::{Client as TapirClient, KeyRange, ShardClient, ShardNumber, Sharded, TransactionError};
 use crate::{IrClientId, IrMembership, TapirTransport};
 
 const DISCOVERY_SHARD: ShardNumber = ShardNumber(0);
@@ -166,28 +166,40 @@ where
         key: &str,
         mode: &ReadMode,
     ) -> Result<Option<String>, DiscoveryError> {
-        // Refresh shard client cache (no-op if not DNS mode).
-        let sc = self.current_shard_client();
         let mode_str = match mode {
             ReadMode::Strong => "strong",
             ReadMode::Eventual => "eventual",
         };
-        tracing::debug!(key, mode = mode_str, "discovery read_raw: starting");
-        let result = match mode {
-            ReadMode::Strong => {
-                let ro = self.client.begin_read_only();
-                ro.get(key.to_string())
+        for attempt in 0..5u32 {
+            // Refresh shard client cache (no-op if not DNS mode).
+            let sc = self.current_shard_client();
+            tracing::debug!(key, mode = mode_str, attempt, "discovery read_raw: starting");
+            let result = match mode {
+                ReadMode::Strong => {
+                    let ro = self.client.begin_read_only();
+                    ro.get(key.to_string()).await
+                }
+                ReadMode::Eventual => sc
+                    .get(key.to_string(), None)
                     .await
-                    .map_err(|e| DiscoveryError::ConnectionFailed(format!("{e:?}")))
+                    .map(|(v, _)| v),
+            };
+            match result {
+                Ok(v) => {
+                    tracing::debug!(key, mode = mode_str, "discovery read_raw: completed");
+                    return Ok(v);
+                }
+                Err(ref e) if attempt < 4 && matches!(e, TransactionError::PrepareConflict | TransactionError::Unavailable) => {
+                    tracing::debug!(key, mode = mode_str, attempt, error = ?e, "discovery read_raw: transient error, retrying");
+                    let delay = Duration::from_millis(100 * (1 << attempt.min(3)));
+                    tokio::time::sleep(delay).await;
+                }
+                Err(e) => {
+                    return Err(DiscoveryError::ConnectionFailed(format!("{e:?}")));
+                }
             }
-            ReadMode::Eventual => sc
-                .get(key.to_string(), None)
-                .await
-                .map_err(|e| DiscoveryError::ConnectionFailed(format!("{e:?}")))
-                .map(|(v, _)| v),
-        };
-        tracing::debug!(key, mode = mode_str, ok = result.is_ok(), "discovery read_raw: completed");
-        result
+        }
+        unreachable!("retry loop always returns")
     }
 
     /// Pre-reads shard entry, verifies it exists and is not already tombstoned,
@@ -223,49 +235,61 @@ where
         &self,
         mode: &ReadMode,
     ) -> Result<Vec<(ShardNumber, IrMembership<A>, u64)>, DiscoveryError> {
-        // Refresh shard client cache (no-op if not DNS mode).
-        let sc = self.current_shard_client();
-        let entries = match mode {
-            ReadMode::Strong => {
-                let ro = self.client.begin_read_only();
-                let start = Sharded {
-                    shard: DISCOVERY_SHARD,
-                    key: SCAN_START.to_string(),
-                };
-                let end = Sharded {
-                    shard: DISCOVERY_SHARD,
-                    key: SCAN_END.to_string(),
-                };
-                ro.scan(start, end)
-                    .await
-                    .map_err(|e| DiscoveryError::ConnectionFailed(format!("{e:?}")))?
-            }
-            ReadMode::Eventual => {
-                let (results, _ts) = sc
-                    .scan(SCAN_START.to_string(), SCAN_END.to_string(), None)
-                    .await
-                    .map_err(|e| DiscoveryError::ConnectionFailed(format!("{e:?}")))?;
-                results
-                    .into_iter()
-                    .filter_map(|(k, v)| v.map(|v| (k, v)))
-                    .collect()
-            }
-        };
-
-        let mut result = Vec::new();
-        for (key, json) in entries {
-            let Some(shard) = parse_shard_number(&key) else {
-                continue;
+        for attempt in 0..5u32 {
+            // Refresh shard client cache (no-op if not DNS mode).
+            let sc = self.current_shard_client();
+            let scan_result = match mode {
+                ReadMode::Strong => {
+                    let ro = self.client.begin_read_only();
+                    let start = Sharded {
+                        shard: DISCOVERY_SHARD,
+                        key: SCAN_START.to_string(),
+                    };
+                    let end = Sharded {
+                        shard: DISCOVERY_SHARD,
+                        key: SCAN_END.to_string(),
+                    };
+                    ro.scan(start, end).await
+                }
+                ReadMode::Eventual => {
+                    sc.scan(SCAN_START.to_string(), SCAN_END.to_string(), None)
+                        .await
+                        .map(|(results, _ts)| {
+                            results
+                                .into_iter()
+                                .filter_map(|(k, v)| v.map(|v| (k, v)))
+                                .collect()
+                        })
+                }
             };
-            let record = parse_record::<K>(&json)?;
-            if record.status != ShardStatus::Active {
-                continue;
+            match scan_result {
+                Ok(entries) => {
+                    let mut result = Vec::new();
+                    for (key, json) in entries {
+                        let Some(shard) = parse_shard_number(&key) else {
+                            continue;
+                        };
+                        let record = parse_record::<K>(&json)?;
+                        if record.status != ShardStatus::Active {
+                            continue;
+                        }
+                        let membership = parse_membership_from(&record)?;
+                        result.push((shard, membership, record.view));
+                    }
+                    result.sort_by_key(|(s, _, _)| *s);
+                    return Ok(result);
+                }
+                Err(ref e) if attempt < 4 && matches!(e, TransactionError::PrepareConflict | TransactionError::Unavailable) => {
+                    tracing::debug!(attempt, error = ?e, "discovery scan: transient error, retrying");
+                    let delay = Duration::from_millis(100 * (1 << attempt.min(3)));
+                    tokio::time::sleep(delay).await;
+                }
+                Err(e) => {
+                    return Err(DiscoveryError::ConnectionFailed(format!("{e:?}")));
+                }
             }
-            let membership = parse_membership_from(&record)?;
-            result.push((shard, membership, record.view));
         }
-        result.sort_by_key(|(s, _, _)| *s);
-        Ok(result)
+        unreachable!("retry loop always returns")
     }
 }
 
@@ -372,14 +396,7 @@ where
         shard: ShardNumber,
     ) -> Result<Option<crate::discovery::ShardRecord<A, K>>, DiscoveryError> {
         let key = shard_key(shard);
-        // Always use linearizable read (RO transaction).
-        let _sc = self.current_shard_client();
-        let ro = self.client.begin_read_only();
-        let json = ro
-            .get(key)
-            .await
-            .map_err(|e| DiscoveryError::ConnectionFailed(format!("{e:?}")))?;
-        match json {
+        match self.read_raw_with_consistency_mode(&key, &ReadMode::Strong).await? {
             Some(json) => {
                 let record = parse_record::<K>(&json)?;
                 let membership = parse_membership_from(&record)?;
