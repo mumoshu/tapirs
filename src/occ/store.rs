@@ -237,14 +237,27 @@ impl<K: Key, V: Value, TS: Timestamp + Send, M: MvccBackend<K, V, TS>> Store<K, 
 
     /// Get value at `snapshot_ts` and update the read timestamp to block future
     /// writes from overwriting the version.
-    pub fn quorum_read(&mut self, key: K, snapshot_ts: TS) -> (Option<V>, TS) {
+    ///
+    /// Returns `Err(PrepareConflict)` when a prepared-but-uncommitted write
+    /// exists on `key` at `commit_ts <= snapshot_ts`. Without this check, a
+    /// QuorumRead starting right after an RW commit could miss the write if
+    /// the IO::Commit Finalize hasn't reached this replica yet — returning
+    /// the stale pre-commit value (a linearizability violation). This is the
+    /// RW→RO direction, symmetric with `commit_get()` which protects the
+    /// RO→RW direction.
+    pub fn quorum_read(&mut self, key: K, snapshot_ts: TS) -> Result<(Option<V>, TS), PrepareConflict> {
+        if let Some(timestamps) = self.prepared_writes.get(&key)
+            && timestamps.range(..=&snapshot_ts).next().is_some()
+        {
+            return Err(PrepareConflict);
+        }
         let (value, write_ts) = MvccBackend::get_at(&self.inner, &key, snapshot_ts).unwrap();
         MvccBackend::commit_get(&mut self.inner, key, snapshot_ts, snapshot_ts).unwrap();
         self.max_read_commit_time = Some(match self.max_read_commit_time {
             Some(prev) => prev.max(snapshot_ts),
             None => snapshot_ts,
         });
-        (value, write_ts)
+        Ok((value, write_ts))
     }
 
     /// Read-only scan fast path: check if a covering range_read exists.
@@ -267,10 +280,21 @@ impl<K: Key, V: Value, TS: Timestamp + Send, M: MvccBackend<K, V, TS>> Store<K, 
     }
 
     /// Read-only scan slow path: scan the MVCC store and record range protection.
-    pub fn quorum_scan(&mut self, start: K, end: K, snapshot_ts: TS) -> Vec<(K, Option<V>, TS)> {
+    ///
+    /// Returns `Err(PrepareConflict)` when any key in `[start, end]` has a
+    /// prepared-but-uncommitted write at `commit_ts <= snapshot_ts`. Same
+    /// rationale as [`Self::quorum_read`]: prevents returning stale values
+    /// when the IO::Commit Finalize for a recently committed RW transaction
+    /// hasn't arrived yet.
+    pub fn quorum_scan(&mut self, start: K, end: K, snapshot_ts: TS) -> Result<Vec<(K, Option<V>, TS)>, PrepareConflict> {
+        for (_key, timestamps) in self.prepared_writes.range(&start..=&end) {
+            if timestamps.range(..=&snapshot_ts).next().is_some() {
+                return Err(PrepareConflict);
+            }
+        }
         let results = MvccBackend::scan(&self.inner, &start, &end, snapshot_ts).unwrap();
         self.commit_scan(start, end, snapshot_ts);
-        results
+        Ok(results)
     }
 
     /// Return the max timestamps from the two read-protection mechanisms.
@@ -1240,7 +1264,7 @@ mod tests {
     fn quorum_scan_range_read_blocks_phantom() {
         let (_dir, mut store) = new_store(false);
         // quorum_scan [a,z] at snapshot_ts(10,1).
-        let _results = store.quorum_scan("a".to_string(), "z".to_string(), ts(10, 1));
+        let _results = store.quorum_scan("a".to_string(), "z".to_string(), ts(10, 1)).unwrap();
 
         // Prepare a write of NEW key "m" at commit_ts(7,2) — range_read(10) > commit(7) → Retry.
         let t2 = make_txn(vec![], vec![("m", Some("v1"))], vec![]);
@@ -1254,7 +1278,7 @@ mod tests {
     fn quorum_scan_range_read_allows_later_write() {
         let (_dir, mut store) = new_store(false);
         // quorum_scan [a,z] at snapshot_ts(10,1).
-        let _results = store.quorum_scan("a".to_string(), "z".to_string(), ts(10, 1));
+        let _results = store.quorum_scan("a".to_string(), "z".to_string(), ts(10, 1)).unwrap();
 
         // Prepare a write of "m" at commit_ts(15,2) — range_read(10) < commit(15) → Ok.
         let t2 = make_txn(vec![], vec![("m", Some("v1"))], vec![]);
@@ -1268,7 +1292,7 @@ mod tests {
     fn quorum_scan_range_read_outside_range() {
         let (_dir, mut store) = new_store(false);
         // quorum_scan [a,c] at snapshot_ts(10,1).
-        let _results = store.quorum_scan("a".to_string(), "c".to_string(), ts(10, 1));
+        let _results = store.quorum_scan("a".to_string(), "c".to_string(), ts(10, 1)).unwrap();
 
         // Prepare a write of "z" at commit_ts(7,2) — "z" outside range [a,c] → Ok.
         let t2 = make_txn(vec![], vec![("z", Some("v1"))], vec![]);
@@ -1287,7 +1311,7 @@ mod tests {
         store.commit(txn_id(1, 1), &t1, ts(3, 1));
 
         // quorum_read at snapshot_ts(10,1) should return the value and set read_ts.
-        let (value, write_ts) = store.quorum_read("x".to_string(), ts(10, 1));
+        let (value, write_ts) = store.quorum_read("x".to_string(), ts(10, 1)).unwrap();
         assert_eq!(value, Some("v1".to_string()));
         assert_eq!(write_ts, ts(3, 1));
 

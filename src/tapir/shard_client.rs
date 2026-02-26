@@ -221,38 +221,56 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
 
     /// Quorum read via IR inconsistent op. Sends to all replicas,
     /// waits for f+1 finalize replies, picks highest write_ts.
+    ///
+    /// Retries with exponential backoff when any replica returns
+    /// `IR::PrepareConflict` (prepared-but-uncommitted write at
+    /// `commit_ts <= snapshot_ts`). During backoff, the spawned
+    /// IO::Commit Finalize delivers the write to MVCC.
     pub fn quorum_read(
         &self,
         key: K,
         timestamp: Timestamp,
     ) -> impl Future<Output = Result<(Option<V>, Timestamp), TransactionError>> + Send + use<K, V, T> {
-        let future = self
-            .inner
-            .invoke_inconsistent_with_result(IO::QuorumRead { key, timestamp });
+        let inner = self.inner.clone();
         async move {
-            let results = future.await;
-            let mut best: Option<(Option<V>, Timestamp)> = None;
-            let mut all_out_of_range = true;
+            let mut retry_backoff = Duration::from_millis(50);
+            loop {
+                let results = inner
+                    .invoke_inconsistent_with_result(IO::QuorumRead {
+                        key: key.clone(),
+                        timestamp,
+                    })
+                    .await;
 
-            for ir in results {
-                match ir {
-                    IR::QuorumRead(value, ts) => {
-                        all_out_of_range = false;
-                        if best.as_ref().is_none_or(|(_, best_ts)| ts > *best_ts) {
-                            best = Some((value, ts));
+                if results.iter().any(|r| matches!(r, IR::PrepareConflict)) {
+                    T::sleep(retry_backoff).await;
+                    retry_backoff = (retry_backoff * 2).min(Duration::from_secs(1));
+                    continue;
+                }
+
+                let mut best: Option<(Option<V>, Timestamp)> = None;
+                let mut all_out_of_range = true;
+
+                for ir in results {
+                    match ir {
+                        IR::QuorumRead(value, ts) => {
+                            all_out_of_range = false;
+                            if best.as_ref().is_none_or(|(_, best_ts)| ts > *best_ts) {
+                                best = Some((value, ts));
+                            }
+                        }
+                        IR::OutOfRange => {}
+                        _ => {
+                            all_out_of_range = false;
                         }
                     }
-                    IR::OutOfRange => {}
-                    _ => {
-                        all_out_of_range = false;
-                    }
                 }
-            }
 
-            if all_out_of_range {
-                return Err(TransactionError::OutOfRange);
+                if all_out_of_range {
+                    return Err(TransactionError::OutOfRange);
+                }
+                return Ok(best.unwrap_or((None, Timestamp::default())));
             }
-            Ok(best.unwrap_or((None, Timestamp::default())))
         }
     }
 
@@ -311,54 +329,68 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
     /// Read-only scan slow path: QuorumScan via IR inconsistent op.
     /// Sends IO::QuorumScan, waits for f+1 finalize replies, merges
     /// results by picking highest `write_ts` per key.
+    ///
+    /// Retries with exponential backoff when any replica returns
+    /// `IR::PrepareConflict` (prepared-but-uncommitted write in
+    /// the scan range at `commit_ts <= snapshot_ts`).
     pub fn quorum_scan(
         &self,
         start_key: K,
         end_key: K,
         snapshot_ts: Timestamp,
     ) -> impl Future<Output = Result<Vec<(K, Option<V>, Timestamp)>, TransactionError>> + Send + use<K, V, T> {
-        let future = self
-            .inner
-            .invoke_inconsistent_with_result(IO::QuorumScan {
-                start_key,
-                end_key,
-                snapshot_ts,
-            });
+        let inner = self.inner.clone();
         async move {
-            let results = future.await;
-            let mut merged = std::collections::BTreeMap::<K, (Option<V>, Timestamp)>::new();
-            let mut all_out_of_range = true;
+            let mut retry_backoff = Duration::from_millis(50);
+            loop {
+                let results = inner
+                    .invoke_inconsistent_with_result(IO::QuorumScan {
+                        start_key: start_key.clone(),
+                        end_key: end_key.clone(),
+                        snapshot_ts,
+                    })
+                    .await;
 
-            for ir in results {
-                match ir {
-                    IR::QuorumScan(entries) => {
-                        all_out_of_range = false;
-                        for (key, value, write_ts) in entries {
-                            merged
-                                .entry(key)
-                                .and_modify(|(v, ts)| {
-                                    if write_ts > *ts {
-                                        *v = value.clone();
-                                        *ts = write_ts;
-                                    }
-                                })
-                                .or_insert((value, write_ts));
+                if results.iter().any(|r| matches!(r, IR::PrepareConflict)) {
+                    T::sleep(retry_backoff).await;
+                    retry_backoff = (retry_backoff * 2).min(Duration::from_secs(1));
+                    continue;
+                }
+
+                let mut merged = std::collections::BTreeMap::<K, (Option<V>, Timestamp)>::new();
+                let mut all_out_of_range = true;
+
+                for ir in results {
+                    match ir {
+                        IR::QuorumScan(entries) => {
+                            all_out_of_range = false;
+                            for (key, value, write_ts) in entries {
+                                merged
+                                    .entry(key)
+                                    .and_modify(|(v, ts)| {
+                                        if write_ts > *ts {
+                                            *v = value.clone();
+                                            *ts = write_ts;
+                                        }
+                                    })
+                                    .or_insert((value, write_ts));
+                            }
+                        }
+                        IR::OutOfRange => {}
+                        _ => {
+                            all_out_of_range = false;
                         }
                     }
-                    IR::OutOfRange => {}
-                    _ => {
-                        all_out_of_range = false;
-                    }
                 }
-            }
 
-            if all_out_of_range {
-                return Err(TransactionError::OutOfRange);
+                if all_out_of_range {
+                    return Err(TransactionError::OutOfRange);
+                }
+                return Ok(merged
+                    .into_iter()
+                    .map(|(k, (v, ts))| (k, v, ts))
+                    .collect());
             }
-            Ok(merged
-                .into_iter()
-                .map(|(k, (v, ts))| (k, v, ts))
-                .collect())
         }
     }
 

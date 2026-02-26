@@ -530,8 +530,10 @@ where
                     && !range.contains(key) {
                         return Some(IR::OutOfRange);
                     }
-                let (value, write_ts) = self.inner.quorum_read(key.clone(), *timestamp);
-                Some(IR::QuorumRead(value, write_ts))
+                match self.inner.quorum_read(key.clone(), *timestamp) {
+                    Ok((value, write_ts)) => Some(IR::QuorumRead(value, write_ts)),
+                    Err(_) => Some(IR::PrepareConflict),
+                }
             }
             IO::QuorumScan {
                 start_key,
@@ -548,8 +550,10 @@ where
                         return Some(IR::OutOfRange);
                     }
                 }
-                let results = self.inner.quorum_scan(start_key.clone(), end_key.clone(), *snapshot_ts);
-                Some(IR::QuorumScan(results))
+                match self.inner.quorum_scan(start_key.clone(), end_key.clone(), *snapshot_ts) {
+                    Ok(results) => Some(IR::QuorumScan(results)),
+                    Err(_) => Some(IR::PrepareConflict),
+                }
             }
         }
     }
