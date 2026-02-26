@@ -330,9 +330,23 @@ pub fn up() -> Result<(), String> {
             "replicas": replicas,
         })
         .to_string();
-        let resp = http_post("127.0.0.1", SHARD_MGR_PORT, "/v1/register", &body)?;
-        if !resp.contains("\"ok\":true") && !resp.contains("\"ok\": true") {
-            return Err(format!("register shard {shard} with shard-manager: {resp}"));
+        let mut registered = false;
+        for attempt in 0..5u32 {
+            let resp = http_post("127.0.0.1", SHARD_MGR_PORT, "/v1/register", &body)?;
+            if resp.contains("\"ok\":true") || resp.contains("\"ok\": true") {
+                registered = true;
+                break;
+            }
+            if attempt < 4 {
+                eprintln!(
+                    "  warning: register shard {shard} failed (attempt {}/5): {resp}",
+                    attempt + 1,
+                );
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            }
+        }
+        if !registered {
+            return Err(format!("register shard {shard} with shard-manager failed after 5 attempts"));
         }
         println!("  Shard {shard}: key range [{}, {})", start.as_deref().unwrap_or(""), end.as_deref().unwrap_or(""));
     }
