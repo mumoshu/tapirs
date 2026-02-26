@@ -1,12 +1,9 @@
-// HashMap used for lookup-only data (no iteration affecting execution order).
-#![allow(clippy::disallowed_types)]
-
 use super::address::TcpAddress;
 use super::wire::TcpIrMessage;
 use crate::discovery::{InMemoryShardDirectory, ShardDirectory as _};
 use crate::ir::ReplicaUpcalls;
 use crate::{IrMembership, ShardNumber};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, RwLock};
@@ -30,11 +27,11 @@ impl<U: ReplicaUpcalls> Clone for TcpTransport<U> {
 /// Shared transport state behind Arc.
 pub(super) struct TransportInner<U: ReplicaUpcalls> {
     /// Pending request-reply oneshots, keyed by request_id.
-    pub pending_replies: Mutex<HashMap<u64, oneshot::Sender<TcpIrMessage<U>>>>,
+    pub pending_replies: Mutex<BTreeMap<u64, oneshot::Sender<TcpIrMessage<U>>>>,
     /// Monotonically increasing request ID counter.
     pub next_request_id: AtomicU64,
     /// Outbound connection pool: one mpsc sender per peer.
-    pub connections: Mutex<HashMap<SocketAddr, mpsc::Sender<Vec<u8>>>>,
+    pub connections: Mutex<BTreeMap<SocketAddr, mpsc::Sender<Vec<u8>>>>,
     /// Receive callback for inbound messages (set when hosting a replica).
     #[allow(clippy::type_complexity)]
     pub receive_callback: Mutex<
@@ -68,9 +65,9 @@ impl<U: ReplicaUpcalls> TcpTransport<U> {
         Self {
             address,
             inner: Arc::new(TransportInner {
-                pending_replies: Mutex::new(HashMap::new()),
+                pending_replies: Mutex::new(BTreeMap::new()),
                 next_request_id: AtomicU64::new(0),
-                connections: Mutex::new(HashMap::new()),
+                connections: Mutex::new(BTreeMap::new()),
                 receive_callback: Mutex::new(None),
                 directory,
                 shard: RwLock::new(None),
@@ -107,9 +104,9 @@ impl<U: ReplicaUpcalls> TcpTransport<U> {
         Ok(Self {
             address,
             inner: Arc::new(TransportInner {
-                pending_replies: Mutex::new(HashMap::new()),
+                pending_replies: Mutex::new(BTreeMap::new()),
                 next_request_id: AtomicU64::new(0),
-                connections: Mutex::new(HashMap::new()),
+                connections: Mutex::new(BTreeMap::new()),
                 receive_callback: Mutex::new(None),
                 directory,
                 shard: RwLock::new(None),

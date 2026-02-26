@@ -1,7 +1,4 @@
-// HashMap used for lookup-only data (no iteration affecting execution order).
-#![allow(clippy::disallowed_types)]
-
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
@@ -13,7 +10,7 @@ pub(crate) struct TimerWheel {
     /// deadline_nanos -> entries with that deadline
     timers: BTreeMap<u64, Vec<TimerEntry>>,
     /// timer_id -> deadline (for cancellation)
-    id_to_deadline: HashMap<u64, u64>,
+    id_to_deadline: BTreeMap<u64, u64>,
 }
 
 struct TimerEntry {
@@ -26,7 +23,7 @@ impl TimerWheel {
         Self {
             next_id: 0,
             timers: BTreeMap::new(),
-            id_to_deadline: HashMap::new(),
+            id_to_deadline: BTreeMap::new(),
         }
     }
 

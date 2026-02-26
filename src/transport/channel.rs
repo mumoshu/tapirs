@@ -1,6 +1,3 @@
-// HashMap used for lookup-only data (no iteration affecting execution order).
-#![allow(clippy::disallowed_types)]
-
 use super::{TapirTransport, Transport};
 use crate::{
     discovery::{InMemoryShardDirectory, ShardDirectory as _},
@@ -9,7 +6,7 @@ use crate::{
 };
 use serde::{de::DeserializeOwned, Serialize};
 use std::{
-    collections::HashMap,
+    collections::BTreeMap,
     fmt::Debug,
     future::Future,
     sync::{Arc, Mutex, RwLock},
@@ -104,7 +101,7 @@ impl<U: IrReplicaUpcalls> Registry<U> {
 
 pub struct Channel<U: IrReplicaUpcalls> {
     address: usize,
-    persistent: Arc<Mutex<HashMap<String, String>>>,
+    persistent: Arc<Mutex<BTreeMap<String, String>>>,
     inner: Arc<RwLock<Inner<U>>>,
     directory: Arc<InMemoryShardDirectory<usize>>,
     shard: Arc<RwLock<Option<ShardNumber>>>,

@@ -1,6 +1,3 @@
-// HashMap used for lookup-only data (no iteration affecting execution order).
-#![allow(clippy::disallowed_types)]
-
 use super::{Channel, TapirTransport, Transport};
 use crate::{
     tapir::{Key, Value},
@@ -12,7 +9,7 @@ use rand::distributions::{Distribution, Uniform};
 use rand_distr::Normal;
 use serde::{de::DeserializeOwned, Serialize};
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet},
     fmt::Debug,
     future::Future,
     sync::{Arc, RwLock},
@@ -38,7 +35,7 @@ impl<U: IrReplicaUpcalls> Clone for FaultyChannelTransport<U> {
 struct FaultState<U: IrReplicaUpcalls> {
     config: NetworkFaultConfig,
     rng: StdRng,
-    reorder_buffers: HashMap<(usize, usize), ReorderBuffer<U>>,
+    reorder_buffers: BTreeMap<(usize, usize), ReorderBuffer<U>>,
     partitioned_nodes: BTreeSet<usize>,
 }
 
@@ -116,7 +113,7 @@ impl<U: IrReplicaUpcalls> FaultyChannelTransport<U> {
             state: Arc::new(RwLock::new(FaultState {
                 config,
                 rng: StdRng::seed_from_u64(seed),
-                reorder_buffers: HashMap::new(),
+                reorder_buffers: BTreeMap::new(),
                 partitioned_nodes: BTreeSet::new(),
             })),
         }
@@ -939,7 +936,7 @@ mod tests {
         // do_send spawns async tasks — partition checks happen when those tasks
         // run during quiescence. Track partition windows to only check messages
         // sent AFTER partition AND partition never healed.
-        let mut partition_start: HashMap<usize, usize> = HashMap::new(); // node -> operation_index
+        let mut partition_start: BTreeMap<usize, usize> = BTreeMap::new(); // node -> operation_index
         let mut sent_messages: Vec<(usize, usize, u64, usize)> = Vec::new(); // (from, to, id, op_index)
 
         // 5. Execute operations

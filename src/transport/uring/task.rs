@@ -1,20 +1,17 @@
-// HashMap/HashSet used for lookup-only data (no iteration affecting execution order).
-#![allow(clippy::disallowed_types)]
-
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 /// Unique identifier for a spawned task.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct TaskId(pub u64);
 
 /// Cooperative, thread-local, `!Send` task scheduler.
 pub(crate) struct Executor {
     next_task_id: u64,
     run_queue: VecDeque<TaskId>,
-    tasks: HashMap<TaskId, Pin<Box<dyn Future<Output = ()> + 'static>>>,
+    tasks: BTreeMap<TaskId, Pin<Box<dyn Future<Output = ()> + 'static>>>,
     in_run_queue: HashSet<TaskId>,
 }
 
@@ -23,7 +20,7 @@ impl Executor {
         Self {
             next_task_id: 0,
             run_queue: VecDeque::new(),
-            tasks: HashMap::new(),
+            tasks: BTreeMap::new(),
             in_run_queue: HashSet::new(),
         }
     }

@@ -1,11 +1,8 @@
-// HashMap used for lookup-only data (no iteration affecting execution order).
-#![allow(clippy::disallowed_types)]
-
 use super::task::Executor;
 use super::timer::TimerWheel;
 use io_uring::{opcode, types, IoUring};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::task::Waker;
 use std::time::SystemTime;
 
@@ -32,7 +29,7 @@ enum OpState {
 pub(crate) struct Reactor {
     ring: IoUring,
     next_op_key: u64,
-    ops: HashMap<u64, OpState>,
+    ops: BTreeMap<u64, OpState>,
     pub executor: Executor,
     pub timer_wheel: TimerWheel,
 }
@@ -43,7 +40,7 @@ impl Reactor {
         Self {
             ring,
             next_op_key: 0,
-            ops: HashMap::new(),
+            ops: BTreeMap::new(),
             executor: Executor::new(),
             timer_wheel: TimerWheel::new(),
         }

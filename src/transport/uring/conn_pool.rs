@@ -1,11 +1,8 @@
-// HashMap used for lookup-only data (no iteration affecting execution order).
-#![allow(clippy::disallowed_types)]
-
 use super::codec::{FrameCodec, FrameReader};
 use super::tcp::TcpStream;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 use std::net::SocketAddr;
 use std::time::Instant;
 
@@ -68,14 +65,14 @@ impl PooledConnection {
 
 /// Per-address connection pool.
 pub(crate) struct ConnectionPool {
-    connections: HashMap<SocketAddr, PooledConnection>,
+    connections: BTreeMap<SocketAddr, PooledConnection>,
     /// Addresses currently being connected, with queued frames.
-    pub(crate) connecting: HashMap<SocketAddr, Vec<Vec<u8>>>,
-    pub(crate) reconnect_attempts: HashMap<SocketAddr, u32>,
+    pub(crate) connecting: BTreeMap<SocketAddr, Vec<Vec<u8>>>,
+    pub(crate) reconnect_attempts: BTreeMap<SocketAddr, u32>,
     /// Circuit breaker: addresses with open circuits and when they opened.
-    circuit_open: HashMap<SocketAddr, Instant>,
+    circuit_open: BTreeMap<SocketAddr, Instant>,
     /// Circuit breaker: consecutive connection failures per address.
-    consecutive_failures: HashMap<SocketAddr, u32>,
+    consecutive_failures: BTreeMap<SocketAddr, u32>,
     /// Optional RNG for jitter (deterministic testing when seeded).
     jitter_rng: Option<StdRng>,
 }
@@ -88,11 +85,11 @@ const CIRCUIT_BREAKER_COOLDOWN_MS: u64 = 30_000;
 impl ConnectionPool {
     pub fn new() -> Self {
         Self {
-            connections: HashMap::new(),
-            connecting: HashMap::new(),
-            reconnect_attempts: HashMap::new(),
-            circuit_open: HashMap::new(),
-            consecutive_failures: HashMap::new(),
+            connections: BTreeMap::new(),
+            connecting: BTreeMap::new(),
+            reconnect_attempts: BTreeMap::new(),
+            circuit_open: BTreeMap::new(),
+            consecutive_failures: BTreeMap::new(),
             jitter_rng: None,
         }
     }
@@ -100,11 +97,11 @@ impl ConnectionPool {
     /// Create a connection pool with jitter enabled (uses seeded RNG for deterministic testing).
     pub fn new_with_jitter(seed: u64) -> Self {
         Self {
-            connections: HashMap::new(),
-            connecting: HashMap::new(),
-            reconnect_attempts: HashMap::new(),
-            circuit_open: HashMap::new(),
-            consecutive_failures: HashMap::new(),
+            connections: BTreeMap::new(),
+            connecting: BTreeMap::new(),
+            reconnect_attempts: BTreeMap::new(),
+            circuit_open: BTreeMap::new(),
+            consecutive_failures: BTreeMap::new(),
             jitter_rng: Some(StdRng::seed_from_u64(seed)),
         }
     }

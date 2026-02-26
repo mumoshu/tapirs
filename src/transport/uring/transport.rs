@@ -1,6 +1,3 @@
-// HashMap used for lookup-only data (no iteration affecting execution order).
-#![allow(clippy::disallowed_types)]
-
 use super::address::UringAddress;
 use super::codec::{FrameCodec, FrameReader};
 use super::conn_pool::ConnectionPool;
@@ -11,7 +8,7 @@ use crate::ir::ReplicaUpcalls;
 use crate::{IrMembership, ShardNumber};
 use serde::{Serialize, de::DeserializeOwned};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::task::Waker;
@@ -28,9 +25,9 @@ pub(crate) struct TransportState<U: ReplicaUpcalls> {
     pub receive_callback: Option<
         Box<dyn Fn(UringAddress, UringIrMessage<U>) -> Option<UringIrMessage<U>>>,
     >,
-    pub pending_replies: HashMap<u64, PendingReply<U>>,
+    pub pending_replies: BTreeMap<u64, PendingReply<U>>,
     pub next_request_id: u64,
-    pub shard_directory: HashMap<ShardNumber, IrMembership<UringAddress>>,
+    pub shard_directory: BTreeMap<ShardNumber, IrMembership<UringAddress>>,
     pub persist_dir: String,
     pub connect_timeout_ms: u64,
     pub request_timeout_ms: u64,
@@ -76,9 +73,9 @@ impl<U: ReplicaUpcalls> UringTransport<U> {
             state: Rc::new(RefCell::new(TransportState {
                 conn_pool: ConnectionPool::new(),
                 receive_callback: None,
-                pending_replies: HashMap::new(),
+                pending_replies: BTreeMap::new(),
                 next_request_id: 0,
-                shard_directory: HashMap::new(),
+                shard_directory: BTreeMap::new(),
                 persist_dir,
                 connect_timeout_ms,
                 request_timeout_ms,
