@@ -773,6 +773,154 @@ mod tests {
     use super::*;
     use crate::tapir::message::Change;
 
+    fn ts(time: u64) -> Timestamp {
+        Timestamp { time, client_id: crate::IrClientId(0) }
+    }
+
+    // --- merge_quorum_read_results tests ---
+
+    #[test]
+    fn quorum_read_all_success() {
+        let results: Vec<IR<i64, i64>> = vec![
+            IR::QuorumRead(Some(1), ts(5)),
+            IR::QuorumRead(Some(1), ts(3)),
+        ];
+        let r = merge_quorum_read_results(results, 2);
+        assert!(r.is_ok());
+        assert_eq!(r.unwrap(), (Some(1), ts(5)));
+    }
+
+    #[test]
+    fn quorum_read_tolerates_prepare_conflict_with_enough_data() {
+        // 3 responses (all 2f+1 arrived), 2 data + 1 PrepareConflict.
+        // f+1=2, so 2 >= 2 → success.
+        let results: Vec<IR<i64, i64>> = vec![
+            IR::QuorumRead(Some(1), ts(5)),
+            IR::QuorumRead(Some(1), ts(3)),
+            IR::PrepareConflict,
+        ];
+        let r = merge_quorum_read_results(results, 2);
+        assert!(r.is_ok());
+        assert_eq!(r.unwrap(), (Some(1), ts(5)));
+    }
+
+    #[test]
+    fn quorum_read_not_enough_data_returns_prepare_conflict() {
+        // 2 responses, 1 data + 1 PrepareConflict. f+1=2, so 1 < 2 → error.
+        let results: Vec<IR<i64, i64>> = vec![
+            IR::QuorumRead(Some(1), ts(5)),
+            IR::PrepareConflict,
+        ];
+        let r = merge_quorum_read_results(results, 2);
+        assert!(matches!(r, Err(TransactionError::PrepareConflict)));
+    }
+
+    #[test]
+    fn quorum_read_all_prepare_conflict() {
+        let results: Vec<IR<i64, i64>> = vec![
+            IR::PrepareConflict,
+            IR::PrepareConflict,
+        ];
+        let r = merge_quorum_read_results(results, 2);
+        assert!(matches!(r, Err(TransactionError::PrepareConflict)));
+    }
+
+    #[test]
+    fn quorum_read_all_out_of_range() {
+        let results: Vec<IR<i64, i64>> = vec![IR::OutOfRange, IR::OutOfRange];
+        let r = merge_quorum_read_results(results, 2);
+        assert!(matches!(r, Err(TransactionError::OutOfRange)));
+    }
+
+    #[test]
+    fn quorum_read_mixed_out_of_range_and_prepare_conflict() {
+        let results: Vec<IR<i64, i64>> = vec![IR::OutOfRange, IR::PrepareConflict];
+        let r = merge_quorum_read_results(results, 2);
+        assert!(matches!(r, Err(TransactionError::PrepareConflict)));
+    }
+
+    #[test]
+    fn quorum_read_5_replicas_tolerates_2_conflicts() {
+        // 5 responses, 3 data + 2 PrepareConflict. f+1=3 → success.
+        let results: Vec<IR<i64, i64>> = vec![
+            IR::QuorumRead(Some(10), ts(5)),
+            IR::QuorumRead(Some(10), ts(7)),
+            IR::QuorumRead(Some(10), ts(3)),
+            IR::PrepareConflict,
+            IR::PrepareConflict,
+        ];
+        let r = merge_quorum_read_results(results, 3);
+        assert!(r.is_ok());
+        assert_eq!(r.unwrap(), (Some(10), ts(7)));
+    }
+
+    #[test]
+    fn quorum_read_5_replicas_not_enough_data() {
+        // 5 responses, 2 data + 3 PrepareConflict. f+1=3, so 2 < 3 → error.
+        let results: Vec<IR<i64, i64>> = vec![
+            IR::QuorumRead(Some(10), ts(5)),
+            IR::QuorumRead(Some(10), ts(3)),
+            IR::PrepareConflict,
+            IR::PrepareConflict,
+            IR::PrepareConflict,
+        ];
+        let r = merge_quorum_read_results(results, 3);
+        assert!(matches!(r, Err(TransactionError::PrepareConflict)));
+    }
+
+    // --- merge_quorum_scan_results tests ---
+
+    #[test]
+    fn quorum_scan_all_success() {
+        let results: Vec<IR<i64, i64>> = vec![
+            IR::QuorumScan(vec![(1, Some(10), ts(5)), (2, Some(20), ts(3))]),
+            IR::QuorumScan(vec![(1, Some(10), ts(3)), (2, Some(20), ts(5))]),
+        ];
+        let r = merge_quorum_scan_results(results, 2);
+        assert!(r.is_ok());
+        let entries = r.unwrap();
+        assert_eq!(entries, vec![(1, Some(10), ts(5)), (2, Some(20), ts(5))]);
+    }
+
+    #[test]
+    fn quorum_scan_tolerates_prepare_conflict_with_enough_data() {
+        let results: Vec<IR<i64, i64>> = vec![
+            IR::QuorumScan(vec![(1, Some(10), ts(5))]),
+            IR::QuorumScan(vec![(1, Some(10), ts(3))]),
+            IR::PrepareConflict,
+        ];
+        let r = merge_quorum_scan_results(results, 2);
+        assert!(r.is_ok());
+        assert_eq!(r.unwrap(), vec![(1, Some(10), ts(5))]);
+    }
+
+    #[test]
+    fn quorum_scan_not_enough_data_returns_prepare_conflict() {
+        let results: Vec<IR<i64, i64>> = vec![
+            IR::QuorumScan(vec![(1, Some(10), ts(5))]),
+            IR::PrepareConflict,
+        ];
+        let r = merge_quorum_scan_results(results, 2);
+        assert!(matches!(r, Err(TransactionError::PrepareConflict)));
+    }
+
+    #[test]
+    fn quorum_scan_all_prepare_conflict() {
+        let results: Vec<IR<i64, i64>> = vec![
+            IR::PrepareConflict,
+            IR::PrepareConflict,
+        ];
+        let r = merge_quorum_scan_results(results, 2);
+        assert!(matches!(r, Err(TransactionError::PrepareConflict)));
+    }
+
+    #[test]
+    fn quorum_scan_all_out_of_range() {
+        let results: Vec<IR<i64, i64>> = vec![IR::OutOfRange, IR::OutOfRange];
+        let r = merge_quorum_scan_results(results, 2);
+        assert!(matches!(r, Err(TransactionError::OutOfRange)));
+    }
+
     #[test]
     fn scan_changes_result_bitcode_round_trip() {
         let original = ScanChangesResult::<String, String> {
