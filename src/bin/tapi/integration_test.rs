@@ -6,6 +6,7 @@ use rand::{thread_rng, Rng as _};
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 use tapirs::discovery::{tapir, InMemoryShardDirectory, RemoteShardDirectory};
+use tapirs::backup::local::LocalBackupStorage;
 use tapirs::sharding::shardmanager_client::HttpShardManagerClient;
 use tapirs::{
     DynamicRouter, KeyRange, RoutingClient, ShardDirectory, ShardEntry, ShardNumber, TapirClient,
@@ -756,7 +757,8 @@ async fn test_cluster_backup_restore_via_admin() {
     let sm_url = format!("http://{}", cluster.shard_manager_addr);
     let sm_client = HttpShardManagerClient::new(&sm_url);
     let mgr = tapirs::backup::BackupManager::new(sm_client);
-    mgr.backup_cluster(backup_path).unwrap();
+    let storage = LocalBackupStorage::new(backup_path);
+    mgr.backup_cluster(&storage).await.unwrap();
 
     // Verify backup files exist.
     assert!(
@@ -806,8 +808,9 @@ async fn test_cluster_backup_restore_via_admin() {
     // Restore.
     let restore_sm_client = HttpShardManagerClient::new(&sm_url);
     let restore_mgr = tapirs::backup::BackupManager::new(restore_sm_client);
+    let restore_storage = LocalBackupStorage::new(backup_path);
     restore_mgr
-        .restore_cluster(&admin_addrs, backup_path)
+        .restore_cluster(&admin_addrs, &restore_storage)
         .await
         .unwrap();
 
@@ -870,7 +873,8 @@ async fn test_backup_restore_incremental() {
     let backup_path = backup_dir.path().to_str().unwrap();
     let sm_client = HttpShardManagerClient::new(&sm_url);
     let mgr = tapirs::backup::BackupManager::new(sm_client);
-    mgr.backup_cluster(backup_path).unwrap();
+    let storage = LocalBackupStorage::new(backup_path);
+    mgr.backup_cluster(&storage).await.unwrap();
 
     assert!(
         std::path::Path::new(&format!("{backup_path}/shard_0_delta_0.bin")).exists(),
@@ -891,7 +895,8 @@ async fn test_backup_restore_incremental() {
     // Incremental backup (reads last_backup_views from cluster.json).
     let sm_client2 = HttpShardManagerClient::new(&sm_url);
     let mgr2 = tapirs::backup::BackupManager::new(sm_client2);
-    mgr2.backup_cluster(backup_path).unwrap();
+    let storage2 = LocalBackupStorage::new(backup_path);
+    mgr2.backup_cluster(&storage2).await.unwrap();
 
     assert!(
         std::path::Path::new(&format!("{backup_path}/shard_0_delta_1.bin")).exists(),
@@ -930,8 +935,9 @@ async fn test_backup_restore_incremental() {
     // Restore (applies both delta files).
     let restore_sm_client = HttpShardManagerClient::new(&sm_url);
     let restore_mgr = tapirs::backup::BackupManager::new(restore_sm_client);
+    let restore_storage = LocalBackupStorage::new(backup_path);
     restore_mgr
-        .restore_cluster(&admin_addrs, backup_path)
+        .restore_cluster(&admin_addrs, &restore_storage)
         .await
         .unwrap();
 

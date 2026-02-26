@@ -1,3 +1,4 @@
+use super::storage::BackupStorage;
 use super::types::ClusterMetadata;
 
 impl super::BackupManager {
@@ -11,15 +12,13 @@ impl super::BackupManager {
     /// `admin_addrs` are the admin API addresses of the target nodes (one per node).
     /// The number of admin addresses must match the number of replicas per shard
     /// recorded in the backup.
-    pub async fn restore_cluster(
+    pub async fn restore_cluster<S: BackupStorage>(
         &self,
         admin_addrs: &[String],
-        backup_dir: &str,
+        storage: &S,
     ) -> Result<(), String> {
         // Read cluster.json.
-        let cluster_json_path = format!("{backup_dir}/cluster.json");
-        let data = std::fs::read_to_string(&cluster_json_path)
-            .map_err(|e| format!("read cluster.json: {e}"))?;
+        let data = storage.read_string("cluster.json").await?;
         let meta: ClusterMetadata =
             serde_json::from_str(&data).map_err(|e| format!("parse cluster.json: {e}"))?;
 
@@ -100,9 +99,7 @@ impl super::BackupManager {
             let replicas = &last_delta.replicas_on_backup_taken;
 
             for delta in &shard_hist.deltas {
-                let file_path = format!("{backup_dir}/{}", delta.file);
-                let delta_bytes = std::fs::read(&file_path)
-                    .map_err(|e| format!("read {}: {e}", delta.file))?;
+                let delta_bytes = storage.read(&delta.file).await?;
 
                 self.shard_manager_client
                     .apply_changes(shard_hist.shard, replicas, &delta_bytes)

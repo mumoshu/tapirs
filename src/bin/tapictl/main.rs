@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use tapirs::backup::local::LocalBackupStorage;
 use tapirs::sharding::shardmanager_client::HttpShardManagerClient;
 use std::path::PathBuf;
 
@@ -445,7 +446,12 @@ fn main() {
         Command::Get {
             resource: GetResource::Backups { dir },
         } => {
-            tapirs::backup::BackupManager::list_backups(&dir).map(|backups| {
+            let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");
+            rt.block_on(async {
+                let storage = LocalBackupStorage::new(&dir);
+                tapirs::backup::BackupManager::list_backups(&storage).await
+            })
+            .map(|backups| {
                 if backups.is_empty() {
                     println!("No backups found in {dir}");
                 } else {
@@ -465,8 +471,12 @@ fn main() {
         } => {
             let client = make_sm_client(&shard_manager_url, #[cfg(feature = "tls")] &cli.tls);
             let mgr = tapirs::backup::BackupManager::new(client);
-            mgr.backup_cluster(&output)
-                .map(|()| println!("Backup completed to {output}"))
+            let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");
+            rt.block_on(async {
+                let storage = LocalBackupStorage::new(&output);
+                mgr.backup_cluster(&storage).await
+            })
+            .map(|()| println!("Backup completed to {output}"))
         }
         Command::Restore {
             resource:
@@ -484,7 +494,8 @@ fn main() {
                 .collect();
             let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");
             rt.block_on(async {
-                mgr.restore_cluster(&addrs, &input).await
+                let storage = LocalBackupStorage::new(&input);
+                mgr.restore_cluster(&addrs, &storage).await
             })
             .map(|()| println!("Restore completed from {input}"))
         }

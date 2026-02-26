@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+
+use super::storage::BackupStorage;
 use super::types::{ClusterMetadata, ShardBackupHistory, ShardDeltaInfo};
 
 /// Format the current UTC time as an ISO 8601 string (e.g. "2025-01-15T10:30:00Z").
@@ -35,23 +37,26 @@ pub(crate) fn utc_now_iso8601() -> String {
 impl super::BackupManager {
     /// Perform a full or incremental backup of all active shards.
     ///
-    /// Reads `cluster.json` from `output_dir` if it exists (incremental),
+    /// Reads `cluster.json` from storage if it exists (incremental),
     /// otherwise starts from view 0 (full backup). Writes per-shard delta
     /// files and updates `cluster.json` with the new delta info.
-    pub fn backup_cluster(&self, output_dir: &str) -> Result<(), String> {
-        std::fs::create_dir_all(output_dir)
-            .map_err(|e| format!("create output dir: {e}"))?;
+    pub async fn backup_cluster<S: BackupStorage>(
+        &self,
+        storage: &S,
+    ) -> Result<(), String> {
+        storage.init().await?;
 
         // Load existing cluster.json for incremental backup.
-        let cluster_json_path = format!("{output_dir}/cluster.json");
-        let mut existing: Option<ClusterMetadata> = if std::path::Path::new(&cluster_json_path).exists() {
-            let data = std::fs::read_to_string(&cluster_json_path)
-                .map_err(|e| format!("read cluster.json: {e}"))?;
-            Some(serde_json::from_str(&data)
-                .map_err(|e| format!("parse cluster.json: {e}"))?)
-        } else {
-            None
-        };
+        let mut existing: Option<ClusterMetadata> =
+            if storage.exists("cluster.json").await? {
+                let data = storage.read_string("cluster.json").await?;
+                Some(
+                    serde_json::from_str(&data)
+                        .map_err(|e| format!("parse cluster.json: {e}"))?,
+                )
+            } else {
+                None
+            };
 
         // Derive last_backup_views from existing history.
         let mut last_backup_views: HashMap<u32, u64> = HashMap::new();
@@ -88,13 +93,11 @@ impl super::BackupManager {
 
             let seq = shard_delta_counts.get(&shard_data.shard).copied().unwrap_or(0);
             let file_name = format!("shard_{}_delta_{seq}.bin", shard_data.shard);
-            let file_path = format!("{output_dir}/{file_name}");
 
             // Serialize deltas as bitcode binary.
             let delta_bytes = bitcode::serialize(&shard_data.deltas)
                 .map_err(|e| format!("serialize deltas for shard {}: {e}", shard_data.shard))?;
-            std::fs::write(&file_path, &delta_bytes)
-                .map_err(|e| format!("write {file_name}: {e}"))?;
+            storage.write(&file_name, &delta_bytes).await?;
 
             let from_view = last_backup_views.get(&shard_data.shard).copied().unwrap_or(0);
             let effective_end_view = shard_data.effective_end_view.unwrap_or(from_view);
@@ -134,8 +137,7 @@ impl super::BackupManager {
         };
         let json = serde_json::to_string_pretty(&metadata)
             .map_err(|e| format!("serialize cluster.json: {e}"))?;
-        std::fs::write(&cluster_json_path, json)
-            .map_err(|e| format!("write cluster.json: {e}"))?;
+        storage.write("cluster.json", json.as_bytes()).await?;
 
         Ok(())
     }
