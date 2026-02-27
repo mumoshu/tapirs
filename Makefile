@@ -65,19 +65,19 @@ $(MAELSTROM_BIN):
 maelstrom: maelstrom-sync maelstrom-skewed
 
 maelstrom-sync:
-	TAPIR_CLOCK=sync $(MAKE) maelstrom-run
+	TAPIR_CLOCK=sync TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get $(MAKE) maelstrom-run
 
 maelstrom-skewed:
-	TAPIR_CLOCK=skewed $(MAKE) maelstrom-run
+	TAPIR_CLOCK=skewed TAPIR_LINEARIZABLE_READ_METHOD=rw_txn_get_commit $(MAKE) maelstrom-run
 
 maelstrom-sync-ro-fast-path:
-	TAPIR_CLOCK=sync TAPIR_RO_FAST_PATH_DELAY_MS=200 TAPIR_VIEW_CHANGE_INTERVAL_MS=200 $(MAKE) maelstrom-run
+	TAPIR_CLOCK=sync TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get TAPIR_RO_FAST_PATH_DELAY_MS=200 TAPIR_VIEW_CHANGE_INTERVAL_MS=200 $(MAKE) maelstrom-run
 
 # Expect failure: 1ms delay is too short for replicas to sync via view change
 # (view change interval is 200ms), so read_validated returns stale data.
 maelstrom-sync-ro-fast-path-fail:
 	@echo "Expecting linearizability FAILURE (delay 1ms < view change interval 200ms)..."
-	@TAPIR_CLOCK=sync TAPIR_RO_FAST_PATH_DELAY_MS=1 TAPIR_VIEW_CHANGE_INTERVAL_MS=200 $(MAKE) maelstrom-run \
+	@TAPIR_CLOCK=sync TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get TAPIR_RO_FAST_PATH_DELAY_MS=1 TAPIR_VIEW_CHANGE_INTERVAL_MS=200 $(MAKE) maelstrom-run \
 		&& { echo "ERROR: expected maelstrom to fail but it passed"; exit 1; } \
 		|| echo "Good: maelstrom failed as expected (fast path delay too short)"
 

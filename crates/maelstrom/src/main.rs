@@ -56,11 +56,24 @@ struct Wrapper {
     do_reply_to: Option<u64>,
 }
 
+/// How maelstrom's "read" operation achieves linearizability.
+#[derive(Clone, Copy)]
+enum ReadMethod {
+    /// `begin_read_only()` + `get()` — quorum read, linearizable under
+    /// synchronized clocks (Paper S6.1). Uses the RO fast path when
+    /// `ro_fast_path_delay` is set.
+    RoTxnGet,
+    /// `begin()` + `get()` + `commit()` — RW transaction with OCC
+    /// validation, linearizable regardless of clock skew.
+    RwTxnGetCommit,
+}
+
 struct Inner {
     requests: Mutex<BTreeMap<u64, tokio::sync::oneshot::Sender<Message>>>,
     msg_id: AtomicU64,
     net: ProcNet<LinKv, Wrapper>,
     clock_skewed: bool,
+    read_method: ReadMethod,
 }
 
 #[derive(Copy, Clone, Serialize, Deserialize, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -233,6 +246,13 @@ impl Process<LinKv, Wrapper> for KvNode {
         let membership = IrMembership::new(ids);
         let id = IdEnum::from_str(&id).unwrap();
         let clock_skewed = std::env::var("TAPIR_CLOCK").is_ok_and(|v| v == "skewed");
+        let read_method = match std::env::var("TAPIR_LINEARIZABLE_READ_METHOD").as_deref() {
+            Ok("rw_txn_get_commit") => ReadMethod::RwTxnGetCommit,
+            Ok("ro_txn_get") => ReadMethod::RoTxnGet,
+            Ok(other) => panic!("unknown TAPIR_LINEARIZABLE_READ_METHOD={other:?}, expected rw_txn_get_commit or ro_txn_get"),
+            // Default: infer from clock mode for backward compat.
+            Err(_) => if clock_skewed { ReadMethod::RwTxnGetCommit } else { ReadMethod::RoTxnGet },
+        };
         let ro_fast_path_delay = std::env::var("TAPIR_RO_FAST_PATH_DELAY_MS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
@@ -249,6 +269,7 @@ impl Process<LinKv, Wrapper> for KvNode {
                 msg_id: AtomicU64::new(start_msg_id),
                 net,
                 clock_skewed,
+                read_method,
             }),
         };
         self.inner = Some((
@@ -410,9 +431,8 @@ impl Process<LinKv, Wrapper> for KvNode {
                                         }
                                         LinKv::Read { msg_id, key } => {
                                             let key = serde_json::to_string(&key).unwrap();
-                                            if transport.inner.clock_skewed {
-                                                // Under clock skew, RO reads are not linearizable
-                                                // (Paper S6.1). Use RW transaction: OCC validates
+                                            if matches!(transport.inner.read_method, ReadMethod::RwTxnGetCommit) {
+                                                // RW transaction: OCC validates
                                                 // the read at commit time.
                                                 let txn = app.begin();
                                                 let value = txn.get(key.clone()).await.unwrap();
@@ -471,7 +491,7 @@ impl Process<LinKv, Wrapper> for KvNode {
                                                         .await;
                                                 }
                                             } else {
-                                                // Synchronized clocks: RO quorum read is linearizable.
+                                                // RO transaction: quorum read (or fast path if delay is set).
                                                 let ro = app.begin_read_only();
                                                 match ro.get(key.clone()).await {
                                                     Ok(Some(s)) => {
