@@ -190,7 +190,7 @@ These are pitfalls specific to our implementation's extensions beyond the origin
 
 **What breaks if violated:** Under simulated time, the transport's retry backoff sleeps advance the clock, consuming the caller's timeout budget. A read-only transaction that should complete in milliseconds blocks for seconds or minutes. If there's an outer timeout (e.g., in a fuzz test), the transaction fails even though a quorum of healthy replicas is available.
 
-**How tapirs handles it:** `read_validated()` wraps `invoke_unlogged()` in a 2-second `futures::future::select` timeout. On timeout, returns `Err(Unavailable)`, and the caller falls back to `quorum_read()` which uses IR inconsistent (f+1 replicas). Source: `tapir/shard_client.rs:187-220`. **Update:** The fast path is now disabled entirely (see gotcha #19) — `read_validated` is no longer called, making this timeout moot. The code remains but is dead.
+**How tapirs handles it:** `read_validated()` wraps `invoke_unlogged()` in a `futures::future::select` timeout. On timeout, returns `Err(Unavailable)`, and the caller falls back to `quorum_read()` which uses IR inconsistent (f+1 replicas). Source: `tapir/shard_client.rs:187-220`. **Update:** The fast path is opt-in via `Client::set_ro_fast_path_delay(Some(delay))`. When enabled, `read_validated` is called with the timeout from `Client::set_read_timeout(Duration)` (default 2s). The maelstrom fast path targets use TAPIR_READ_TIMEOUT_MS=200 to keep total budget (200ms delay + 200ms timeout = 400ms) within maelstrom's ~1s operation limit.
 
 ### 15. Route fallback = serializability violation
 
@@ -244,4 +244,20 @@ These are pitfalls specific to our implementation's extensions beyond the origin
 
 **What breaks if violated:** Concrete scenario (from Jepsen trace): (1) CAS [3→2] commits at f+1 replicas {A, B, C}. Async `FinalizeInconsistent(Commit)` only reaches {A, B, C} during partition. (2) A `quorum_read` from {B, D, E} correctly picks value 2 (highest `write_ts`), but `commit_get` sets `read_ts` on all three — including D and E which still have stale value 3. (3) A subsequent `read_validated` hits replica D via `invoke_unlogged`. D has `read_ts >= snapshot_ts`, so `get_validated` trusts it. `get_at(key, snapshot_ts)` returns stale value 3. Linearizability violation.
 
-**How tapirs handles it:** The fast path (`read_validated` / `scan_validated`) is disabled. `ReadOnlyTransaction::get()` and `scan()` always use `quorum_read` / `quorum_scan`, which merge f+1 responses by highest `write_ts` — correct via quorum intersection. The per-transaction read cache still prevents redundant quorum reads for the same key within one transaction. Source: `tapir/client.rs` (ReadOnlyTransaction::get, scan).
+**How tapirs handles it:** The fast path is opt-in via `Client::set_ro_fast_path_delay(Some(delay))`. Default: `None` — always `quorum_read`/`quorum_scan`. When enabled, each cache-miss `get()`/`scan()` sleeps for the delay, then tries `read_validated`/`scan_validated` (1 replica). On failure or timeout, falls back to quorum. Linearizable when delay >= view change interval and the uncertainty bound is configured. Under partitions, the delay may not suffice (view changes stall without f+1 DoViewChange). The read cache within `ReadOnlyTransaction` still prevents redundant reads for the same key. Source: `tapir/client.rs` (ReadOnlyTransaction::get, scan), `tapir/shard_client.rs` (read_validated, quorum_read).
+
+### 20. RO quorum reads require TrueTime uncertainty bound for linearizability
+
+**What the paper says:** §6.1: "this read-only protocol would provide linearizability guarantees only if the clock skew did not exceed the TrueTime bound, like Spanner."
+
+**General implication:** RO transactions use `snapshot_ts = client's local clock`. Perfectly synchronized clocks are impossible in the real world. Under any clock skew δ, `snapshot_ts` can be less than a completed write's `commit_ts` (assigned by a faster-clock node). The `quorum_read` picks the highest `write_ts <= snapshot_ts` from f+1 replicas — if `snapshot_ts < commit_ts`, the write is invisible regardless of quorum coverage.
+
+**What breaks if violated:** Concrete scenario: A write commits with timestamp T+δ (fast-clock node). A subsequent RO transaction gets `snapshot_ts = T'` (slow-clock node) where `T' < T+δ`. `quorum_read` returns the version before the write. Linearizability violation — a read that starts after a write completes doesn't see the write.
+
+**How tapirs handles it:** `begin_read_only(ε)` takes the uncertainty bound as a mandatory `Duration` parameter. Two mechanisms work together:
+
+1. **Snapshot adjustment:** `snapshot_ts = local_time + ε`, ensuring `snapshot_ts >= commit_ts` for all prior writes when `ε >= δ` (max clock skew).
+
+2. **Commit-wait:** Before each `quorum_read`/`quorum_scan`, sleep for ε (minus any fast path delay already spent). This ensures all writes with `commit_ts <= snapshot_ts` have completed by the time the read executes.
+
+Pass `Duration::ZERO` when clocks are known to be perfectly synchronized (e.g., in-process channel transport in tests, single-node deployments). See [TrueTime Uncertainty Bound](protocol-tapir-paper-extensions-truetime.md) for the full correctness argument. Source: `tapir/client.rs` (begin_read_only, ReadOnlyTransaction::get/scan).
