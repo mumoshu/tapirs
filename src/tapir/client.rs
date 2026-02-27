@@ -120,6 +120,34 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Client<K, V, T> {
     /// making the fast path's "up-to-date" assumption (Paper S6.1) valid.
     /// On fast path failure, falls through to `quorum_read`/`quorum_scan`.
     /// `None` (default) disables the fast path entirely.
+    ///
+    /// # Linearizability requirement
+    ///
+    /// For the fast path to be truly linearizable, the delay must be >=
+    /// the longest time until **every** replica participates in at least
+    /// one view change after the snapshot timestamp T1. View change
+    /// sync/merge propagates all `FinalizeInconsistent(Commit)` ops, so
+    /// once a replica has gone through a view change since T1, its MVCC
+    /// store reflects all writes committed before T1.
+    ///
+    /// In practice this is hard to guarantee: a network partition can
+    /// prevent the f+1 DoViewChange quorum from forming, continuous
+    /// traffic keeps resetting the inactivity timer so no periodic view
+    /// change is triggered, or a slow/partitioned replica may miss
+    /// multiple view change rounds. If the target replica hasn't
+    /// participated in a view change since T1, `read_validated` may
+    /// return stale MVCC data that looks like a valid hit.
+    ///
+    /// # Latency and bandwidth tradeoffs
+    ///
+    /// The fast path only saves latency when
+    /// `delay < quorum_read_latency - read_validated_latency`.
+    /// If `view_change_interval >= quorum_read_latency - read_validated_latency`,
+    /// no delay value is both safe-ish and faster than the quorum path.
+    ///
+    /// However, the fast path always saves bandwidth: `read_validated` hits
+    /// 1 replica vs f+1 for `quorum_read`. If potential linearizability
+    /// violations are acceptable, this alone may justify enabling it.
     pub fn set_ro_fast_path_delay(&self, delay: Option<Duration>) {
         self.inner.lock().unwrap().ro_fast_path_delay = delay;
     }
