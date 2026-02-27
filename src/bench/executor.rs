@@ -2,11 +2,12 @@
 
 use super::ops::{Op, TxnOps};
 use super::BenchRoutingClient;
+use std::time::Duration;
 
 /// Execute a single transaction's operations against a TAPIR cluster.
 pub async fn execute_txn(client: &BenchRoutingClient, txn_ops: TxnOps) -> bool {
     if txn_ops.read_only {
-        let txn = client.begin_read_only();
+        let txn = client.begin_read_only(Duration::ZERO);
         for op in txn_ops.ops {
             match op {
                 Op::Get { key } => {

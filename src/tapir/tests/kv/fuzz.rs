@@ -784,7 +784,7 @@ async fn fuzz_tapir_transactions_inner(seed: u64) {
                         'retry_ro: loop {
                             let txn_index = next_txn_index.fetch_add(1, Ordering::Relaxed) as usize;
                             total_attempted.fetch_add(1, Ordering::Relaxed);
-                            let txn = routing_client.begin_read_only();
+                            let txn = routing_client.begin_read_only(Duration::ZERO);
 
                             txn_event_log.record(FuzzEvent::TxnBegin {
                                 txn_index, client_id: client_idx,
@@ -1309,7 +1309,7 @@ async fn fuzz_tapir_transactions_inner(seed: u64) {
                 attempt += 1;
                 eprintln!("fuzz: verify key={key} attempt={attempt} sim={}ms (seed={seed})",
                     key_sim_start.elapsed().as_millis());
-                let txn = verify_client.begin_read_only();
+                let txn = verify_client.begin_read_only(Duration::ZERO);
                 match txn.get(*key).await {
                     Ok(val) => break Ok(val),
                     Err(TransactionError::Unavailable) => {

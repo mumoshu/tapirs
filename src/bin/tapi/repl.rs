@@ -142,7 +142,7 @@ pub async fn run(
                 if active_txn.is_some() {
                     println!("Error: transaction already active. Use 'commit' or 'abort' first.");
                 } else if parts.get(1) == Some(&"ro") {
-                    active_txn = Some(ActiveTxn::ReadOnly(client.begin_read_only()));
+                    active_txn = Some(ActiveTxn::ReadOnly(client.begin_read_only(std::time::Duration::ZERO)));
                     println!("Read-only transaction started.");
                 } else {
                     active_txn = Some(ActiveTxn::ReadWrite(client.begin()));

@@ -27,7 +27,7 @@ async fn read_only_basic() {
     tokio::time::advance(Duration::from_millis(1)).await;
 
     // Read it back via read-only transaction.
-    let ro = clients[1].begin_read_only();
+    let ro = clients[1].begin_read_only(Duration::ZERO);
     let val = ro
         .get(Sharded {
             shard: ShardNumber(0),
@@ -84,7 +84,7 @@ async fn read_only_consistent_snapshot() {
     tokio::time::advance(Duration::from_millis(1)).await;
 
     // Read-only transaction sees a consistent snapshot of both keys.
-    let ro = clients[1].begin_read_only();
+    let ro = clients[1].begin_read_only(Duration::ZERO);
     let v1 = ro
         .get(Sharded {
             shard: ShardNumber(0),
@@ -156,7 +156,7 @@ async fn read_only_multi_key_sharded() {
     tokio::time::advance(Duration::from_millis(1)).await;
 
     // Read-only transaction reads across all shards.
-    let ro = clients[1].begin_read_only();
+    let ro = clients[1].begin_read_only(Duration::ZERO);
     let v1 = ro
         .get(Sharded {
             shard: ShardNumber(0),
@@ -211,7 +211,7 @@ async fn read_only_scan_basic() {
     tokio::time::advance(Duration::from_millis(1)).await;
 
     // Scan range [10, 30] via read-only transaction.
-    let ro = clients[1].begin_read_only();
+    let ro = clients[1].begin_read_only(Duration::ZERO);
     let results = ro
         .scan(
             Sharded { shard: ShardNumber(0), key: 10 },
@@ -239,7 +239,7 @@ async fn read_only_scan_consistent_with_get() {
     tokio::time::advance(Duration::from_millis(1)).await;
 
     // Scan first, then get the same key — should return same value from cache.
-    let ro = clients[1].begin_read_only();
+    let ro = clients[1].begin_read_only(Duration::ZERO);
     let scan_results = ro
         .scan(
             Sharded { shard: ShardNumber(0), key: 40 },
@@ -273,7 +273,7 @@ async fn read_only_scan_empty_range() {
     tokio::time::advance(Duration::from_millis(1)).await;
 
     // Scan range [0, 50] — no keys in range.
-    let ro = clients[1].begin_read_only();
+    let ro = clients[1].begin_read_only(Duration::ZERO);
     let results = ro
         .scan(
             Sharded { shard: ShardNumber(0), key: 0 },
@@ -314,7 +314,7 @@ async fn read_only_scan_multi_shard() {
     let router = Arc::new(DynamicRouter::new(Arc::new(RwLock::new(shard_dir))));
     let routing_client = RoutingClient::new(Arc::clone(&clients[1]), Arc::clone(&router));
 
-    let ro = routing_client.begin_read_only();
+    let ro = routing_client.begin_read_only(Duration::ZERO);
     let results = ro.scan(10, 120).await.unwrap();
     // Should contain keys from both shards.
     assert_eq!(
@@ -337,7 +337,7 @@ async fn read_only_scan_blocks_phantom_write() {
     tokio::time::advance(Duration::from_millis(1)).await;
 
     // Read-only scan range [0, 50] — triggers QuorumScan which records range_read.
-    let ro = clients[1].begin_read_only();
+    let ro = clients[1].begin_read_only(Duration::ZERO);
     let results = ro
         .scan(
             Sharded { shard: ShardNumber(0), key: 0 },

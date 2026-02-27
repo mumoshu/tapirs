@@ -34,7 +34,10 @@ struct KvNode {
 #[derive(Clone)]
 enum KvNodeInner {
     Replica(Arc<IrReplica<TapirReplica<K, V>, Maelstrom>>),
-    App(Arc<TapirClient<K, V, Maelstrom>>),
+    App {
+        client: Arc<TapirClient<K, V, Maelstrom>>,
+        ro_clock_skew_uncertainty_bound: Duration,
+    },
 }
 
 impl Maelstrom {
@@ -310,10 +313,10 @@ impl Process<LinKv, Wrapper> for KvNode {
                     if let Some(timeout) = read_timeout {
                         client.set_read_timeout(timeout);
                     }
-                    if let Some(bound) = ro_clock_skew_uncertainty_bound {
-                        client.set_ro_clock_skew_uncertainty_bound(Some(bound));
+                    KvNodeInner::App {
+                        client,
+                        ro_clock_skew_uncertainty_bound: ro_clock_skew_uncertainty_bound.unwrap_or(Duration::ZERO),
                     }
-                    KvNodeInner::App(client)
                 }
                 id => panic!("{id}"),
             },
@@ -360,7 +363,7 @@ impl Process<LinKv, Wrapper> for KvNode {
                                 }
                             }
                             Body::Workload(work) => {
-                                if let KvNodeInner::App(app) = &inner {
+                                if let KvNodeInner::App { client: app, ro_clock_skew_uncertainty_bound } = &inner {
                                     match work {
                                         LinKv::Cas {
                                             msg_id,
@@ -513,7 +516,7 @@ impl Process<LinKv, Wrapper> for KvNode {
                                                 }
                                             } else {
                                                 // RO transaction: quorum read (or fast path if delay is set).
-                                                let ro = app.begin_read_only();
+                                                let ro = app.begin_read_only(*ro_clock_skew_uncertainty_bound);
                                                 match ro.get(key.clone()).await {
                                                     Ok(Some(s)) => {
                                                         let value = serde_json::from_str::<serde_json::Value>(&s).unwrap();

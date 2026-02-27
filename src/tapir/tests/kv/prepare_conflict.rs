@@ -21,7 +21,7 @@ async fn quorum_read_sees_committed_write_without_finalize_sleep() {
     // Advance for timestamp ordering only.
     tokio::time::advance(Duration::from_millis(1)).await;
 
-    let ro = clients[1].begin_read_only();
+    let ro = clients[1].begin_read_only(Duration::ZERO);
     let val = ro
         .get(Sharded {
             shard: ShardNumber(0),
@@ -51,7 +51,7 @@ async fn quorum_scan_sees_committed_write_without_finalize_sleep() {
 
     tokio::time::advance(Duration::from_millis(1)).await;
 
-    let ro = clients[1].begin_read_only();
+    let ro = clients[1].begin_read_only(Duration::ZERO);
     let results = ro
         .scan(
             Sharded {

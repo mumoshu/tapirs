@@ -140,9 +140,9 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>, R: ShardRouter<K>> RoutingClient
         }
     }
 
-    pub fn begin_read_only(&self) -> RoutingReadOnlyTransaction<K, V, T, R> {
+    pub fn begin_read_only(&self, clock_skew_uncertainty_bound: Duration) -> RoutingReadOnlyTransaction<K, V, T, R> {
         RoutingReadOnlyTransaction {
-            inner: self.inner.begin_read_only(),
+            inner: self.inner.begin_read_only(clock_skew_uncertainty_bound),
             router: Arc::clone(&self.router),
             retry_config: self.retry_config.clone(),
             on_retry: self.on_retry.clone(),

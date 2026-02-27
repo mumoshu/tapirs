@@ -176,7 +176,7 @@ where
             tracing::debug!(key, mode = mode_str, attempt, "discovery read_raw: starting");
             let result = match mode {
                 ReadMode::Strong => {
-                    let ro = self.client.begin_read_only();
+                    let ro = self.client.begin_read_only(Duration::ZERO);
                     ro.get(key.to_string()).await
                 }
                 ReadMode::Eventual => sc
@@ -240,7 +240,7 @@ where
             let sc = self.current_shard_client();
             let scan_result = match mode {
                 ReadMode::Strong => {
-                    let ro = self.client.begin_read_only();
+                    let ro = self.client.begin_read_only(Duration::ZERO);
                     let start = Sharded {
                         shard: DISCOVERY_SHARD,
                         key: SCAN_START.to_string(),

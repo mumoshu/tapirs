@@ -38,7 +38,7 @@ async fn rwr(linearizable: bool, num_replicas: usize) {
 
     Transport::sleep(Duration::from_millis(10)).await;
 
-    let ro = clients[1].begin_read_only();
+    let ro = clients[1].begin_read_only(Duration::ZERO);
     let result = ro.get(1).await.unwrap();
     if let Some(val) = result {
         assert_eq!(val, 2);
