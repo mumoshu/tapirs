@@ -72,7 +72,8 @@ struct Inner {
     requests: Mutex<BTreeMap<u64, tokio::sync::oneshot::Sender<Message>>>,
     msg_id: AtomicU64,
     net: ProcNet<LinKv, Wrapper>,
-    clock_skewed: bool,
+    /// Maximum clock skew in nanoseconds. 0 = synchronized clocks.
+    clock_skew_max_ns: u64,
     read_method: ReadMethod,
 }
 
@@ -133,11 +134,13 @@ impl Transport<TapirReplica<K, V>> for Maelstrom {
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
-        if self.inner.clock_skewed {
-            // Simulate unbounded clock skew. TAPIR RO transactions require
+        let max_ns = self.inner.clock_skew_max_ns;
+        if max_ns > 0 {
+            // Simulate clock skew up to max_ns. TAPIR RO transactions require
             // snapshot_ts >= commit_ts of completed writes (Paper S6.1).
-            // Under skew, reads must use RW transactions with OCC validation.
-            now + thread_rng().gen_range(0..1_000_000_000)
+            // Under skew, reads must use RW transactions with OCC validation
+            // or TrueTime-style uncertainty bound delay.
+            now + thread_rng().gen_range(0..max_ns)
         } else {
             now
         }
@@ -245,13 +248,17 @@ impl Process<LinKv, Wrapper> for KvNode {
         let ids = (0..3).map(IdEnum::Replica).collect::<Vec<_>>();
         let membership = IrMembership::new(ids);
         let id = IdEnum::from_str(&id).unwrap();
-        let clock_skewed = std::env::var("TAPIR_CLOCK").is_ok_and(|v| v == "skewed");
+        let clock_skew_max_ms: u64 = std::env::var("TAPIR_CLOCK_SKEW_MAX")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0);
+        let clock_skew_max_ns = clock_skew_max_ms * 1_000_000;
         let read_method = match std::env::var("TAPIR_LINEARIZABLE_READ_METHOD").as_deref() {
             Ok("rw_txn_get_commit") => ReadMethod::RwTxnGetCommit,
             Ok("ro_txn_get") => ReadMethod::RoTxnGet,
             Ok(other) => panic!("unknown TAPIR_LINEARIZABLE_READ_METHOD={other:?}, expected rw_txn_get_commit or ro_txn_get"),
             // Default: infer from clock mode for backward compat.
-            Err(_) => if clock_skewed { ReadMethod::RwTxnGetCommit } else { ReadMethod::RoTxnGet },
+            Err(_) => if clock_skew_max_ns > 0 { ReadMethod::RwTxnGetCommit } else { ReadMethod::RoTxnGet },
         };
         let ro_fast_path_delay = std::env::var("TAPIR_RO_FAST_PATH_DELAY_MS")
             .ok()
@@ -272,7 +279,7 @@ impl Process<LinKv, Wrapper> for KvNode {
                 requests: Default::default(),
                 msg_id: AtomicU64::new(start_msg_id),
                 net,
-                clock_skewed,
+                clock_skew_max_ns,
                 read_method,
             }),
         };

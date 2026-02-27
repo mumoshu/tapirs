@@ -66,21 +66,21 @@ maelstrom: maelstrom-sync-ro-txn-get maelstrom-skewed-rw-txn-get-commit maelstro
 
 # Synchronized clocks: RO quorum read is linearizable.
 maelstrom-sync-ro-txn-get:
-	TAPIR_CLOCK=sync TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get $(MAKE) maelstrom-run
+	TAPIR_CLOCK_SKEW_MAX=0 TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get $(MAKE) maelstrom-run
 
 maelstrom-skewed-rw-txn-get-commit:
-	TAPIR_CLOCK=skewed TAPIR_LINEARIZABLE_READ_METHOD=rw_txn_get_commit $(MAKE) maelstrom-run
+	TAPIR_CLOCK_SKEW_MAX=1000 TAPIR_LINEARIZABLE_READ_METHOD=rw_txn_get_commit $(MAKE) maelstrom-run
 
-# Under clock skew, RO reads are not linearizable (Paper S6.1).
+# Under clock skew (max 1000ms), RO reads are not linearizable (Paper S6.1).
 # Use RW transaction: OCC validates the read at commit time.
 maelstrom-skewed-ro-txn-get-fail:
 	@echo "Expecting linearizability FAILURE (RO reads under clock skew)..."
-	@TAPIR_CLOCK=skewed TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get $(MAKE) maelstrom-run \
+	@TAPIR_CLOCK_SKEW_MAX=1000 TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get $(MAKE) maelstrom-run \
 		&& { echo "ERROR: expected maelstrom to fail but it passed"; exit 1; } \
 		|| echo "Good: maelstrom failed as expected (RO reads not linearizable under clock skew)"
 
 maelstrom-sync-ro-fast-path:
-	TAPIR_CLOCK=sync TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get TAPIR_RO_FAST_PATH_DELAY_MS=200 TAPIR_READ_TIMEOUT_MS=200 TAPIR_VIEW_CHANGE_INTERVAL_MS=200 $(MAKE) maelstrom-run
+	TAPIR_CLOCK_SKEW_MAX=0 TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get TAPIR_RO_FAST_PATH_DELAY_MS=200 TAPIR_READ_TIMEOUT_MS=200 TAPIR_VIEW_CHANGE_INTERVAL_MS=200 $(MAKE) maelstrom-run
 
 # Expect frequent failure: 1ms delay is too short for replicas to sync via view change
 # (view change interval is 200ms), so read_validated may return stale data.
@@ -94,7 +94,7 @@ maelstrom-sync-ro-fast-path:
 # misses a subsequent write's FinalizeInconsistent. Run manually to
 # check: it should fail more often than not, but may occasionally pass.
 maelstrom-sync-ro-fast-path-may-fail:
-	TAPIR_CLOCK=sync TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get TAPIR_RO_FAST_PATH_DELAY_MS=1 TAPIR_READ_TIMEOUT_MS=200 TAPIR_VIEW_CHANGE_INTERVAL_MS=200 $(MAKE) maelstrom-run
+	TAPIR_CLOCK_SKEW_MAX=0 TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get TAPIR_RO_FAST_PATH_DELAY_MS=1 TAPIR_READ_TIMEOUT_MS=200 TAPIR_VIEW_CHANGE_INTERVAL_MS=200 $(MAKE) maelstrom-run
 
 maelstrom-run: $(MAELSTROM_BIN)
 	cargo build --release -p tapi-maelstrom
