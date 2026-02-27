@@ -524,10 +524,11 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> ReadOnlyTransaction<K, V, T> {
     /// Range scan on a single shard. Returns key-value pairs in
     /// `[start.key, end.key]` at the snapshot timestamp.
     ///
-    /// Fast path: try `scan_validated` (1 RTT) — succeeds if a prior
-    /// QuorumScan recorded a covering range_read at f+1 replicas.
-    /// Slow path: fall through to `quorum_scan` (2 RTT) — records
-    /// range_read via `commit_scan` at FINALIZE time.
+    /// Always uses `quorum_scan` (IR inconsistent op, f+1 replicas)
+    /// for linearizability. The `scan_validated` fast path is unsafe:
+    /// a prior quorum_scan may have set range_reads on stale replicas
+    /// via `commit_scan`, causing `scan_validated` to trust stale
+    /// MVCC data under partitions.
     pub fn scan(
         &self,
         start: Sharded<K>,
@@ -544,18 +545,10 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> ReadOnlyTransaction<K, V, T> {
         async move {
             let shard_client = Inner::shard_client(&client, start.shard).await;
 
-            // Fast path: check if replicas have covering range_reads.
-            let scan_results = if let Some(results) = shard_client
-                .scan_validated(start.key.clone(), end.key.clone(), snapshot_ts)
-                .await
-            {
-                results
-            } else {
-                // Slow path: quorum scan via IR inconsistent op.
-                shard_client
-                    .quorum_scan(start.key.clone(), end.key.clone(), snapshot_ts)
-                    .await?
-            };
+            // Always use quorum scan for linearizability (same reasoning as get).
+            let scan_results = shard_client
+                .quorum_scan(start.key.clone(), end.key.clone(), snapshot_ts)
+                .await?;
 
             // Populate read cache (don't overwrite earlier reads).
             {
@@ -594,25 +587,13 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> ReadOnlyTransaction<K, V, T> {
 
             let shard_client = Inner::shard_client(&client, key.shard).await;
 
-            // Fast path: check if one replica has a validated version.
-            debug!(shard = ?key.shard, key = ?key.key, "ro_get: read_validated start");
-            match shard_client.read_validated(key.key.clone(), snapshot_ts).await {
-                Ok(Some((value, _write_ts))) => {
-                    debug!(shard = ?key.shard, key = ?key.key, "ro_get: read_validated Ok(Some)");
-                    let mut cache = read_cache.lock().unwrap();
-                    cache.entry(key).or_insert(value.clone());
-                    return Ok(value);
-                }
-                Ok(None) => {
-                    debug!(shard = ?key.shard, key = ?key.key, "ro_get: read_validated Ok(None), falling to quorum_read");
-                }
-                Err(ref e) => {
-                    debug!(shard = ?key.shard, key = ?key.key, error = ?e, "ro_get: read_validated Err");
-                    return Err(e.clone());
-                }
-            }
-
-            // Slow path: quorum read via IR inconsistent op.
+            // Always use quorum read for linearizability. The read_validated
+            // fast path (single-replica invoke_unlogged via get_validated) is
+            // unsafe: a prior quorum_read may have set read_ts on a stale
+            // replica via commit_get, causing get_validated to trust stale
+            // MVCC data. See TAPIR paper Section 6.1 — the fast path's
+            // "up-to-date" assumption breaks under partitions when
+            // FinalizeInconsistent(Commit) hasn't propagated.
             debug!(shard = ?key.shard, key = ?key.key, "ro_get: quorum_read start");
             let (value, _write_ts) =
                 shard_client.quorum_read(key.key.clone(), snapshot_ts).await?;
