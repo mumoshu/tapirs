@@ -294,7 +294,6 @@ impl Process<LinKv, Wrapper> for KvNode {
                             }
                             Body::Workload(work) => {
                                 if let KvNodeInner::App(app) = &inner {
-                                    let txn = app.begin();
                                     match work {
                                         LinKv::Cas {
                                             msg_id,
@@ -302,6 +301,7 @@ impl Process<LinKv, Wrapper> for KvNode {
                                             from,
                                             to,
                                         } => {
+                                            let txn = app.begin();
                                             let key = serde_json::to_string(&key).unwrap();
                                             let old = txn
                                                 .get(key.clone())
@@ -385,12 +385,10 @@ impl Process<LinKv, Wrapper> for KvNode {
                                         }
                                         LinKv::Read { msg_id, key } => {
                                             let key = serde_json::to_string(&key).unwrap();
-                                            let old = txn.get(key.clone()).await.unwrap().map(|s| {
-                                                serde_json::from_str::<serde_json::Value>(&s)
-                                                    .unwrap()
-                                            });
-                                            if txn.commit().await.is_some() {
-                                                if let Some(old) = old {
+                                            let ro = app.begin_read_only();
+                                            match ro.get(key.clone()).await {
+                                                Ok(Some(s)) => {
+                                                    let value = serde_json::from_str::<serde_json::Value>(&s).unwrap();
                                                     let _ = transport
                                                         .inner
                                                         .net
@@ -403,11 +401,12 @@ impl Process<LinKv, Wrapper> for KvNode {
                                                                 msg_id: Some(
                                                                     transport.next_msg_id(),
                                                                 ),
-                                                                value: old,
+                                                                value,
                                                             }),
                                                         })
                                                         .await;
-                                                } else {
+                                                }
+                                                Ok(None) => {
                                                     let _ = transport
                                                         .inner
                                                         .net
@@ -423,24 +422,26 @@ impl Process<LinKv, Wrapper> for KvNode {
                                                         })
                                                         .await;
                                                 }
-                                            } else {
-                                                let _ = transport
-                                                    .inner
-                                                    .net
-                                                    .txq
-                                                    .send(Msg {
-                                                        src: transport.id.to_string(),
-                                                        dest: src,
-                                                        body: Body::Error(Error {
-                                                            in_reply_to: msg_id,
-                                                            text: String::from("read txn conflict"),
-                                                            code: 30,
-                                                        }),
-                                                    })
-                                                    .await;
+                                                Err(_) => {
+                                                    let _ = transport
+                                                        .inner
+                                                        .net
+                                                        .txq
+                                                        .send(Msg {
+                                                            src: transport.id.to_string(),
+                                                            dest: src,
+                                                            body: Body::Error(Error {
+                                                                in_reply_to: msg_id,
+                                                                text: String::from("read unavailable"),
+                                                                code: 14,
+                                                            }),
+                                                        })
+                                                        .await;
+                                                }
                                             }
                                         }
                                         LinKv::Write { msg_id, key, value } => {
+                                            let txn = app.begin();
                                             let key = serde_json::to_string(&key).unwrap();
                                             let value = serde_json::to_string(&value).unwrap();
                                             txn.put(key, Some(value));
