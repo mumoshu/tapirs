@@ -233,14 +233,14 @@ impl Process<LinKv, Wrapper> for KvNode {
         let membership = IrMembership::new(ids);
         let id = IdEnum::from_str(&id).unwrap();
         let clock_skewed = std::env::var("TAPIR_CLOCK").is_ok_and(|v| v == "skewed");
-        let ro_fast_path_delay = std::env::var("TAPIR_RO_FAST_PATH_DELAY")
+        let ro_fast_path_delay = std::env::var("TAPIR_RO_FAST_PATH_DELAY_MS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
-            .map(Duration::from_secs);
-        let view_change_interval = std::env::var("TAPIR_VIEW_CHANGE_INTERVAL")
+            .map(Duration::from_millis);
+        let view_change_interval = std::env::var("TAPIR_VIEW_CHANGE_INTERVAL_MS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
-            .map(Duration::from_secs)
+            .map(Duration::from_millis)
             .unwrap_or(Duration::from_secs(60));
         let transport = Maelstrom {
             id,

@@ -71,7 +71,7 @@ maelstrom-skewed:
 	TAPIR_CLOCK=skewed $(MAKE) maelstrom-run
 
 maelstrom-sync-ro-fast-path:
-	TAPIR_CLOCK=sync TAPIR_RO_FAST_PATH_DELAY=2 TAPIR_VIEW_CHANGE_INTERVAL=2 $(MAKE) maelstrom-run
+	TAPIR_CLOCK=sync TAPIR_RO_FAST_PATH_DELAY_MS=200 TAPIR_VIEW_CHANGE_INTERVAL_MS=200 $(MAKE) maelstrom-run
 
 maelstrom-run: $(MAELSTROM_BIN)
 	cargo build --release -p tapi-maelstrom
