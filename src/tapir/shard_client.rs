@@ -182,20 +182,21 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
     /// Fast-path read: check if one replica has a validated version.
     ///
     /// Returns `Ok(result)` when the replica responds with a valid
-    /// `ReadValidated` reply within 2s, `Err(OutOfRange)` if the key
+    /// `ReadValidated` reply within `timeout`, `Err(OutOfRange)` if the key
     /// is outside this shard's range, or `Err(Unavailable)` on timeout
     /// or unexpected response type.
     pub fn read_validated(
         &self,
         key: K,
         timestamp: Timestamp,
+        timeout: Duration,
     ) -> impl Future<Output = Result<Option<(Option<V>, Timestamp)>, TransactionError>> {
         let future = self.inner.invoke_unlogged(UO::ReadValidated { key, timestamp });
         async move {
-            let timeout = T::sleep(Duration::from_secs(2));
-            let timeout = std::pin::pin!(timeout);
+            let sleep = T::sleep(timeout);
+            let sleep = std::pin::pin!(sleep);
             let future = std::pin::pin!(future);
-            let result = futures::future::select(timeout, future).await;
+            let result = futures::future::select(sleep, future).await;
             match &result {
                 futures::future::Either::Right((UR::ReadValidated(_), _)) => {
                     debug!("read_validated: got response");
@@ -204,7 +205,7 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
                     debug!("read_validated: OutOfRange");
                 }
                 futures::future::Either::Left(_) => {
-                    debug!("read_validated: 2s timeout");
+                    debug!(?timeout, "read_validated: timeout");
                 }
                 _ => {
                     debug!("read_validated: unexpected UR variant");

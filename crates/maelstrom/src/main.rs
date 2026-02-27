@@ -257,6 +257,10 @@ impl Process<LinKv, Wrapper> for KvNode {
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
             .map(Duration::from_millis);
+        let read_timeout = std::env::var("TAPIR_READ_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(Duration::from_millis);
         let view_change_interval = std::env::var("TAPIR_VIEW_CHANGE_INTERVAL_MS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
@@ -291,6 +295,9 @@ impl Process<LinKv, Wrapper> for KvNode {
                     let client = Arc::new(TapirClient::new(tapirs::Rng::from_seed(thread_rng().r#gen()), transport));
                     if let Some(delay) = ro_fast_path_delay {
                         client.set_ro_fast_path_delay(Some(delay));
+                    }
+                    if let Some(timeout) = read_timeout {
+                        client.set_read_timeout(timeout);
                     }
                     KvNodeInner::App(client)
                 }

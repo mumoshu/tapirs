@@ -28,6 +28,7 @@ pub struct Inner<K: Key, V: Value, T: TapirTransport<K, V>> {
     transport: T,
     rng: crate::Rng,
     ro_fast_path_delay: Option<Duration>,
+    read_timeout: Duration,
 }
 
 impl<K: Key, V: Value, T: TapirTransport<K, V>> Inner<K, V, T> {
@@ -100,6 +101,7 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Client<K, V, T> {
                 transport,
                 rng,
                 ro_fast_path_delay: None,
+                read_timeout: Duration::from_secs(2),
             })),
             next_transaction_number: AtomicU64::new(txn_number),
         }
@@ -150,6 +152,14 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Client<K, V, T> {
     /// violations are acceptable, this alone may justify enabling it.
     pub fn set_ro_fast_path_delay(&self, delay: Option<Duration>) {
         self.inner.lock().unwrap().ro_fast_path_delay = delay;
+    }
+
+    /// Set the timeout for `read_validated` during the RO fast path.
+    /// Defaults to 2s. When the fast path is enabled, this bounds how
+    /// long `read_validated` waits for a single-replica response before
+    /// giving up and falling through to `quorum_read`.
+    pub fn set_read_timeout(&self, timeout: Duration) {
+        self.inner.lock().unwrap().read_timeout = timeout;
     }
 
     pub fn begin(&self) -> Transaction<K, V, T> {
@@ -523,6 +533,7 @@ pub struct ReadOnlyTransaction<K: Key, V: Value, T: TapirTransport<K, V>> {
     client: Arc<Mutex<Inner<K, V, T>>>,
     read_cache: Arc<Mutex<BTreeMap<Sharded<K>, Option<V>>>>,
     fast_path_delay: Option<Duration>,
+    read_timeout: Duration,
 }
 
 impl<K: Key, V: Value, T: TapirTransport<K, V>> Client<K, V, T> {
@@ -533,11 +544,13 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Client<K, V, T> {
             client_id: inner.id,
         };
         let fast_path_delay = inner.ro_fast_path_delay;
+        let read_timeout = inner.read_timeout;
         ReadOnlyTransaction {
             snapshot_ts,
             client: Arc::clone(&self.inner),
             read_cache: Arc::new(Mutex::new(BTreeMap::new())),
             fast_path_delay,
+            read_timeout,
         }
     }
 }
@@ -628,6 +641,7 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> ReadOnlyTransaction<K, V, T> {
         let read_cache = Arc::clone(&self.read_cache);
         let snapshot_ts = self.snapshot_ts;
         let fast_path_delay = self.fast_path_delay;
+        let read_timeout = self.read_timeout;
 
         async move {
             // Check read cache for consistent reads within the transaction.
@@ -647,7 +661,7 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> ReadOnlyTransaction<K, V, T> {
                 debug!(shard = ?key.shard, key = ?key.key, ?delay, "ro_get: fast path delay start");
                 T::sleep(delay).await;
                 debug!(shard = ?key.shard, key = ?key.key, "ro_get: fast path delay done, trying read_validated");
-                match shard_client.read_validated(key.key.clone(), snapshot_ts).await {
+                match shard_client.read_validated(key.key.clone(), snapshot_ts, read_timeout).await {
                     Ok(Some((value, _write_ts))) => {
                         debug!(shard = ?key.shard, key = ?key.key, "ro_get: fast path hit");
                         let mut cache = read_cache.lock().unwrap();
