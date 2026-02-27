@@ -60,6 +60,7 @@ struct Inner {
     requests: Mutex<BTreeMap<u64, tokio::sync::oneshot::Sender<Message>>>,
     msg_id: AtomicU64,
     net: ProcNet<LinKv, Wrapper>,
+    clock_skewed: bool,
 }
 
 #[derive(Copy, Clone, Serialize, Deserialize, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -115,16 +116,18 @@ impl Transport<TapirReplica<K, V>> for Maelstrom {
 
     fn time(&self) -> u64 {
         use std::time::SystemTime;
-        // No random jitter: TAPIR read-only transactions (Section 6.1) require
-        // snapshot_ts >= commit_ts of all previously completed writes for
-        // linearizability. Random jitter (up to 1s) caused snapshot_ts <
-        // commit_ts, making reads miss recently committed writes. TAPIR's
-        // SSI tolerates clock skew for RW transactions (OCC catches conflicts),
-        // but RO snapshot reads assume roughly synchronized clocks.
-        SystemTime::now()
+        let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
-            .as_nanos() as u64
+            .as_nanos() as u64;
+        if self.inner.clock_skewed {
+            // Simulate unbounded clock skew. TAPIR RO transactions require
+            // snapshot_ts >= commit_ts of completed writes (Paper S6.1).
+            // Under skew, reads must use RW transactions with OCC validation.
+            now + thread_rng().gen_range(0..1_000_000_000)
+        } else {
+            now
+        }
     }
 
     fn sleep(duration: Duration) -> Self::Sleep {
@@ -229,12 +232,14 @@ impl Process<LinKv, Wrapper> for KvNode {
         let ids = (0..3).map(IdEnum::Replica).collect::<Vec<_>>();
         let membership = IrMembership::new(ids);
         let id = IdEnum::from_str(&id).unwrap();
+        let clock_skewed = std::env::var("TAPIR_CLOCK").is_ok_and(|v| v == "skewed");
         let transport = Maelstrom {
             id,
             inner: Arc::new(Inner {
                 requests: Default::default(),
                 msg_id: AtomicU64::new(start_msg_id),
                 net,
+                clock_skewed,
             }),
         };
         self.inner = Some((
@@ -390,28 +395,51 @@ impl Process<LinKv, Wrapper> for KvNode {
                                         }
                                         LinKv::Read { msg_id, key } => {
                                             let key = serde_json::to_string(&key).unwrap();
-                                            let ro = app.begin_read_only();
-                                            match ro.get(key.clone()).await {
-                                                Ok(Some(s)) => {
-                                                    let value = serde_json::from_str::<serde_json::Value>(&s).unwrap();
-                                                    let _ = transport
-                                                        .inner
-                                                        .net
-                                                        .txq
-                                                        .send(Msg {
-                                                            src: transport.id.to_string(),
-                                                            dest: src,
-                                                            body: Body::Workload(LinKv::ReadOk {
-                                                                in_reply_to: msg_id,
-                                                                msg_id: Some(
-                                                                    transport.next_msg_id(),
-                                                                ),
-                                                                value,
-                                                            }),
-                                                        })
-                                                        .await;
-                                                }
-                                                Ok(None) => {
+                                            if transport.inner.clock_skewed {
+                                                // Under clock skew, RO reads are not linearizable
+                                                // (Paper S6.1). Use RW transaction: OCC validates
+                                                // the read at commit time.
+                                                let txn = app.begin();
+                                                let value = txn.get(key.clone()).await.unwrap();
+                                                if txn.commit().await.is_some() {
+                                                    match value {
+                                                        Some(s) => {
+                                                            let value = serde_json::from_str::<serde_json::Value>(&s).unwrap();
+                                                            let _ = transport
+                                                                .inner
+                                                                .net
+                                                                .txq
+                                                                .send(Msg {
+                                                                    src: transport.id.to_string(),
+                                                                    dest: src,
+                                                                    body: Body::Workload(LinKv::ReadOk {
+                                                                        in_reply_to: msg_id,
+                                                                        msg_id: Some(
+                                                                            transport.next_msg_id(),
+                                                                        ),
+                                                                        value,
+                                                                    }),
+                                                                })
+                                                                .await;
+                                                        }
+                                                        None => {
+                                                            let _ = transport
+                                                                .inner
+                                                                .net
+                                                                .txq
+                                                                .send(Msg {
+                                                                    src: transport.id.to_string(),
+                                                                    dest: src,
+                                                                    body: Body::Error(Error {
+                                                                        in_reply_to: msg_id,
+                                                                        text: String::from("not found"),
+                                                                        code: 20,
+                                                                    }),
+                                                                })
+                                                                .await;
+                                                        }
+                                                    }
+                                                } else {
                                                     let _ = transport
                                                         .inner
                                                         .net
@@ -421,27 +449,67 @@ impl Process<LinKv, Wrapper> for KvNode {
                                                             dest: src,
                                                             body: Body::Error(Error {
                                                                 in_reply_to: msg_id,
-                                                                text: String::from("not found"),
-                                                                code: 20,
-                                                            }),
-                                                        })
-                                                        .await;
-                                                }
-                                                Err(_) => {
-                                                    let _ = transport
-                                                        .inner
-                                                        .net
-                                                        .txq
-                                                        .send(Msg {
-                                                            src: transport.id.to_string(),
-                                                            dest: src,
-                                                            body: Body::Error(Error {
-                                                                in_reply_to: msg_id,
-                                                                text: String::from("read unavailable"),
+                                                                text: String::from("read txn conflict"),
                                                                 code: 14,
                                                             }),
                                                         })
                                                         .await;
+                                                }
+                                            } else {
+                                                // Synchronized clocks: RO quorum read is linearizable.
+                                                let ro = app.begin_read_only();
+                                                match ro.get(key.clone()).await {
+                                                    Ok(Some(s)) => {
+                                                        let value = serde_json::from_str::<serde_json::Value>(&s).unwrap();
+                                                        let _ = transport
+                                                            .inner
+                                                            .net
+                                                            .txq
+                                                            .send(Msg {
+                                                                src: transport.id.to_string(),
+                                                                dest: src,
+                                                                body: Body::Workload(LinKv::ReadOk {
+                                                                    in_reply_to: msg_id,
+                                                                    msg_id: Some(
+                                                                        transport.next_msg_id(),
+                                                                    ),
+                                                                    value,
+                                                                }),
+                                                            })
+                                                            .await;
+                                                    }
+                                                    Ok(None) => {
+                                                        let _ = transport
+                                                            .inner
+                                                            .net
+                                                            .txq
+                                                            .send(Msg {
+                                                                src: transport.id.to_string(),
+                                                                dest: src,
+                                                                body: Body::Error(Error {
+                                                                    in_reply_to: msg_id,
+                                                                    text: String::from("not found"),
+                                                                    code: 20,
+                                                                }),
+                                                            })
+                                                            .await;
+                                                    }
+                                                    Err(_) => {
+                                                        let _ = transport
+                                                            .inner
+                                                            .net
+                                                            .txq
+                                                            .send(Msg {
+                                                                src: transport.id.to_string(),
+                                                                dest: src,
+                                                                body: Body::Error(Error {
+                                                                    in_reply_to: msg_id,
+                                                                    text: String::from("read unavailable"),
+                                                                    code: 14,
+                                                                }),
+                                                            })
+                                                            .await;
+                                                    }
                                                 }
                                             }
                                         }

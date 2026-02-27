@@ -1,4 +1,4 @@
-.PHONY: test lint lock_server_stress_test coordinator_failure_stress_test_3 coordinator_failure_stress_test_7 bench bench/ro bench/rw bench/mix bench/compare fuzz fuzz100 maelstrom ci ci-full ci/operator-lint ci/operator-test ci/bench-solo ci/bench-compare ci/testbed-kube-operator ci/testbed-kube-operator-tls ci/testbed-kube ci/testbed-docker-compose ci/testbed-solo ci/testbed ci/fuzz-diagnose ci/fuzz-multi-seed ci/test-surrealkv ci/test-s3
+.PHONY: test lint lock_server_stress_test coordinator_failure_stress_test_3 coordinator_failure_stress_test_7 bench bench/ro bench/rw bench/mix bench/compare fuzz fuzz100 maelstrom maelstrom-run maelstrom-sync maelstrom-skewed ci ci-full ci/operator-lint ci/operator-test ci/bench-solo ci/bench-compare ci/testbed-kube-operator ci/testbed-kube-operator-tls ci/testbed-kube ci/testbed-docker-compose ci/testbed-solo ci/testbed ci/fuzz-diagnose ci/fuzz-multi-seed ci/test-surrealkv ci/test-s3
 
 lint:
 	cargo clippy --workspace --all-targets -- -D warnings -D clippy::iter_over_hash_type && ./scripts/check-determinism.sh
@@ -62,7 +62,15 @@ $(MAELSTROM_BIN):
 	@curl -fsSL https://github.com/jepsen-io/maelstrom/releases/download/v$(MAELSTROM_VERSION)/maelstrom.tar.bz2 | tar -xjf - -C $(MAELSTROM_DIR)
 	@echo "Maelstrom v$(MAELSTROM_VERSION) installed to $(MAELSTROM_DIR)/"
 
-maelstrom: $(MAELSTROM_BIN)
+maelstrom: maelstrom-sync maelstrom-skewed
+
+maelstrom-sync:
+	TAPIR_CLOCK=sync $(MAKE) maelstrom-run
+
+maelstrom-skewed:
+	TAPIR_CLOCK=skewed $(MAKE) maelstrom-run
+
+maelstrom-run: $(MAELSTROM_BIN)
 	cargo build --release -p tapi-maelstrom
 	bash -c 'set -o pipefail; $(MAELSTROM_BIN) test -w lin-kv --bin target/release/maelstrom --latency 0 --rate 10 --time-limit 90 --concurrency 20 --nemesis partition --nemesis-interval 20 2>&1 | tee /tmp/maelstrom-output.txt'; \
 	EXIT=$$?; \
