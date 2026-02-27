@@ -115,11 +115,16 @@ impl Transport<TapirReplica<K, V>> for Maelstrom {
 
     fn time(&self) -> u64 {
         use std::time::SystemTime;
+        // No random jitter: TAPIR read-only transactions (Section 6.1) require
+        // snapshot_ts >= commit_ts of all previously completed writes for
+        // linearizability. Random jitter (up to 1s) caused snapshot_ts <
+        // commit_ts, making reads miss recently committed writes. TAPIR's
+        // SSI tolerates clock skew for RW transactions (OCC catches conflicts),
+        // but RO snapshot reads assume roughly synchronized clocks.
         SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64
-            + rand::thread_rng().gen_range(0..1000 * 1000 * 1000)
     }
 
     fn sleep(duration: Duration) -> Self::Sleep {
