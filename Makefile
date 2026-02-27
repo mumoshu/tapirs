@@ -1,4 +1,4 @@
-.PHONY: test lint lock_server_stress_test coordinator_failure_stress_test_3 coordinator_failure_stress_test_7 bench bench/ro bench/rw bench/mix bench/compare fuzz fuzz100 maelstrom maelstrom-run maelstrom-sync-ro-txn-get maelstrom-skewed-rw-txn-get-commit maelstrom-skewed-ro-txn-get-fail maelstrom-sync-ro-fast-path maelstrom-sync-ro-fast-path-may-fail ci ci-full ci/operator-lint ci/operator-test ci/bench-solo ci/bench-compare ci/testbed-kube-operator ci/testbed-kube-operator-tls ci/testbed-kube ci/testbed-docker-compose ci/testbed-solo ci/testbed ci/fuzz-diagnose ci/fuzz-multi-seed ci/test-surrealkv ci/test-s3
+.PHONY: test lint lock_server_stress_test coordinator_failure_stress_test_3 coordinator_failure_stress_test_7 bench bench/ro bench/rw bench/mix bench/compare fuzz fuzz100 maelstrom maelstrom-run maelstrom-sync-ro-txn-get maelstrom-skewed-rw-txn-get-commit maelstrom-skewed-ro-txn-get-fail maelstrom-sync-ro-fast-path maelstrom-sync-ro-fast-path-may-fail maelstrom-skew-ro-slow-path-truetime ci ci-full ci/operator-lint ci/operator-test ci/bench-solo ci/bench-compare ci/testbed-kube-operator ci/testbed-kube-operator-tls ci/testbed-kube ci/testbed-docker-compose ci/testbed-solo ci/testbed ci/fuzz-diagnose ci/fuzz-multi-seed ci/test-surrealkv ci/test-s3
 
 lint:
 	cargo clippy --workspace --all-targets -- -D warnings -D clippy::iter_over_hash_type && ./scripts/check-determinism.sh
@@ -62,7 +62,7 @@ $(MAELSTROM_BIN):
 	@curl -fsSL https://github.com/jepsen-io/maelstrom/releases/download/v$(MAELSTROM_VERSION)/maelstrom.tar.bz2 | tar -xjf - -C $(MAELSTROM_DIR)
 	@echo "Maelstrom v$(MAELSTROM_VERSION) installed to $(MAELSTROM_DIR)/"
 
-maelstrom: maelstrom-sync-ro-txn-get maelstrom-skewed-rw-txn-get-commit maelstrom-skewed-ro-txn-get-fail maelstrom-sync-ro-fast-path
+maelstrom: maelstrom-sync-ro-txn-get maelstrom-skewed-rw-txn-get-commit maelstrom-skewed-ro-txn-get-fail maelstrom-sync-ro-fast-path maelstrom-skew-ro-slow-path-truetime
 
 # Synchronized clocks: RO quorum read is linearizable.
 maelstrom-sync-ro-txn-get:
@@ -95,6 +95,16 @@ maelstrom-sync-ro-fast-path:
 # check: it should fail more often than not, but may occasionally pass.
 maelstrom-sync-ro-fast-path-may-fail:
 	TAPIR_CLOCK_SKEW_MAX=0 TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get TAPIR_RO_FAST_PATH_DELAY_MS=1 TAPIR_READ_TIMEOUT_MS=200 TAPIR_VIEW_CHANGE_INTERVAL_MS=200 $(MAKE) maelstrom-run
+
+# TrueTime-style RO linearizability under clock skew (Paper S6.1 + Spanner).
+# Clock skew up to 100ms (one-directional: now + [0,100ms)).
+# Uncertainty bound = 2 * max_skew = 200ms: covers worst case where writer's
+# clock is +100ms ahead and reader's clock is +0ms (or bidirectional ±100ms).
+# snapshot_ts is adjusted by the bound so that snapshot_ts >= commit_ts of
+# any completed write. The delay before quorum_read ensures async
+# FinalizeInconsistent(Commit) propagation. No fast path — always quorum read.
+maelstrom-skew-ro-slow-path-truetime:
+	TAPIR_CLOCK_SKEW_MAX=100 TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get TAPIR_RO_CLOCK_SKEW_UNCERTAINTY_BOUND=200 $(MAKE) maelstrom-run
 
 maelstrom-run: $(MAELSTROM_BIN)
 	cargo build --release -p tapi-maelstrom

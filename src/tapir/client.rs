@@ -29,6 +29,7 @@ pub struct Inner<K: Key, V: Value, T: TapirTransport<K, V>> {
     rng: crate::Rng,
     ro_fast_path_delay: Option<Duration>,
     read_timeout: Duration,
+    ro_clock_skew_uncertainty_bound: Option<Duration>,
 }
 
 impl<K: Key, V: Value, T: TapirTransport<K, V>> Inner<K, V, T> {
@@ -102,6 +103,7 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Client<K, V, T> {
                 rng,
                 ro_fast_path_delay: None,
                 read_timeout: Duration::from_secs(2),
+                ro_clock_skew_uncertainty_bound: None,
             })),
             next_transaction_number: AtomicU64::new(txn_number),
         }
@@ -160,6 +162,23 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Client<K, V, T> {
     /// giving up and falling through to `quorum_read`.
     pub fn set_read_timeout(&self, timeout: Duration) {
         self.inner.lock().unwrap().read_timeout = timeout;
+    }
+
+    /// Configure a TrueTime-style clock skew uncertainty bound for
+    /// read-only transactions. When set, `ReadOnlyTransaction::get()`
+    /// and `scan()` sleep for this duration before executing
+    /// `quorum_read`/`quorum_scan`, ensuring all replicas' clocks have
+    /// advanced past `snapshot_ts` (Paper S6.1, combined with Spanner's
+    /// TrueTime algorithm).
+    ///
+    /// This provides linearizable RO reads under bounded clock skew:
+    /// if the actual clock skew never exceeds this bound, then after
+    /// the wait, `snapshot_ts >= commit_ts` of all writes that
+    /// completed before the read-only transaction began.
+    ///
+    /// `None` (default) disables the uncertainty bound delay.
+    pub fn set_ro_clock_skew_uncertainty_bound(&self, bound: Option<Duration>) {
+        self.inner.lock().unwrap().ro_clock_skew_uncertainty_bound = bound;
     }
 
     pub fn begin(&self) -> Transaction<K, V, T> {
@@ -534,6 +553,7 @@ pub struct ReadOnlyTransaction<K: Key, V: Value, T: TapirTransport<K, V>> {
     read_cache: Arc<Mutex<BTreeMap<Sharded<K>, Option<V>>>>,
     fast_path_delay: Option<Duration>,
     read_timeout: Duration,
+    clock_skew_uncertainty_bound: Option<Duration>,
 }
 
 impl<K: Key, V: Value, T: TapirTransport<K, V>> Client<K, V, T> {
@@ -543,6 +563,21 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Client<K, V, T> {
             time: inner.transport.time(),
             client_id: inner.id,
         };
+        // TrueTime-style snapshot adjustment (Paper S6.1 + Spanner):
+        // Add the uncertainty bound to snapshot_ts so that it exceeds
+        // the commit_ts of any write that completed before this RO txn
+        // began. Without this, clock skew can make snapshot_ts < commit_ts,
+        // causing quorum_read to miss the committed value even after
+        // waiting for propagation.
+        let clock_skew_uncertainty_bound = inner.ro_clock_skew_uncertainty_bound;
+        let snapshot_ts = if let Some(bound) = clock_skew_uncertainty_bound {
+            Timestamp {
+                time: snapshot_ts.time + bound.as_nanos() as u64,
+                ..snapshot_ts
+            }
+        } else {
+            snapshot_ts
+        };
         let fast_path_delay = inner.ro_fast_path_delay;
         let read_timeout = inner.read_timeout;
         ReadOnlyTransaction {
@@ -551,6 +586,7 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Client<K, V, T> {
             read_cache: Arc::new(Mutex::new(BTreeMap::new())),
             fast_path_delay,
             read_timeout,
+            clock_skew_uncertainty_bound,
         }
     }
 }
@@ -576,6 +612,7 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> ReadOnlyTransaction<K, V, T> {
         let read_cache = Arc::clone(&self.read_cache);
         let snapshot_ts = self.snapshot_ts;
         let fast_path_delay = self.fast_path_delay;
+        let clock_skew_uncertainty_bound = self.clock_skew_uncertainty_bound;
 
         async move {
             let shard_client = Inner::shard_client(&client, start.shard).await;
@@ -610,6 +647,19 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> ReadOnlyTransaction<K, V, T> {
                 debug!(shard = ?start.shard, "ro_scan: fast path miss (no covering range_read), fallback to quorum");
             }
 
+            // TrueTime wait: delay for the uncertainty bound (minus any time
+            // already spent on fast path delay) so that async
+            // FinalizeInconsistent(Commit) propagates to all replicas.
+            if let Some(bound) = clock_skew_uncertainty_bound {
+                let already_waited = fast_path_delay.unwrap_or(Duration::ZERO);
+                let remaining = bound.saturating_sub(already_waited);
+                if !remaining.is_zero() {
+                    debug!(shard = ?start.shard, ?remaining, "ro_scan: TrueTime uncertainty wait start");
+                    T::sleep(remaining).await;
+                    debug!(shard = ?start.shard, "ro_scan: TrueTime uncertainty wait done");
+                }
+            }
+
             // Quorum scan — always correct via f+1 merge by highest write_ts.
             let scan_results = shard_client
                 .quorum_scan(start.key.clone(), end.key.clone(), snapshot_ts)
@@ -642,6 +692,7 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> ReadOnlyTransaction<K, V, T> {
         let snapshot_ts = self.snapshot_ts;
         let fast_path_delay = self.fast_path_delay;
         let read_timeout = self.read_timeout;
+        let clock_skew_uncertainty_bound = self.clock_skew_uncertainty_bound;
 
         async move {
             // Check read cache for consistent reads within the transaction.
@@ -677,6 +728,19 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> ReadOnlyTransaction<K, V, T> {
                     Err(_) => {
                         debug!(shard = ?key.shard, key = ?key.key, "ro_get: fast path unavailable, fallback to quorum");
                     }
+                }
+            }
+
+            // TrueTime wait: delay for the uncertainty bound (minus any time
+            // already spent on fast path delay) so that async
+            // FinalizeInconsistent(Commit) propagates to all replicas.
+            if let Some(bound) = clock_skew_uncertainty_bound {
+                let already_waited = fast_path_delay.unwrap_or(Duration::ZERO);
+                let remaining = bound.saturating_sub(already_waited);
+                if !remaining.is_zero() {
+                    debug!(shard = ?key.shard, key = ?key.key, ?remaining, "ro_get: TrueTime uncertainty wait start");
+                    T::sleep(remaining).await;
+                    debug!(shard = ?key.shard, key = ?key.key, "ro_get: TrueTime uncertainty wait done");
                 }
             }
 

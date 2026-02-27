@@ -268,6 +268,10 @@ impl Process<LinKv, Wrapper> for KvNode {
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
             .map(Duration::from_millis);
+        let ro_clock_skew_uncertainty_bound = std::env::var("TAPIR_RO_CLOCK_SKEW_UNCERTAINTY_BOUND")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(Duration::from_millis);
         let view_change_interval = std::env::var("TAPIR_VIEW_CHANGE_INTERVAL_MS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
@@ -305,6 +309,9 @@ impl Process<LinKv, Wrapper> for KvNode {
                     }
                     if let Some(timeout) = read_timeout {
                         client.set_read_timeout(timeout);
+                    }
+                    if let Some(bound) = ro_clock_skew_uncertainty_bound {
+                        client.set_ro_clock_skew_uncertainty_bound(Some(bound));
                     }
                     KvNodeInner::App(client)
                 }
