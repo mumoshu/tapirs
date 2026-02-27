@@ -62,7 +62,7 @@ $(MAELSTROM_BIN):
 	@curl -fsSL https://github.com/jepsen-io/maelstrom/releases/download/v$(MAELSTROM_VERSION)/maelstrom.tar.bz2 | tar -xjf - -C $(MAELSTROM_DIR)
 	@echo "Maelstrom v$(MAELSTROM_VERSION) installed to $(MAELSTROM_DIR)/"
 
-maelstrom: maelstrom-sync-ro-txn-get maelstrom-skewed-rw-txn-get-commit
+maelstrom: maelstrom-sync-ro-txn-get maelstrom-skewed-rw-txn-get-commit maelstrom-skewed-ro-txn-get-fail maelstrom-sync-ro-fast-path maelstrom-sync-ro-fast-path-fail
 
 # Synchronized clocks: RO quorum read is linearizable.
 maelstrom-sync-ro-txn-get:
