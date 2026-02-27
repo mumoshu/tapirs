@@ -268,6 +268,13 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Transaction<K, V, T> {
             Arc::new(lock.inner.clone())
         };
 
+        assert!(
+            !transaction.write_set.is_empty(),
+            "RW transaction commit() called with no writes — \
+             use begin_read_only() for consistent reads, \
+             or drop the RW transaction without committing for fast inconsistent reads"
+        );
+
         let min_commit_timestamp = max_read_timestamp(&transaction).saturating_add(1);
         let mut timestamp = {
             let client = self.client.lock().unwrap();

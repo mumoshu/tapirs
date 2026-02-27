@@ -308,31 +308,47 @@ impl Process<LinKv, Wrapper> for KvNode {
                                                 .await
                                                 .unwrap()
                                                 .map(|s| serde_json::from_str(&s).unwrap());
-                                            let swap = old == Some(from);
-                                            if swap {
+
+                                            if old.is_none() {
+                                                drop(txn);
+                                                let _ = transport
+                                                    .inner
+                                                    .net
+                                                    .txq
+                                                    .send(Msg {
+                                                        src: transport.id.to_string(),
+                                                        dest: src,
+                                                        body: Body::Error(Error {
+                                                            in_reply_to: msg_id,
+                                                            text: String::from(
+                                                                "cas key not found",
+                                                            ),
+                                                            code: 20,
+                                                        }),
+                                                    })
+                                                    .await;
+                                            } else if old != Some(from) {
+                                                drop(txn);
+                                                let _ = transport
+                                                    .inner
+                                                    .net
+                                                    .txq
+                                                    .send(Msg {
+                                                        src: transport.id.to_string(),
+                                                        dest: src,
+                                                        body: Body::Error(Error {
+                                                            in_reply_to: msg_id,
+                                                            text: String::from(
+                                                                "cas precondition failed",
+                                                            ),
+                                                            code: 22,
+                                                        }),
+                                                    })
+                                                    .await;
+                                            } else {
                                                 let to = serde_json::to_string(&to).unwrap();
                                                 txn.put(key, Some(to));
-                                            }
-
-                                            if txn.commit().await.is_some() {
-                                                if old.is_none() {
-                                                    let _ = transport
-                                                        .inner
-                                                        .net
-                                                        .txq
-                                                        .send(Msg {
-                                                            src: transport.id.to_string(),
-                                                            dest: src,
-                                                            body: Body::Error(Error {
-                                                                in_reply_to: msg_id,
-                                                                text: String::from(
-                                                                    "cas key not found",
-                                                                ),
-                                                                code: 20,
-                                                            }),
-                                                        })
-                                                        .await;
-                                                } else if swap {
+                                                if txn.commit().await.is_some() {
                                                     let _ = transport
                                                         .inner
                                                         .net
@@ -359,28 +375,13 @@ impl Process<LinKv, Wrapper> for KvNode {
                                                             body: Body::Error(Error {
                                                                 in_reply_to: msg_id,
                                                                 text: String::from(
-                                                                    "cas precondition failed",
+                                                                    "cas txn conflict",
                                                                 ),
-                                                                code: 22,
+                                                                code: 30,
                                                             }),
                                                         })
                                                         .await;
                                                 }
-                                            } else {
-                                                let _ = transport
-                                                    .inner
-                                                    .net
-                                                    .txq
-                                                    .send(Msg {
-                                                        src: transport.id.to_string(),
-                                                        dest: src,
-                                                        body: Body::Error(Error {
-                                                            in_reply_to: msg_id,
-                                                            text: String::from("cas txn conflict"),
-                                                            code: 30,
-                                                        }),
-                                                    })
-                                                    .await;
                                             }
                                         }
                                         LinKv::Read { msg_id, key } => {

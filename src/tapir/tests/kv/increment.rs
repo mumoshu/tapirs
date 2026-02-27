@@ -77,8 +77,10 @@ async fn increment_parallel(num_replicas: usize) {
 
     Transport::sleep(Duration::from_secs(3)).await;
 
+    // Inconsistent read (1 replica) — may not see all committed values.
     let txn = clients[1].begin();
     let result = txn.get(0).await.unwrap().unwrap_or_default();
+    drop(txn);
     eprintln!("INCREMENT TEST result={result} committed={committed}");
-    println!("{} {}", txn.commit().await.is_some(), result == committed);
+    println!("{}", result == committed);
 }

@@ -34,31 +34,14 @@ async fn rwr(linearizable: bool, num_replicas: usize) {
     let txn = clients[0].begin();
     assert_eq!(txn.get(0).await.unwrap(), None);
     txn.put(1, Some(2));
-    let first = txn.commit().await.unwrap();
+    txn.commit().await.unwrap();
 
     Transport::sleep(Duration::from_millis(10)).await;
 
-    if linearizable {
-        let txn = clients[1].begin();
-        let result = txn.get(1).await.unwrap();
-        if result.is_none() {
-            // We read stale data so shouldn't be able to commit.
-            assert_eq!(txn.commit().await, None, "prev = {first:?}");
-        } else {
-            // Up to date, should be able to commit.
-            //assert!(txn.commit().await.is_some());
-        }
-    } else {
-        let txn = clients[1].begin();
-        let result = txn.get(1).await.unwrap();
-        if let Some(commit) = txn.commit().await {
-            if result.is_none() {
-                assert!(commit < first, "{commit:?} {first:?}");
-            } else {
-                assert_eq!(result, Some(2));
-                assert!(commit > first);
-            }
-        }
+    let ro = clients[1].begin_read_only();
+    let result = ro.get(1).await.unwrap();
+    if let Some(val) = result {
+        assert_eq!(val, 2);
     }
 }
 

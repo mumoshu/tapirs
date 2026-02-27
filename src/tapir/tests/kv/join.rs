@@ -80,10 +80,9 @@ async fn test_join_with_preload() {
 
     // Verify: read key=1 through the 4-replica group.
     // The 4th replica should have the committed data from the bootstrap.
-    let txn = routing_client.begin();
-    let val = txn.get(1_i64).await.unwrap();
+    let ro = routing_client.begin_read_only();
+    let val = ro.get(1_i64).await.unwrap();
     assert_eq!(val, Some(42), "key=1 should be readable after join");
-    assert!(txn.commit().await.is_some(), "read-only txn should commit");
 
     // Verify: new write succeeds through the 4-replica group.
     let txn = routing_client.begin();
@@ -101,10 +100,9 @@ async fn test_join_with_preload() {
     tokio::time::sleep(Duration::from_secs(5)).await;
 
     // Verify: read back the new write (any replica should have it after merge).
-    let txn = routing_client.begin();
-    let val = txn.get(2_i64).await.unwrap();
+    let ro = routing_client.begin_read_only();
+    let val = ro.get(2_i64).await.unwrap();
     assert_eq!(val, Some(99), "key=2 should be readable after view change merge");
-    assert!(txn.commit().await.is_some());
 
     // Gracefully shut down discovery cluster to drain spawned tasks.
     disc.shutdown().await;

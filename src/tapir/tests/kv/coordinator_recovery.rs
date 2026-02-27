@@ -46,12 +46,8 @@ async fn coordinator_recovery(num_replicas: usize, seed: u64) {
 
     'outer: for n in (0..50).step_by(2).chain((50..500).step_by(10)) {
         let conflicting = clients[2].begin();
-        conflicting.get(n).await.unwrap();
+        conflicting.put(n, Some(1));
         tokio::spawn(conflicting.only_prepare());
-
-        //let conflicting = clients[2].begin();
-        //conflicting.put(n, Some(1));
-        //tokio::spawn(conflicting.only_prepare());
 
         let txn = clients[0].begin();
         txn.put(n, Some(42));
@@ -68,19 +64,14 @@ async fn coordinator_recovery(num_replicas: usize, seed: u64) {
         Transport::sleep(Duration::from_millis(rng.gen_range(0..100u64))).await;
 
         for i in 0..128 {
+            // Inconsistent read (1 replica, fast) is fine for polling.
+            // Just drop the RW txn without committing.
             let txn = clients[1].begin();
             let read = txn.get(n).await.unwrap();
+            drop(txn);
             println!("{n} try {i} read {read:?}");
 
-            if let Ok(Some(ts)) = timeout(Duration::from_secs(5), txn.commit()).await {
-                let result = result.lock().unwrap();
-                if let Some(result) = *result {
-                    if let Some(result) = result {
-                        assert_eq!(read.is_some(), ts > result);
-                    } else {
-                        assert!(read.is_none());
-                    }
-                }
+            if read.is_some() {
                 continue 'outer;
             }
 

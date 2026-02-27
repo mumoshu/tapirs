@@ -52,17 +52,15 @@ async fn test_merge_two_shards() {
     manager.merge(ShardNumber(1), ShardNumber(0)).await.unwrap();
 
     // Verify: read key=10 (originally on shard 0) — still accessible.
-    let txn = clients[0].begin();
-    let val = txn.get(Sharded { shard: ShardNumber(0), key: 10 }).await.unwrap();
+    let ro = clients[0].begin_read_only();
+    let val = ro.get(Sharded { shard: ShardNumber(0), key: 10 }).await.unwrap();
     assert_eq!(val, Some(100), "key=10 should still be readable after merge");
-    assert!(txn.commit().await.is_some());
 
     // Verify: read key=60 (originally on shard 1, shipped to shard 0).
     Transport::sleep(Duration::from_millis(1)).await;
-    let txn = clients[0].begin();
-    let val = txn.get(Sharded { shard: ShardNumber(0), key: 60 }).await.unwrap();
+    let ro = clients[0].begin_read_only();
+    let val = ro.get(Sharded { shard: ShardNumber(0), key: 60 }).await.unwrap();
     assert_eq!(val, Some(600), "key=60 should be readable on surviving shard after merge");
-    assert!(txn.commit().await.is_some());
 
     // Verify: new write on the merged range succeeds.
     Transport::sleep(Duration::from_millis(1)).await;
@@ -135,10 +133,9 @@ async fn test_split_merge_two_shards() {
         (0, 10, 100), (0, 30, 300),
         (1, 60, 600), (1, 80, 800),
     ] {
-        let txn = clients[0].begin();
-        let val = txn.get(Sharded { shard: ShardNumber(shard), key }).await.unwrap();
+        let ro = clients[0].begin_read_only();
+        let val = ro.get(Sharded { shard: ShardNumber(shard), key }).await.unwrap();
         assert_eq!(val, Some(expected), "after split: shard={shard} key={key}");
-        assert!(txn.commit().await.is_some());
         Transport::sleep(Duration::from_millis(1)).await;
     }
 
@@ -166,10 +163,9 @@ async fn test_split_merge_two_shards() {
         (10, 100), (20, 200), (30, 300),
         (60, 600), (70, 700), (80, 800),
     ] {
-        let txn = clients[0].begin();
-        let val = txn.get(Sharded { shard: ShardNumber(0), key }).await.unwrap();
+        let ro = clients[0].begin_read_only();
+        let val = ro.get(Sharded { shard: ShardNumber(0), key }).await.unwrap();
         assert_eq!(val, Some(expected), "after merge: key={key}");
-        assert!(txn.commit().await.is_some());
         Transport::sleep(Duration::from_millis(1)).await;
     }
 
