@@ -233,6 +233,15 @@ impl Process<LinKv, Wrapper> for KvNode {
         let membership = IrMembership::new(ids);
         let id = IdEnum::from_str(&id).unwrap();
         let clock_skewed = std::env::var("TAPIR_CLOCK").is_ok_and(|v| v == "skewed");
+        let ro_fast_path_delay = std::env::var("TAPIR_RO_FAST_PATH_DELAY")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(Duration::from_secs);
+        let view_change_interval = std::env::var("TAPIR_VIEW_CHANGE_INTERVAL")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(Duration::from_secs)
+            .unwrap_or(Duration::from_secs(60));
         let transport = Maelstrom {
             id,
             inner: Arc::new(Inner {
@@ -254,10 +263,16 @@ impl Process<LinKv, Wrapper> for KvNode {
                         TapirReplica::new_with_backend(tapirs::ShardNumber(0), true, backend),
                         transport,
                         Some(TapirReplica::tick),
-                        Some(Duration::from_secs(60)),
+                        Some(view_change_interval),
                     )))
                 }
-                IdEnum::App(_) => KvNodeInner::App(Arc::new(TapirClient::new(tapirs::Rng::from_seed(thread_rng().r#gen()), transport))),
+                IdEnum::App(_) => {
+                    let client = Arc::new(TapirClient::new(tapirs::Rng::from_seed(thread_rng().r#gen()), transport));
+                    if let Some(delay) = ro_fast_path_delay {
+                        client.set_ro_fast_path_delay(Some(delay));
+                    }
+                    KvNodeInner::App(client)
+                }
                 id => panic!("{id}"),
             },
         ));

@@ -1,4 +1,4 @@
-.PHONY: test lint lock_server_stress_test coordinator_failure_stress_test_3 coordinator_failure_stress_test_7 bench bench/ro bench/rw bench/mix bench/compare fuzz fuzz100 maelstrom maelstrom-run maelstrom-sync maelstrom-skewed ci ci-full ci/operator-lint ci/operator-test ci/bench-solo ci/bench-compare ci/testbed-kube-operator ci/testbed-kube-operator-tls ci/testbed-kube ci/testbed-docker-compose ci/testbed-solo ci/testbed ci/fuzz-diagnose ci/fuzz-multi-seed ci/test-surrealkv ci/test-s3
+.PHONY: test lint lock_server_stress_test coordinator_failure_stress_test_3 coordinator_failure_stress_test_7 bench bench/ro bench/rw bench/mix bench/compare fuzz fuzz100 maelstrom maelstrom-run maelstrom-sync maelstrom-skewed maelstrom-sync-ro-fast-path ci ci-full ci/operator-lint ci/operator-test ci/bench-solo ci/bench-compare ci/testbed-kube-operator ci/testbed-kube-operator-tls ci/testbed-kube ci/testbed-docker-compose ci/testbed-solo ci/testbed ci/fuzz-diagnose ci/fuzz-multi-seed ci/test-surrealkv ci/test-s3
 
 lint:
 	cargo clippy --workspace --all-targets -- -D warnings -D clippy::iter_over_hash_type && ./scripts/check-determinism.sh
@@ -69,6 +69,9 @@ maelstrom-sync:
 
 maelstrom-skewed:
 	TAPIR_CLOCK=skewed $(MAKE) maelstrom-run
+
+maelstrom-sync-ro-fast-path:
+	TAPIR_CLOCK=sync TAPIR_RO_FAST_PATH_DELAY=2 TAPIR_VIEW_CHANGE_INTERVAL=2 $(MAKE) maelstrom-run
 
 maelstrom-run: $(MAELSTROM_BIN)
 	cargo build --release -p tapi-maelstrom
