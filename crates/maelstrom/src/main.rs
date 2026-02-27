@@ -238,12 +238,13 @@ impl Process<LinKv, Wrapper> for KvNode {
                 IdEnum::Replica(_) => {
                     let mvcc_dir = std::env::temp_dir().join(format!("maelstrom-tapir-{}", std::process::id()));
                     let backend = MvccDiskStore::open(mvcc_dir).expect("open DiskStore");
-                    KvNodeInner::Replica(Arc::new(IrReplica::new(
+                    KvNodeInner::Replica(Arc::new(IrReplica::with_view_change_interval(
                         tapirs::Rng::from_seed(thread_rng().r#gen()),
                         membership,
                         TapirReplica::new_with_backend(tapirs::ShardNumber(0), true, backend),
                         transport,
                         Some(TapirReplica::tick),
+                        Some(Duration::from_secs(60)),
                     )))
                 }
                 IdEnum::App(_) => KvNodeInner::App(Arc::new(TapirClient::new(tapirs::Rng::from_seed(thread_rng().r#gen()), transport))),
@@ -253,16 +254,6 @@ impl Process<LinKv, Wrapper> for KvNode {
     }
 
     async fn run(&self) -> Status {
-        fn commit_fault() -> Option<Duration> {
-            use rand::Rng;
-            let mut rng = rand::thread_rng();
-            if rng.gen_bool(0.02) {
-                Some(Duration::from_millis(rng.gen_range(0..100)))
-            } else {
-                None
-            }
-        }
-
         let (transport, inner) = self.inner.as_ref().unwrap();
         loop {
             match transport.inner.net.rxq.recv().await {
@@ -323,7 +314,7 @@ impl Process<LinKv, Wrapper> for KvNode {
                                                 txn.put(key, Some(to));
                                             }
 
-                                            if txn.commit2(commit_fault()).await.is_some() {
+                                            if txn.commit().await.is_some() {
                                                 if old.is_none() {
                                                     let _ = transport
                                                         .inner
@@ -398,7 +389,7 @@ impl Process<LinKv, Wrapper> for KvNode {
                                                 serde_json::from_str::<serde_json::Value>(&s)
                                                     .unwrap()
                                             });
-                                            if txn.commit2(commit_fault()).await.is_some() {
+                                            if txn.commit().await.is_some() {
                                                 if let Some(old) = old {
                                                     let _ = transport
                                                         .inner
@@ -453,7 +444,7 @@ impl Process<LinKv, Wrapper> for KvNode {
                                             let key = serde_json::to_string(&key).unwrap();
                                             let value = serde_json::to_string(&value).unwrap();
                                             txn.put(key, Some(value));
-                                            if txn.commit2(commit_fault()).await.is_some() {
+                                            if txn.commit().await.is_some() {
                                                 let _ = transport
                                                     .inner
                                                     .net
