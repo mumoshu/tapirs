@@ -190,7 +190,7 @@ These are pitfalls specific to our implementation's extensions beyond the origin
 
 **What breaks if violated:** Under simulated time, the transport's retry backoff sleeps advance the clock, consuming the caller's timeout budget. A read-only transaction that should complete in milliseconds blocks for seconds or minutes. If there's an outer timeout (e.g., in a fuzz test), the transaction fails even though a quorum of healthy replicas is available.
 
-**How tapirs handles it:** `read_validated()` wraps `invoke_unlogged()` in a 2-second `futures::future::select` timeout. On timeout, returns `Err(Unavailable)`, and the caller falls back to `quorum_read()` which uses IR inconsistent (f+1 replicas). Source: `tapir/shard_client.rs:187-220`.
+**How tapirs handles it:** `read_validated()` wraps `invoke_unlogged()` in a 2-second `futures::future::select` timeout. On timeout, returns `Err(Unavailable)`, and the caller falls back to `quorum_read()` which uses IR inconsistent (f+1 replicas). Source: `tapir/shard_client.rs:187-220`. **Update:** The fast path is now disabled entirely (see gotcha #19) — `read_validated` is no longer called, making this timeout moot. The code remains but is dead.
 
 ### 15. Route fallback = serializability violation
 
@@ -235,3 +235,13 @@ These are pitfalls specific to our implementation's extensions beyond the origin
 **What breaks if violated:** (a) **JoinUntil partial drain**: `FuturesUnordered` may have multiple ready futures. If you check the `until` condition after each individual future, the set of collected results depends on poll order. Different runs collect different subsets → non-deterministic behavior. (b) **HashMap iteration order**: `HashMap` iteration is randomized per process. If view-change merge iterates `outstanding_do_view_changes` in different orders, the merged record differs between runs. (c) **Shared RNG in async context**: If `FaultyChannelTransport` samples from a shared RNG inside an async block, the poll order of `FuturesUnordered` determines which message gets which fault decision → non-deterministic faults.
 
 **How tapirs handles it:** (a) `JoinUntil::poll` drains ALL ready futures from `FuturesUnordered` before checking the `until` condition. Source: `util/join.rs`. (b) `outstanding_do_view_changes` uses `BTreeMap` for deterministic iteration. Source: `ir/replica.rs`. (c) `FaultyChannelTransport` samples a per-message seed from the shared RNG at `send()`/`do_send()` creation time (deterministic sync context), then creates a per-message `StdRng` from that seed in the async block. Source: `transport/faulty_channel.rs`.
+
+### 19. RO fast path returns stale data under partitions
+
+**What the paper says:** §6.1: "If a replica has a validated version of an object, we know that the returned object is valid, because it is up-to-date." The fast path sends a read to one replica; if `write_ts < snapshot_ts < read_ts`, the replica responds immediately.
+
+**General implication:** The fast path assumes the single replica's MVCC store has all committed writes. This holds when `FinalizeInconsistent(Commit)` propagates promptly. Under partitions or async finalize delays, a replica can have `read_ts` set high (from a prior `quorum_read`'s `commit_get`) but stale MVCC data (missing a recent Commit that only propagated to a subset of replicas).
+
+**What breaks if violated:** Concrete scenario (from Jepsen trace): (1) CAS [3→2] commits at f+1 replicas {A, B, C}. Async `FinalizeInconsistent(Commit)` only reaches {A, B, C} during partition. (2) A `quorum_read` from {B, D, E} correctly picks value 2 (highest `write_ts`), but `commit_get` sets `read_ts` on all three — including D and E which still have stale value 3. (3) A subsequent `read_validated` hits replica D via `invoke_unlogged`. D has `read_ts >= snapshot_ts`, so `get_validated` trusts it. `get_at(key, snapshot_ts)` returns stale value 3. Linearizability violation.
+
+**How tapirs handles it:** The fast path (`read_validated` / `scan_validated`) is disabled. `ReadOnlyTransaction::get()` and `scan()` always use `quorum_read` / `quorum_scan`, which merge f+1 responses by highest `write_ts` — correct via quorum intersection. The per-transaction read cache still prevents redundant quorum reads for the same key within one transaction. Source: `tapir/client.rs` (ReadOnlyTransaction::get, scan).
