@@ -13,6 +13,7 @@ use std::{
         Arc, Mutex,
     },
     task::Context,
+    time::Duration,
 };
 use tracing::{debug, trace};
 
@@ -26,6 +27,7 @@ pub struct Inner<K: Key, V: Value, T: TapirTransport<K, V>> {
     clients: BTreeMap<ShardNumber, ShardClient<K, V, T>>,
     transport: T,
     rng: crate::Rng,
+    ro_fast_path_delay: Option<Duration>,
 }
 
 impl<K: Key, V: Value, T: TapirTransport<K, V>> Inner<K, V, T> {
@@ -97,6 +99,7 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Client<K, V, T> {
                 clients: Default::default(),
                 transport,
                 rng,
+                ro_fast_path_delay: None,
             })),
             next_transaction_number: AtomicU64::new(txn_number),
         }
@@ -108,6 +111,17 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Client<K, V, T> {
     /// into the TapirClient cache when resolved IPs change.
     pub fn set_shard_client(&self, shard: ShardNumber, client: ShardClient<K, V, T>) {
         self.inner.lock().unwrap().clients.insert(shard, client);
+    }
+
+    /// Configure the read-only fast path delay. When set, `ReadOnlyTransaction::get()`
+    /// and `scan()` sleep for this duration before attempting a single-replica
+    /// `read_validated`/`scan_validated`. The delay gives periodic view change
+    /// sync/merge time to propagate `FinalizeInconsistent(Commit)` to all replicas,
+    /// making the fast path's "up-to-date" assumption (Paper S6.1) valid.
+    /// On fast path failure, falls through to `quorum_read`/`quorum_scan`.
+    /// `None` (default) disables the fast path entirely.
+    pub fn set_ro_fast_path_delay(&self, delay: Option<Duration>) {
+        self.inner.lock().unwrap().ro_fast_path_delay = delay;
     }
 
     pub fn begin(&self) -> Transaction<K, V, T> {
@@ -480,6 +494,7 @@ pub struct ReadOnlyTransaction<K: Key, V: Value, T: TapirTransport<K, V>> {
     snapshot_ts: Timestamp,
     client: Arc<Mutex<Inner<K, V, T>>>,
     read_cache: Arc<Mutex<BTreeMap<Sharded<K>, Option<V>>>>,
+    fast_path_delay: Option<Duration>,
 }
 
 impl<K: Key, V: Value, T: TapirTransport<K, V>> Client<K, V, T> {
@@ -489,10 +504,12 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Client<K, V, T> {
             time: inner.transport.time(),
             client_id: inner.id,
         };
+        let fast_path_delay = inner.ro_fast_path_delay;
         ReadOnlyTransaction {
             snapshot_ts,
             client: Arc::clone(&self.inner),
             read_cache: Arc::new(Mutex::new(BTreeMap::new())),
+            fast_path_delay,
         }
     }
 }
@@ -501,11 +518,10 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> ReadOnlyTransaction<K, V, T> {
     /// Range scan on a single shard. Returns key-value pairs in
     /// `[start.key, end.key]` at the snapshot timestamp.
     ///
-    /// Always uses `quorum_scan` (IR inconsistent op, f+1 replicas)
-    /// for linearizability. The `scan_validated` fast path is unsafe:
-    /// a prior quorum_scan may have set range_reads on stale replicas
-    /// via `commit_scan`, causing `scan_validated` to trust stale
-    /// MVCC data under partitions.
+    /// When `fast_path_delay` is set, sleeps for the delay then tries
+    /// `scan_validated` (single-replica). Falls through to `quorum_scan`
+    /// if the fast path fails. When `fast_path_delay` is `None`, always
+    /// uses `quorum_scan` (IR inconsistent op, f+1 replicas).
     pub fn scan(
         &self,
         start: Sharded<K>,
@@ -518,11 +534,42 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> ReadOnlyTransaction<K, V, T> {
         let client = Arc::clone(&self.client);
         let read_cache = Arc::clone(&self.read_cache);
         let snapshot_ts = self.snapshot_ts;
+        let fast_path_delay = self.fast_path_delay;
 
         async move {
             let shard_client = Inner::shard_client(&client, start.shard).await;
 
-            // Always use quorum scan for linearizability (same reasoning as get).
+            // RO fast path with delay: wait for view change sync to propagate
+            // FinalizeInconsistent(Commit) to all replicas, then try single-
+            // replica validated scan.
+            if let Some(delay) = fast_path_delay {
+                debug!(shard = ?start.shard, ?delay, "ro_scan: fast path delay start");
+                T::sleep(delay).await;
+                debug!(shard = ?start.shard, "ro_scan: fast path delay done, trying scan_validated");
+                if let Some(results) = shard_client
+                    .scan_validated(start.key.clone(), end.key.clone(), snapshot_ts)
+                    .await
+                {
+                    debug!(shard = ?start.shard, count = results.len(), "ro_scan: fast path hit");
+                    {
+                        let mut cache = read_cache.lock().unwrap();
+                        for (key, value, _write_ts) in &results {
+                            let sharded = Sharded {
+                                shard: start.shard,
+                                key: key.clone(),
+                            };
+                            cache.entry(sharded).or_insert_with(|| value.clone());
+                        }
+                    }
+                    return Ok(results
+                        .into_iter()
+                        .filter_map(|(k, v, _ts)| v.map(|v| (k, v)))
+                        .collect());
+                }
+                debug!(shard = ?start.shard, "ro_scan: fast path miss (no covering range_read), fallback to quorum");
+            }
+
+            // Quorum scan — always correct via f+1 merge by highest write_ts.
             let scan_results = shard_client
                 .quorum_scan(start.key.clone(), end.key.clone(), snapshot_ts)
                 .await?;
@@ -552,6 +599,7 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> ReadOnlyTransaction<K, V, T> {
         let client = Arc::clone(&self.client);
         let read_cache = Arc::clone(&self.read_cache);
         let snapshot_ts = self.snapshot_ts;
+        let fast_path_delay = self.fast_path_delay;
 
         async move {
             // Check read cache for consistent reads within the transaction.
@@ -564,13 +612,33 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> ReadOnlyTransaction<K, V, T> {
 
             let shard_client = Inner::shard_client(&client, key.shard).await;
 
-            // Always use quorum read for linearizability. The read_validated
-            // fast path (single-replica invoke_unlogged via get_validated) is
-            // unsafe: a prior quorum_read may have set read_ts on a stale
-            // replica via commit_get, causing get_validated to trust stale
-            // MVCC data. See TAPIR paper Section 6.1 — the fast path's
-            // "up-to-date" assumption breaks under partitions when
-            // FinalizeInconsistent(Commit) hasn't propagated.
+            // RO fast path with delay: wait for view change sync to propagate
+            // FinalizeInconsistent(Commit) to all replicas, then try single-
+            // replica validated read.
+            if let Some(delay) = fast_path_delay {
+                debug!(shard = ?key.shard, key = ?key.key, ?delay, "ro_get: fast path delay start");
+                T::sleep(delay).await;
+                debug!(shard = ?key.shard, key = ?key.key, "ro_get: fast path delay done, trying read_validated");
+                match shard_client.read_validated(key.key.clone(), snapshot_ts).await {
+                    Ok(Some((value, _write_ts))) => {
+                        debug!(shard = ?key.shard, key = ?key.key, "ro_get: fast path hit");
+                        let mut cache = read_cache.lock().unwrap();
+                        cache.entry(key).or_insert(value.clone());
+                        return Ok(value);
+                    }
+                    Ok(None) => {
+                        debug!(shard = ?key.shard, key = ?key.key, "ro_get: fast path miss (no validated version), fallback to quorum");
+                    }
+                    Err(TransactionError::OutOfRange) => {
+                        return Err(TransactionError::OutOfRange);
+                    }
+                    Err(_) => {
+                        debug!(shard = ?key.shard, key = ?key.key, "ro_get: fast path unavailable, fallback to quorum");
+                    }
+                }
+            }
+
+            // Quorum read — always correct via f+1 merge by highest write_ts.
             debug!(shard = ?key.shard, key = ?key.key, "ro_get: quorum_read start");
             let (value, _write_ts) =
                 shard_client.quorum_read(key.key.clone(), snapshot_ts).await?;
