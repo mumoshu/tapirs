@@ -1,4 +1,4 @@
-.PHONY: test lint lock_server_stress_test coordinator_failure_stress_test_3 coordinator_failure_stress_test_7 bench bench/ro bench/rw bench/mix bench/compare fuzz fuzz100 maelstrom maelstrom-run maelstrom-sync-ro-txn-get maelstrom-skewed maelstrom-skewed-ro-txn-get-fail maelstrom-sync-ro-fast-path maelstrom-sync-ro-fast-path-fail ci ci-full ci/operator-lint ci/operator-test ci/bench-solo ci/bench-compare ci/testbed-kube-operator ci/testbed-kube-operator-tls ci/testbed-kube ci/testbed-docker-compose ci/testbed-solo ci/testbed ci/fuzz-diagnose ci/fuzz-multi-seed ci/test-surrealkv ci/test-s3
+.PHONY: test lint lock_server_stress_test coordinator_failure_stress_test_3 coordinator_failure_stress_test_7 bench bench/ro bench/rw bench/mix bench/compare fuzz fuzz100 maelstrom maelstrom-run maelstrom-sync-ro-txn-get maelstrom-skewed-rw-txn-get-commit maelstrom-skewed-ro-txn-get-fail maelstrom-sync-ro-fast-path maelstrom-sync-ro-fast-path-fail ci ci-full ci/operator-lint ci/operator-test ci/bench-solo ci/bench-compare ci/testbed-kube-operator ci/testbed-kube-operator-tls ci/testbed-kube ci/testbed-docker-compose ci/testbed-solo ci/testbed ci/fuzz-diagnose ci/fuzz-multi-seed ci/test-surrealkv ci/test-s3
 
 lint:
 	cargo clippy --workspace --all-targets -- -D warnings -D clippy::iter_over_hash_type && ./scripts/check-determinism.sh
@@ -62,13 +62,13 @@ $(MAELSTROM_BIN):
 	@curl -fsSL https://github.com/jepsen-io/maelstrom/releases/download/v$(MAELSTROM_VERSION)/maelstrom.tar.bz2 | tar -xjf - -C $(MAELSTROM_DIR)
 	@echo "Maelstrom v$(MAELSTROM_VERSION) installed to $(MAELSTROM_DIR)/"
 
-maelstrom: maelstrom-sync-ro-txn-get maelstrom-skewed
+maelstrom: maelstrom-sync-ro-txn-get maelstrom-skewed-rw-txn-get-commit
 
 # Synchronized clocks: RO quorum read is linearizable.
 maelstrom-sync-ro-txn-get:
 	TAPIR_CLOCK=sync TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get $(MAKE) maelstrom-run
 
-maelstrom-skewed:
+maelstrom-skewed-rw-txn-get-commit:
 	TAPIR_CLOCK=skewed TAPIR_LINEARIZABLE_READ_METHOD=rw_txn_get_commit $(MAKE) maelstrom-run
 
 # Under clock skew, RO reads are not linearizable (Paper S6.1).
