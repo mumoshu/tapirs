@@ -1,4 +1,25 @@
 use super::*;
+use crate::tapir::{Key, Value};
+use crate::tapir::client::Transaction;
+use crate::TapirTransport;
+
+async fn commit_with_fault<K: Key, V: Value, T: TapirTransport<K, V>>(
+    txn: Transaction<K, V, T>,
+    inject: Option<Duration>,
+) -> Option<TapirTimestamp> {
+    if let Some(duration) = inject {
+        let inner = txn.commit();
+        let sleep = T::sleep(duration);
+        futures::pin_mut!(sleep);
+        futures::pin_mut!(inner);
+        match futures::future::select(sleep, inner).await {
+            futures::future::Either::Left(_) => std::future::pending().await,
+            futures::future::Either::Right((result, _)) => result,
+        }
+    } else {
+        txn.commit().await
+    }
+}
 
 #[ignore]
 #[tokio::test(start_paused = true)]
@@ -56,7 +77,7 @@ async fn coordinator_recovery(num_replicas: usize, seed: u64) {
         {
             let result = Arc::clone(&result);
             tokio::spawn(async move {
-                let ts = txn.commit2(Some(Duration::from_millis(n as u64))).await;
+                let ts = commit_with_fault(txn, Some(Duration::from_millis(n as u64))).await;
                 *result.lock().unwrap() = Some(ts);
             });
         }

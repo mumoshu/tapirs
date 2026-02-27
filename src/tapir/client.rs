@@ -13,9 +13,7 @@ use std::{
         Arc, Mutex,
     },
     task::Context,
-    time::Duration,
 };
-use futures::future::Either;
 use tracing::{debug, trace};
 
 pub struct Client<K: Key, V: Value, T: TapirTransport<K, V>> {
@@ -363,27 +361,6 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Transaction<K, V, T> {
         self.commit_inner(false)
     }
 
-    #[doc(hidden)]
-    pub fn commit2(
-        self,
-        inject_fault: Option<Duration>,
-    ) -> impl Future<Output = Option<Timestamp>> {
-        let inner = self.commit();
-
-        async move {
-            if let Some(duration) = inject_fault {
-                let sleep = T::sleep(duration);
-                futures::pin_mut!(sleep);
-                futures::pin_mut!(inner);
-                match futures::future::select(sleep, inner).await {
-                    Either::Left(_) => std::future::pending::<Option<Timestamp>>().await,
-                    Either::Right((result, _)) => result,
-                }
-            } else {
-                inner.await
-            }
-        }
-    }
 }
 
 /// Read-only transaction for TAPIR (Section 6.1 of the paper).
