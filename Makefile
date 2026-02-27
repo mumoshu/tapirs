@@ -1,4 +1,4 @@
-.PHONY: test lint lock_server_stress_test coordinator_failure_stress_test_3 coordinator_failure_stress_test_7 bench bench/ro bench/rw bench/mix bench/compare fuzz fuzz100 maelstrom maelstrom-run maelstrom-sync-ro-txn-get maelstrom-skewed-rw-txn-get-commit maelstrom-skewed-ro-txn-get-fail maelstrom-sync-ro-fast-path maelstrom-sync-ro-fast-path-fail ci ci-full ci/operator-lint ci/operator-test ci/bench-solo ci/bench-compare ci/testbed-kube-operator ci/testbed-kube-operator-tls ci/testbed-kube ci/testbed-docker-compose ci/testbed-solo ci/testbed ci/fuzz-diagnose ci/fuzz-multi-seed ci/test-surrealkv ci/test-s3
+.PHONY: test lint lock_server_stress_test coordinator_failure_stress_test_3 coordinator_failure_stress_test_7 bench bench/ro bench/rw bench/mix bench/compare fuzz fuzz100 maelstrom maelstrom-run maelstrom-sync-ro-txn-get maelstrom-skewed-rw-txn-get-commit maelstrom-skewed-ro-txn-get-fail maelstrom-sync-ro-fast-path maelstrom-sync-ro-fast-path-may-fail ci ci-full ci/operator-lint ci/operator-test ci/bench-solo ci/bench-compare ci/testbed-kube-operator ci/testbed-kube-operator-tls ci/testbed-kube ci/testbed-docker-compose ci/testbed-solo ci/testbed ci/fuzz-diagnose ci/fuzz-multi-seed ci/test-surrealkv ci/test-s3
 
 lint:
 	cargo clippy --workspace --all-targets -- -D warnings -D clippy::iter_over_hash_type && ./scripts/check-determinism.sh
@@ -62,7 +62,7 @@ $(MAELSTROM_BIN):
 	@curl -fsSL https://github.com/jepsen-io/maelstrom/releases/download/v$(MAELSTROM_VERSION)/maelstrom.tar.bz2 | tar -xjf - -C $(MAELSTROM_DIR)
 	@echo "Maelstrom v$(MAELSTROM_VERSION) installed to $(MAELSTROM_DIR)/"
 
-maelstrom: maelstrom-sync-ro-txn-get maelstrom-skewed-rw-txn-get-commit maelstrom-skewed-ro-txn-get-fail maelstrom-sync-ro-fast-path maelstrom-sync-ro-fast-path-fail
+maelstrom: maelstrom-sync-ro-txn-get maelstrom-skewed-rw-txn-get-commit maelstrom-skewed-ro-txn-get-fail maelstrom-sync-ro-fast-path
 
 # Synchronized clocks: RO quorum read is linearizable.
 maelstrom-sync-ro-txn-get:
@@ -82,13 +82,19 @@ maelstrom-skewed-ro-txn-get-fail:
 maelstrom-sync-ro-fast-path:
 	TAPIR_CLOCK=sync TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get TAPIR_RO_FAST_PATH_DELAY_MS=200 TAPIR_READ_TIMEOUT_MS=200 TAPIR_VIEW_CHANGE_INTERVAL_MS=200 $(MAKE) maelstrom-run
 
-# Expect failure: 1ms delay is too short for replicas to sync via view change
-# (view change interval is 200ms), so read_validated returns stale data.
-maelstrom-sync-ro-fast-path-fail:
-	@echo "Expecting linearizability FAILURE (delay 1ms < view change interval 200ms)..."
-	@TAPIR_CLOCK=sync TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get TAPIR_RO_FAST_PATH_DELAY_MS=1 TAPIR_READ_TIMEOUT_MS=200 TAPIR_VIEW_CHANGE_INTERVAL_MS=200 $(MAKE) maelstrom-run \
-		&& { echo "ERROR: expected maelstrom to fail but it passed"; exit 1; } \
-		|| echo "Good: maelstrom failed as expected (fast path delay too short)"
+# Expect frequent failure: 1ms delay is too short for replicas to sync via view change
+# (view change interval is 200ms), so read_validated may return stale data.
+# When it did return stale data, it's linearizability violation that maelstrom catches.
+#
+# NOT included in `make maelstrom` — probabilistic, not deterministic.
+# With zero-latency transport, async FinalizeInconsistent propagates
+# nearly instantly, so read_validated often returns correct data even
+# with 1ms delay. The stale-read scenario requires a specific partition
+# timing where a prior commit_get set read_ts on a replica that then
+# misses a subsequent write's FinalizeInconsistent. Run manually to
+# check: it should fail more often than not, but may occasionally pass.
+maelstrom-sync-ro-fast-path-may-fail:
+	TAPIR_CLOCK=sync TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get TAPIR_RO_FAST_PATH_DELAY_MS=1 TAPIR_READ_TIMEOUT_MS=200 TAPIR_VIEW_CHANGE_INTERVAL_MS=200 $(MAKE) maelstrom-run
 
 maelstrom-run: $(MAELSTROM_BIN)
 	cargo build --release -p tapi-maelstrom
