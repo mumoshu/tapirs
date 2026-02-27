@@ -64,7 +64,10 @@ $(MAELSTROM_BIN):
 
 maelstrom: $(MAELSTROM_BIN)
 	cargo build --release -p tapi-maelstrom
-	$(MAELSTROM_BIN) test -w lin-kv --bin target/release/maelstrom --latency 0 --rate 10 --time-limit 90 --concurrency 20 --nemesis partition --nemesis-interval 20
+	bash -c 'set -o pipefail; $(MAELSTROM_BIN) test -w lin-kv --bin target/release/maelstrom --latency 0 --rate 10 --time-limit 90 --concurrency 20 --nemesis partition --nemesis-interval 20 2>&1 | tee /tmp/maelstrom-output.txt'; \
+	EXIT=$$?; \
+	bash scripts/maelstrom-summary.sh /tmp/maelstrom-output.txt; \
+	exit $$EXIT
 
 ci: test maelstrom ci/operator-lint ci/operator-test
 	@echo "All CI checks passed."
