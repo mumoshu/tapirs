@@ -2,6 +2,23 @@ use crate::occ::{PrepareConflict, PrepareResult, SharedTransaction, Transaction,
 use crate::tapir::{Key, LeaderRecordDelta, ShardNumber, Timestamp, Value};
 use serde::{de::DeserializeOwned, Serialize};
 
+/// Result of checking the current status of a transaction for prepare decisions.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CheckPrepareStatus {
+    /// Already committed at the exact requested timestamp.
+    CommittedAtTimestamp,
+    /// Already committed, but at a different timestamp.
+    CommittedDifferent { proposed: u64 },
+    /// Already aborted.
+    Aborted,
+    /// Already prepared at the requested timestamp.
+    PreparedAtTimestamp { finalized: bool },
+    /// Commit time is before min_prepare_time (too late).
+    TooLate,
+    /// No decision can be made from local state.
+    Unknown,
+}
+
 /// Abstracts all stateful operations the TAPIR replica needs.
 ///
 /// Implementations hold the OCC store, transaction log, min-prepare-time
@@ -67,6 +84,12 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
     /// Check if a transaction is prepared at a specific commit timestamp.
     /// Returns `Some(finalized)` if prepared at that timestamp, `None` otherwise.
     fn prepared_at_timestamp(&self, id: &TransactionId, commit: &Timestamp) -> Option<bool>;
+
+    /// Check the current status of a transaction for prepare/check-prepare decisions.
+    ///
+    /// Performs a cascading lookup: txn_log → prepared_at_timestamp → min_prepare_time,
+    /// returning a typed status that callers map to their own result type.
+    fn check_prepare_status(&self, id: &TransactionId, commit: &Timestamp) -> CheckPrepareStatus;
 
     /// Mark a prepared transaction as finalized (IR quorum confirmed).
     /// Returns true if the entry existed at the given commit timestamp.

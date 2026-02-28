@@ -1,5 +1,5 @@
 use super::*;
-use crate::tapirstore::TapirStore;
+use crate::tapirstore::{CheckPrepareStatus, TapirStore};
 
 #[test]
 fn prepared_get_and_at_timestamp() {
@@ -79,4 +79,71 @@ fn remove_unfinalized_prepared() {
     assert_eq!(store.prepared_count(), 1);
     assert!(store.prepared_get(&txn_id(1, 1)).is_some());
     assert!(store.prepared_get(&txn_id(2, 1)).is_none());
+}
+
+#[test]
+fn check_prepare_status_all_variants() {
+    let (_dir, mut store) = new_store();
+
+    let commit = ts(5, 1);
+
+    // Unknown: no txn_log entry, no prepare.
+    assert_eq!(
+        store.check_prepare_status(&txn_id(1, 1), &commit),
+        CheckPrepareStatus::Unknown,
+    );
+
+    // PreparedAtTimestamp (not finalized): prepare the transaction.
+    let txn = make_txn(vec![], vec![("a", Some("v1"))], vec![]);
+    store.prepare(txn_id(1, 1), txn.clone(), commit, false);
+    assert_eq!(
+        store.check_prepare_status(&txn_id(1, 1), &commit),
+        CheckPrepareStatus::PreparedAtTimestamp { finalized: false },
+    );
+
+    // PreparedAtTimestamp (finalized): mark as finalized.
+    store.set_prepared_finalized(&txn_id(1, 1), &commit);
+    assert_eq!(
+        store.check_prepare_status(&txn_id(1, 1), &commit),
+        CheckPrepareStatus::PreparedAtTimestamp { finalized: true },
+    );
+
+    // CommittedAtTimestamp: commit the transaction.
+    store.commit_and_log(txn_id(1, 1), &txn, commit);
+    assert_eq!(
+        store.check_prepare_status(&txn_id(1, 1), &commit),
+        CheckPrepareStatus::CommittedAtTimestamp,
+    );
+
+    // CommittedDifferent: check with a different timestamp.
+    assert_eq!(
+        store.check_prepare_status(&txn_id(1, 1), &ts(99, 1)),
+        CheckPrepareStatus::CommittedDifferent { proposed: 5 },
+    );
+
+    // Aborted: record an abort in the txn log.
+    store.txn_log_insert(txn_id(2, 1), Default::default(), false);
+    assert_eq!(
+        store.check_prepare_status(&txn_id(2, 1), &commit),
+        CheckPrepareStatus::Aborted,
+    );
+
+    // TooLate: set min_prepare_time above the commit time.
+    store.set_min_prepare_time(100);
+    assert_eq!(
+        store.check_prepare_status(&txn_id(3, 1), &commit),
+        CheckPrepareStatus::TooLate,
+    );
+
+    // TooLate via prepared_get: prepare at a low timestamp, then raise min_prepare_time.
+    let txn4 = make_txn(vec![], vec![("b", Some("v2"))], vec![]);
+    store.set_min_prepare_time(0); // reset so prepare succeeds
+    store.prepare(txn_id(4, 1), txn4, ts(3, 1), false);
+    store.set_min_prepare_time(10); // now the prepare's commit ts (3) < min_prepare_time (10)
+    // Checking with a different timestamp than prepared, so prepared_at_timestamp won't match,
+    // but prepared_get finds it and its commit time (3) < min_prepare_time (10).
+    assert_eq!(
+        store.check_prepare_status(&txn_id(4, 1), &ts(20, 1)),
+        CheckPrepareStatus::TooLate,
+    );
 }

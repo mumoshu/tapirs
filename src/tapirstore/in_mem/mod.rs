@@ -4,7 +4,7 @@ mod tests;
 use crate::mvcc::backend::MvccBackend;
 use crate::occ::{PrepareConflict, PrepareResult, SharedTransaction, Store as OccStore, Transaction, TransactionId};
 use crate::tapir::{Key, LeaderRecordDelta, ShardNumber, Timestamp, Value};
-use crate::tapirstore::TapirStore;
+use crate::tapirstore::{CheckPrepareStatus, TapirStore};
 use crate::util::vectorize_btree;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -171,6 +171,30 @@ where
             .get(id)
             .filter(|(ts, _, _)| ts == commit)
             .map(|(_, _, fin)| *fin)
+    }
+
+    fn check_prepare_status(&self, id: &TransactionId, commit: &Timestamp) -> CheckPrepareStatus {
+        if let Some((ts, committed)) = self.transaction_log.get(id).copied() {
+            if committed {
+                if ts == *commit {
+                    CheckPrepareStatus::CommittedAtTimestamp
+                } else {
+                    CheckPrepareStatus::CommittedDifferent { proposed: ts.time }
+                }
+            } else {
+                CheckPrepareStatus::Aborted
+            }
+        } else if let Some(finalized) = self.prepared_at_timestamp(id, commit) {
+            CheckPrepareStatus::PreparedAtTimestamp { finalized }
+        } else if commit.time < self.min_prepare_time
+            || self.occ.prepared.get(id)
+                .map(|(c, _, _)| c.time < self.min_prepare_time)
+                .unwrap_or(false)
+        {
+            CheckPrepareStatus::TooLate
+        } else {
+            CheckPrepareStatus::Unknown
+        }
     }
 
     fn set_prepared_finalized(&mut self, id: &TransactionId, commit: &Timestamp) -> bool {

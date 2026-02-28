@@ -329,38 +329,15 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                 transaction_id,
                 commit,
             } => {
-                UR::CheckPrepare(if let Some((ts, c)) = self.store.txn_log_get(&transaction_id) {
-                    if c && ts == commit {
-                        // Already committed at this timestamp.
-                        OccPrepareResult::Ok
-                    } else {
-                        // Didn't (and will never) commit at this timestamp.
-                        OccPrepareResult::Fail
-                    }
-                } else if let Some(finalized) = self
-                    .store
-                    .prepared_at_timestamp(&transaction_id, &commit)
-                {
-                    // Already prepared at this timestamp.
-                    if finalized {
-                        // Prepare was finalized.
-                        OccPrepareResult::Ok
-                    } else {
-                        // Prepare wasn't finalized, can't be sure yet.
-                        OccPrepareResult::Abstain
-                    }
-                } else if commit.time < self.store.min_prepare_time()
-                    || self
-                        .store
-                        .prepared_get(&transaction_id)
-                        .map(|(c, _, _)| c.time < self.store.min_prepare_time())
-                        .unwrap_or(false)
-                {
-                    // Too late for the client to prepare.
-                    OccPrepareResult::TooLate
-                } else {
-                    // Not sure.
-                    OccPrepareResult::Abstain
+                use crate::tapirstore::CheckPrepareStatus;
+                UR::CheckPrepare(match self.store.check_prepare_status(&transaction_id, &commit) {
+                    CheckPrepareStatus::CommittedAtTimestamp => OccPrepareResult::Ok,
+                    CheckPrepareStatus::CommittedDifferent { .. }
+                    | CheckPrepareStatus::Aborted => OccPrepareResult::Fail,
+                    CheckPrepareStatus::PreparedAtTimestamp { finalized: true } => OccPrepareResult::Ok,
+                    CheckPrepareStatus::PreparedAtTimestamp { finalized: false } => OccPrepareResult::Abstain,
+                    CheckPrepareStatus::TooLate => OccPrepareResult::TooLate,
+                    CheckPrepareStatus::Unknown => OccPrepareResult::Abstain,
                 })
             }
             UO::ReadValidated { key, timestamp } => {
@@ -551,46 +528,27 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                     self.counters.prepare_fail_count.fetch_add(1, Ordering::Relaxed);
                     return CR::Prepare(OccPrepareResult::Fail);
                 }
-                let result = if let Some((ts, c)) = self.store.txn_log_get(transaction_id) {
-                if c {
-                    if ts == *commit {
-                        // Already committed at this timestamp.
-                        OccPrepareResult::Ok
-                    } else {
-                        // Committed at a different timestamp.
-                        OccPrepareResult::Retry { proposed: ts.time }
+                use crate::tapirstore::CheckPrepareStatus;
+                let result = match self.store.check_prepare_status(transaction_id, commit) {
+                    CheckPrepareStatus::CommittedAtTimestamp => OccPrepareResult::Ok,
+                    CheckPrepareStatus::CommittedDifferent { proposed } => {
+                        OccPrepareResult::Retry { proposed }
                     }
-                } else {
-                    // Already aborted by client.
-                    OccPrepareResult::Fail
-                }
-            } else if self
-                .store
-                .prepared_at_timestamp(transaction_id, commit)
-                .is_some()
-            {
-                // Already prepared at this timestamp.
-                OccPrepareResult::Ok
-            } else if commit.time < self.store.min_prepare_time()
-                || self
-                    .store
-                    .prepared_get(transaction_id)
-                    .map(|(c, _, _)| c.time < self.store.min_prepare_time())
-                    .unwrap_or(false)
-            {
-                tracing::debug!(
-                    shard = ?self.store.shard(),
-                    txn_id = ?transaction_id,
-                    commit_time = commit.time,
-                    min_prepare_time = self.store.min_prepare_time(),
-                    "Prepare rejected: TooLate (commit_time < min_prepare_time)"
-                );
-                // Too late to prepare or reprepare.
-                OccPrepareResult::TooLate
-            } else {
-                self.store
-                    .prepare(*transaction_id, transaction.clone(), *commit, false)
-            };
+                    CheckPrepareStatus::Aborted => OccPrepareResult::Fail,
+                    CheckPrepareStatus::PreparedAtTimestamp { .. } => OccPrepareResult::Ok,
+                    CheckPrepareStatus::TooLate => {
+                        tracing::debug!(
+                            shard = ?self.store.shard(),
+                            txn_id = ?transaction_id,
+                            commit_time = commit.time,
+                            "Prepare rejected: TooLate"
+                        );
+                        OccPrepareResult::TooLate
+                    }
+                    CheckPrepareStatus::Unknown => {
+                        self.store.prepare(*transaction_id, transaction.clone(), *commit, false)
+                    }
+                };
                 match &result {
                     OccPrepareResult::Ok => { self.counters.prepare_ok_count.fetch_add(1, Ordering::Relaxed); }
                     OccPrepareResult::Fail => { self.counters.prepare_fail_count.fetch_add(1, Ordering::Relaxed); }
