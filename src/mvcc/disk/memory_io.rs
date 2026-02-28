@@ -53,6 +53,23 @@ impl MemoryIo {
             COUNTER.fetch_add(1, Ordering::Relaxed)
         ))
     }
+
+    /// List all files under the given directory prefix, returning (path, size) pairs
+    /// sorted by path. Only returns files whose path starts with `dir/`.
+    #[cfg(test)]
+    pub fn list_files(dir: &Path) -> Vec<(PathBuf, usize)> {
+        let fs = get_fs();
+        let inner = fs.lock().unwrap();
+        let prefix = format!("{}/", dir.display());
+        let mut result: Vec<(PathBuf, usize)> = inner
+            .files
+            .iter()
+            .filter(|(p, _)| p.to_string_lossy().starts_with(&prefix))
+            .map(|(p, data)| (p.clone(), data.len()))
+            .collect();
+        result.sort_by(|a, b| a.0.cmp(&b.0));
+        result
+    }
 }
 
 impl DiskIo for MemoryIo {

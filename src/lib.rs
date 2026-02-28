@@ -13,8 +13,7 @@ mod tapir;
 #[cfg(feature = "tls")]
 pub mod tls;
 mod transport;
-#[allow(dead_code, unused_imports)]
-mod unified;
+pub mod unified;
 pub mod util;
 
 #[cfg(test)]

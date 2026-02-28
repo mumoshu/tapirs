@@ -82,13 +82,7 @@ impl PrepareCache {
         self.key_to_counter.insert(key, self.counter);
     }
 
-    /// Clear all entries.
-    pub fn clear(&mut self) {
-        self.entries.clear();
-        self.access_order.clear();
-        self.key_to_counter.clear();
-    }
-
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.entries.len()
     }

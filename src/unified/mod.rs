@@ -1,7 +1,9 @@
+pub mod cli;
 mod manifest;
 mod mvcc_backend;
 mod prepare_cache;
 pub mod types;
+pub(crate) mod unified_memtable;
 mod vlog;
 
 #[cfg(test)]
@@ -14,13 +16,15 @@ use crate::mvcc::disk::lsm::LsmTree;
 use crate::mvcc::disk::memtable::Memtable;
 use crate::occ::TransactionId as OccTransactionId;
 use crate::tapir::Timestamp;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use manifest::UnifiedManifest;
 use prepare_cache::PrepareCache;
 use types::*;
+use unified_memtable::UnifiedMemtable;
 use vlog::UnifiedVlogSegment;
 
 pub use mvcc_backend::UnifiedMvccBackend;
@@ -40,6 +44,9 @@ pub struct UnifiedStore<K: Ord, IO: DiskIo> {
     /// MVCC memtable: current view's committed values + read timestamps.
     mvcc_memtable: Memtable<K, Timestamp>,
 
+    /// Unified MVCC memtable using UnifiedLsmEntry with ValueLocation.
+    unified_memtable: UnifiedMemtable<K>,
+
     /// MVCC SSTs from sealed views.
     mvcc_tree: LsmTree<IO>,
 
@@ -54,7 +61,8 @@ pub struct UnifiedStore<K: Ord, IO: DiskIo> {
     prepare_registry: BTreeMap<OccTransactionId, Arc<CachedPrepare>>,
 
     /// LRU cache for deserialized CO::Prepare payloads from sealed VLog.
-    prepare_cache: PrepareCache,
+    /// Uses RefCell for interior mutability (MvccBackend::get takes &self).
+    prepare_cache: RefCell<PrepareCache>,
 
     /// Current view number.
     current_view: u64,
@@ -70,6 +78,11 @@ pub struct UnifiedStore<K: Ord, IO: DiskIo> {
     /// For now, we use an in-memory BTreeMap as a stepping stone.
     ir_base: BTreeMap<OpId, IrSstEntry>,
 
+    /// Maps transaction_id → VLog pointer for sealed CO::Prepare entries.
+    /// Populated at seal time, used by cross-view commit to create OnDisk
+    /// MVCC entries without re-reading the prepare from VLog.
+    pub(crate) prepare_vlog_index: BTreeMap<OccTransactionId, UnifiedVlogPtr>,
+
     /// Base directory for all on-disk files.
     base_dir: PathBuf,
 
@@ -80,7 +93,8 @@ pub struct UnifiedStore<K: Ord, IO: DiskIo> {
     min_view_vlog_size: u64,
 
     /// Number of VLog reads performed (for testing LRU cache effectiveness).
-    vlog_read_count: u64,
+    /// Uses Cell for interior mutability (MvccBackend::get takes &self).
+    vlog_read_count: Cell<u64>,
 
     /// Number of entries written to the current view's VLog (for view seal).
     current_view_entry_count: u32,
@@ -127,7 +141,7 @@ impl<K: Ord + Clone, IO: DiskIo> UnifiedStore<K, IO> {
             "vlog_seg_{:04}.dat",
             manifest.active_segment_id
         ));
-        let active_vlog = UnifiedVlogSegment::<IO>::open_at(
+        let mut active_vlog = UnifiedVlogSegment::<IO>::open_at(
             manifest.active_segment_id,
             active_path,
             manifest.active_write_offset,
@@ -144,23 +158,35 @@ impl<K: Ord + Clone, IO: DiskIo> UnifiedStore<K, IO> {
             io_flags,
         );
 
+        let current_view = manifest.current_view;
+
+        // Start tracking the current view in the active VLog segment.
+        // This ensures finish_view() at seal time has a ViewRange to update.
+        active_vlog.start_view(current_view);
+
         Ok(Self {
             mvcc_memtable: Memtable::new(),
+            unified_memtable: UnifiedMemtable::new(),
             mvcc_tree,
             active_vlog,
             sealed_vlog_segments,
             prepare_registry: BTreeMap::new(),
-            prepare_cache: PrepareCache::new(DEFAULT_PREPARE_CACHE_CAPACITY),
-            current_view: manifest.current_view,
+            prepare_vlog_index: BTreeMap::new(),
+            prepare_cache: RefCell::new(PrepareCache::new(DEFAULT_PREPARE_CACHE_CAPACITY)),
+            current_view,
             manifest,
             ir_overlay: BTreeMap::new(),
             ir_base: BTreeMap::new(),
             base_dir,
             io_flags,
             min_view_vlog_size,
-            vlog_read_count: 0,
+            vlog_read_count: Cell::new(0),
             current_view_entry_count: 0,
         })
+    }
+
+    pub fn base_dir(&self) -> &Path {
+        &self.base_dir
     }
 
     pub fn current_view(&self) -> u64 {
@@ -168,11 +194,31 @@ impl<K: Ord + Clone, IO: DiskIo> UnifiedStore<K, IO> {
     }
 
     pub fn vlog_read_count(&self) -> u64 {
-        self.vlog_read_count
+        self.vlog_read_count.get()
     }
 
     pub fn sealed_vlog_segments(&self) -> &BTreeMap<u64, UnifiedVlogSegment<IO>> {
         &self.sealed_vlog_segments
+    }
+
+    /// Get the active VLog segment's ID.
+    pub fn active_vlog_id(&self) -> u64 {
+        self.active_vlog.id
+    }
+
+    /// Get the active VLog segment's write offset (bytes written).
+    pub fn active_vlog_write_offset(&self) -> u64 {
+        self.active_vlog.write_offset()
+    }
+
+    /// Get the active VLog segment's view ranges.
+    pub fn active_vlog_views(&self) -> &[ViewRange] {
+        &self.active_vlog.views
+    }
+
+    /// Iterate over all IR overlay entries.
+    pub fn ir_overlay_entries(&self) -> impl Iterator<Item = (&OpId, &IrMemEntry)> {
+        self.ir_overlay.iter()
     }
 
     /// Insert an IR entry into the overlay.
@@ -222,20 +268,22 @@ impl<K: Ord + Clone, IO: DiskIo> UnifiedStore<K, IO> {
 
     /// Resolve a value from a sealed VLog (OnDisk path).
     /// Uses the prepare cache to avoid repeated reads.
+    /// Takes `&self` via interior mutability (RefCell/Cell) so it can be
+    /// called from `MvccBackend::get(&self)`.
     pub fn resolve_on_disk(
-        &mut self,
+        &self,
         ptr: &UnifiedVlogPrepareValuePtr,
     ) -> Result<Arc<CachedPrepare>, StorageError> {
         let key_seg = ptr.prepare_ptr.segment_id;
         let key_off = ptr.prepare_ptr.offset;
 
         // Check cache first
-        if let Some(cached) = self.prepare_cache.get(key_seg, key_off) {
+        if let Some(cached) = self.prepare_cache.borrow_mut().get(key_seg, key_off) {
             return Ok(cached);
         }
 
         // Cache miss: read from VLog (sealed or active)
-        self.vlog_read_count += 1;
+        self.vlog_read_count.set(self.vlog_read_count.get() + 1);
 
         // Check sealed segments first, then the active segment (which may
         // contain sealed view entries when the segment is smaller than
@@ -254,7 +302,7 @@ impl<K: Ord + Clone, IO: DiskIo> UnifiedStore<K, IO> {
 
         let prepare = segment.read_prepare(&ptr.prepare_ptr)?;
         let cached = Arc::new(prepare);
-        self.prepare_cache.insert(key_seg, key_off, cached.clone());
+        self.prepare_cache.borrow_mut().insert(key_seg, key_off, cached.clone());
         Ok(cached)
     }
 
@@ -273,21 +321,14 @@ impl<K: Ord + Clone, IO: DiskIo> UnifiedStore<K, IO> {
         &self.mvcc_tree
     }
 
-    /// Look up an MVCC entry in the memtable by key bytes and timestamp.
-    pub fn mvcc_entry_from_memtable(
-        &self,
-        key: &K,
-        ts: Timestamp,
-    ) -> Option<&UnifiedLsmEntry>
-    where
-        K: Clone,
-    {
-        // The memtable stores LsmEntry (from the existing memtable module),
-        // but our unified store wraps it. For now, we need a separate
-        // unified memtable. This is a placeholder that will be replaced
-        // with the actual unified memtable integration.
-        let _ = (key, ts);
-        None
+    /// Get a reference to the unified MVCC memtable.
+    pub(crate) fn unified_memtable(&self) -> &UnifiedMemtable<K> {
+        &self.unified_memtable
+    }
+
+    /// Get a mutable reference to the unified MVCC memtable.
+    pub(crate) fn unified_memtable_mut(&mut self) -> &mut UnifiedMemtable<K> {
+        &mut self.unified_memtable
     }
 
     /// Seal the current view: write VLog entries, flush MVCC memtable → SST,
@@ -313,8 +354,8 @@ impl<K: Ord + Clone, IO: DiskIo> UnifiedStore<K, IO> {
             vlog_ptrs = self.active_vlog.append_batch(&entry_refs)?;
         }
 
-        // 2. Build IR base entries from the VLog pointers
-        for (i, (op_id, entry_type, _)) in finalized_entries.iter().enumerate() {
+        // 2. Build IR base entries and prepare_vlog_index from VLog pointers
+        for (i, (op_id, entry_type, payload)) in finalized_entries.iter().enumerate() {
             self.ir_base.insert(
                 *op_id,
                 IrSstEntry {
@@ -322,6 +363,12 @@ impl<K: Ord + Clone, IO: DiskIo> UnifiedStore<K, IO> {
                     vlog_ptr: vlog_ptrs[i],
                 },
             );
+            // Index CO::Prepare entries by transaction_id for cross-view commit
+            if *entry_type == VlogEntryType::Prepare
+                && let IrPayloadInline::Prepare { transaction_id, .. } = payload
+            {
+                self.prepare_vlog_index.insert(*transaction_id, vlog_ptrs[i]);
+            }
         }
 
         // 3. Sync VLog
@@ -388,7 +435,9 @@ impl<K: Ord + Clone, IO: DiskIo> UnifiedStore<K, IO> {
         self.manifest.active_write_offset = self.active_vlog.write_offset();
         self.manifest.save::<IO>(&self.base_dir)?;
 
-        // 8. Clear overlay and prepare registry
+        // 8. Convert unified memtable InMemory → OnDisk, then clear overlay + registry
+        self.unified_memtable
+            .convert_in_memory_to_on_disk(&self.prepare_vlog_index);
         self.ir_overlay.clear();
         self.prepare_registry.clear();
         self.current_view_entry_count = 0;
@@ -441,6 +490,8 @@ impl<K: Ord + Clone, IO: DiskIo> UnifiedStore<K, IO> {
         self.manifest.current_view = target_view;
         self.ir_overlay.clear();
         self.prepare_registry.clear();
+        // Note: unified_memtable is NOT cleared — committed entries from
+        // previous views remain valid with OnDisk pointers.
 
         Ok(())
     }

@@ -18,6 +18,9 @@ name = "tapictl"
 [[bin]]
 name = "tapiadm"
 
+[[bin]]
+name = "tapirstore"
+
 [features]
 default = []
 io-uring = ["dep:io-uring", "dep:socket2"]

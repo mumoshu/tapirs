@@ -1,0 +1,456 @@
+use std::collections::BTreeMap;
+use std::io::{Read, Write};
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use crate::ir::OpId;
+use crate::mvcc::backend::MvccBackend;
+use crate::mvcc::disk::disk_io::BufferedIo;
+use crate::occ::TransactionId as OccTransactionId;
+use crate::tapir::Timestamp;
+use crate::unified::mvcc_backend::UnifiedMvccBackend;
+use crate::unified::types::*;
+use crate::unified::UnifiedStore;
+use crate::IrClientId;
+
+type Store = UnifiedMvccBackend<String, String, BufferedIo>;
+
+/// Run the tapirstore interpreter.
+///
+/// Reads a script from args (joined by space) or stdin, splits into
+/// commands separated by `;` or newlines, and executes them sequentially
+/// against a single store session.
+///
+/// Returns exit code: 0 on success, 1 if any command failed.
+pub fn run<I, R, W, E>(args: I, mut stdin: R, mut stdout: W, mut stderr: E) -> i32
+where
+    I: IntoIterator<Item = String>,
+    R: Read,
+    W: Write,
+    E: Write,
+{
+    // Collect args after program name
+    let args: Vec<String> = args.into_iter().collect();
+    let script = if args.len() > 1 {
+        args[1..].join(" ")
+    } else {
+        let mut buf = String::new();
+        if stdin.read_to_string(&mut buf).is_err() {
+            let _ = writeln!(stderr, "error: failed to read stdin");
+            return 1;
+        }
+        buf
+    };
+
+    let mut ctx = Context {
+        store: None,
+        // Track prepared transactions for commit lookup
+        prepared_writes: BTreeMap::new(),
+        op_counter: 0,
+        had_error: false,
+    };
+
+    // Split by `;` and newlines into individual commands
+    for line in script.split([';', '\n']) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+        if parts.is_empty() {
+            continue;
+        }
+        if let Err(e) = execute_command(&mut ctx, &parts, &mut stdout) {
+            let _ = writeln!(stderr, "error: {e}");
+            ctx.had_error = true;
+        }
+    }
+
+    if ctx.had_error { 1 } else { 0 }
+}
+
+struct Context {
+    store: Option<Store>,
+    /// Cached write sets from prepare commands, keyed by txn_id.
+    prepared_writes: BTreeMap<OccTransactionId, Vec<(String, Option<String>)>>,
+    /// Auto-incrementing OpId counter.
+    op_counter: u64,
+    had_error: bool,
+}
+
+impl Context {
+    fn next_op_id(&mut self) -> OpId {
+        self.op_counter += 1;
+        OpId {
+            client_id: IrClientId(1),
+            number: self.op_counter,
+        }
+    }
+
+    fn store(&self) -> Result<&Store, String> {
+        self.store.as_ref().ok_or_else(|| "no store open".to_string())
+    }
+
+    fn store_mut(&mut self) -> Result<&mut Store, String> {
+        self.store.as_mut().ok_or_else(|| "no store open".to_string())
+    }
+}
+
+fn parse_ts(s: &str) -> Result<Timestamp, String> {
+    let time: u64 = s.parse().map_err(|_| format!("invalid timestamp: {s}"))?;
+    Ok(Timestamp {
+        time,
+        client_id: IrClientId(1),
+    })
+}
+
+fn parse_txn_id(s: &str) -> Result<OccTransactionId, String> {
+    let (client_str, num_str) = s
+        .split_once(':')
+        .ok_or_else(|| format!("invalid txn_id (expected client:number): {s}"))?;
+    let client: u64 = client_str
+        .parse()
+        .map_err(|_| format!("invalid client_id: {client_str}"))?;
+    let num: u64 = num_str
+        .parse()
+        .map_err(|_| format!("invalid txn number: {num_str}"))?;
+    Ok(OccTransactionId {
+        client_id: IrClientId(client),
+        number: num,
+    })
+}
+
+fn parse_kv_pair(s: &str) -> Result<(String, Option<String>), String> {
+    if let Some((k, v)) = s.split_once('=') {
+        Ok((k.to_string(), Some(v.to_string())))
+    } else {
+        Err(format!("invalid key=value pair: {s}"))
+    }
+}
+
+fn execute_command<W: Write>(
+    ctx: &mut Context,
+    parts: &[&str],
+    stdout: &mut W,
+) -> Result<(), String> {
+    match parts[0] {
+        "open" => cmd_open(ctx, parts),
+        "open-with" => cmd_open_with(ctx, parts),
+        "put" => cmd_put(ctx, parts),
+        "delete" => cmd_delete(ctx, parts),
+        "prepare" => cmd_prepare(ctx, parts),
+        "commit" => cmd_commit(ctx, parts),
+        "get" => cmd_get(ctx, parts, stdout),
+        "get-at" => cmd_get_at(ctx, parts, stdout),
+        "get-range" => cmd_get_range(ctx, parts, stdout),
+        "scan" => cmd_scan(ctx, parts, stdout),
+        "has-writes" => cmd_has_writes(ctx, parts, stdout),
+        "seal" => cmd_seal(ctx, parts),
+        "status" => cmd_status(ctx, parts, stdout),
+        "list-vlogs" => cmd_list_vlogs(ctx, parts, stdout),
+        _ => Err(format!("unknown command: {}", parts[0])),
+    }
+}
+
+fn cmd_open(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
+    if parts.len() != 2 {
+        return Err("usage: open <dir>".to_string());
+    }
+    let path = PathBuf::from(parts[1]);
+    let inner = UnifiedStore::<String, BufferedIo>::open(path)
+        .map_err(|e| format!("open failed: {e}"))?;
+    ctx.store = Some(UnifiedMvccBackend::new(inner));
+    Ok(())
+}
+
+fn cmd_open_with(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
+    if parts.len() != 3 {
+        return Err("usage: open-with <dir> <min_vlog_size>".to_string());
+    }
+    let path = PathBuf::from(parts[1]);
+    let min_size: u64 = parts[2]
+        .parse()
+        .map_err(|_| format!("invalid min_vlog_size: {}", parts[2]))?;
+    let inner = UnifiedStore::<String, BufferedIo>::open_with_options(path, min_size)
+        .map_err(|e| format!("open-with failed: {e}"))?;
+    ctx.store = Some(UnifiedMvccBackend::new(inner));
+    Ok(())
+}
+
+fn cmd_put(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
+    if parts.len() != 4 {
+        return Err("usage: put <key> <value> <ts>".to_string());
+    }
+    let key = parts[1].to_string();
+    let value = parts[2].to_string();
+    let ts = parse_ts(parts[3])?;
+    let store = ctx.store_mut()?;
+    MvccBackend::put(store, key, Some(value), ts)
+        .map_err(|e| format!("put failed: {e}"))
+}
+
+fn cmd_delete(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
+    if parts.len() != 3 {
+        return Err("usage: delete <key> <ts>".to_string());
+    }
+    let key = parts[1].to_string();
+    let ts = parse_ts(parts[2])?;
+    let store = ctx.store_mut()?;
+    MvccBackend::put(store, key, None, ts)
+        .map_err(|e| format!("delete failed: {e}"))
+}
+
+fn cmd_prepare(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
+    if parts.len() < 3 {
+        return Err("usage: prepare <client:num> <ts> [key=value ...]".to_string());
+    }
+    let txn_id = parse_txn_id(parts[1])?;
+    let commit_ts = parse_ts(parts[2])?;
+
+    let mut writes = Vec::new();
+    for kv in &parts[3..] {
+        writes.push(parse_kv_pair(kv)?);
+    }
+
+    // Build serialized write set for IR entry
+    let write_set: Vec<(Vec<u8>, Vec<u8>)> = writes
+        .iter()
+        .map(|(k, v)| {
+            (
+                bitcode::serialize(k).unwrap_or_default(),
+                v.as_ref()
+                    .map(|s| bitcode::serialize(s).unwrap_or_default())
+                    .unwrap_or_default(),
+            )
+        })
+        .collect();
+
+    // Register prepare in the store
+    let prepare = Arc::new(CachedPrepare {
+        transaction_id: txn_id,
+        commit_ts,
+        read_set: vec![],
+        write_set,
+        scan_set: vec![],
+    });
+
+    let op_id = ctx.next_op_id();
+    let store = ctx.store_mut()?;
+    store.inner_mut().register_prepare_raw(txn_id, prepare);
+
+    // Insert IR overlay entry
+    let current_view = store.inner().current_view();
+    store.inner_mut().insert_ir_entry(
+        op_id,
+        IrMemEntry {
+            entry_type: VlogEntryType::Prepare,
+            state: IrState::Finalized(current_view),
+            payload: IrPayloadInline::Prepare {
+                transaction_id: txn_id,
+                commit_ts,
+                read_set: vec![],
+                write_set: writes
+                    .iter()
+                    .map(|(k, v)| {
+                        (
+                            bitcode::serialize(k).unwrap_or_default(),
+                            v.as_ref()
+                                .map(|s| bitcode::serialize(s).unwrap_or_default())
+                                .unwrap_or_default(),
+                        )
+                    })
+                    .collect(),
+                scan_set: vec![],
+            },
+        },
+    );
+
+    // Cache writes for commit lookup
+    ctx.prepared_writes.insert(txn_id, writes);
+    Ok(())
+}
+
+fn cmd_commit(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
+    if parts.len() != 3 {
+        return Err("usage: commit <client:num> <ts>".to_string());
+    }
+    let txn_id = parse_txn_id(parts[1])?;
+    let commit_ts = parse_ts(parts[2])?;
+
+    let writes = ctx
+        .prepared_writes
+        .remove(&txn_id)
+        .ok_or_else(|| format!("no prepared transaction: {}", parts[1]))?;
+
+    // Insert IR commit entry
+    let prepare_op_id = OpId {
+        client_id: IrClientId(1),
+        number: 0, // placeholder — we don't track prepare op_id to commit
+    };
+    let op_id = ctx.next_op_id();
+    let store = ctx.store_mut()?;
+    let current_view = store.inner().current_view();
+    store.inner_mut().insert_ir_entry(
+        op_id,
+        IrMemEntry {
+            entry_type: VlogEntryType::Commit,
+            state: IrState::Finalized(current_view),
+            payload: IrPayloadInline::Commit {
+                transaction_id: txn_id,
+                commit_ts,
+                prepare_ref: PrepareRef::SameView(prepare_op_id),
+            },
+        },
+    );
+
+    // Commit through MvccBackend
+    store
+        .commit_batch_for_transaction(txn_id, writes, vec![], commit_ts)
+        .map_err(|e| format!("commit failed: {e}"))
+}
+
+fn cmd_get<W: Write>(ctx: &mut Context, parts: &[&str], stdout: &mut W) -> Result<(), String> {
+    if parts.len() != 2 {
+        return Err("usage: get <key>".to_string());
+    }
+    let key = parts[1].to_string();
+    let store = ctx.store()?;
+    let (value, ts) =
+        MvccBackend::get(store, &key).map_err(|e| format!("get failed: {e}"))?;
+    write_kv_result(stdout, &key, value.as_deref(), ts)
+}
+
+fn cmd_get_at<W: Write>(
+    ctx: &mut Context,
+    parts: &[&str],
+    stdout: &mut W,
+) -> Result<(), String> {
+    if parts.len() != 3 {
+        return Err("usage: get-at <key> <ts>".to_string());
+    }
+    let key = parts[1].to_string();
+    let ts = parse_ts(parts[2])?;
+    let store = ctx.store()?;
+    let (value, actual_ts) =
+        MvccBackend::get_at(store, &key, ts).map_err(|e| format!("get-at failed: {e}"))?;
+    write_kv_result(stdout, &key, value.as_deref(), actual_ts)
+}
+
+fn cmd_get_range<W: Write>(
+    ctx: &mut Context,
+    parts: &[&str],
+    stdout: &mut W,
+) -> Result<(), String> {
+    if parts.len() != 3 {
+        return Err("usage: get-range <key> <ts>".to_string());
+    }
+    let key = parts[1].to_string();
+    let ts = parse_ts(parts[2])?;
+    let store = ctx.store()?;
+    let (write_ts, next_ts) =
+        MvccBackend::get_range(store, &key, ts).map_err(|e| format!("get-range failed: {e}"))?;
+    let next_str = match next_ts {
+        Some(t) => t.time.to_string(),
+        None => "none".to_string(),
+    };
+    writeln!(stdout, "write_ts={} next_ts={next_str}", write_ts.time)
+        .map_err(|e| format!("write failed: {e}"))
+}
+
+fn cmd_scan<W: Write>(ctx: &mut Context, parts: &[&str], stdout: &mut W) -> Result<(), String> {
+    if parts.len() != 4 {
+        return Err("usage: scan <start> <end> <ts>".to_string());
+    }
+    let start = parts[1].to_string();
+    let end = parts[2].to_string();
+    let ts = parse_ts(parts[3])?;
+    let store = ctx.store()?;
+    let results =
+        MvccBackend::scan(store, &start, &end, ts).map_err(|e| format!("scan failed: {e}"))?;
+    for (key, value, entry_ts) in &results {
+        write_kv_result(stdout, key, value.as_deref(), *entry_ts)?;
+    }
+    Ok(())
+}
+
+fn cmd_has_writes<W: Write>(
+    ctx: &mut Context,
+    parts: &[&str],
+    stdout: &mut W,
+) -> Result<(), String> {
+    if parts.len() != 5 {
+        return Err("usage: has-writes <start> <end> <after_ts> <before_ts>".to_string());
+    }
+    let start = parts[1].to_string();
+    let end = parts[2].to_string();
+    let after = parse_ts(parts[3])?;
+    let before = parse_ts(parts[4])?;
+    let store = ctx.store()?;
+    let has = MvccBackend::has_writes_in_range(store, &start, &end, after, before)
+        .map_err(|e| format!("has-writes failed: {e}"))?;
+    writeln!(stdout, "{has}").map_err(|e| format!("write failed: {e}"))
+}
+
+fn cmd_seal(ctx: &mut Context, _parts: &[&str]) -> Result<(), String> {
+    let store = ctx.store_mut()?;
+    store
+        .inner_mut()
+        .seal_current_view()
+        .map_err(|e| format!("seal failed: {e}"))
+}
+
+fn cmd_status<W: Write>(
+    ctx: &mut Context,
+    _parts: &[&str],
+    stdout: &mut W,
+) -> Result<(), String> {
+    let store = ctx.store()?;
+    let view = store.inner().current_view();
+    let segments = store.inner().sealed_vlog_segments().len();
+    writeln!(stdout, "view={view} sealed_segments={segments}")
+        .map_err(|e| format!("write failed: {e}"))
+}
+
+fn cmd_list_vlogs<W: Write>(
+    ctx: &mut Context,
+    _parts: &[&str],
+    stdout: &mut W,
+) -> Result<(), String> {
+    let store = ctx.store()?;
+
+    // Active segment
+    let active_id = store.inner().active_vlog_id();
+    let active_size = store.inner().active_vlog_write_offset();
+    let active_views = store.inner().active_vlog_views();
+    let view_list: Vec<String> = active_views.iter().map(|v| v.view.to_string()).collect();
+    writeln!(
+        stdout,
+        "vlog_seg_{active_id:04} size={active_size} views=[{}]",
+        view_list.join(",")
+    )
+    .map_err(|e| format!("write failed: {e}"))?;
+
+    // Sealed segments
+    for (id, seg) in store.inner().sealed_vlog_segments() {
+        let size = seg.write_offset();
+        let view_list: Vec<String> = seg.views.iter().map(|v| v.view.to_string()).collect();
+        writeln!(
+            stdout,
+            "vlog_seg_{id:04} size={size} views=[{}]",
+            view_list.join(",")
+        )
+        .map_err(|e| format!("write failed: {e}"))?;
+    }
+    Ok(())
+}
+
+fn write_kv_result<W: Write>(
+    stdout: &mut W,
+    key: &str,
+    value: Option<&str>,
+    ts: Timestamp,
+) -> Result<(), String> {
+    let val_str = value.unwrap_or("<none>");
+    writeln!(stdout, "{key}={val_str} @{}", ts.time)
+        .map_err(|e| format!("write failed: {e}"))
+}

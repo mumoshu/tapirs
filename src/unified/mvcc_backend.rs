@@ -3,7 +3,6 @@ use super::UnifiedStore;
 use crate::mvcc::backend::MvccBackend;
 use crate::mvcc::disk::disk_io::DiskIo;
 use crate::mvcc::disk::error::StorageError;
-use crate::mvcc::disk::memtable::{CompositeKey, MaxValue};
 use crate::occ::TransactionId as OccTransactionId;
 use crate::tapir::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -36,112 +35,43 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedMvccBackend<K, V, IO> {
     }
 }
 
-/// In-memory MVCC memtable using UnifiedLsmEntry as values.
-/// Wraps a BTreeMap<CompositeKey<K, Timestamp>, UnifiedLsmEntry>.
-struct UnifiedMemtable<K: Ord> {
-    map: std::collections::BTreeMap<CompositeKey<K, Timestamp>, UnifiedLsmEntry>,
-}
-
-impl<K: Ord> Default for UnifiedMemtable<K> {
-    fn default() -> Self {
-        Self {
-            map: std::collections::BTreeMap::new(),
-        }
-    }
-}
-
-impl<K: Ord + Clone> UnifiedMemtable<K> {
-    fn insert(&mut self, key: K, ts: Timestamp, entry: UnifiedLsmEntry) {
-        self.map.insert(CompositeKey::new(key, ts), entry);
-    }
-
-    fn get_at(&self, key: &K, ts: Timestamp) -> Option<(&CompositeKey<K, Timestamp>, &UnifiedLsmEntry)> {
-        let search = CompositeKey::new(key.clone(), ts);
-        self.map
-            .range(search..)
-            .next()
-            .filter(|(k, _)| k.key == *key)
-    }
-
-    fn get_latest(&self, key: &K) -> Option<(&CompositeKey<K, Timestamp>, &UnifiedLsmEntry)>
-    where
-        Timestamp: MaxValue,
-    {
-        let search = CompositeKey::new(key.clone(), Timestamp::max_value());
-        self.map
-            .range(search..)
-            .next()
-            .filter(|(k, _)| k.key == *key)
-    }
-
-    fn update_last_read(&mut self, key: &K, ts: Timestamp, read_ts: u64) {
-        let search = CompositeKey::new(key.clone(), ts);
-        if let Some((found_key, _)) = self
-            .map
-            .range(search..)
-            .next()
-            .filter(|(k, _)| k.key == *key)
-        {
-            let found_key = found_key.clone();
-            if let Some(entry) = self.map.get_mut(&found_key) {
-                entry.last_read_ts = Some(match entry.last_read_ts {
-                    Some(existing) => existing.max(read_ts),
-                    None => read_ts,
-                });
+impl<K, V, IO: DiskIo> UnifiedMvccBackend<K, V, IO>
+where
+    K: Clone + Ord + Hash + Debug + Send + Serialize + for<'de> Deserialize<'de> + 'static,
+    V: Clone + Debug + Send + Serialize + for<'de> Deserialize<'de> + 'static,
+    IO: DiskIo,
+{
+    /// Resolve a value from a UnifiedLsmEntry's ValueLocation.
+    ///
+    /// - `InMemory { txn_id, write_index }` → look up in prepare_registry
+    /// - `OnDisk(ptr)` → read from VLog via prepare_cache
+    /// - `None` → tombstone / metadata-only entry
+    fn resolve_value(&self, entry: &UnifiedLsmEntry) -> Result<Option<V>, StorageError> {
+        match &entry.value_ref {
+            None => Ok(None),
+            Some(ValueLocation::InMemory { txn_id, write_index }) => {
+                match self.store.resolve_in_memory(txn_id, *write_index) {
+                    Some((_key_bytes, value_bytes)) => {
+                        let value: V = bitcode::deserialize(value_bytes)
+                            .map_err(|e| StorageError::Codec(e.to_string()))?;
+                        Ok(Some(value))
+                    }
+                    None => Ok(None),
+                }
+            }
+            Some(ValueLocation::OnDisk(ptr)) => {
+                let cached = self.store.resolve_on_disk(ptr)?;
+                if let Some((_key_bytes, value_bytes)) =
+                    cached.write_set.get(ptr.write_index as usize)
+                {
+                    let value: V = bitcode::deserialize(value_bytes)
+                        .map_err(|e| StorageError::Codec(e.to_string()))?;
+                    Ok(Some(value))
+                } else {
+                    Ok(None)
+                }
             }
         }
-    }
-
-    fn scan(
-        &self,
-        start: &K,
-        end: &K,
-        ts: Timestamp,
-    ) -> Vec<(&CompositeKey<K, Timestamp>, &UnifiedLsmEntry)>
-    where
-        Timestamp: MaxValue,
-    {
-        let from = CompositeKey::new(start.clone(), Timestamp::max_value());
-        let mut results = Vec::new();
-        let mut last_key: Option<&K> = None;
-
-        for (ck, entry) in self.map.range(from..) {
-            if ck.key > *end {
-                break;
-            }
-            if ck.timestamp.0 > ts {
-                continue;
-            }
-            if last_key == Some(&ck.key) {
-                continue;
-            }
-            last_key = Some(&ck.key);
-            results.push((ck, entry));
-        }
-        results
-    }
-
-    fn has_writes_in_range(
-        &self,
-        start: &K,
-        end: &K,
-        after_ts: Timestamp,
-        before_ts: Timestamp,
-    ) -> bool
-    where
-        Timestamp: MaxValue,
-    {
-        let from = CompositeKey::new(start.clone(), Timestamp::max_value());
-        for (ck, entry) in self.map.range(from..) {
-            if ck.key > *end {
-                break;
-            }
-            let ts = ck.timestamp.0;
-            if ts > after_ts && ts < before_ts && entry.value_ref.is_some() {
-                return true;
-            }
-        }
-        false
     }
 }
 
@@ -154,61 +84,35 @@ where
     type Error = StorageError;
 
     fn get(&self, key: &K) -> Result<(Option<V>, Timestamp), StorageError> {
-        // Look up latest version in unified memtable
-        let _key_bytes =
-            bitcode::serialize(key).map_err(|e| StorageError::Codec(e.to_string()))?;
-
-        // Check unified memtable (we store entries in the existing memtable for now)
-        if let Some((ck, entry)) = self.store.mvcc_memtable().get_latest(key) {
-            // The existing memtable uses LsmEntry, not UnifiedLsmEntry.
-            // For the unified backend, we need our own storage.
-            // This is handled by the unified_memtable field.
+        if let Some((ck, entry)) = self.store.unified_memtable().get_latest(key) {
             let ts = ck.timestamp.0;
-            if let Some(value_ptr) = &entry.value_ptr {
-                // Resolve value - for now return default
-                let _ = value_ptr;
-            }
-            return Ok((None, ts));
+            let value = self.resolve_value(entry)?;
+            return Ok((value, ts));
         }
-
         Ok((None, Timestamp::default()))
     }
 
     fn get_at(&self, key: &K, timestamp: Timestamp) -> Result<(Option<V>, Timestamp), StorageError> {
-        // Check memtable first
-        if let Some((ck, entry)) = self.store.mvcc_memtable().get_at(key, &timestamp) {
+        if let Some((ck, entry)) = self.store.unified_memtable().get_at(key, timestamp) {
             let ts = ck.timestamp.0;
-            if let Some(value_ptr) = &entry.value_ptr {
-                let _ = value_ptr;
-            }
-            return Ok((None, ts));
+            let value = self.resolve_value(entry)?;
+            return Ok((value, ts));
         }
-
-        // Check SSTs
-        // TODO: Check MVCC SSTs from sealed views
-
         Ok((None, Timestamp::default()))
     }
 
     fn get_range(&self, key: &K, timestamp: Timestamp) -> Result<(Timestamp, Option<Timestamp>), StorageError> {
-        // Find the version at or before `timestamp`
-        if let Some((ck, entry)) = self.store.mvcc_memtable().get_at(key, &timestamp) {
+        if let Some((ck, _entry)) = self.store.unified_memtable().get_at(key, timestamp) {
             let write_ts = ck.timestamp.0;
-            // Find the next version after this one
-            let next_ts = self.store.mvcc_memtable().get_at(key, &Timestamp {
-                time: write_ts.time + 1,
-                ..write_ts
-            });
-            let _ = (entry, next_ts);
-            return Ok((write_ts, None));
+            let next = self.store.unified_memtable().find_next_version(key, write_ts);
+            return Ok((write_ts, next));
         }
-
         Ok((Timestamp::default(), None))
     }
 
     fn put(&mut self, key: K, value: Option<V>, timestamp: Timestamp) -> Result<(), StorageError> {
         // For direct puts (not through commit_batch_for_transaction),
-        // we create a simple entry. This is used for initial data setup.
+        // create a synthetic prepare entry for this single write.
         let value_bytes = value
             .as_ref()
             .map(|v| bitcode::serialize(v).map_err(|e| StorageError::Codec(e.to_string())))
@@ -216,7 +120,6 @@ where
         let key_bytes =
             bitcode::serialize(&key).map_err(|e| StorageError::Codec(e.to_string()))?;
 
-        // Create a synthetic prepare entry for this single write
         let txn_id = OccTransactionId {
             client_id: crate::IrClientId(u64::MAX),
             number: timestamp.time,
@@ -238,15 +141,22 @@ where
 
         self.store.register_prepare_raw(txn_id, prepare);
 
-        // Insert into memtable with InMemory location
-        let entry = crate::mvcc::disk::memtable::LsmEntry {
-            value_ptr: None, // Unified path uses ValueLocation::InMemory
-            last_read_ts: None,
+        let value_ref = if value.is_some() {
+            Some(ValueLocation::InMemory {
+                txn_id,
+                write_index: 0,
+            })
+        } else {
+            None
         };
 
-        self.store.mvcc_memtable_mut().insert(
-            CompositeKey::new(key, timestamp),
-            entry,
+        self.store.unified_memtable_mut().insert(
+            key,
+            timestamp,
+            UnifiedLsmEntry {
+                value_ref,
+                last_read_ts: None,
+            },
         );
 
         Ok(())
@@ -259,13 +169,13 @@ where
         commit: Timestamp,
     ) -> Result<(), StorageError> {
         self.store
-            .mvcc_memtable_mut()
-            .update_last_read(&key, &read, commit.time);
+            .unified_memtable_mut()
+            .update_last_read(&key, read, commit.time);
         Ok(())
     }
 
     fn get_last_read(&self, key: &K) -> Result<Option<Timestamp>, StorageError> {
-        if let Some((_, entry)) = self.store.mvcc_memtable().get_latest(key)
+        if let Some((_, entry)) = self.store.unified_memtable().get_latest(key)
             && let Some(ts) = entry.last_read_ts
         {
             return Ok(Some(Timestamp::from_time(ts)));
@@ -278,7 +188,7 @@ where
         key: &K,
         timestamp: Timestamp,
     ) -> Result<Option<Timestamp>, StorageError> {
-        if let Some((_, entry)) = self.store.mvcc_memtable().get_at(key, &timestamp)
+        if let Some((_, entry)) = self.store.unified_memtable().get_at(key, timestamp)
             && let Some(ts) = entry.last_read_ts
         {
             return Ok(Some(Timestamp::from_time(ts)));
@@ -292,12 +202,12 @@ where
         end: &K,
         timestamp: Timestamp,
     ) -> Result<Vec<(K, Option<V>, Timestamp)>, StorageError> {
-        let results = self.store.mvcc_memtable().scan(start, end, &timestamp);
+        let results = self.store.unified_memtable().scan(start, end, timestamp);
         let mut output = Vec::new();
-        for (ck, _entry) in results {
+        for (ck, entry) in results {
             let ts = ck.timestamp.0;
-            // TODO: Resolve value from VLog/prepare_registry
-            output.push((ck.key.clone(), None, ts));
+            let value = self.resolve_value(entry)?;
+            output.push((ck.key.clone(), value, ts));
         }
         Ok(output)
     }
@@ -309,18 +219,10 @@ where
         after_ts: Timestamp,
         before_ts: Timestamp,
     ) -> Result<bool, StorageError> {
-        // Check memtable for writes in the given timestamp range
-        let from = CompositeKey::new(start.clone(), Timestamp::max_value());
-        for (ck, entry) in self.store.mvcc_memtable().entries().range(from..) {
-            if ck.key > *end {
-                break;
-            }
-            let ts = ck.timestamp.0;
-            if ts > after_ts && ts < before_ts && entry.value_ptr.is_some() {
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        Ok(self
+            .store
+            .unified_memtable()
+            .has_writes_in_range(start, end, after_ts, before_ts))
     }
 
     fn commit_batch(
@@ -342,7 +244,8 @@ where
     }
 }
 
-use crate::occ::Timestamp as OccTimestamp;
+// Bring OccTimestamp trait into scope for Timestamp::from_time().
+use crate::occ::Timestamp as _;
 
 impl<K, V, IO: DiskIo> UnifiedMvccBackend<K, V, IO>
 where
@@ -400,7 +303,8 @@ where
     }
 
     /// Commit with transaction identity for PrepareRef lookup.
-    /// Creates MVCC entries with ValueLocation::InMemory.
+    /// Creates MVCC entries with ValueLocation::InMemory pointing to
+    /// the prepare_registry, avoiding value duplication in the VLog.
     pub fn commit_batch_for_transaction(
         &mut self,
         txn_id: OccTransactionId,
@@ -408,39 +312,61 @@ where
         reads: Vec<(K, Timestamp)>,
         commit: Timestamp,
     ) -> Result<(), StorageError> {
-        // Look up the prepare in registry to find write_index mapping
         let has_prepare = self.store.prepare_registry.contains_key(&txn_id);
+        let cross_view_ptr = self.store.prepare_vlog_index.get(&txn_id).copied();
 
         if has_prepare {
-            // Create MVCC entries with InMemory location pointing to prepare_registry
-            for (key, _value) in writes.iter() {
-                let entry = crate::mvcc::disk::memtable::LsmEntry {
-                    value_ptr: None, // Unified path uses ValueLocation::InMemory
-                    last_read_ts: None,
+            // InMemory path: prepare is in current view's prepare_registry
+            for (i, (key, value)) in writes.iter().enumerate() {
+                let value_ref = if value.is_some() {
+                    Some(ValueLocation::InMemory {
+                        txn_id,
+                        write_index: i as u16,
+                    })
+                } else {
+                    None
                 };
 
-                self.store.mvcc_memtable_mut().insert(
-                    CompositeKey::new(key.clone(), commit),
-                    entry,
+                self.store.unified_memtable_mut().insert(
+                    key.clone(),
+                    commit,
+                    UnifiedLsmEntry {
+                        value_ref,
+                        last_read_ts: None,
+                    },
+                );
+            }
+        } else if let Some(vlog_ptr) = cross_view_ptr {
+            // OnDisk path: prepare is in a sealed VLog (cross-view commit)
+            for (i, (key, value)) in writes.iter().enumerate() {
+                let value_ref = if value.is_some() {
+                    Some(ValueLocation::OnDisk(UnifiedVlogPrepareValuePtr {
+                        prepare_ptr: vlog_ptr,
+                        write_index: i as u16,
+                    }))
+                } else {
+                    None
+                };
+
+                self.store.unified_memtable_mut().insert(
+                    key.clone(),
+                    commit,
+                    UnifiedLsmEntry {
+                        value_ref,
+                        last_read_ts: None,
+                    },
                 );
             }
         } else {
-            // Fallback: no prepare registered, use direct commit_batch
+            // Fallback: no prepare registered and not in VLog index
             return self.commit_batch(writes, reads, commit);
         }
 
         // Update read timestamps
         for (key, read) in reads {
-            self.commit_get(key, read, commit)?;
+            MvccBackend::commit_get(self, key, read, commit)?;
         }
 
-        Ok(())
-    }
-
-    fn commit_get(&mut self, key: K, read: Timestamp, commit: Timestamp) -> Result<(), StorageError> {
-        self.store
-            .mvcc_memtable_mut()
-            .update_last_read(&key, &read, commit.time);
         Ok(())
     }
 }
