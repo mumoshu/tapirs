@@ -36,6 +36,16 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
         commit: Timestamp,
     );
 
+    /// Record a commit in the transaction log and apply the write set.
+    /// Panics (debug only) if the transaction was previously logged as aborted
+    /// or committed at a different timestamp.
+    fn commit_and_log(
+        &mut self,
+        id: TransactionId,
+        txn: &Transaction<K, V, Timestamp>,
+        commit: Timestamp,
+    );
+
     fn remove_prepared(&mut self, id: TransactionId) -> bool;
 
     fn add_prepared(

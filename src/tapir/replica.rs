@@ -429,15 +429,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                 transaction,
                 commit,
             } => {
-                let old = self.store.txn_log_insert(*transaction_id, *commit, true);
-                if let Some((ts, committed)) = old {
-                    debug_assert!(committed, "{transaction_id:?} aborted");
-                    debug_assert_eq!(
-                        ts, *commit,
-                        "{transaction_id:?} committed at (different) {ts:?}"
-                    );
-                }
-                self.store.commit(*transaction_id, transaction, *commit);
+                self.store.commit_and_log(*transaction_id, transaction, *commit);
                 self.counters.commit_count.fetch_add(1, Ordering::Relaxed);
                 None
             }

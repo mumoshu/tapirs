@@ -125,6 +125,20 @@ where
         self.occ.commit(id, txn, commit);
     }
 
+    fn commit_and_log(
+        &mut self,
+        id: TransactionId,
+        txn: &Transaction<K, V, Timestamp>,
+        commit: Timestamp,
+    ) {
+        let old = self.transaction_log.insert(id, (commit, true));
+        if let Some((ts, committed)) = old {
+            debug_assert!(committed, "{id:?} aborted");
+            debug_assert_eq!(ts, commit, "{id:?} committed at (different) {ts:?}");
+        }
+        self.occ.commit(id, txn, commit);
+    }
+
     fn remove_prepared(&mut self, id: TransactionId) -> bool {
         self.occ.remove_prepared(id)
     }
