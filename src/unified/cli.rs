@@ -72,7 +72,8 @@ where
 struct Context {
     store: Option<Store>,
     /// Cached write sets from prepare commands, keyed by txn_id.
-    prepared_writes: BTreeMap<OccTransactionId, Vec<(String, Option<String>)>>,
+    /// Stores (prepare_op_id, prepare_view, writes).
+    prepared_writes: BTreeMap<OccTransactionId, (OpId, u64, Vec<(String, Option<String>)>)>,
     /// Auto-incrementing OpId counter.
     op_counter: u64,
     had_error: bool,
@@ -148,6 +149,7 @@ fn execute_command<W: Write>(
         "seal" => cmd_seal(ctx, parts),
         "status" => cmd_status(ctx, parts, stdout),
         "list-vlogs" => cmd_list_vlogs(ctx, parts, stdout),
+        "dump-vlog" => cmd_dump_vlog(ctx, parts, stdout),
         _ => Err(format!("unknown command: {}", parts[0])),
     }
 }
@@ -265,8 +267,9 @@ fn cmd_prepare(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
         },
     );
 
-    // Cache writes for commit lookup
-    ctx.prepared_writes.insert(txn_id, writes);
+    // Cache writes, op_id, and view for commit lookup
+    ctx.prepared_writes
+        .insert(txn_id, (op_id, current_view, writes));
     Ok(())
 }
 
@@ -277,18 +280,25 @@ fn cmd_commit(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
     let txn_id = parse_txn_id(parts[1])?;
     let commit_ts = parse_ts(parts[2])?;
 
-    let writes = ctx
+    let (prepare_op_id, prepare_view, writes) = ctx
         .prepared_writes
         .remove(&txn_id)
         .ok_or_else(|| format!("no prepared transaction: {}", parts[1]))?;
 
-    // Insert IR commit entry
-    let prepare_op_id = OpId {
-        client_id: IrClientId(1),
-        number: 0, // placeholder — we don't track prepare op_id to commit
-    };
     let op_id = ctx.next_op_id();
     let store = ctx.store_mut()?;
+
+    // Determine PrepareRef: if prepare was sealed, use CrossView with VLog ptr;
+    // otherwise use SameView with the prepare's op_id.
+    let prepare_ref = if let Some(ir_sst) = store.inner().lookup_ir_base_entry(prepare_op_id) {
+        PrepareRef::CrossView {
+            view: prepare_view,
+            vlog_ptr: ir_sst.vlog_ptr,
+        }
+    } else {
+        PrepareRef::SameView(prepare_op_id)
+    };
+
     let current_view = store.inner().current_view();
     store.inner_mut().insert_ir_entry(
         op_id,
@@ -298,7 +308,7 @@ fn cmd_commit(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
             payload: IrPayloadInline::Commit {
                 transaction_id: txn_id,
                 commit_ts,
-                prepare_ref: PrepareRef::SameView(prepare_op_id),
+                prepare_ref,
             },
         },
     );
@@ -440,6 +450,120 @@ fn cmd_list_vlogs<W: Write>(
             view_list.join(",")
         )
         .map_err(|e| format!("write failed: {e}"))?;
+    }
+    Ok(())
+}
+
+fn cmd_dump_vlog<W: Write>(
+    ctx: &mut Context,
+    parts: &[&str],
+    stdout: &mut W,
+) -> Result<(), String> {
+    if parts.len() != 2 {
+        return Err("usage: dump-vlog <segment-id>".to_string());
+    }
+    let seg_id: u64 = parts[1]
+        .parse()
+        .map_err(|_| format!("invalid segment id: {}", parts[1]))?;
+    let store = ctx.store()?;
+    let entries = store
+        .inner()
+        .dump_vlog_segment(seg_id)
+        .map_err(|e| format!("dump-vlog failed: {e}"))?;
+    for (offset, op_id, _entry_type, payload) in &entries {
+        write!(
+            stdout,
+            "@{offset} op={}:{} ",
+            op_id.client_id.0, op_id.number
+        )
+        .map_err(|e| format!("write failed: {e}"))?;
+        match payload {
+            IrPayloadInline::Prepare {
+                transaction_id,
+                commit_ts,
+                write_set,
+                ..
+            } => {
+                write!(
+                    stdout,
+                    "PREPARE txn={}:{} ts={}",
+                    transaction_id.client_id.0, transaction_id.number, commit_ts.time
+                )
+                .map_err(|e| format!("write failed: {e}"))?;
+                for (k_bytes, v_bytes) in write_set {
+                    let k: String = bitcode::deserialize(k_bytes)
+                        .unwrap_or_else(|_| format!("<{} bytes>", k_bytes.len()));
+                    let v: String = bitcode::deserialize(v_bytes)
+                        .unwrap_or_else(|_| format!("<{} bytes>", v_bytes.len()));
+                    write!(stdout, " {k}={v}").map_err(|e| format!("write failed: {e}"))?;
+                }
+                writeln!(stdout).map_err(|e| format!("write failed: {e}"))?;
+            }
+            IrPayloadInline::Commit {
+                transaction_id,
+                commit_ts,
+                prepare_ref,
+            } => {
+                let ref_str = match prepare_ref {
+                    PrepareRef::SameView(op) => {
+                        format!("same_view({}:{})", op.client_id.0, op.number)
+                    }
+                    PrepareRef::CrossView { view, vlog_ptr } => {
+                        format!(
+                            "cross_view(v={} seg={} off={} len={})",
+                            view, vlog_ptr.segment_id, vlog_ptr.offset, vlog_ptr.length
+                        )
+                    }
+                };
+                writeln!(
+                    stdout,
+                    "COMMIT txn={}:{} ts={} ref={}",
+                    transaction_id.client_id.0,
+                    transaction_id.number,
+                    commit_ts.time,
+                    ref_str
+                )
+                .map_err(|e| format!("write failed: {e}"))?;
+            }
+            IrPayloadInline::Abort {
+                transaction_id,
+                commit_ts,
+            } => {
+                let ts_str = commit_ts.map_or("none".to_string(), |t| t.time.to_string());
+                writeln!(
+                    stdout,
+                    "ABORT txn={}:{} ts={}",
+                    transaction_id.client_id.0, transaction_id.number, ts_str
+                )
+                .map_err(|e| format!("write failed: {e}"))?;
+            }
+            IrPayloadInline::QuorumRead { key, timestamp } => {
+                let k: String = bitcode::deserialize(key)
+                    .unwrap_or_else(|_| format!("<{} bytes>", key.len()));
+                writeln!(stdout, "QUORUM_READ key={k} ts={}", timestamp.time)
+                    .map_err(|e| format!("write failed: {e}"))?;
+            }
+            IrPayloadInline::QuorumScan {
+                start_key,
+                end_key,
+                snapshot_ts,
+            } => {
+                let sk: String = bitcode::deserialize(start_key)
+                    .unwrap_or_else(|_| format!("<{} bytes>", start_key.len()));
+                let ek: String = bitcode::deserialize(end_key)
+                    .unwrap_or_else(|_| format!("<{} bytes>", end_key.len()));
+                writeln!(
+                    stdout,
+                    "QUORUM_SCAN start={sk} end={ek} ts={}",
+                    snapshot_ts.time
+                )
+                .map_err(|e| format!("write failed: {e}"))?;
+            }
+            IrPayloadInline::RaiseMinPrepareTime { time } => {
+                writeln!(stdout, "RAISE_MIN_PREPARE_TIME ts={time}")
+                    .map_err(|e| format!("write failed: {e}"))?;
+            }
+        }
     }
     Ok(())
 }

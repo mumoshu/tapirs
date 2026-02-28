@@ -216,6 +216,23 @@ impl<K: Ord + Clone, IO: DiskIo> UnifiedStore<K, IO> {
         &self.active_vlog.views
     }
 
+    /// Dump all entries from a VLog segment (by segment ID).
+    /// Returns entries from either the active or a sealed segment.
+    pub fn dump_vlog_segment(
+        &self,
+        segment_id: u64,
+    ) -> Result<Vec<(u64, crate::ir::OpId, VlogEntryType, IrPayloadInline)>, StorageError> {
+        if self.active_vlog.id == segment_id {
+            self.active_vlog.iter_entries()
+        } else if let Some(seg) = self.sealed_vlog_segments.get(&segment_id) {
+            seg.iter_entries()
+        } else {
+            Err(StorageError::Codec(format!(
+                "VLog segment {segment_id} not found"
+            )))
+        }
+    }
+
     /// Iterate over all IR overlay entries.
     pub fn ir_overlay_entries(&self) -> impl Iterator<Item = (&OpId, &IrMemEntry)> {
         self.ir_overlay.iter()

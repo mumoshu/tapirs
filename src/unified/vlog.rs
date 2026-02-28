@@ -442,6 +442,41 @@ impl<IO: DiskIo> UnifiedVlogSegment<IO> {
         }
     }
 
+    /// Iterate all entries in the segment from offset 0 up to write_offset.
+    /// Returns (offset, OpId, entry_type, payload) for each entry.
+    pub fn iter_entries(
+        &self,
+    ) -> Result<Vec<(u64, OpId, VlogEntryType, IrPayloadInline)>, StorageError> {
+        let mut results = Vec::new();
+        let mut offset = 0u64;
+        let end = self.write_offset;
+
+        while offset + HEADER_SIZE as u64 <= end {
+            // Read just the header to get entry_len
+            let header_read_size = round_up(HEADER_SIZE);
+            let mut header_buf = AlignedBuf::new(header_read_size);
+            IO::block_on(self.io.as_ref().unwrap().pread(&mut header_buf, offset))?;
+
+            let raw = header_buf.as_full_slice();
+            let entry_len = u32::from_le_bytes([raw[1], raw[2], raw[3], raw[4]]) as u64;
+            if entry_len < MIN_ENTRY_SIZE as u64 || offset + entry_len > end {
+                break;
+            }
+
+            let ptr = UnifiedVlogPtr {
+                segment_id: self.id,
+                offset,
+                length: entry_len as u32,
+            };
+            let (op_id, entry_type, payload) = self.read_entry(&ptr)?;
+            results.push((offset, op_id, entry_type, payload));
+
+            offset += entry_len;
+        }
+
+        Ok(results)
+    }
+
     /// Fsync the segment.
     pub fn sync(&self) -> Result<(), StorageError> {
         IO::block_on(self.io.as_ref().unwrap().fsync())

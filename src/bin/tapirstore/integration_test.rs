@@ -290,3 +290,81 @@ fn test_stdin_input() {
     assert_eq!(code, 0);
     assert_eq!(stdout, "x=hello @5\nview=0 sealed_segments=0\n");
 }
+
+#[test]
+fn test_dump_vlog() {
+    // Prepare+commit single-key, seal, then dump the VLog segment.
+    let (stdout, stderr, code) = run_script(
+        "prepare 1:1 5 x=v1; commit 1:1 5; seal; \
+         list-vlogs; dump-vlog 0",
+    );
+    assert_eq!(stderr, "");
+    assert_eq!(code, 0);
+    assert_eq!(
+        stdout,
+        "vlog_seg_0000 size=138 views=[0,1]\n\
+         @0 op=1:1 PREPARE txn=1:1 ts=5 x=v1\n\
+         @64 op=1:2 COMMIT txn=1:1 ts=5 ref=same_view(1:1)\n"
+    );
+}
+
+#[test]
+fn test_dump_vlog_multi_key() {
+    // Prepare+commit two keys, seal, then dump.
+    let (stdout, stderr, code) = run_script(
+        "prepare 1:1 5 a=val1 b=val2; commit 1:1 5; seal; dump-vlog 0",
+    );
+    assert_eq!(stderr, "");
+    assert_eq!(code, 0);
+    assert_eq!(
+        stdout,
+        "@0 op=1:1 PREPARE txn=1:1 ts=5 a=val1 b=val2\n\
+         @74 op=1:2 COMMIT txn=1:1 ts=5 ref=same_view(1:1)\n"
+    );
+}
+
+#[test]
+fn test_dump_vlog_multi_views() {
+    // Prepare in view 0, seal, commit in view 1 → cross-view ref in same segment.
+    let (stdout, stderr, code) = run_script(
+        "prepare 1:1 5 x=v1; seal; commit 1:1 5; seal; dump-vlog 0",
+    );
+    assert_eq!(stderr, "");
+    assert_eq!(code, 0);
+    assert_eq!(
+        stdout,
+        "@0 op=1:1 PREPARE txn=1:1 ts=5 x=v1\n\
+         @64 op=1:2 COMMIT txn=1:1 ts=5 ref=cross_view(v=0 seg=0 off=0 len=64)\n"
+    );
+}
+
+#[test]
+fn test_dump_vlog_multi_segments() {
+    // With small segment threshold, seal rotates segments.
+    // Prepare 1:1 in view 0 → segment 0, prepare 1:2 in view 1 → segment 1.
+    // Both commits in view 2 → segment 2, each with cross-view/cross-segment
+    // references back to their respective prepares.
+    let dir = tempfile::TempDir::new().unwrap();
+    let script = format!(
+        "open-with {} 64; \
+         prepare 1:1 5 x=v1; seal; \
+         prepare 1:2 10 y=v2; seal; \
+         commit 1:1 5; commit 1:2 10; seal; \
+         list-vlogs; dump-vlog 0; dump-vlog 1; dump-vlog 2",
+        dir.path().display(),
+    );
+    let (stdout, stderr, code) = run_raw_script(&script);
+    assert_eq!(stderr, "");
+    assert_eq!(code, 0);
+    assert_eq!(
+        stdout,
+        "vlog_seg_0003 size=0 views=[3]\n\
+         vlog_seg_0000 size=64 views=[0]\n\
+         vlog_seg_0001 size=64 views=[1]\n\
+         vlog_seg_0002 size=172 views=[2]\n\
+         @0 op=1:1 PREPARE txn=1:1 ts=5 x=v1\n\
+         @0 op=1:2 PREPARE txn=1:2 ts=10 y=v2\n\
+         @0 op=1:3 COMMIT txn=1:1 ts=5 ref=cross_view(v=0 seg=0 off=0 len=64)\n\
+         @86 op=1:4 COMMIT txn=1:2 ts=10 ref=cross_view(v=1 seg=1 off=0 len=64)\n"
+    );
+}
