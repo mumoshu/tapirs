@@ -690,12 +690,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                 }
                 CO::RaiseMinPrepareTime { .. } => {
                     if let CR::RaiseMinPrepareTime { time } = &entry.result {
-                        // Finalized min prepare time is monotonically non-decreasing.
-                        let new_fmpt = self.store.finalized_min_prepare_time().max(*time);
-                        self.store.set_finalized_min_prepare_time(new_fmpt);
-                        // Can rollback tentative prepared time.
-                        let new_mpt = self.store.min_prepare_time().min(new_fmpt);
-                        self.store.set_min_prepare_time(new_mpt);
+                        self.store.sync_min_prepare_time(*time);
                     } else {
                         debug_assert!(false);
                     }

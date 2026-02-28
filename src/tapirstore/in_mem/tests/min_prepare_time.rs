@@ -80,3 +80,24 @@ fn finalize_min_prepare_time_raises_both() {
     assert_eq!(store.finalized_min_prepare_time(), 150);
     assert_eq!(store.min_prepare_time(), 200); // tentative stays at 200
 }
+
+#[test]
+fn sync_min_prepare_time_can_rollback_tentative() {
+    let (_dir, mut store) = new_store();
+
+    // Set tentative higher than finalized (speculative raise).
+    store.set_min_prepare_time(100);
+    store.set_finalized_min_prepare_time(30);
+
+    // Sync at 50: finalized becomes max(30, 50) = 50,
+    // tentative becomes min(100, 50) = 50 (rolled back).
+    store.sync_min_prepare_time(50);
+    assert_eq!(store.finalized_min_prepare_time(), 50);
+    assert_eq!(store.min_prepare_time(), 50);
+
+    // Sync at 40 (below current finalized): finalized stays 50,
+    // tentative stays min(50, 50) = 50.
+    store.sync_min_prepare_time(40);
+    assert_eq!(store.finalized_min_prepare_time(), 50);
+    assert_eq!(store.min_prepare_time(), 50);
+}

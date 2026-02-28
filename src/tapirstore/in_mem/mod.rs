@@ -283,6 +283,12 @@ where
         self.min_prepare_time = self.min_prepare_time.max(self.finalized_min_prepare_time);
     }
 
+    fn sync_min_prepare_time(&mut self, time: u64) {
+        self.finalized_min_prepare_time = self.finalized_min_prepare_time.max(time);
+        // Can rollback tentative prepared time.
+        self.min_prepare_time = self.min_prepare_time.min(self.finalized_min_prepare_time);
+    }
+
     fn finalized_min_prepare_time(&self) -> u64 {
         self.finalized_min_prepare_time
     }
