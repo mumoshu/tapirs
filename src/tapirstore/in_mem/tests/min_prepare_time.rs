@@ -56,3 +56,27 @@ fn raise_min_prepare_time_caps_at_min_prepared() {
     let result = store.raise_min_prepare_time(30);
     assert_eq!(result, 100);
 }
+
+#[test]
+fn finalize_min_prepare_time_raises_both() {
+    let (_dir, mut store) = new_store();
+
+    // Set tentative to 50 first.
+    store.set_min_prepare_time(50);
+
+    // Finalize at 100: finalized becomes 100, tentative raised to max(50, 100) = 100.
+    store.finalize_min_prepare_time(100);
+    assert_eq!(store.finalized_min_prepare_time(), 100);
+    assert_eq!(store.min_prepare_time(), 100);
+
+    // Finalize at 80 (below current): finalized stays 100, tentative stays 100.
+    store.finalize_min_prepare_time(80);
+    assert_eq!(store.finalized_min_prepare_time(), 100);
+    assert_eq!(store.min_prepare_time(), 100);
+
+    // Set tentative higher, then finalize below tentative.
+    store.set_min_prepare_time(200);
+    store.finalize_min_prepare_time(150);
+    assert_eq!(store.finalized_min_prepare_time(), 150);
+    assert_eq!(store.min_prepare_time(), 200); // tentative stays at 200
+}

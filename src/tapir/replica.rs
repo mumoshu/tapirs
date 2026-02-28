@@ -630,10 +630,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                 }
             }
             CO::RaiseMinPrepareTime { time } => {
-                let new_fmpt = self.store.finalized_min_prepare_time().max(*time);
-                self.store.set_finalized_min_prepare_time(new_fmpt);
-                let new_mpt = self.store.min_prepare_time().max(new_fmpt);
-                self.store.set_min_prepare_time(new_mpt);
+                self.store.finalize_min_prepare_time(*time);
             }
         }
     }
