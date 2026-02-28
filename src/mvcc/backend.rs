@@ -1,5 +1,7 @@
 use std::fmt::Debug;
 
+use crate::occ::{Transaction, TransactionId};
+
 /// Abstract MVCC storage backend.
 ///
 /// `DiskStore` implements this with `Error = StorageError`.
@@ -40,5 +42,46 @@ pub trait MvccBackend<K, V, TS>: Send {
             self.commit_get(key, read, commit)?;
         }
         Ok(())
+    }
+
+    /// Register a prepared transaction for future zero-copy commit.
+    ///
+    /// Called by `OccStore::add_prepared()` after adding the transaction to
+    /// the prepared list. The default implementation is a no-op — existing
+    /// backends (MemoryStore, DiskStore, SurrealKvStore) don't need this.
+    ///
+    /// `UnifiedMvccBackend` overrides this to store the transaction's write_set
+    /// in the prepare_registry, enabling `commit_batch_for_transaction()` to
+    /// create MVCC entries with `ValueLocation::InMemory` instead of copying
+    /// values into the VLog at commit time.
+    fn register_prepare(
+        &mut self,
+        _txn_id: TransactionId,
+        _transaction: &Transaction<K, V, TS>,
+        _commit_ts: TS,
+    ) {
+        // Default: no-op. Existing backends don't need prepare registration.
+    }
+
+    /// Commit with transaction identity for PrepareRef lookup.
+    ///
+    /// Called by `OccStore::commit()` instead of `commit_batch()`. The default
+    /// implementation delegates to `commit_batch()` so existing backends work
+    /// unchanged.
+    ///
+    /// `UnifiedMvccBackend` overrides this to create MVCC entries with
+    /// `ValueLocation::InMemory` pointing to the prepare_registry, avoiding
+    /// value duplication in the VLog.
+    fn commit_batch_for_transaction(
+        &mut self,
+        _txn_id: TransactionId,
+        writes: Vec<(K, Option<V>)>,
+        reads: Vec<(K, TS)>,
+        commit: TS,
+    ) -> Result<(), Self::Error>
+    where
+        TS: Copy,
+    {
+        self.commit_batch(writes, reads, commit)
     }
 }
