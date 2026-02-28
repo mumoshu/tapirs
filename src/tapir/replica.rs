@@ -723,7 +723,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
         let mut ret: BTreeMap<IrOpId, Self::CR> = BTreeMap::new();
 
         // Remove inconsistencies caused by out-of-order execution at the leader.
-        self.store.set_min_prepare_time(self.store.finalized_min_prepare_time());
+        self.store.reset_min_prepare_time_to_finalized();
         self.store.remove_unfinalized_prepared();
 
         // Preserve any potentially valid fast-path consensus operations.

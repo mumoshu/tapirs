@@ -129,6 +129,10 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
     /// then set tentative mpt to min(current_tentative, new_finalized).
     /// Can rollback tentative prepared time to the finalized value.
     fn sync_min_prepare_time(&mut self, time: u64);
+
+    /// Reset tentative min_prepare_time to the finalized value.
+    /// Used during merge to clear out-of-order tentative state.
+    fn reset_min_prepare_time_to_finalized(&mut self);
     fn finalized_min_prepare_time(&self) -> u64;
     fn set_finalized_min_prepare_time(&mut self, time: u64);
 

@@ -289,6 +289,10 @@ where
         self.min_prepare_time = self.min_prepare_time.min(self.finalized_min_prepare_time);
     }
 
+    fn reset_min_prepare_time_to_finalized(&mut self) {
+        self.min_prepare_time = self.finalized_min_prepare_time;
+    }
+
     fn finalized_min_prepare_time(&self) -> u64 {
         self.finalized_min_prepare_time
     }

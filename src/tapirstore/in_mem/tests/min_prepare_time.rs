@@ -101,3 +101,15 @@ fn sync_min_prepare_time_can_rollback_tentative() {
     assert_eq!(store.finalized_min_prepare_time(), 50);
     assert_eq!(store.min_prepare_time(), 50);
 }
+
+#[test]
+fn reset_min_prepare_time_to_finalized_resets_tentative() {
+    let (_dir, mut store) = new_store();
+
+    store.set_finalized_min_prepare_time(42);
+    store.set_min_prepare_time(100);
+
+    store.reset_min_prepare_time_to_finalized();
+    assert_eq!(store.min_prepare_time(), 42);
+    assert_eq!(store.finalized_min_prepare_time(), 42); // unchanged
+}
