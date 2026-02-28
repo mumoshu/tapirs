@@ -116,6 +116,10 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
 
     fn min_prepare_time(&self) -> u64;
     fn set_min_prepare_time(&mut self, time: u64);
+
+    /// Raise tentative min_prepare_time to max(current, min(time, min_prepared_timestamp)).
+    /// Returns the final min_prepare_time value.
+    fn raise_min_prepare_time(&mut self, time: u64) -> u64;
     fn finalized_min_prepare_time(&self) -> u64;
     fn set_finalized_min_prepare_time(&mut self, time: u64);
 

@@ -271,6 +271,13 @@ where
         self.min_prepare_time = time;
     }
 
+    fn raise_min_prepare_time(&mut self, time: u64) -> u64 {
+        let min_prepared_ts = self.min_prepared_timestamp().unwrap_or(u64::MAX);
+        let new_mpt = self.min_prepare_time.max(time.min(min_prepared_ts));
+        self.min_prepare_time = new_mpt;
+        self.min_prepare_time
+    }
+
     fn finalized_min_prepare_time(&self) -> u64 {
         self.finalized_min_prepare_time
     }

@@ -609,12 +609,8 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                 CR::Prepare(result)
             }
             CO::RaiseMinPrepareTime { time } => {
-                // Want to avoid tentative prepare operations materializing later on...
-                let min_prepared_ts = self.store.min_prepared_timestamp().unwrap_or(u64::MAX);
-                let new_mpt = self.store.min_prepare_time().max((*time).min(min_prepared_ts));
-                self.store.set_min_prepare_time(new_mpt);
                 CR::RaiseMinPrepareTime {
-                    time: self.store.min_prepare_time(),
+                    time: self.store.raise_min_prepare_time(*time),
                 }
             }
         }
