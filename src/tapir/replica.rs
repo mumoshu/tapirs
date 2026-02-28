@@ -2,16 +2,18 @@ use super::{Change, Key, KeyRange, LeaderRecordDelta, ShardNumber, Timestamp, Va
 use super::message::MinPrepareBaselineResult;
 use crate::ir::ReplyUnlogged;
 use crate::tapir::ShardClient;
-use crate::util::vectorize_btree;
+use crate::tapirstore::TapirStore;
 use crate::{
     DefaultDiskIo, IrClientId, IrMembership, IrMembershipSize, IrOpId, IrRecord, IrReplicaUpcalls,
     MvccBackend, MvccDiskStore,
-    OccPrepareResult, OccSharedTransaction, OccStore, OccTransactionId, TapirTransport,
+    OccPrepareResult, OccSharedTransaction, OccTransactionId, TapirTransport,
 };
+use crate::tapirstore::InMemTapirStore;
 use futures::future::join_all;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::marker::PhantomData;
 use std::task::Context;
 use std::time::Duration;
 use std::{future::Future, hash::Hash};
@@ -51,37 +53,14 @@ pub(crate) struct ShardConfig<K> {
 /// view change to syncronize each participant shard's prepare result and then
 /// let one or more of many possible backup coordinators take them at face-value.
 #[derive(Serialize, Deserialize)]
-pub struct Replica<K, V, M = MvccDiskStore<K, V, Timestamp, DefaultDiskIo>> {
+pub struct Replica<K, V, S = InMemTapirStore<K, V, MvccDiskStore<K, V, Timestamp, DefaultDiskIo>>> {
     #[serde(bound(
-        serialize = "K: Serialize + Ord + Hash, V: Serialize, M: Serialize",
-        deserialize = "K: Deserialize<'de> + Ord + Hash + Eq, V: Deserialize<'de>, M: Deserialize<'de>"
+        serialize = "K: Serialize + Ord + Hash, V: Serialize, S: Serialize",
+        deserialize = "K: Deserialize<'de> + Ord + Hash + Eq, V: Deserialize<'de>, S: Deserialize<'de>"
     ))]
-    inner: OccStore<K, V, Timestamp, M>,
-    /// Stores the commit timestamp, read/write sets, and commit status (true if committed) for
-    /// all known committed and aborted transactions.
-    #[serde(
-        with = "vectorize_btree",
-        bound(
-            serialize = "K: Serialize, V: Serialize",
-            deserialize = "K: Deserialize<'de> + Ord, V: Deserialize<'de>"
-        )
-    )]
-    transaction_log: BTreeMap<OccTransactionId, (Timestamp, bool)>,
-    /// Minimum acceptable prepare time (tentative).
-    min_prepare_time: u64,
-    /// Minimum acceptable prepare time (finalized).
-    finalized_min_prepare_time: u64,
-    /// Changes committed DURING each view, keyed by base_view (the view number
-    /// during which changes accumulated). IR provides base_view directly from the
-    /// RecordPayload::Delta or leader_record at each view change.
-    #[serde(
-        with = "vectorize_btree",
-        bound(
-            serialize = "K: Serialize, V: Serialize",
-            deserialize = "K: Deserialize<'de>, V: Deserialize<'de>"
-        )
-    )]
-    record_delta_during_view: BTreeMap<u64, LeaderRecordDelta<K, V>>,
+    store: S,
+    #[serde(skip, default)]
+    _phantom: PhantomData<V>,
     /// If set, reject operations for keys outside this range.
     /// Not persisted: re-applied from view.app_config via apply_config after each view change.
     #[serde(skip_serializing, skip_deserializing, default = "none", bound(deserialize = ""))]
@@ -104,17 +83,29 @@ pub(crate) struct ReplicaCounters {
     pub prepare_too_late_count: AtomicU64,
 }
 
-impl<K: Key, V: Value, M> Replica<K, V, M> {
+impl<K: Key, V: Value, S: TapirStore<K, V>> Replica<K, V, S> {
+    pub fn new_with_store(store: S) -> Self {
+        Self {
+            store,
+            _phantom: PhantomData,
+            key_range: None,
+            phase: ShardPhase::default(),
+            counters: ReplicaCounters::default(),
+        }
+    }
+}
+
+impl<K: Key, V: Value, M> Replica<K, V, InMemTapirStore<K, V, M>>
+where
+    M: MvccBackend<K, V, Timestamp> + Serialize + DeserializeOwned + 'static,
+{
     pub fn new(shard: ShardNumber, linearizable: bool) -> Self
     where
         M: Default,
     {
         Self {
-            inner: OccStore::new(shard, linearizable),
-            transaction_log: BTreeMap::new(),
-            min_prepare_time: 0,
-            finalized_min_prepare_time: 0,
-            record_delta_during_view: BTreeMap::new(),
+            store: InMemTapirStore::new(shard, linearizable),
+            _phantom: PhantomData,
             key_range: None,
             phase: ShardPhase::default(),
             counters: ReplicaCounters::default(),
@@ -123,16 +114,16 @@ impl<K: Key, V: Value, M> Replica<K, V, M> {
 
     pub fn new_with_backend(shard: ShardNumber, linearizable: bool, backend: M) -> Self {
         Self {
-            inner: OccStore::new_with_backend(shard, linearizable, backend),
-            transaction_log: BTreeMap::new(),
-            min_prepare_time: 0,
-            finalized_min_prepare_time: 0,
-            record_delta_during_view: BTreeMap::new(),
+            store: InMemTapirStore::new_with_backend(shard, linearizable, backend),
+            _phantom: PhantomData,
             key_range: None,
             phase: ShardPhase::default(),
             counters: ReplicaCounters::default(),
         }
     }
+}
+
+impl<K: Key, V: Value, S: TapirStore<K, V>> Replica<K, V, S> {
 
     fn recover_coordination<T: TapirTransport<K, V>>(
         transaction_id: OccTransactionId,
@@ -273,10 +264,7 @@ impl<K: Key, V: Value, M> Replica<K, V, M> {
     }
 }
 
-impl<K: Key, V: Value, M> IrReplicaUpcalls for Replica<K, V, M>
-where
-    M: MvccBackend<K, V, Timestamp> + Serialize + DeserializeOwned + 'static,
-{
+impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S> {
     type UO = UO<K>;
     type UR = UR<K, V>;
     type IO = IO<K, V>;
@@ -292,9 +280,9 @@ where
                         return UR::OutOfRange;
                     }
                 let (v, ts) = if let Some(timestamp) = timestamp {
-                    self.inner.get_at(&key, timestamp)
+                    self.store.get_at(&key, timestamp)
                 } else {
-                    self.inner.get(&key)
+                    self.store.get(&key)
                 };
                 UR::Get(v, ts)
             }
@@ -325,7 +313,7 @@ where
                         client_id: IrClientId(u64::MAX),
                     }
                 });
-                let results = self.inner.scan(&start_key, &end_key, ts);
+                let results = self.store.scan(&start_key, &end_key, ts);
                 let max_ts = results
                     .iter()
                     .map(|(_, _, t)| *t)
@@ -341,35 +329,31 @@ where
                 transaction_id,
                 commit,
             } => {
-                UR::CheckPrepare(if let Some((ts, c)) = self.transaction_log.get(&transaction_id) {
-                    if *c && *ts == commit {
+                UR::CheckPrepare(if let Some((ts, c)) = self.store.txn_log_get(&transaction_id) {
+                    if c && ts == commit {
                         // Already committed at this timestamp.
                         OccPrepareResult::Ok
                     } else {
                         // Didn't (and will never) commit at this timestamp.
                         OccPrepareResult::Fail
                     }
-                } else if let Some(f) = self
-                    .inner
-                    .prepared
-                    .get(&transaction_id)
-                    .filter(|(ts, _, _)| *ts == commit)
-                    .map(|(_, _, f)| *f)
+                } else if let Some(finalized) = self
+                    .store
+                    .prepared_at_timestamp(&transaction_id, &commit)
                 {
                     // Already prepared at this timestamp.
-                    if f {
+                    if finalized {
                         // Prepare was finalized.
                         OccPrepareResult::Ok
                     } else {
                         // Prepare wasn't finalized, can't be sure yet.
                         OccPrepareResult::Abstain
                     }
-                } else if commit.time < self.min_prepare_time
+                } else if commit.time < self.store.min_prepare_time()
                     || self
-                        .inner
-                        .prepared
-                        .get(&transaction_id)
-                        .map(|(c, _, _)| c.time < self.min_prepare_time)
+                        .store
+                        .prepared_get(&transaction_id)
+                        .map(|(c, _, _)| c.time < self.store.min_prepare_time())
                         .unwrap_or(false)
                 {
                     // Too late for the client to prepare.
@@ -384,7 +368,7 @@ where
                     && !range.contains(&key) {
                         return UR::OutOfRange;
                     }
-                UR::ReadValidated(self.inner.get_validated(&key, timestamp))
+                UR::ReadValidated(self.store.get_validated(&key, timestamp))
             }
             UO::ScanValidated {
                 start_key,
@@ -401,13 +385,13 @@ where
                         return UR::OutOfRange;
                     }
                 }
-                UR::ScanValidated(self.inner.scan_validated(&start_key, &end_key, snapshot_ts))
+                UR::ScanValidated(self.store.scan_validated(&start_key, &end_key, snapshot_ts))
             }
             UO::MinPrepareBaseline => {
                 if self.phase != ShardPhase::Decommissioning {
                     return UR::MinPrepareBaseline(MinPrepareBaselineResult::NotDecommissioning);
                 }
-                let (max_rr, max_rc) = self.inner.min_prepare_baseline();
+                let (max_rr, max_rc) = self.store.min_prepare_baseline();
                 UR::MinPrepareBaseline(MinPrepareBaselineResult::Ok {
                     max_range_read_time: max_rr.map(|ts| ts.time).unwrap_or(0),
                     max_read_commit_time: max_rc.map(|ts| ts.time).unwrap_or(0),
@@ -427,20 +411,12 @@ where
                 // available". Without Option, both map to 0 and the caller
                 // cannot tell whether to scan from 0 (no history) or from
                 // 1 (view 0 already consumed).
-                let effective_end_view = self
-                    .record_delta_during_view
-                    .keys()
-                    .next_back()
-                    .copied();
-                let deltas = self
-                    .record_delta_during_view
-                    .range(from_view..)
-                    .map(|(_, delta)| delta.clone())
-                    .collect();
+                let effective_end_view = self.store.cdc_max_view();
+                let deltas = self.store.cdc_deltas_from(from_view);
                 UR::ScanChanges {
                     deltas,
                     effective_end_view,
-                    pending_prepares: self.inner.prepared.len(),
+                    pending_prepares: self.store.prepared_count(),
                 }
             }
         }
@@ -453,9 +429,7 @@ where
                 transaction,
                 commit,
             } => {
-                let old = self
-                    .transaction_log
-                    .insert(*transaction_id, (*commit, true));
+                let old = self.store.txn_log_insert(*transaction_id, *commit, true);
                 if let Some((ts, committed)) = old {
                     debug_assert!(committed, "{transaction_id:?} aborted");
                     debug_assert_eq!(
@@ -463,7 +437,7 @@ where
                         "{transaction_id:?} committed at (different) {ts:?}"
                     );
                 }
-                self.inner.commit(*transaction_id, transaction, *commit);
+                self.store.commit(*transaction_id, transaction, *commit);
                 self.counters.commit_count.fetch_add(1, Ordering::Relaxed);
                 None
             }
@@ -476,42 +450,41 @@ where
                     .map(|commit| {
                         debug_assert!(
                             !self
-                                .transaction_log
-                                .get(transaction_id)
-                                .map(|(ts, c)| *c && *ts == commit)
+                                .store
+                                .txn_log_get(transaction_id)
+                                .map(|(ts, c)| c && ts == commit)
                                 .unwrap_or(false),
                             "{transaction_id:?} committed at {commit:?}"
                         );
-                        self.inner
-                            .prepared
-                            .get(transaction_id)
+                        self.store
+                            .prepared_get(transaction_id)
                             .map(|(ts, _, _)| *ts == commit)
                             .unwrap_or(true)
                     })
                     .unwrap_or_else(|| {
                         // Guard: never overwrite a committed transaction.
                         if self
-                            .transaction_log
-                            .get(transaction_id)
-                            .map(|(_, c)| *c)
+                            .store
+                            .txn_log_get(transaction_id)
+                            .map(|(_, c)| c)
                             .unwrap_or(false)
                         {
                             return false;
                         }
                         debug_assert!(
                             !self
-                                .transaction_log
-                                .get(transaction_id)
-                                .map(|(_, c)| *c)
+                                .store
+                                .txn_log_get(transaction_id)
+                                .map(|(_, c)| c)
                                 .unwrap_or(false),
                             "{transaction_id:?} committed"
                         );
-                        self.transaction_log
-                            .insert(*transaction_id, (Default::default(), false));
+                        self.store
+                            .txn_log_insert(*transaction_id, Default::default(), false);
                         true
                     })
                 {
-                    self.inner.remove_prepared(*transaction_id);
+                    self.store.remove_prepared(*transaction_id);
                 }
                 self.counters.abort_count.fetch_add(1, Ordering::Relaxed);
                 None
@@ -530,7 +503,7 @@ where
                     && !range.contains(key) {
                         return Some(IR::OutOfRange);
                     }
-                match self.inner.quorum_read(key.clone(), *timestamp) {
+                match self.store.quorum_read(key.clone(), *timestamp) {
                     Ok((value, write_ts)) => Some(IR::QuorumRead(value, write_ts)),
                     Err(_) => Some(IR::PrepareConflict),
                 }
@@ -550,7 +523,7 @@ where
                         return Some(IR::OutOfRange);
                     }
                 }
-                match self.inner.quorum_scan(start_key.clone(), end_key.clone(), *snapshot_ts) {
+                match self.store.quorum_scan(start_key.clone(), end_key.clone(), *snapshot_ts) {
                     Ok(results) => Some(IR::QuorumScan(results)),
                     Err(_) => Some(IR::PrepareConflict),
                 }
@@ -567,10 +540,10 @@ where
             } => {
                 if let Some(range) = &self.key_range {
                     let reads_in_range = transaction
-                        .shard_read_set(self.inner.shard())
+                        .shard_read_set(self.store.shard())
                         .all(|(key, _)| range.contains(key));
                     let writes_in_range = transaction
-                        .shard_write_set(self.inner.shard())
+                        .shard_write_set(self.store.shard())
                         .all(|(key, _)| range.contains(key));
                     if !reads_in_range || !writes_in_range {
                         return CR::Prepare(OccPrepareResult::OutOfRange);
@@ -578,7 +551,7 @@ where
                 }
                 if self.phase != ShardPhase::ReadWrite {
                     tracing::debug!(
-                        shard = ?self.inner.shard(),
+                        shard = ?self.store.shard(),
                         phase = ?self.phase,
                         txn_id = ?transaction_id,
                         "Prepare rejected: shard not in ReadWrite phase"
@@ -586,9 +559,9 @@ where
                     self.counters.prepare_fail_count.fetch_add(1, Ordering::Relaxed);
                     return CR::Prepare(OccPrepareResult::Fail);
                 }
-                let result = if let Some((ts, c)) = self.transaction_log.get(transaction_id) {
-                if *c {
-                    if ts == commit {
+                let result = if let Some((ts, c)) = self.store.txn_log_get(transaction_id) {
+                if c {
+                    if ts == *commit {
                         // Already committed at this timestamp.
                         OccPrepareResult::Ok
                     } else {
@@ -600,33 +573,30 @@ where
                     OccPrepareResult::Fail
                 }
             } else if self
-                .inner
-                .prepared
-                .get(transaction_id)
-                .map(|(ts, _, _)| *ts == *commit)
-                .unwrap_or(false)
+                .store
+                .prepared_at_timestamp(transaction_id, commit)
+                .is_some()
             {
                 // Already prepared at this timestamp.
                 OccPrepareResult::Ok
-            } else if commit.time < self.min_prepare_time
+            } else if commit.time < self.store.min_prepare_time()
                 || self
-                    .inner
-                    .prepared
-                    .get(transaction_id)
-                    .map(|(c, _, _)| c.time < self.min_prepare_time)
+                    .store
+                    .prepared_get(transaction_id)
+                    .map(|(c, _, _)| c.time < self.store.min_prepare_time())
                     .unwrap_or(false)
             {
                 tracing::debug!(
-                    shard = ?self.inner.shard(),
+                    shard = ?self.store.shard(),
                     txn_id = ?transaction_id,
                     commit_time = commit.time,
-                    min_prepare_time = self.min_prepare_time,
+                    min_prepare_time = self.store.min_prepare_time(),
                     "Prepare rejected: TooLate (commit_time < min_prepare_time)"
                 );
                 // Too late to prepare or reprepare.
                 OccPrepareResult::TooLate
             } else {
-                self.inner
+                self.store
                     .prepare(*transaction_id, transaction.clone(), *commit, false)
             };
                 match &result {
@@ -640,19 +610,11 @@ where
             }
             CO::RaiseMinPrepareTime { time } => {
                 // Want to avoid tentative prepare operations materializing later on...
-                self.min_prepare_time = self.min_prepare_time.max(
-                    (*time).min(
-                        self.inner
-                            .prepared
-                            .values()
-                            //.filter(|(_, _, f)| !*f)
-                            .map(|(ts, _, _)| ts.time)
-                            .min()
-                            .unwrap_or(u64::MAX),
-                    ),
-                );
+                let min_prepared_ts = self.store.min_prepared_timestamp().unwrap_or(u64::MAX);
+                let new_mpt = self.store.min_prepare_time().max((*time).min(min_prepared_ts));
+                self.store.set_min_prepare_time(new_mpt);
                 CR::RaiseMinPrepareTime {
-                    time: self.min_prepare_time,
+                    time: self.store.min_prepare_time(),
                 }
             }
         }
@@ -665,14 +627,17 @@ where
                 commit,
                 ..
             } => {
-                if matches!(res, CR::Prepare(OccPrepareResult::Ok)) && let Some((ts, _, finalized)) = self.inner.prepared.get_mut(transaction_id) && *commit == *ts {
+                if matches!(res, CR::Prepare(OccPrepareResult::Ok))
+                    && self.store.set_prepared_finalized(transaction_id, commit)
+                {
                     trace!("confirming prepare {transaction_id:?} at {commit:?}");
-                    *finalized = true;
                 }
             }
             CO::RaiseMinPrepareTime { time } => {
-                self.finalized_min_prepare_time = self.finalized_min_prepare_time.max(*time);
-                self.min_prepare_time = self.min_prepare_time.max(self.finalized_min_prepare_time);
+                let new_fmpt = self.store.finalized_min_prepare_time().max(*time);
+                self.store.set_finalized_min_prepare_time(new_fmpt);
+                let new_mpt = self.store.min_prepare_time().max(new_fmpt);
+                self.store.set_min_prepare_time(new_mpt);
             }
         }
     }
@@ -698,20 +663,19 @@ where
                     // Backup coordinator prepares don't change state.
                     if matches!(entry.result, CR::Prepare(OccPrepareResult::Ok)) {
                         if self
-                            .inner
-                            .prepared
-                            .get(transaction_id)
+                            .store
+                            .prepared_get(transaction_id)
                             .map(|(ts, _, _)| ts == commit)
                             .unwrap_or(true)
-                            && !self.transaction_log.contains_key(transaction_id)
+                            && !self.store.txn_log_contains(transaction_id)
                         {
                             // Enough other replicas agreed to prepare
                             // the transaction so it must be okay.
                             //
                             // Finalize it immediately since we are syncing
                             // from the leader's record.
-                            trace!("syncing successful {op_id:?} prepare for {transaction_id:?} at {commit:?} (had {:?})", self.inner.prepared.get(transaction_id));
-                            self.inner.add_prepared(
+                            trace!("syncing successful {op_id:?} prepare for {transaction_id:?} at {commit:?} (had {:?})", self.store.prepared_get(transaction_id));
+                            self.store.add_prepared(
                                 *transaction_id,
                                 transaction.clone(),
                                 *commit,
@@ -719,9 +683,8 @@ where
                             );
                         }
                     } else if self
-                        .inner
-                        .prepared
-                        .get(transaction_id)
+                        .store
+                        .prepared_get(transaction_id)
                         .map(|(ts, _, _)| ts == commit)
                         .unwrap_or(false)
                     {
@@ -729,17 +692,17 @@ where
                             "syncing {:?} {op_id:?} prepare for {transaction_id:?} at {commit:?}",
                             entry.result
                         );
-                        self.inner.remove_prepared(*transaction_id);
+                        self.store.remove_prepared(*transaction_id);
                     }
                 }
                 CO::RaiseMinPrepareTime { .. } => {
                     if let CR::RaiseMinPrepareTime { time } = &entry.result {
                         // Finalized min prepare time is monotonically non-decreasing.
-                        self.finalized_min_prepare_time =
-                            self.finalized_min_prepare_time.max(*time);
+                        let new_fmpt = self.store.finalized_min_prepare_time().max(*time);
+                        self.store.set_finalized_min_prepare_time(new_fmpt);
                         // Can rollback tentative prepared time.
-                        self.min_prepare_time =
-                            self.min_prepare_time.min(self.finalized_min_prepare_time);
+                        let new_mpt = self.store.min_prepare_time().min(new_fmpt);
+                        self.store.set_min_prepare_time(new_mpt);
                     } else {
                         debug_assert!(false);
                     }
@@ -772,17 +735,8 @@ where
         let mut ret: BTreeMap<IrOpId, Self::CR> = BTreeMap::new();
 
         // Remove inconsistencies caused by out-of-order execution at the leader.
-        self.min_prepare_time = self.finalized_min_prepare_time;
-        for transaction_id in self
-            .inner
-            .prepared
-            .iter()
-            .filter(|(_, (_, _, f))| !*f)
-            .map(|(id, _)| *id)
-            .collect::<Vec<_>>()
-        {
-            self.inner.remove_prepared(transaction_id);
-        }
+        self.store.set_min_prepare_time(self.store.finalized_min_prepare_time());
+        self.store.remove_unfinalized_prepared();
 
         // Preserve any potentially valid fast-path consensus operations.
         for (op_id, (request, reply)) in &d {
@@ -862,7 +816,7 @@ where
         new_view: u64,
         delta: &IrRecord<Self>,
     ) {
-        let shard = self.inner.shard();
+        let shard = self.store.shard();
         let mut changes = Vec::new();
 
         for entry in delta.inconsistent.values() {
@@ -882,7 +836,7 @@ where
         }
 
         if !changes.is_empty() {
-            self.record_delta_during_view.insert(
+            self.store.record_cdc_delta(
                 base_view,
                 LeaderRecordDelta {
                     from_view: base_view,
@@ -895,8 +849,8 @@ where
 
     fn metrics(&self) -> Vec<(&'static str, f64)> {
         vec![
-            ("tapirs_prepared_transactions", self.inner.prepared.len() as f64),
-            ("tapirs_transaction_log_size", self.transaction_log.len() as f64),
+            ("tapirs_prepared_transactions", self.store.prepared_count() as f64),
+            ("tapirs_transaction_log_size", self.store.txn_log_len() as f64),
             ("tapirs_commits_total", self.counters.commit_count.load(Ordering::Relaxed) as f64),
             ("tapirs_aborts_total", self.counters.abort_count.load(Ordering::Relaxed) as f64),
             ("tapirs_prepare_ok_total", self.counters.prepare_ok_count.load(Ordering::Relaxed) as f64),
@@ -907,7 +861,7 @@ where
     }
 }
 
-impl<K: Key, V: Value, M: 'static> Replica<K, V, M> {
+impl<K: Key, V: Value, S: TapirStore<K, V>> Replica<K, V, S> {
     fn gc_stale_state(&mut self) {
         // Placeholder for future GC logic (e.g. range_reads cleanup,
         // transaction_log trimming) using finalized_min_prepare_time.
@@ -919,24 +873,25 @@ impl<K: Key, V: Value, M: 'static> Replica<K, V, M> {
         membership: &IrMembership<T::Address>,
         rng: &mut crate::Rng,
     ) {
-        if !self.inner.prepared.is_empty() {
+        let prepared_count = self.store.prepared_count();
+        if prepared_count > 0 {
             trace!(
                 "there are {} prepared transactions",
-                self.inner.prepared.len()
+                prepared_count
             );
         }
         let threshold: u64 = transport.time_offset(-500);
-        if let Some((transaction_id, (commit, transaction, _))) =
-            self.inner.prepared.iter().min_by_key(|(_, (c, _, _))| *c)
+        if let Some((transaction_id, commit, transaction)) =
+            self.store.oldest_prepared()
         {
             if commit.time > threshold {
                 // Allow the client to finish on its own.
                 return;
             }
             let future = Self::recover_coordination(
-                *transaction_id,
-                transaction.clone(),
-                *commit,
+                transaction_id,
+                transaction,
+                commit,
                 membership.clone(),
                 transport.clone(),
                 rng.fork(),
@@ -999,7 +954,7 @@ mod tests {
             transaction: txn,
             commit: ts,
         });
-        assert_eq!(replica.transaction_log.get(&txn_id), Some(&(ts, true)));
+        assert_eq!(replica.store.txn_log_get(&txn_id), Some((ts, true)));
 
         // Abort with commit: None should NOT overwrite the committed entry.
         replica.exec_inconsistent(&IO::Abort {
@@ -1007,8 +962,8 @@ mod tests {
             commit: None,
         });
         assert_eq!(
-            replica.transaction_log.get(&txn_id),
-            Some(&(ts, true)),
+            replica.store.txn_log_get(&txn_id),
+            Some((ts, true)),
             "abort with commit: None must not overwrite a committed transaction"
         );
     }
@@ -1031,7 +986,7 @@ mod tests {
             matches!(result, CR::Prepare(OccPrepareResult::Ok)),
             "prepare should succeed"
         );
-        assert!(replica.inner.prepared.contains_key(&txn_id));
+        assert!(replica.store.prepared_get(&txn_id).is_some());
 
         // Abort at ts2 (different timestamp) should NOT remove the prepare at ts1.
         replica.exec_inconsistent(&IO::Abort {
@@ -1039,7 +994,7 @@ mod tests {
             commit: Some(ts2),
         });
         assert!(
-            replica.inner.prepared.contains_key(&txn_id),
+            replica.store.prepared_get(&txn_id).is_some(),
             "abort at different timestamp must not remove the prepared entry"
         );
     }
@@ -1061,7 +1016,7 @@ mod tests {
             matches!(result, CR::Prepare(OccPrepareResult::Ok)),
             "prepare should succeed"
         );
-        assert!(replica.inner.prepared.contains_key(&txn_id));
+        assert!(replica.store.prepared_get(&txn_id).is_some());
 
         // Abort at ts1 (matching timestamp) should remove the prepare.
         replica.exec_inconsistent(&IO::Abort {
@@ -1069,7 +1024,7 @@ mod tests {
             commit: Some(ts1),
         });
         assert!(
-            !replica.inner.prepared.contains_key(&txn_id),
+            replica.store.prepared_get(&txn_id).is_none(),
             "abort at matching timestamp must remove the prepared entry"
         );
     }
@@ -1091,13 +1046,13 @@ mod tests {
             matches!(result, CR::Prepare(OccPrepareResult::Ok)),
             "prepare should succeed"
         );
-        assert!(replica.inner.prepared.contains_key(&txn_id));
+        assert!(replica.store.prepared_get(&txn_id).is_some());
 
         // gc_stale_state must NOT remove prepared entries — they are resolved
         // exclusively by the coordinator system (IO::Commit / IO::Abort).
         replica.gc_stale_state();
         assert!(
-            replica.inner.prepared.contains_key(&txn_id),
+            replica.store.prepared_get(&txn_id).is_some(),
             "prepared entries must not be removed by gc_stale_state"
         );
     }

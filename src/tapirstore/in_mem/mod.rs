@@ -160,11 +160,11 @@ where
     }
 
     fn set_prepared_finalized(&mut self, id: &TransactionId, commit: &Timestamp) -> bool {
-        if let Some((ts, _, finalized)) = self.occ.prepared.get_mut(id) {
-            if ts == commit {
-                *finalized = true;
-                return true;
-            }
+        if let Some((ts, _, finalized)) = self.occ.prepared.get_mut(id)
+            && ts == commit
+        {
+            *finalized = true;
+            return true;
         }
         false
     }
