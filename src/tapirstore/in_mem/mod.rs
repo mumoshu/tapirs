@@ -78,6 +78,49 @@ impl<K: Key, V: Value, M> InMemTapirStore<K, V, M> {
     pub fn occ_mut(&mut self) -> &mut OccStore<K, V, Timestamp, M> {
         &mut self.occ
     }
+
+    pub fn commit(
+        &mut self,
+        id: TransactionId,
+        txn: &Transaction<K, V, Timestamp>,
+        commit: Timestamp,
+    ) where
+        M: MvccBackend<K, V, Timestamp>,
+    {
+        self.occ.commit(id, txn, commit);
+    }
+
+    pub fn prepared_at_timestamp(&self, id: &TransactionId, commit: &Timestamp) -> Option<bool> {
+        self.occ
+            .prepared
+            .get(id)
+            .filter(|(ts, _, _)| ts == commit)
+            .map(|(_, _, fin)| *fin)
+    }
+
+    pub fn min_prepared_timestamp(&self) -> Option<u64> {
+        self.occ
+            .prepared
+            .values()
+            .map(|(ts, _, _)| ts.time)
+            .min()
+    }
+
+    pub fn min_prepare_time(&self) -> u64 {
+        self.min_prepare_time
+    }
+
+    pub fn set_min_prepare_time(&mut self, time: u64) {
+        self.min_prepare_time = time;
+    }
+
+    pub fn finalized_min_prepare_time(&self) -> u64 {
+        self.finalized_min_prepare_time
+    }
+
+    pub fn set_finalized_min_prepare_time(&mut self, time: u64) {
+        self.finalized_min_prepare_time = time;
+    }
 }
 
 impl<K, V, M> TapirStore<K, V> for InMemTapirStore<K, V, M>
@@ -114,15 +157,6 @@ where
         dry_run: bool,
     ) -> PrepareResult<Timestamp> {
         self.occ.prepare(id, txn, commit, dry_run)
-    }
-
-    fn commit(
-        &mut self,
-        id: TransactionId,
-        txn: &Transaction<K, V, Timestamp>,
-        commit: Timestamp,
-    ) {
-        self.occ.commit(id, txn, commit);
     }
 
     fn commit_and_log(
@@ -165,14 +199,6 @@ where
             .map(|(ts, txn, fin)| (ts, txn, *fin))
     }
 
-    fn prepared_at_timestamp(&self, id: &TransactionId, commit: &Timestamp) -> Option<bool> {
-        self.occ
-            .prepared
-            .get(id)
-            .filter(|(ts, _, _)| ts == commit)
-            .map(|(_, _, fin)| *fin)
-    }
-
     fn check_prepare_status(&self, id: &TransactionId, commit: &Timestamp) -> CheckPrepareStatus {
         if let Some((ts, committed)) = self.transaction_log.get(id).copied() {
             if committed {
@@ -209,14 +235,6 @@ where
 
     fn prepared_count(&self) -> usize {
         self.occ.prepared.len()
-    }
-
-    fn min_prepared_timestamp(&self) -> Option<u64> {
-        self.occ
-            .prepared
-            .values()
-            .map(|(ts, _, _)| ts.time)
-            .min()
     }
 
     fn oldest_prepared(
@@ -301,14 +319,6 @@ where
 
     // === Min Prepare Time ===
 
-    fn min_prepare_time(&self) -> u64 {
-        self.min_prepare_time
-    }
-
-    fn set_min_prepare_time(&mut self, time: u64) {
-        self.min_prepare_time = time;
-    }
-
     fn raise_min_prepare_time(&mut self, time: u64) -> u64 {
         let min_prepared_ts = self.min_prepared_timestamp().unwrap_or(u64::MAX);
         let new_mpt = self.min_prepare_time.max(time.min(min_prepared_ts));
@@ -329,14 +339,6 @@ where
 
     fn reset_min_prepare_time_to_finalized(&mut self) {
         self.min_prepare_time = self.finalized_min_prepare_time;
-    }
-
-    fn finalized_min_prepare_time(&self) -> u64 {
-        self.finalized_min_prepare_time
-    }
-
-    fn set_finalized_min_prepare_time(&mut self, time: u64) {
-        self.finalized_min_prepare_time = time;
     }
 
     // === CDC Deltas ===

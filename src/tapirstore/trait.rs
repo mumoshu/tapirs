@@ -46,13 +46,6 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
         dry_run: bool,
     ) -> PrepareResult<Timestamp>;
 
-    fn commit(
-        &mut self,
-        id: TransactionId,
-        txn: &Transaction<K, V, Timestamp>,
-        commit: Timestamp,
-    );
-
     /// Record a commit in the transaction log and apply the write set.
     /// Panics (debug only) if the transaction was previously logged as aborted
     /// or committed at a different timestamp.
@@ -81,10 +74,6 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
         id: &TransactionId,
     ) -> Option<(&Timestamp, &SharedTransaction<K, V, Timestamp>, bool)>;
 
-    /// Check if a transaction is prepared at a specific commit timestamp.
-    /// Returns `Some(finalized)` if prepared at that timestamp, `None` otherwise.
-    fn prepared_at_timestamp(&self, id: &TransactionId, commit: &Timestamp) -> Option<bool>;
-
     /// Check the current status of a transaction for prepare/check-prepare decisions.
     ///
     /// Performs a cascading lookup: txn_log → prepared_at_timestamp → min_prepare_time,
@@ -96,9 +85,6 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
     fn set_prepared_finalized(&mut self, id: &TransactionId, commit: &Timestamp) -> bool;
 
     fn prepared_count(&self) -> usize;
-
-    /// Returns the minimum commit timestamp among all prepared transactions.
-    fn min_prepared_timestamp(&self) -> Option<u64>;
 
     /// Returns the oldest prepared transaction (minimum commit timestamp).
     fn oldest_prepared(
@@ -147,9 +133,6 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
 
     // === Min Prepare Time ===
 
-    fn min_prepare_time(&self) -> u64;
-    fn set_min_prepare_time(&mut self, time: u64);
-
     /// Raise tentative min_prepare_time to max(current, min(time, min_prepared_timestamp)).
     /// Returns the final min_prepare_time value.
     fn raise_min_prepare_time(&mut self, time: u64) -> u64;
@@ -166,8 +149,6 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
     /// Reset tentative min_prepare_time to the finalized value.
     /// Used during merge to clear out-of-order tentative state.
     fn reset_min_prepare_time_to_finalized(&mut self);
-    fn finalized_min_prepare_time(&self) -> u64;
-    fn set_finalized_min_prepare_time(&mut self, time: u64);
 
     // === CDC Deltas ===
 
