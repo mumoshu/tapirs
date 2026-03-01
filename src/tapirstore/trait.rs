@@ -109,9 +109,9 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
         ts: Timestamp,
     ) -> Result<Vec<(K, Option<V>, Timestamp)>, PrepareConflict>;
 
-    // === Fast Path Validation ===
+    // === Uncommitted Validated Reads ===
 
-    fn get_validated(&self, key: &K, ts: Timestamp) -> Option<(Option<V>, Timestamp)>;
+    fn do_uncommitted_get_validated(&self, key: &K, ts: Timestamp) -> Option<(Option<V>, Timestamp)>;
     fn scan_validated(
         &self,
         start: &K,

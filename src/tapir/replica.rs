@@ -371,7 +371,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                     && !range.contains(&key) {
                         return UR::OutOfRange;
                     }
-                UR::ReadValidated(self.store.get_validated(&key, timestamp))
+                UR::ReadValidated(self.store.do_uncommitted_get_validated(&key, timestamp))
             }
             UO::ScanValidated {
                 start_key,

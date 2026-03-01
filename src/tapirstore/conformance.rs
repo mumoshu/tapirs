@@ -491,7 +491,7 @@ pub(crate) fn test_get_validated_returns_none_before_quorum_read(
     seed_value(store, "x", "v1", ts(1, 1));
 
     // No quorum_read has been done yet, so get_validated should return None.
-    assert!(store.get_validated(&"x".to_string(), ts(5, 1)).is_none());
+    assert!(store.do_uncommitted_get_validated(&"x".to_string(), ts(5, 1)).is_none());
 }
 
 pub(crate) fn test_get_validated_returns_some_after_quorum_read(
@@ -503,7 +503,7 @@ pub(crate) fn test_get_validated_returns_some_after_quorum_read(
     store.do_committed_get("x".into(), ts(5, 1)).unwrap();
 
     // Now get_validated at same ts should return the value.
-    let result = store.get_validated(&"x".to_string(), ts(5, 1));
+    let result = store.do_uncommitted_get_validated(&"x".to_string(), ts(5, 1));
     assert!(result.is_some());
     let (val, write_ts) = result.unwrap();
     assert_eq!(val, Some("v1".to_string()));

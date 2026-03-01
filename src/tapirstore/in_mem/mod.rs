@@ -279,9 +279,9 @@ where
         self.occ.quorum_scan(start, end, ts)
     }
 
-    // === Fast Path Validation ===
+    // === Uncommitted Validated Reads ===
 
-    fn get_validated(&self, key: &K, ts: Timestamp) -> Option<(Option<V>, Timestamp)> {
+    fn do_uncommitted_get_validated(&self, key: &K, ts: Timestamp) -> Option<(Option<V>, Timestamp)> {
         self.occ.get_validated(key, ts)
     }
 
