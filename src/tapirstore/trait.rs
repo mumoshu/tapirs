@@ -660,5 +660,40 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
 
     // === Resharding ===
 
+    /// Return the OCC read-protection high-water marks for resharding.
+    ///
+    /// Returns `(max_range_read_time, max_read_commit_time)`:
+    ///
+    /// - `max_range_read_time`: the highest `scan_ts` passed to
+    ///   `do_committed_scan`. Protects against phantom writes. `None` if
+    ///   no committed scans have been performed.
+    ///
+    /// - `max_read_commit_time`: the highest commit timestamp passed to
+    ///   `do_committed_get`. Protects against write-after-read conflicts.
+    ///   `None` if no committed gets have been performed.
+    ///
+    /// # Usage
+    ///
+    /// Only meaningful when the shard is in `Decommissioning` phase (new
+    /// reads are blocked). The caller computes
+    /// `barrier = max(both_values) + 1` and calls
+    /// `raise_min_prepare_time(barrier)` on the target shard to subsume
+    /// all historical read protections from the source.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// Fresh store:
+    ///   min_prepare_baseline() → (None, None)
+    ///
+    /// After do_committed_get("x", ts(5,1)):
+    ///   min_prepare_baseline() → (None, Some(ts(5,1)))
+    ///
+    /// After do_committed_scan("a", "b", ts(7,1)):
+    ///   min_prepare_baseline() → (Some(ts(7,1)), Some(ts(5,1)))
+    ///
+    /// After do_committed_get("y", ts(3,1)):  // 3 < 5, max unchanged
+    ///   min_prepare_baseline() → (Some(ts(7,1)), Some(ts(5,1)))
+    /// ```
     fn min_prepare_baseline(&self) -> (Option<Timestamp>, Option<Timestamp>);
 }
