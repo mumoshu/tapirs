@@ -378,6 +378,40 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
         Ok(cached)
     }
 
+    /// Resolve a committed value from its `ValueLocation`.
+    ///
+    /// Both paths return typed `V` without the caller needing to know
+    /// whether the value is in memory or on disk:
+    ///
+    /// - `InMemory` → zero-copy lookup in `prepare_registry` (current view)
+    /// - `OnDisk` → VLog read + LRU cache lookup (sealed views)
+    /// - `None` → delete tombstone or metadata-only entry (e.g. `commit_get`)
+    pub fn resolve_value(&self, entry: &UnifiedLsmEntry) -> Result<Option<V>, StorageError>
+    where
+        K: serde::de::DeserializeOwned,
+        V: Clone + serde::de::DeserializeOwned,
+    {
+        match &entry.value_ref {
+            None => Ok(None),
+            Some(ValueLocation::InMemory { txn_id, write_index }) => {
+                match self.resolve_in_memory(txn_id, *write_index) {
+                    Some((_key, value)) => Ok(value.clone()),
+                    None => Ok(None),
+                }
+            }
+            Some(ValueLocation::OnDisk(ptr)) => {
+                let cached = self.resolve_on_disk(ptr)?;
+                if let Some((_key, value)) =
+                    cached.write_set.get(ptr.write_index as usize)
+                {
+                    Ok(value.clone())
+                } else {
+                    Ok(None)
+                }
+            }
+        }
+    }
+
     /// Get a reference to the MVCC memtable.
     pub fn mvcc_memtable(&self) -> &Memtable<K, Timestamp> {
         &self.mvcc_memtable

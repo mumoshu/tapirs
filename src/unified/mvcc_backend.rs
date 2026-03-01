@@ -42,43 +42,6 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedMvccBackend<K, V, IO> {
     }
 }
 
-impl<K, V, IO: DiskIo> UnifiedMvccBackend<K, V, IO>
-where
-    K: Clone + Ord + Hash + Debug + Send + Sync + Serialize + for<'de> Deserialize<'de> + 'static,
-    V: Clone + Debug + Send + Sync + Serialize + for<'de> Deserialize<'de> + 'static,
-    IO: DiskIo,
-{
-    /// Resolve a committed value from its `ValueLocation`.
-    ///
-    /// Both paths return typed `V` without the caller needing to know
-    /// whether the value is in memory or on disk:
-    ///
-    /// - `InMemory` → zero-copy lookup in `prepare_registry` (current view)
-    /// - `OnDisk` → VLog read + LRU cache lookup (sealed views)
-    /// - `None` → delete tombstone or metadata-only entry (e.g. `commit_get`)
-    fn resolve_value(&self, entry: &UnifiedLsmEntry) -> Result<Option<V>, StorageError> {
-        match &entry.value_ref {
-            None => Ok(None),
-            Some(ValueLocation::InMemory { txn_id, write_index }) => {
-                match self.store.resolve_in_memory(txn_id, *write_index) {
-                    Some((_key, value)) => Ok(value.clone()),
-                    None => Ok(None),
-                }
-            }
-            Some(ValueLocation::OnDisk(ptr)) => {
-                let cached = self.store.resolve_on_disk(ptr)?;
-                if let Some((_key, value)) =
-                    cached.write_set.get(ptr.write_index as usize)
-                {
-                    Ok(value.clone())
-                } else {
-                    Ok(None)
-                }
-            }
-        }
-    }
-}
-
 impl<K, V, IO: DiskIo> MvccBackend<K, V, Timestamp> for UnifiedMvccBackend<K, V, IO>
 where
     K: Clone + Ord + Hash + Debug + Send + Sync + Serialize + for<'de> Deserialize<'de> + 'static,
@@ -90,7 +53,7 @@ where
     fn get(&self, key: &K) -> Result<(Option<V>, Timestamp), StorageError> {
         if let Some((ck, entry)) = self.store.unified_memtable().get_latest(key) {
             let ts = ck.timestamp.0;
-            let value = self.resolve_value(entry)?;
+            let value = self.store.resolve_value(entry)?;
             return Ok((value, ts));
         }
         Ok((None, Timestamp::default()))
@@ -99,7 +62,7 @@ where
     fn get_at(&self, key: &K, timestamp: Timestamp) -> Result<(Option<V>, Timestamp), StorageError> {
         if let Some((ck, entry)) = self.store.unified_memtable().get_at(key, timestamp) {
             let ts = ck.timestamp.0;
-            let value = self.resolve_value(entry)?;
+            let value = self.store.resolve_value(entry)?;
             return Ok((value, ts));
         }
         Ok((None, Timestamp::default()))
@@ -203,7 +166,7 @@ where
         let mut output = Vec::new();
         for (ck, entry) in results {
             let ts = ck.timestamp.0;
-            let value = self.resolve_value(entry)?;
+            let value = self.store.resolve_value(entry)?;
             output.push((ck.key.clone(), value, ts));
         }
         Ok(output)
