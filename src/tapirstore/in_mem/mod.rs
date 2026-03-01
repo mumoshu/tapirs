@@ -5,7 +5,7 @@ use crate::mvcc::backend::MvccBackend;
 use crate::mvcc::disk::error::StorageError;
 use crate::occ::{PrepareConflict, PrepareResult, SharedTransaction, Store as OccStore, Transaction, TransactionId};
 use crate::tapir::{Key, LeaderRecordDelta, ShardNumber, Timestamp, Value};
-use crate::tapirstore::{CheckPrepareStatus, RecordDeltaDuringView, TapirStore, TransactionLog};
+use crate::tapirstore::{CheckPrepareStatus, MinPrepareTimes, RecordDeltaDuringView, TapirStore, TransactionLog};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::hash::Hash;
 
@@ -24,8 +24,7 @@ pub struct InMemTapirStore<K, V, M> {
 
     transaction_log: TransactionLog,
 
-    min_prepare_time: u64,
-    finalized_min_prepare_time: u64,
+    min_prepare_times: MinPrepareTimes,
 
     #[serde(bound(
         serialize = "K: Serialize, V: Serialize",
@@ -42,8 +41,7 @@ impl<K: Key, V: Value, M> InMemTapirStore<K, V, M> {
         Self {
             occ: OccStore::new(shard, linearizable),
             transaction_log: TransactionLog::new(),
-            min_prepare_time: 0,
-            finalized_min_prepare_time: 0,
+            min_prepare_times: MinPrepareTimes::new(),
             record_delta_during_view: RecordDeltaDuringView::new(),
         }
     }
@@ -52,8 +50,7 @@ impl<K: Key, V: Value, M> InMemTapirStore<K, V, M> {
         Self {
             occ: OccStore::new_with_backend(shard, linearizable, backend),
             transaction_log: TransactionLog::new(),
-            min_prepare_time: 0,
-            finalized_min_prepare_time: 0,
+            min_prepare_times: MinPrepareTimes::new(),
             record_delta_during_view: RecordDeltaDuringView::new(),
         }
     }
@@ -100,19 +97,19 @@ impl<K: Key, V: Value, M> InMemTapirStore<K, V, M> {
 #[cfg(test)]
 impl<K: Key, V: Value, M> InMemTapirStore<K, V, M> {
     pub fn min_prepare_time(&self) -> u64 {
-        self.min_prepare_time
+        self.min_prepare_times.min_prepare_time()
     }
 
     pub fn set_min_prepare_time(&mut self, time: u64) {
-        self.min_prepare_time = time;
+        self.min_prepare_times.set_min_prepare_time(time);
     }
 
     pub fn finalized_min_prepare_time(&self) -> u64 {
-        self.finalized_min_prepare_time
+        self.min_prepare_times.finalized_min_prepare_time()
     }
 
     pub fn set_finalized_min_prepare_time(&mut self, time: u64) {
-        self.finalized_min_prepare_time = time;
+        self.min_prepare_times.set_finalized_min_prepare_time(time);
     }
 }
 
@@ -206,9 +203,9 @@ where
             }
         } else if let Some(finalized) = self.prepared_at_timestamp(id, commit) {
             CheckPrepareStatus::PreparedAtTimestamp { finalized }
-        } else if commit.time < self.min_prepare_time
+        } else if commit.time < self.min_prepare_times.min_prepare_time()
             || self.occ.prepared.get(id)
-                .map(|(c, _, _)| c.time < self.min_prepare_time)
+                .map(|(c, _, _)| c.time < self.min_prepare_times.min_prepare_time())
                 .unwrap_or(false)
         {
             CheckPrepareStatus::TooLate
@@ -314,25 +311,20 @@ where
     // === Min Prepare Time ===
 
     fn raise_min_prepare_time(&mut self, time: u64) -> u64 {
-        let min_prepared_ts = self.min_prepared_timestamp().unwrap_or(u64::MAX);
-        let new_mpt = self.min_prepare_time.max(time.min(min_prepared_ts));
-        self.min_prepare_time = new_mpt;
-        self.min_prepare_time
+        let min_prepared_ts = self.min_prepared_timestamp();
+        self.min_prepare_times.raise(time, min_prepared_ts)
     }
 
     fn finalize_min_prepare_time(&mut self, time: u64) {
-        self.finalized_min_prepare_time = self.finalized_min_prepare_time.max(time);
-        self.min_prepare_time = self.min_prepare_time.max(self.finalized_min_prepare_time);
+        self.min_prepare_times.finalize(time);
     }
 
     fn sync_min_prepare_time(&mut self, time: u64) {
-        self.finalized_min_prepare_time = self.finalized_min_prepare_time.max(time);
-        // Can rollback tentative prepared time.
-        self.min_prepare_time = self.min_prepare_time.min(self.finalized_min_prepare_time);
+        self.min_prepare_times.sync(time);
     }
 
     fn reset_min_prepare_time_to_finalized(&mut self) {
-        self.min_prepare_time = self.finalized_min_prepare_time;
+        self.min_prepare_times.reset_to_finalized();
     }
 
     // === CDC Deltas ===
