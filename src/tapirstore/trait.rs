@@ -326,14 +326,109 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
 
     // === Transaction Log ===
 
+    /// Look up a transaction's final outcome in the transaction log.
+    ///
+    /// Returns `Some((timestamp, committed))` if the transaction has been
+    /// recorded, where `committed = true` means committed at `timestamp`,
+    /// and `committed = false` means aborted (`timestamp` is
+    /// `Timestamp::default()` for aborts).
+    ///
+    /// Returns `None` if the transaction has never been logged.
+    ///
+    /// # Callers
+    ///
+    /// - `exec_inconsistent(Abort)`: checks whether the transaction was
+    ///   already committed before recording an abort.
+    /// - `check_prepare_status`: first lookup in the cascading chain
+    ///   (txn_log → prepared → min_prepare_time).
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// Fresh store:
+    ///   txn_log_get(&id) → None
+    ///
+    /// After txn_log_insert(id, ts(10,1), true):
+    ///   txn_log_get(&id) → Some((ts(10,1), true))
+    ///
+    /// After txn_log_insert(id, default(), false):
+    ///   txn_log_get(&id) → Some((ts(0,0), false))
+    /// ```
     fn txn_log_get(&self, id: &TransactionId) -> Option<(Timestamp, bool)>;
+
+    /// Record a transaction outcome (commit or abort) in the transaction log.
+    ///
+    /// Inserts `(ts, committed)` for the given transaction ID. If the ID
+    /// already exists, the entry is **replaced** and the previous value is
+    /// returned.
+    ///
+    /// - `committed = true`: the transaction committed at `ts`.
+    /// - `committed = false`: the transaction was aborted. By convention,
+    ///   `ts` is `Timestamp::default()` for aborts.
+    ///
+    /// # Return value
+    ///
+    /// `Some((old_ts, old_committed))` if the ID was already present (the
+    /// old entry is replaced), or `None` for a new insertion.
+    ///
+    /// # Side effects
+    ///
+    /// - `txn_log_get` and `txn_log_contains` immediately reflect the new
+    ///   entry. `txn_log_len` increments by 1 for new IDs (not replacements).
+    /// - `check_prepare_status` consults the log first: a committed entry
+    ///   yields `CommittedAtTimestamp` or `CommittedDifferent`; an aborted
+    ///   entry yields `Aborted`.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// Fresh store (txn_log_len = 0):
+    ///   txn_log_insert(id, ts(10,1), true)  → None       // len = 1
+    ///   txn_log_insert(id, ts(20,1), false) → Some((ts(10,1), true))  // replaced
+    ///   txn_log_get(&id) → Some((ts(20,1), false))       // current value
+    /// ```
     fn txn_log_insert(
         &mut self,
         id: TransactionId,
         ts: Timestamp,
         committed: bool,
     ) -> Option<(Timestamp, bool)>;
+
+    /// Check whether a transaction has any outcome recorded in the log.
+    ///
+    /// Returns `true` if the ID has been inserted (committed or aborted).
+    /// Equivalent to `txn_log_get(id).is_some()` but avoids copying.
+    ///
+    /// # Callers
+    ///
+    /// - `sync()`: during leader-record replay, skips re-finalizing a
+    ///   prepare if `txn_log_contains` returns `true`, since the
+    ///   transaction already has a final outcome.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// Fresh store:                          txn_log_contains(&id) → false
+    /// After txn_log_insert(id, ..., true):  txn_log_contains(&id) → true
+    /// ```
     fn txn_log_contains(&self, id: &TransactionId) -> bool;
+
+    /// Return the number of entries in the transaction log.
+    ///
+    /// Counts both committed and aborted entries. Only grows (there is no
+    /// method to remove individual log entries). Replacing an existing
+    /// entry does not change the count.
+    ///
+    /// Used by `metrics()` to expose `tapirs_transaction_log_size`.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// Fresh store:                            txn_log_len() → 0
+    /// After txn_log_insert(id1, ..., true):   txn_log_len() → 1
+    /// After txn_log_insert(id2, ..., false):  txn_log_len() → 2
+    /// After txn_log_insert(id1, ..., false):  txn_log_len() → 2  // replace
+    /// ```
     fn txn_log_len(&self) -> usize;
 
     // === Min Prepare Time ===
