@@ -6,6 +6,7 @@ pub(crate) mod unified_memtable;
 mod vlog;
 
 mod mvcc_impl;
+mod tapirstore;
 
 #[cfg(test)]
 mod tests;
