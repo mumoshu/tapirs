@@ -3,14 +3,10 @@ use crate::mvcc::disk::error::StorageError;
 use crate::occ::{PrepareConflict, PrepareResult, SharedTransaction, Transaction, TransactionId};
 use crate::tapir::{Key, LeaderRecordDelta, ShardNumber, Timestamp, Value};
 use crate::tapirstore::{CheckPrepareStatus, TapirStore};
-use serde::{de::DeserializeOwned, Serialize};
 
 use super::UnifiedStore;
 
-impl<K: Key, V: Value, IO: DiskIo> TapirStore<K, V> for UnifiedStore<K, V, IO>
-where
-    Self: Serialize + DeserializeOwned,
-{
+impl<K: Key, V: Value, IO: DiskIo> TapirStore<K, V> for UnifiedStore<K, V, IO> {
     // === Identity ===
 
     fn shard(&self) -> ShardNumber {
