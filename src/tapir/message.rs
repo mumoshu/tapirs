@@ -27,6 +27,12 @@ pub enum UO<K> {
         end_key: K,
         timestamp: Option<Timestamp>,
     },
+    /// Range scan at a specific timestamp.
+    ScanAt {
+        start_key: K,
+        end_key: K,
+        timestamp: Timestamp,
+    },
     /// For CDC-based resharding: read committed changes by view number.
     ScanChanges {
         from_view: u64,
@@ -103,6 +109,15 @@ pub enum UR<K, V> {
     },
     /// Range scan results.
     Scan(
+        #[serde(bound(
+            serialize = "K: Serialize, V: Serialize",
+            deserialize = "K: Deserialize<'de>, V: Deserialize<'de>"
+        ))]
+        Vec<(K, Option<V>)>,
+        Timestamp,
+    ),
+    /// Range scan results at a specific timestamp.
+    ScanAt(
         #[serde(bound(
             serialize = "K: Serialize, V: Serialize",
             deserialize = "K: Deserialize<'de>, V: Deserialize<'de>"

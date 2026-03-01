@@ -105,6 +105,28 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
         }
     }
 
+    pub fn scan_at(
+        &self,
+        start_key: K,
+        end_key: K,
+        timestamp: Timestamp,
+    ) -> impl Future<Output = Result<(Vec<(K, Option<V>)>, Timestamp), TransactionError>> + use<'_, K, V, T> {
+        let future = self
+            .inner
+            .invoke_unlogged(UO::ScanAt { start_key, end_key, timestamp });
+
+        async move {
+            match future.await {
+                UR::ScanAt(results, ts) => Ok((results, ts)),
+                UR::OutOfRange => Err(TransactionError::OutOfRange),
+                other => {
+                    debug_assert!(false, "unexpected UR variant for scan_at: {other:?}");
+                    Ok((Vec::new(), Default::default()))
+                }
+            }
+        }
+    }
+
     pub fn prepare(
         &self,
         transaction_id: OccTransactionId,

@@ -68,7 +68,7 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> TimeTravelTransaction<K, V, T> {
         async move {
             let shard_client = Inner::shard_client(&client, start.shard).await;
             let (results, _ts) =
-                shard_client.scan(start.key, end.key, Some(timestamp)).await?;
+                shard_client.scan_at(start.key, end.key, timestamp).await?;
             Ok(results
                 .into_iter()
                 .filter_map(|(k, v)| v.map(|v| (k, v)))

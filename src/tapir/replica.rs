@@ -329,6 +329,33 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                     .collect();
                 UR::Scan(pairs, max_ts)
             }
+            UO::ScanAt {
+                start_key,
+                end_key,
+                timestamp,
+            } => {
+                if let Some(range) = &self.key_range {
+                    if !range.contains(&start_key) {
+                        return UR::OutOfRange;
+                    }
+                    if let Some(range_end) = &range.end
+                        && &end_key > range_end
+                    {
+                        return UR::OutOfRange;
+                    }
+                }
+                let results = self.store.scan(&start_key, &end_key, timestamp);
+                let max_ts = results
+                    .iter()
+                    .map(|(_, _, t)| *t)
+                    .max()
+                    .unwrap_or_default();
+                let pairs = results
+                    .into_iter()
+                    .map(|(k, v, _)| (k, v))
+                    .collect();
+                UR::ScanAt(pairs, max_ts)
+            }
             UO::CheckPrepare {
                 transaction_id,
                 commit,
