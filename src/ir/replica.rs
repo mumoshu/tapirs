@@ -8,7 +8,6 @@ use super::{
     VersionedEntry, VersionedRecord, View, ViewNumber,
 };
 use crate::{Transport, TransportMessage};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     collections::{btree_map::Entry, BTreeMap, BTreeSet, HashSet},
     fmt::Debug,
@@ -22,6 +21,10 @@ use tracing::{info, trace, trace_span, warn};
 pub enum Status {
     Normal,
     ViewChanging,
+    /// Not yet used. Will be needed when we implement Recovering mode
+    /// where the replica replays its local IR record to recover state,
+    /// once UnifiedStore is complete.
+    #[allow(dead_code)]
     Recovering,
 }
 
@@ -35,7 +38,7 @@ impl Status {
     }
 }
 
-pub trait Upcalls: Sized + Send + Serialize + DeserializeOwned + 'static {
+pub trait Upcalls: Sized + Send + 'static {
     /// Unlogged operation.
     type UO: TransportMessage;
     /// Unlogged result.
@@ -114,7 +117,6 @@ impl<U: Upcalls, T: Transport<U>> Debug for Replica<U, T> {
 struct Inner<U: Upcalls, T: Transport<U>> {
     transport: T,
     app_tick: Option<fn(&U, &T, &Membership<T::Address>, &mut crate::Rng)>,
-    view_info_key: String,
     view_change_interval: Duration,
     rng: Mutex<crate::Rng>,
     /// Number of completed view changes (status transitioned to Normal).
@@ -147,12 +149,6 @@ struct SyncInner<U: Upcalls, T: Transport<U>> {
     peer_normal_views: BTreeMap<T::Address, ViewNumber>,
 }
 
-#[derive(Serialize, Deserialize)]
-struct PersistentViewInfo<A> {
-    view: SharedView<A>,
-    latest_normal_view: SharedView<A>,
-}
-
 impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
     const VIEW_CHANGE_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -180,12 +176,10 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
             number: ViewNumber(0),
             app_config: None,
         });
-        let view_info_key = format!("ir_replica_{}", transport.address());
         let ret = Self {
             inner: Arc::new(Inner {
                 transport,
                 app_tick,
-                view_info_key,
                 view_change_interval: interval,
                 rng: Mutex::new(rng),
                 view_change_count: AtomicU64::new(0),
@@ -203,29 +197,6 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                 }),
             }),
         };
-        let mut sync = ret.inner.sync.lock().unwrap();
-
-        if let Some(persistent) = ret
-            .inner
-            .transport
-            .persisted::<PersistentViewInfo<T::Address>>(&ret.inner.view_info_key)
-        {
-            sync.status = Status::Recovering;
-            sync.view = persistent.view;
-            sync.latest_normal_view = persistent.latest_normal_view;
-            sync.view.make_mut().number.0 += 1;
-
-            if sync.view.leader() == ret.inner.transport.address() {
-                sync.view.make_mut().number.0 += 1;
-            }
-
-            ret.persist_view_info(&*sync);
-
-            Self::broadcast_do_view_change(&ret.inner.transport, &mut *sync);
-        } else {
-            ret.persist_view_info(&*sync);
-        }
-        drop(sync);
         ret.tick();
         ret.tick_app();
         ret
@@ -237,19 +208,6 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
 
     pub fn address(&self) -> T::Address {
         self.inner.transport.address()
-    }
-
-    fn persist_view_info(&self, sync: &SyncInner<U, T>) {
-        if sync.view.membership.len() == 1 {
-            return;
-        }
-        self.inner.transport.persist(
-            &self.inner.view_info_key,
-            Some(&PersistentViewInfo {
-                view: sync.view.clone(),
-                latest_normal_view: sync.latest_normal_view.clone(),
-            }),
-        );
     }
 
     fn tick(&self) {
@@ -516,7 +474,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                         if sync.status.is_normal() {
                             sync.status = Status::ViewChanging;
                         }
-                        self.persist_view_info(&*sync);
+
                         info!(
                             "{:?} received DoViewChange for view {}, broadcasting to peers",
                             self.inner.transport.address(),
@@ -813,7 +771,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
 
                             sync.latest_normal_view.make_mut().number = msg_view_number;
                             sync.latest_normal_view.make_mut().membership = sync.view.membership.clone();
-                            self.persist_view_info(&*sync);
+    
 
                             let full_payload = RecordPayload::Full(sync.record.base().clone());
 
@@ -850,10 +808,6 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                                 };
                                 self.inner.transport.do_send(address, Message::<U, T>::StartView(sv));
                             }
-                            self.inner.transport.persist(
-                                &format!("checkpoint_{}", sync.view.number.0),
-                                Some(&sync.upcalls),
-                            );
                             self.inner.transport.on_membership_changed(&sync.view.membership, sync.view.number.0);
                         }
                     }
@@ -954,7 +908,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                         sync.upcalls.apply_config(config);
                     }
                     sync.changed_view_recently = true;
-                    self.persist_view_info(&*sync);
+
                     self.inner.transport.on_membership_changed(&sync.view.membership, sync.view.number.0);
                 }
             }
@@ -975,7 +929,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                         .chain(std::iter::once(address))
                         .collect();
                     sync.view.make_mut().membership = Membership::new(new_members);
-                    self.persist_view_info(&*sync);
+
 
                     // Election.
                     Self::broadcast_do_view_change(&self.inner.transport, sync);
@@ -1000,7 +954,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                         .filter(|a| *a != address)
                         .collect();
                     sync.view.make_mut().membership = Membership::new(new_members);
-                    self.persist_view_info(&*sync);
+
 
                     // Election.
                     Self::broadcast_do_view_change(&self.inner.transport, sync);
@@ -1023,7 +977,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                     } else {
                         sync.status = Status::ViewChanging;
                         sync.view.make_mut().number.0 += 3;
-                        self.persist_view_info(&*sync);
+
 
                         Self::broadcast_do_view_change(&self.inner.transport, sync);
                     }

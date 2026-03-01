@@ -95,9 +95,8 @@ impl SoloClusterManager {
             TcpAddress(a)
         };
         let directory = Arc::new(InMemoryShardDirectory::new());
-        let persist_dir = format!("/tmp/tapi_backup_{}", std::process::id());
         let transport: TcpTransport<TapirReplica<String, String>> =
-            TcpTransport::with_directory(ephemeral_addr, persist_dir, directory);
+            TcpTransport::with_directory(ephemeral_addr, directory);
 
         // 4. Per shard: create ShardClient, scan_changes, write delta file.
         self.report_progress("backup-direct:scan-shards");

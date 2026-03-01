@@ -43,8 +43,6 @@ pub(super) struct TransportInner<U: ReplicaUpcalls> {
     pub directory: Arc<InMemoryShardDirectory<TcpAddress>>,
     /// Shard number for this transport's replica group, set by set_shard_addresses().
     pub shard: RwLock<Option<ShardNumber>>,
-    /// Directory for persistent state files.
-    pub persist_dir: String,
     /// Optional TLS acceptor for inbound connections.
     #[cfg(feature = "tls")]
     pub tls_acceptor: Option<crate::tls::ReloadableTlsAcceptor>,
@@ -59,7 +57,6 @@ pub(super) struct TransportInner<U: ReplicaUpcalls> {
 impl<U: ReplicaUpcalls> TcpTransport<U> {
     pub fn with_directory(
         address: TcpAddress,
-        persist_dir: String,
         directory: Arc<InMemoryShardDirectory<TcpAddress>>,
     ) -> Self {
         Self {
@@ -71,7 +68,6 @@ impl<U: ReplicaUpcalls> TcpTransport<U> {
                 receive_callback: Mutex::new(None),
                 directory,
                 shard: RwLock::new(None),
-                persist_dir,
                 #[cfg(feature = "tls")]
                 tls_acceptor: None,
                 #[cfg(feature = "tls")]
@@ -86,7 +82,6 @@ impl<U: ReplicaUpcalls> TcpTransport<U> {
     #[cfg(feature = "tls")]
     pub fn with_tls(
         address: TcpAddress,
-        persist_dir: String,
         directory: Arc<InMemoryShardDirectory<TcpAddress>>,
         tls_config: &crate::tls::TlsConfig,
     ) -> Result<Self, crate::tls::TlsError> {
@@ -110,7 +105,6 @@ impl<U: ReplicaUpcalls> TcpTransport<U> {
                 receive_callback: Mutex::new(None),
                 directory,
                 shard: RwLock::new(None),
-                persist_dir,
                 tls_acceptor: Some(acceptor),
                 tls_connector: Some(connector),
                 tls_server_name,

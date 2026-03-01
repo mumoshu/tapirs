@@ -1,7 +1,6 @@
 use crate::mvcc::disk::error::StorageError;
 use crate::occ::{PrepareConflict, PrepareResult, SharedTransaction, Transaction, TransactionId};
 use crate::tapir::{Key, LeaderRecordDelta, ShardNumber, Timestamp, Value};
-use serde::{de::DeserializeOwned, Serialize};
 
 /// Result of checking the current status of a transaction for prepare decisions.
 #[derive(Debug, PartialEq, Eq)]
@@ -39,7 +38,7 @@ pub enum CheckPrepareStatus {
 ///
 /// The TAPIR replica keeps only transient protocol state (key range,
 /// phase, counters) and delegates all persistent state through this trait.
-pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 'static {
+pub trait TapirStore<K: Key, V: Value>: Send + 'static {
     // === Identity ===
 
     fn shard(&self) -> ShardNumber;

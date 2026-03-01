@@ -89,13 +89,9 @@ impl BenchTarget {
         let membership = IrMembership::new(tcp_addrs);
         directory.put(ShardNumber(0), membership, 0);
 
-        let temp_dir = TempDir::new().expect("create client temp dir");
-        let persist_dir = temp_dir.path().to_str().unwrap().to_string();
-        std::mem::forget(temp_dir);
-
         let client_addr = TcpAddress(alloc_addr());
         let transport: BenchTransport =
-            TcpTransport::with_directory(client_addr, persist_dir, directory);
+            TcpTransport::with_directory(client_addr, directory);
 
         let rng = bench_rng();
         let tapir_client = Arc::new(BenchTapirClient::new(rng, transport));

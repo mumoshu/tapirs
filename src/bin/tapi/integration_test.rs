@@ -54,8 +54,7 @@ fn env_or(var: &str, default: u32) -> u32 {
 async fn create_disc_remote(endpoint: &str) -> DiscTapirDir {
     let addr = TcpAddress(alloc_addr());
     let dir = Arc::new(InMemoryShardDirectory::new());
-    let persist_dir = format!("/tmp/tapi_test_disc_{}", thread_rng().r#gen::<u32>());
-    let transport = TcpTransport::with_directory(addr, persist_dir, dir);
+    let transport = TcpTransport::with_directory(addr, dir);
     let rng = tapirs::Rng::from_seed(thread_rng().r#gen());
     tapir::parse_tapir_endpoint::<TcpAddress, _>(endpoint, transport, rng)
         .await
@@ -258,7 +257,6 @@ async fn create_test_client(
     // Same as client.rs: TcpTransport with shared directory.
     let transport: TestTransport = TcpTransport::with_directory(
         TcpAddress(local_addr),
-        td.path().to_str().unwrap().to_string(),
         Arc::clone(&dir),
     );
 
@@ -1061,11 +1059,9 @@ async fn test_solo_backup_restore() {
 
     // Create a client pointing directly to restored replicas (no discovery).
     let local_addr = alloc_addr();
-    let td_client = TempDir::new().unwrap();
     let dir = Arc::new(InMemoryShardDirectory::new());
     let transport: TestTransport = TcpTransport::with_directory(
         TcpAddress(local_addr),
-        td_client.path().to_str().unwrap().to_string(),
         dir,
     );
     let shard_addrs: Vec<TcpAddress> =
@@ -1214,11 +1210,9 @@ async fn test_solo_backup_restore_incremental() {
 
     // Create a client pointing directly to restored replicas (no discovery).
     let local_addr = alloc_addr();
-    let td_client = TempDir::new().unwrap();
     let dir = Arc::new(InMemoryShardDirectory::new());
     let transport: TestTransport = TcpTransport::with_directory(
         TcpAddress(local_addr),
-        td_client.path().to_str().unwrap().to_string(),
         dir,
     );
     let shard_addrs: Vec<TcpAddress> =

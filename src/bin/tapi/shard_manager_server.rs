@@ -17,17 +17,16 @@ pub async fn run(
             TcpAddress(a)
         };
         let disc_dir = Arc::new(tapirs::discovery::InMemoryShardDirectory::new());
-        let persist_dir = format!("/tmp/tapi_sm_disc_{}", std::process::id());
         #[cfg(feature = "tls")]
         let disc_transport: TcpTransport<TapirReplica<String, String>> = if let Some(ref tls) = tls_config {
-            TcpTransport::with_tls(ephemeral_addr, persist_dir, disc_dir, tls)
+            TcpTransport::with_tls(ephemeral_addr, disc_dir, tls)
                 .unwrap_or_else(|e| panic!("discovery transport TLS error: {e}"))
         } else {
-            TcpTransport::with_directory(ephemeral_addr, persist_dir, disc_dir)
+            TcpTransport::with_directory(ephemeral_addr, disc_dir)
         };
         #[cfg(not(feature = "tls"))]
         let disc_transport: TcpTransport<TapirReplica<String, String>> =
-            TcpTransport::with_directory(ephemeral_addr, persist_dir, disc_dir);
+            TcpTransport::with_directory(ephemeral_addr, disc_dir);
 
         // Consistency: The shard-manager is the authority for shard membership
         // and route changes. strong_* methods use linearizable reads (RO

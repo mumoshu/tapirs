@@ -40,19 +40,16 @@ impl<RD: RemoteShardDirectory<TcpAddress, String>> ShardManagerState<RD> {
             TcpAddress(a)
         };
         let directory = Arc::new(InMemoryShardDirectory::new());
-        let persist_dir = format!("/tmp/tapi_shard_manager_{}", std::process::id());
-
         #[cfg(feature = "tls")]
         let transport = if let Some(tls) = tls_config {
-            TcpTransport::with_tls(ephemeral_addr, persist_dir, Arc::clone(&directory), tls)
+            TcpTransport::with_tls(ephemeral_addr, Arc::clone(&directory), tls)
                 .unwrap_or_else(|e| panic!("shard-manager transport TLS error: {e}"))
         } else {
-            TcpTransport::with_directory(ephemeral_addr, persist_dir, Arc::clone(&directory))
+            TcpTransport::with_directory(ephemeral_addr, Arc::clone(&directory))
         };
         #[cfg(not(feature = "tls"))]
         let transport = TcpTransport::with_directory(
             ephemeral_addr,
-            persist_dir,
             Arc::clone(&directory),
         );
 

@@ -4,12 +4,10 @@ use crate::{
     tapir::{Key, Value},
     IrMembership, IrMessage, IrReplicaUpcalls, ShardNumber, TapirReplica,
 };
-use serde::{de::DeserializeOwned, Serialize};
 use std::{
-    collections::BTreeMap,
     fmt::Debug,
     future::Future,
-    sync::{Arc, Mutex, RwLock},
+    sync::{Arc, RwLock},
     time::Duration,
 };
 use tracing::{trace, warn};
@@ -81,7 +79,6 @@ impl<U: IrReplicaUpcalls> Registry<U> {
         inner.callbacks.push(Arc::new(callback));
         Channel {
             address,
-            persistent: Default::default(),
             inner: Arc::clone(&self.inner),
             directory,
             shard: Arc::new(RwLock::new(None)),
@@ -101,7 +98,6 @@ impl<U: IrReplicaUpcalls> Registry<U> {
 
 pub struct Channel<U: IrReplicaUpcalls> {
     address: usize,
-    persistent: Arc<Mutex<BTreeMap<String, String>>>,
     inner: Arc<RwLock<Inner<U>>>,
     directory: Arc<InMemoryShardDirectory<usize>>,
     shard: Arc<RwLock<Option<ShardNumber>>>,
@@ -113,7 +109,6 @@ impl<U: IrReplicaUpcalls> Clone for Channel<U> {
     fn clone(&self) -> Self {
         Self {
             address: self.address,
-            persistent: Arc::clone(&self.persistent),
             inner: Arc::clone(&self.inner),
             directory: Arc::clone(&self.directory),
             shard: Arc::clone(&self.shard),
@@ -148,32 +143,6 @@ impl<U: IrReplicaUpcalls> Transport<U> for Channel<U> {
 
     fn sleep(duration: Duration) -> Self::Sleep {
         tokio::time::sleep(duration)
-    }
-
-    fn persist<T: Serialize>(&self, key: &str, value: Option<&T>) {
-        let mut persistent = self.persistent.lock().unwrap();
-        if let Some(value) = value {
-            let string = serde_json::to_string(&value).unwrap();
-            let to_display = if string.len() > 200 {
-                let with_bc = bitcode::serialize(&value).unwrap();
-                format!("<{} bytes ({} with bitcode)>", string.len(), with_bc.len())
-            } else {
-                string.clone()
-            };
-            trace!("{:?} persisting {:?} = {}", self.address, key, to_display);
-            persistent.insert(key.to_owned(), string);
-        } else {
-            persistent.remove(key);
-            unreachable!();
-        }
-    }
-
-    fn persisted<T: DeserializeOwned>(&self, key: &str) -> Option<T> {
-        self.persistent
-            .lock()
-            .unwrap()
-            .get(key)
-            .and_then(|value| serde_json::from_str(value).ok())
     }
 
     fn send<R: TryFrom<IrMessage<U, Self>> + Send + Debug>(

@@ -35,25 +35,6 @@ where
         tokio::time::sleep(duration)
     }
 
-    fn persist<T: Serialize>(&self, key: &str, value: Option<&T>) {
-        let dir = &self.inner.persist_dir;
-        let path = format!("{dir}/{key}.bin");
-        if let Some(val) = value {
-            let data = bitcode::serialize(val).expect("serialize");
-            std::fs::create_dir_all(dir).ok();
-            std::fs::write(&path, data).expect("persist write");
-        } else {
-            std::fs::remove_file(&path).ok();
-        }
-    }
-
-    fn persisted<T: DeserializeOwned>(&self, key: &str) -> Option<T> {
-        let path = format!("{}/{key}.bin", self.inner.persist_dir);
-        std::fs::read(&path)
-            .ok()
-            .and_then(|data| bitcode::deserialize(&data).ok())
-    }
-
     fn send<R: TryFrom<IrMessage<U, Self>> + Send + Debug>(
         &self,
         address: TcpAddress,

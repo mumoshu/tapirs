@@ -123,14 +123,6 @@ impl Transport<TapirReplica<K, V>> for Maelstrom {
         self.id
     }
 
-    fn persist<T: serde::Serialize>(&self, _key: &str, _value: Option<&T>) {
-        // no-op.
-    }
-
-    fn persisted<T: serde::de::DeserializeOwned>(&self, _key: &str) -> Option<T> {
-        None
-    }
-
     fn time(&self) -> u64 {
         use std::time::SystemTime;
         let now = SystemTime::now()

@@ -28,7 +28,6 @@ pub(crate) struct TransportState<U: ReplicaUpcalls> {
     pub pending_replies: BTreeMap<u64, PendingReply<U>>,
     pub next_request_id: u64,
     pub shard_directory: BTreeMap<ShardNumber, IrMembership<UringAddress>>,
-    pub persist_dir: String,
     pub connect_timeout_ms: u64,
     pub request_timeout_ms: u64,
 }
@@ -58,13 +57,12 @@ impl<U: ReplicaUpcalls> Clone for UringTransport<U> {
 }
 
 impl<U: ReplicaUpcalls> UringTransport<U> {
-    pub fn new(address: UringAddress, persist_dir: String) -> Self {
-        Self::new_with_config(address, persist_dir, 5000, 30000)
+    pub fn new(address: UringAddress) -> Self {
+        Self::new_with_config(address, 5000, 30000)
     }
 
     pub fn new_with_config(
         address: UringAddress,
-        persist_dir: String,
         connect_timeout_ms: u64,
         request_timeout_ms: u64,
     ) -> Self {
@@ -76,7 +74,6 @@ impl<U: ReplicaUpcalls> UringTransport<U> {
                 pending_replies: BTreeMap::new(),
                 next_request_id: 0,
                 shard_directory: BTreeMap::new(),
-                persist_dir,
                 connect_timeout_ms,
                 request_timeout_ms,
             })),

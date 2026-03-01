@@ -40,20 +40,19 @@ impl Node {
             .collect::<Result<Vec<_>, _>>()?;
         let membership = IrMembership::new(membership_addrs);
 
-        let persist_dir = format!("{}/shard_{}", self.persist_dir, cfg.shard);
         let address = TcpAddress(listen_addr);
 
         #[cfg(feature = "tls")]
         let transport = if let Some(ref tls_config) = self.tls_config {
-            TcpTransport::with_tls(address, persist_dir, Arc::clone(&self.directory), tls_config)
+            TcpTransport::with_tls(address, Arc::clone(&self.directory), tls_config)
                 .map_err(|e| format!("TLS config error: {e}"))?
         } else {
-            TcpTransport::with_directory(address, persist_dir, Arc::clone(&self.directory))
+            TcpTransport::with_directory(address, Arc::clone(&self.directory))
         };
 
         #[cfg(not(feature = "tls"))]
         let transport =
-            TcpTransport::with_directory(address, persist_dir, Arc::clone(&self.directory));
+            TcpTransport::with_directory(address, Arc::clone(&self.directory));
 
         // Populate shard directory so TapirTransport::shard_addresses works.
         transport.set_shard_addresses(shard, membership.clone());

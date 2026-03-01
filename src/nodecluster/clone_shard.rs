@@ -249,9 +249,8 @@ impl SoloClusterManager {
             TcpAddress(a)
         };
         let directory = Arc::new(InMemoryShardDirectory::new());
-        let persist_dir = format!("/tmp/tapi_clone_{}", std::process::id());
         let transport: TcpTransport<TapirReplica<String, String>> =
-            TcpTransport::with_directory(ephemeral_addr, persist_dir, directory);
+            TcpTransport::with_directory(ephemeral_addr, directory);
 
         let source_membership = IrMembership::new(source_listen_addrs);
         transport.set_shard_addresses(source_shard, source_membership.clone());

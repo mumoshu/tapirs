@@ -48,15 +48,6 @@ pub trait Transport<U: IrReplicaUpcalls>: Clone + Send + Sync + 'static {
     /// Sleep for duration.
     fn sleep(duration: Duration) -> Self::Sleep;
 
-    /// Synchronously and atomically persist a key-value pair. Any
-    /// future calls to `persisted` should return this value
-    /// unless/until it is overwritten.
-    fn persist<T: Serialize>(&self, key: &str, value: Option<&T>);
-
-    /// Synchronously load the last key-value pair successfully persisted
-    /// at the given key.
-    fn persisted<T: DeserializeOwned>(&self, key: &str) -> Option<T>;
-
     /// Send/retry, ignoring any errors, until there is a reply.
     fn send<R: TryFrom<IrMessage<U, Self>> + Send + Debug>(
         &self,

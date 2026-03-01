@@ -18,7 +18,6 @@ pub struct CoreConfig {
     pub cpu_id: usize,
     pub shards: Vec<ShardAssignment>,
     pub ring_size: u32,
-    pub persist_dir: String,
     /// Connection timeout (milliseconds). Default: 5000ms.
     pub connect_timeout_ms: u64,
     /// Request timeout (milliseconds). Default: 30000ms (not yet implemented).
@@ -31,7 +30,6 @@ impl Default for CoreConfig {
             cpu_id: 0,
             shards: Vec::new(),
             ring_size: 256,
-            persist_dir: String::new(),
             connect_timeout_ms: 5000,
             request_timeout_ms: 30000,
         }
@@ -69,10 +67,7 @@ impl CoreLauncher {
 
                     for shard_config in &config.shards {
                         let addr = UringAddress::from(shard_config.listen_addr);
-                        let transport = UringTransport::<U>::new(
-                            addr,
-                            config.persist_dir.clone(),
-                        );
+                        let transport = UringTransport::<U>::new(addr);
 
                         {
                             let mut state = transport.state.borrow_mut();

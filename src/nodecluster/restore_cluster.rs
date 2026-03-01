@@ -89,9 +89,8 @@ impl SoloClusterManager {
             TcpAddress(a)
         };
         let directory = Arc::new(InMemoryShardDirectory::new());
-        let persist_dir = format!("/tmp/tapi_restore_{}", std::process::id());
         let transport: TcpTransport<TapirReplica<String, String>> =
-            TcpTransport::with_directory(ephemeral_addr, persist_dir, directory);
+            TcpTransport::with_directory(ephemeral_addr, directory);
 
         for shard_hist in &meta.shards {
             let last_delta = shard_hist.deltas.last().unwrap();

@@ -57,21 +57,19 @@ pub async fn run(
     drop(listener);
 
     let address = TcpAddress(local_addr);
-    let persist_dir = format!("/tmp/tapi_client_{}", std::process::id());
-
     let address_directory = Arc::new(InMemoryShardDirectory::new());
 
     #[cfg(feature = "tls")]
     let transport: TcpTransport<TapirReplica<String, String>> = if let Some(ref tls_cfg) = tls_config {
-        TcpTransport::with_tls(address, persist_dir, Arc::clone(&address_directory), tls_cfg)
+        TcpTransport::with_tls(address, Arc::clone(&address_directory), tls_cfg)
             .unwrap_or_else(|e| panic!("client TLS config error: {e}"))
     } else {
-        TcpTransport::with_directory(address, persist_dir, Arc::clone(&address_directory))
+        TcpTransport::with_directory(address, Arc::clone(&address_directory))
     };
 
     #[cfg(not(feature = "tls"))]
     let transport: TcpTransport<TapirReplica<String, String>> =
-        TcpTransport::with_directory(address, persist_dir, Arc::clone(&address_directory));
+        TcpTransport::with_directory(address, Arc::clone(&address_directory));
 
     // Build shard directory entries and populate transport's shard addresses.
     // Populate membership first, then build key range entries.
@@ -200,19 +198,17 @@ async fn load_tapir_discovery(
         TcpAddress(a)
     };
     let disc_dir = Arc::new(tapirs::discovery::InMemoryShardDirectory::new());
-    let persist_dir = format!("/tmp/tapi_client_disc_{}", std::process::id());
-
     #[cfg(feature = "tls")]
     let disc_transport: TcpTransport<TapirReplica<String, String>> = if let Some(tls_cfg) = tls_config {
-        TcpTransport::with_tls(ephemeral_addr, persist_dir, disc_dir, tls_cfg)
+        TcpTransport::with_tls(ephemeral_addr, disc_dir, tls_cfg)
             .unwrap_or_else(|e| panic!("discovery TLS config error: {e}"))
     } else {
-        TcpTransport::with_directory(ephemeral_addr, persist_dir, disc_dir)
+        TcpTransport::with_directory(ephemeral_addr, disc_dir)
     };
 
     #[cfg(not(feature = "tls"))]
     let disc_transport: TcpTransport<TapirReplica<String, String>> =
-        TcpTransport::with_directory(ephemeral_addr, persist_dir, disc_dir);
+        TcpTransport::with_directory(ephemeral_addr, disc_dir);
 
     let rng = tapirs::Rng::from_seed(thread_rng().r#gen());
     let dir = tapir::parse_tapir_endpoint::<TcpAddress, _>(

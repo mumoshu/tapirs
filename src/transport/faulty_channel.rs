@@ -7,7 +7,6 @@ use rand::{seq::SliceRandom, Rng, RngCore, SeedableRng};
 use rand::rngs::StdRng;
 use rand::distributions::{Distribution, Uniform};
 use rand_distr::Normal;
-use serde::{de::DeserializeOwned, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Debug,
@@ -501,14 +500,6 @@ impl<U: IrReplicaUpcalls> Transport<U> for FaultyChannelTransport<U> {
 
     fn sleep(duration: Duration) -> Self::Sleep {
         Channel::<U>::sleep(duration)
-    }
-
-    fn persist<T: Serialize>(&self, key: &str, value: Option<&T>) {
-        self.inner.persist(key, value)
-    }
-
-    fn persisted<T: DeserializeOwned>(&self, key: &str) -> Option<T> {
-        self.inner.persisted(key)
     }
 
     fn send<R: TryFrom<IrMessage<U, Self>> + Send + Debug>(
