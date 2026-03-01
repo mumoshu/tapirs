@@ -870,6 +870,16 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
     ///   `do_committed_get`. Protects against write-after-read conflicts.
     ///   `None` if no committed gets have been performed.
     ///
+    /// The two values are tracked independently — a `do_committed_get`
+    /// does not affect `max_range_read_time` and vice versa. Each value
+    /// is either `None` (no reads/scans yet) or `Some(ts)` where `ts`
+    /// is monotonically non-decreasing: once set, it can only increase
+    /// as higher-timestamped reads or scans arrive.
+    ///
+    /// # Side effects
+    ///
+    /// None. This is a read-only query — no state mutation occurs.
+    ///
     /// # Usage
     ///
     /// Only meaningful when the shard is in `Decommissioning` phase (new
@@ -892,6 +902,9 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
     ///
     /// After do_committed_get("y", ts(3,1)):  // 3 < 5, max unchanged
     ///   min_prepare_baseline() → (Some(ts(7,1)), Some(ts(5,1)))
+    ///
+    /// After do_committed_get("z", ts(9,1)):  // 9 > 5, max updated
+    ///   min_prepare_baseline() → (Some(ts(7,1)), Some(ts(9,1)))
     /// ```
     fn min_prepare_baseline(&self) -> (Option<Timestamp>, Option<Timestamp>);
 }
