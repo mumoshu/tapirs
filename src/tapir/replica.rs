@@ -518,7 +518,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                         return Some(IR::OutOfRange);
                     }
                 }
-                match self.store.quorum_scan(start_key.clone(), end_key.clone(), *snapshot_ts) {
+                match self.store.do_committed_scan(start_key.clone(), end_key.clone(), *snapshot_ts) {
                     Ok(results) => Some(IR::QuorumScan(results)),
                     Err(_) => Some(IR::PrepareConflict),
                 }

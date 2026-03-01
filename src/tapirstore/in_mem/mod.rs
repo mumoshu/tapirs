@@ -270,7 +270,7 @@ where
         self.occ.quorum_read(key, ts)
     }
 
-    fn quorum_scan(
+    fn do_committed_scan(
         &mut self,
         start: K,
         end: K,

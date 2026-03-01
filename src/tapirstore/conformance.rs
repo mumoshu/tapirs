@@ -460,7 +460,7 @@ pub(crate) fn test_quorum_scan_returns_range(
     seed_value(store, "c", "v3", ts(1, 1));
 
     let results = store
-        .quorum_scan("a".into(), "c".into(), ts(10, 1))
+        .do_committed_scan("a".into(), "c".into(), ts(10, 1))
         .unwrap();
     assert_eq!(results.len(), 3);
     assert_eq!(results[0].0, "a");
@@ -529,7 +529,7 @@ pub(crate) fn test_scan_validated_returns_some_after_quorum_scan(
 
     // Quorum scan covers [a, b] at ts(5,1).
     store
-        .quorum_scan("a".into(), "b".into(), ts(5, 1))
+        .do_committed_scan("a".into(), "b".into(), ts(5, 1))
         .unwrap();
 
     // scan_validated at same range + ts should return results.
@@ -574,7 +574,7 @@ pub(crate) fn test_min_prepare_baseline_after_quorum_scan(
 
     // Quorum scan records range read.
     store
-        .quorum_scan("a".into(), "b".into(), ts(7, 1))
+        .do_committed_scan("a".into(), "b".into(), ts(7, 1))
         .unwrap();
 
     let (max_rr, _max_rc) = store.min_prepare_baseline();

@@ -102,7 +102,7 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
         ts: Timestamp,
     ) -> Result<(Option<V>, Timestamp), PrepareConflict>;
 
-    fn quorum_scan(
+    fn do_committed_scan(
         &mut self,
         start: K,
         end: K,
