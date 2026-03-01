@@ -8,29 +8,24 @@ use crate::tapir::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::marker::PhantomData;
 use std::sync::Arc;
 
 /// Typed adapter that implements `MvccBackend<K, V, Timestamp>` by
 /// delegating to `UnifiedStore`.
 pub struct UnifiedMvccBackend<K: Ord, V, IO: DiskIo> {
-    store: UnifiedStore<K, IO>,
-    _marker: PhantomData<V>,
+    store: UnifiedStore<K, V, IO>,
 }
 
 impl<K: Ord + Clone, V, IO: DiskIo> UnifiedMvccBackend<K, V, IO> {
-    pub fn new(store: UnifiedStore<K, IO>) -> Self {
-        Self {
-            store,
-            _marker: PhantomData,
-        }
+    pub fn new(store: UnifiedStore<K, V, IO>) -> Self {
+        Self { store }
     }
 
-    pub fn inner(&self) -> &UnifiedStore<K, IO> {
+    pub fn inner(&self) -> &UnifiedStore<K, V, IO> {
         &self.store
     }
 
-    pub fn inner_mut(&mut self) -> &mut UnifiedStore<K, IO> {
+    pub fn inner_mut(&mut self) -> &mut UnifiedStore<K, V, IO> {
         &mut self.store
     }
 }

@@ -12,7 +12,7 @@ use std::sync::Arc;
 // === Type Aliases ===
 
 pub type TestStore = UnifiedMvccBackend<String, String, MemoryIo>;
-pub type TestUnifiedStore = UnifiedStore<String, MemoryIo>;
+pub type TestUnifiedStore = UnifiedStore<String, String, MemoryIo>;
 
 // === Factory Helpers ===
 

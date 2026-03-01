@@ -18,6 +18,7 @@ use crate::occ::TransactionId as OccTransactionId;
 use crate::tapir::Timestamp;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
+use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -40,7 +41,7 @@ const DEFAULT_MIN_VIEW_VLOG_SIZE: u64 = 256 * 1024;
 ///
 /// Operates on opaque byte vectors for user keys and values in the VLog,
 /// but uses typed `K` for the in-memory MVCC memtable index.
-pub struct UnifiedStore<K: Ord, IO: DiskIo> {
+pub struct UnifiedStore<K: Ord, V, IO: DiskIo> {
     /// MVCC memtable: current view's committed values + read timestamps.
     mvcc_memtable: Memtable<K, Timestamp>,
 
@@ -98,9 +99,11 @@ pub struct UnifiedStore<K: Ord, IO: DiskIo> {
 
     /// Number of entries written to the current view's VLog (for view seal).
     current_view_entry_count: u32,
+
+    _v: PhantomData<V>,
 }
 
-impl<K: Ord + Clone, IO: DiskIo> UnifiedStore<K, IO> {
+impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
     /// Open or create a unified store at the given directory.
     pub fn open(base_dir: PathBuf) -> Result<Self, StorageError> {
         Self::open_with_options(base_dir, DEFAULT_MIN_VIEW_VLOG_SIZE)
@@ -182,6 +185,7 @@ impl<K: Ord + Clone, IO: DiskIo> UnifiedStore<K, IO> {
             min_view_vlog_size,
             vlog_read_count: Cell::new(0),
             current_view_entry_count: 0,
+            _v: PhantomData,
         })
     }
 

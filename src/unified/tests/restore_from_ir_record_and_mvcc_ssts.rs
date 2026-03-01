@@ -37,7 +37,7 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
     // === Phase 1: Build state across multiple views ===
     {
         let inner =
-            UnifiedStore::<String, MemoryIo>::open_with_options(path.clone(), 64).unwrap();
+            UnifiedStore::<String, String, MemoryIo>::open_with_options(path.clone(), 64).unwrap();
         let mut store = UnifiedMvccBackend::<String, String, MemoryIo>::new(inner);
 
         // Fresh store: only active VLog segment
@@ -125,7 +125,7 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
     // In a real backup scenario, you'd copy the VLog files to the restore target.
 
     let inner =
-        UnifiedStore::<String, MemoryIo>::open_with_options(path, 64).unwrap();
+        UnifiedStore::<String, String, MemoryIo>::open_with_options(path, 64).unwrap();
     let mut restored = UnifiedMvccBackend::<String, String, MemoryIo>::new(inner);
 
     // Step 1: Load MVCC SST entries into the unified_memtable

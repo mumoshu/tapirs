@@ -159,7 +159,7 @@ fn cmd_open(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
         return Err("usage: open <dir>".to_string());
     }
     let path = PathBuf::from(parts[1]);
-    let inner = UnifiedStore::<String, BufferedIo>::open(path)
+    let inner = UnifiedStore::<String, String, BufferedIo>::open(path)
         .map_err(|e| format!("open failed: {e}"))?;
     ctx.store = Some(UnifiedMvccBackend::new(inner));
     Ok(())
@@ -173,7 +173,7 @@ fn cmd_open_with(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
     let min_size: u64 = parts[2]
         .parse()
         .map_err(|_| format!("invalid min_vlog_size: {}", parts[2]))?;
-    let inner = UnifiedStore::<String, BufferedIo>::open_with_options(path, min_size)
+    let inner = UnifiedStore::<String, String, BufferedIo>::open_with_options(path, min_size)
         .map_err(|e| format!("open-with failed: {e}"))?;
     ctx.store = Some(UnifiedMvccBackend::new(inner));
     Ok(())

@@ -293,7 +293,7 @@ fn restore_from_sealed_vlog_rebuilds_mvcc() {
     // === Phase 1: Build state and seal ===
     let ir_record;
     {
-        let inner = UnifiedStore::<String, MemoryIo>::open(path.clone()).unwrap();
+        let inner = UnifiedStore::<String, String, MemoryIo>::open(path.clone()).unwrap();
         let mut store = UnifiedMvccBackend::<String, String, MemoryIo>::new(inner);
 
         prepare_and_commit(
