@@ -338,7 +338,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
     ///
     /// Takes `&self` via interior mutability (`RefCell`/`Cell`) so it can
     /// be called from `MvccBackend::get(&self)`.
-    pub fn resolve_on_disk(
+    fn resolve_on_disk(
         &self,
         ptr: &UnifiedVlogPrepareValuePtr,
     ) -> Result<Arc<CachedPrepare<K, V>>, StorageError>
