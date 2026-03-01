@@ -433,21 +433,147 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
 
     // === Min Prepare Time ===
 
-    /// Raise tentative min_prepare_time to max(current, min(time, min_prepared_timestamp)).
-    /// Returns the final min_prepare_time value.
+    /// Speculatively raise the tentative min_prepare_time.
+    ///
+    /// Computes `max(current_tentative, min(time, min_prepared_timestamp))`
+    /// where `min_prepared_timestamp` is the smallest commit timestamp among
+    /// all currently prepared transactions (`u64::MAX` if none exist).
+    ///
+    /// The `min(time, min_prepared_timestamp)` cap prevents raising the
+    /// threshold above any existing prepared transaction, which would
+    /// retroactively invalidate it.
+    ///
+    /// # Return value
+    ///
+    /// The tentative `min_prepare_time` after the update. Monotonically
+    /// non-decreasing under `raise` alone, but can be rolled back by
+    /// `sync_min_prepare_time` or `reset_min_prepare_time_to_finalized`.
+    ///
+    /// # Side effects
+    ///
+    /// - `check_prepare_status` returns `TooLate` for any transaction whose
+    ///   `commit.time < min_prepare_time` (the tentative value).
+    /// - Does NOT change `finalized_min_prepare_time`.
+    ///
+    /// # Callers
+    ///
+    /// - `exec_consensus(RaiseMinPrepareTime)`: explicit raise from client
+    ///   (resharding sets `commit.time + 1` to subsume read protections).
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// Fresh store (tentative=0, no prepared txns):
+    ///   raise(100) → 100    // max(0, min(100, MAX)) = 100
+    ///   raise(50)  → 100    // max(100, min(50, MAX)) = 100 (monotonic)
+    ///   raise(200) → 200    // max(100, min(200, MAX)) = 200
+    ///
+    /// With a prepared txn at ts.time=50, tentative=100:
+    ///   raise(200) → 100    // max(100, min(200, 50)) = 100  (capped)
+    ///   raise(30)  → 100    // max(100, min(30, 50))  = 100
+    /// ```
     fn raise_min_prepare_time(&mut self, time: u64) -> u64;
 
-    /// Finalize min_prepare_time: raise finalized_mpt to max(current, time),
-    /// then raise tentative mpt to max(current_tentative, new_finalized).
+    /// Finalize the min_prepare_time after IR quorum agreement.
+    ///
+    /// Two-step update:
+    /// 1. `finalized = max(finalized, time)` — finalized only increases.
+    /// 2. `tentative = max(tentative, finalized)` — tentative is raised to
+    ///    at least match finalized, but never lowered.
+    ///
+    /// Unlike `raise_min_prepare_time`, this does NOT cap at
+    /// `min_prepared_timestamp` — the quorum has agreed on this value, so
+    /// it is authoritative even if it exceeds a prepared transaction's
+    /// timestamp.
+    ///
+    /// # Side effects
+    ///
+    /// - May raise tentative, causing `check_prepare_status` to return
+    ///   `TooLate` for transactions below the new threshold.
+    /// - The finalized value persists through `sync_min_prepare_time` and
+    ///   `reset_min_prepare_time_to_finalized` (they use it as a floor).
+    ///
+    /// # Callers
+    ///
+    /// - `finalize_consensus(RaiseMinPrepareTime)`: after IR confirms the
+    ///   quorum agreed on the value.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// State: tentative=50, finalized=0
+    ///   finalize(100) → finalized=100, tentative=max(50,100)=100
+    ///
+    /// State: tentative=200, finalized=100
+    ///   finalize(150) → finalized=150, tentative=max(200,150)=200
+    ///
+    /// State: tentative=100, finalized=100
+    ///   finalize(80)  → finalized=100, tentative=100  // no change
+    /// ```
     fn finalize_min_prepare_time(&mut self, time: u64);
 
-    /// Sync min_prepare_time: raise finalized_mpt to max(current, time),
-    /// then set tentative mpt to min(current_tentative, new_finalized).
-    /// Can rollback tentative prepared time to the finalized value.
+    /// Sync the min_prepare_time from the leader's authoritative value.
+    ///
+    /// Two-step update:
+    /// 1. `finalized = max(finalized, time)` — finalized only increases.
+    /// 2. `tentative = min(tentative, finalized)` — tentative is pulled
+    ///    DOWN to match finalized if it was speculatively raised above it.
+    ///
+    /// This is the key difference from `finalize_min_prepare_time`: step 2
+    /// uses `min` instead of `max`, allowing rollback of speculative raises
+    /// that the leader did not confirm.
+    ///
+    /// # Side effects
+    ///
+    /// - May lower tentative, causing `check_prepare_status` to stop
+    ///   returning `TooLate` for transactions that were previously rejected.
+    /// - Finalized value only increases (monotonic).
+    ///
+    /// # Callers
+    ///
+    /// - `sync(RaiseMinPrepareTime)`: applies the leader's finalized value
+    ///   during leader-record synchronization.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// State: tentative=100, finalized=30
+    ///   sync(50) → finalized=50, tentative=min(100,50)=50
+    ///
+    /// State: tentative=50, finalized=50
+    ///   sync(40) → finalized=50, tentative=min(50,50)=50
+    ///
+    /// State: tentative=50, finalized=50
+    ///   sync(80) → finalized=80, tentative=min(50,80)=50
+    /// ```
     fn sync_min_prepare_time(&mut self, time: u64);
 
     /// Reset tentative min_prepare_time to the finalized value.
-    /// Used during merge to clear out-of-order tentative state.
+    ///
+    /// Sets `tentative = finalized`, discarding any speculative raises not
+    /// confirmed by quorum. No-op when `tentative == finalized`.
+    ///
+    /// # Side effects
+    ///
+    /// - Typically lowers tentative (since speculative raises push it above
+    ///   finalized), which may un-reject transactions that were `TooLate`.
+    /// - Always followed by `remove_all_unfinalized_prepared_txns()` in the
+    ///   merge flow, so the prepared set is also cleaned up.
+    ///
+    /// # Callers
+    ///
+    /// - `merge()`: first step of merge, before replaying quorum-agreed
+    ///   operations. Clears speculative state from the previous view.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// State: tentative=100, finalized=42
+    ///   reset() → tentative=42, finalized=42
+    ///
+    /// State: tentative=50, finalized=50
+    ///   reset() → no change
+    /// ```
     fn reset_min_prepare_time_to_finalized(&mut self);
 
     // === CDC Deltas ===
