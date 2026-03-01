@@ -347,7 +347,7 @@ impl<K: Key, V: Value, TS: Timestamp + Send, M: MvccBackend<K, V, TS>> Store<K, 
                     proposed: commit.time(),
                 };
             } else {
-                self.add_prepared(id, transaction, commit, false);
+                self.add_or_replace_or_finalize_prepared_txn(id, transaction, commit, false);
             }
         }
 
@@ -503,7 +503,23 @@ impl<K: Key, V: Value, TS: Timestamp + Send, M: MvccBackend<K, V, TS>> Store<K, 
         MvccBackend::put(&mut self.inner, key, value, timestamp).unwrap();
     }
 
-    pub fn add_prepared(
+    /// Upsert a prepared transaction with three distinct behaviors:
+    ///
+    /// - **Insert** (vacant): If the transaction ID doesn't exist in `prepared`, inserts
+    ///   the new entry and populates `prepared_reads`/`prepared_writes` caches.
+    ///
+    /// - **Finalize** (same commit timestamp): If the ID already exists with the same
+    ///   commit timestamp, only updates the `finalized` flag. Debug-asserts that the
+    ///   transaction content is identical. Caches are untouched.
+    ///
+    /// - **Replace** (different commit timestamp): If the ID exists but with a different
+    ///   commit timestamp, replaces the entry entirely — removes old cache entries and
+    ///   adds new ones under the new timestamp.
+    ///
+    /// Calling this twice with identical arguments is idempotent (hits the finalize path).
+    /// Calling with a different commit timestamp for the same ID is not idempotent — it
+    /// mutates the caches differently each time.
+    pub fn add_or_replace_or_finalize_prepared_txn(
         &mut self,
         id: TransactionId,
         transaction: SharedTransaction<K, V, TS>,
@@ -1117,18 +1133,18 @@ mod tests {
     // ── A.3.4 Prepared cache: timestamp change ──
 
     #[test]
-    fn add_prepared_replaces_at_new_timestamp() {
+    fn add_or_replace_or_finalize_prepared_txn_replaces_at_new_timestamp() {
         let (_dir, mut store) = new_store(true);
 
         let txn = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
         let id = txn_id(1, 1);
 
         // First prepare at ts(10,1).
-        store.add_prepared(id, txn.clone(), ts(10, 1), false);
+        store.add_or_replace_or_finalize_prepared_txn(id, txn.clone(), ts(10, 1), false);
         assert!(store.prepared_writes.get("x").unwrap().contains_key(&ts(10, 1)));
 
         // Re-prepare same txn at ts(20,1).
-        store.add_prepared(id, txn, ts(20, 1), false);
+        store.add_or_replace_or_finalize_prepared_txn(id, txn, ts(20, 1), false);
 
         // Old cache entry removed, new one present.
         let writes = store.prepared_writes.get("x").unwrap();

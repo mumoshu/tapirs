@@ -644,7 +644,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                             // Finalize it immediately since we are syncing
                             // from the leader's record.
                             trace!("syncing successful {op_id:?} prepare for {transaction_id:?} at {commit:?} (had {:?})", self.store.prepared_get(transaction_id));
-                            self.store.add_prepared(
+                            self.store.add_or_replace_or_finalize_prepared_txn(
                                 *transaction_id,
                                 transaction.clone(),
                                 *commit,

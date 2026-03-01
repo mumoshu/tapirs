@@ -177,14 +177,15 @@ where
         self.occ.remove_prepared(id)
     }
 
-    fn add_prepared(
+    fn add_or_replace_or_finalize_prepared_txn(
         &mut self,
         id: TransactionId,
         txn: SharedTransaction<K, V, Timestamp>,
         commit: Timestamp,
         finalized: bool,
     ) {
-        self.occ.add_prepared(id, txn, commit, finalized);
+        self.occ
+            .add_or_replace_or_finalize_prepared_txn(id, txn, commit, finalized);
     }
 
     // === Prepared Queries ===

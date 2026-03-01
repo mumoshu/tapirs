@@ -58,7 +58,7 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
 
     fn remove_prepared(&mut self, id: TransactionId) -> bool;
 
-    fn add_prepared(
+    fn add_or_replace_or_finalize_prepared_txn(
         &mut self,
         id: TransactionId,
         txn: SharedTransaction<K, V, Timestamp>,
