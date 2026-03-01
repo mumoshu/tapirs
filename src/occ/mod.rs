@@ -1,3 +1,4 @@
+pub(crate) mod prepared;
 mod store;
 mod timestamp;
 mod transaction;

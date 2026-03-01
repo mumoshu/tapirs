@@ -7,7 +7,6 @@ use crate::occ::{PrepareConflict, PrepareResult, SharedTransaction, Store as Occ
 use crate::tapir::{Key, LeaderRecordDelta, ShardNumber, Timestamp, Value};
 use crate::tapirstore::{CheckPrepareStatus, MinPrepareTimes, RecordDeltaDuringView, TapirStore, TransactionLog};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use std::hash::Hash;
 
 /// In-memory TapirStore wrapping OccStore + transaction log + min-prepare-time + CDC deltas.
 ///
@@ -17,8 +16,8 @@ use std::hash::Hash;
 #[derive(Serialize, Deserialize)]
 pub struct InMemTapirStore<K, V, M> {
     #[serde(bound(
-        serialize = "K: Serialize + Ord + Hash, V: Serialize, M: Serialize",
-        deserialize = "K: Deserialize<'de> + Ord + Hash + Eq, V: Deserialize<'de>, M: Deserialize<'de>"
+        serialize = "K: Key, V: Value, M: Serialize",
+        deserialize = "K: Key, V: Value, M: Deserialize<'de>"
     ))]
     occ: OccStore<K, V, Timestamp, M>,
 
@@ -27,8 +26,8 @@ pub struct InMemTapirStore<K, V, M> {
     min_prepare_times: MinPrepareTimes,
 
     #[serde(bound(
-        serialize = "K: Serialize, V: Serialize",
-        deserialize = "K: Deserialize<'de>, V: Deserialize<'de>"
+        serialize = "K: Key, V: Value",
+        deserialize = "K: Key, V: Value"
     ))]
     record_delta_during_view: RecordDeltaDuringView<K, V>,
 }
@@ -77,19 +76,11 @@ impl<K: Key, V: Value, M> InMemTapirStore<K, V, M> {
     }
 
     pub fn prepared_at_timestamp(&self, id: &TransactionId, commit: &Timestamp) -> Option<bool> {
-        self.occ
-            .prepared
-            .get(id)
-            .filter(|(ts, _, _)| ts == commit)
-            .map(|(_, _, fin)| *fin)
+        self.occ.prepared_txns.prepared_at_timestamp(id, commit)
     }
 
     pub fn min_prepared_timestamp(&self) -> Option<u64> {
-        self.occ
-            .prepared
-            .values()
-            .map(|(ts, _, _)| ts.time)
-            .min()
+        self.occ.prepared_txns.min_prepared_timestamp()
     }
 
 }
@@ -184,10 +175,7 @@ where
         &self,
         id: &TransactionId,
     ) -> Option<(&Timestamp, &SharedTransaction<K, V, Timestamp>, bool)> {
-        self.occ
-            .prepared
-            .get(id)
-            .map(|(ts, txn, fin)| (ts, txn, *fin))
+        self.occ.prepared_txns.get(id)
     }
 
     fn check_prepare_status(&self, id: &TransactionId, commit: &Timestamp) -> CheckPrepareStatus {
@@ -201,10 +189,10 @@ where
             } else {
                 CheckPrepareStatus::Aborted
             }
-        } else if let Some(finalized) = self.prepared_at_timestamp(id, commit) {
+        } else if let Some(finalized) = self.occ.prepared_txns.prepared_at_timestamp(id, commit) {
             CheckPrepareStatus::PreparedAtTimestamp { finalized }
         } else if commit.time < self.min_prepare_times.min_prepare_time()
-            || self.occ.prepared.get(id)
+            || self.occ.prepared_txns.get(id)
                 .map(|(c, _, _)| c.time < self.min_prepare_times.min_prepare_time())
                 .unwrap_or(false)
         {
@@ -215,40 +203,21 @@ where
     }
 
     fn finalize_prepared_txn(&mut self, id: &TransactionId, commit: &Timestamp) -> bool {
-        if let Some((ts, _, finalized)) = self.occ.prepared.get_mut(id)
-            && ts == commit
-        {
-            *finalized = true;
-            return true;
-        }
-        false
+        self.occ.prepared_txns.finalize(id, commit)
     }
 
     fn prepared_count(&self) -> usize {
-        self.occ.prepared.len()
+        self.occ.prepared_txns.len()
     }
 
     fn get_oldest_prepared_txn(
         &self,
     ) -> Option<(TransactionId, Timestamp, SharedTransaction<K, V, Timestamp>)> {
-        self.occ
-            .prepared
-            .iter()
-            .min_by_key(|(_, (c, _, _))| *c)
-            .map(|(id, (ts, txn, _))| (*id, *ts, txn.clone()))
+        self.occ.prepared_txns.oldest()
     }
 
     fn remove_all_unfinalized_prepared_txns(&mut self) {
-        let ids: Vec<_> = self
-            .occ
-            .prepared
-            .iter()
-            .filter(|(_, (_, _, f))| !*f)
-            .map(|(id, _)| *id)
-            .collect();
-        for id in ids {
-            self.occ.remove_prepared(id);
-        }
+        self.occ.prepared_txns.remove_all_unfinalized();
     }
 
     // === Committed Read/Scan ===

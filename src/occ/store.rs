@@ -1,105 +1,28 @@
 use super::{SharedTransaction, Timestamp, Transaction, TransactionId};
+use super::prepared::PreparedTransactions;
 use crate::{
     mvcc::backend::MvccBackend,
     tapir::{Key, ShardNumber, Value},
-    util::vectorize_btree,
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{btree_map, BTreeMap},
     fmt::Debug,
-    ops::{Bound, Deref, DerefMut},
+    ops::Bound,
 };
-use tracing::trace;
 
 #[derive(Serialize, Deserialize)]
 pub struct Store<K, V, TS, M> {
-    shard: ShardNumber,
     linearizable: bool,
     #[serde(bound(
         serialize = "M: Serialize",
         deserialize = "M: Deserialize<'de>"
     ))]
     inner: M,
-    // BTreeMap for deterministic iteration during view change merge. Entries are
-    // transient (cleared on commit/abort), so O(log n) vs O(1) is negligible for
-    // the bounded number of concurrent transactions.
-    /// Transactions which may commit in the future (and whether the prepare was
-    /// finalized in the IR sense).
-    #[serde(
-        with = "vectorize_btree",
-        bound(
-            serialize = "V: Serialize, TS: Serialize",
-            deserialize = "V: Deserialize<'de>, TS: Deserialize<'de> + Ord"
-        )
-    )]
-    pub prepared: BTreeMap<TransactionId, (TS, SharedTransaction<K, V, TS>, bool)>,
-    // Cache.
-    #[serde(
-        with = "vectorize_btree",
-        bound(
-            serialize = "K: Serialize + Ord, TS: Serialize",
-            deserialize = "K: Deserialize<'de> + Ord, TS: Deserialize<'de> + Ord"
-        )
-    )]
-    prepared_reads: BTreeMap<K, TimestampSet<TS>>,
-    // Cache. BTreeMap for efficient range queries during scan-set validation.
-    #[serde(
-        with = "vectorize_btree",
-        bound(
-            serialize = "K: Serialize + Ord, TS: Serialize",
-            deserialize = "K: Deserialize<'de> + Ord, TS: Deserialize<'de> + Ord"
-        )
-    )]
-    prepared_writes: BTreeMap<K, TimestampSet<TS>>,
-    /// Range-level read timestamps from read-only QuorumScan operations.
-    /// Each entry `(start_key, end_key, read_ts)` protects the entire range
-    /// from future writes at commit_ts < read_ts (both overwrites and insertions).
     #[serde(bound(
-        serialize = "K: Serialize + Ord, TS: Serialize",
-        deserialize = "K: Deserialize<'de> + Ord, TS: Deserialize<'de>"
+        serialize = "K: Key, V: Value, TS: Timestamp",
+        deserialize = "K: Key, V: Value, TS: Timestamp"
     ))]
-    range_reads: Vec<(K, K, TS)>,
-    /// Highest `commit` timestamp passed to `commit_get()` (from `quorum_read()`
-    /// and committed read-write transactions). Used by resharding to compute
-    /// the min_prepare_time baseline for new shards.
-    #[serde(skip, bound(deserialize = ""))]
-    max_read_commit_time: Option<TS>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct TimestampSet<TS> {
-    /// Use a map in order to use APIs sets don't have.
-    #[serde(
-        with = "vectorize_btree",
-        bound(
-            serialize = "TS: Serialize",
-            deserialize = "TS: Deserialize<'de> + Ord"
-        )
-    )]
-    inner: BTreeMap<TS, ()>,
-}
-
-impl<TS> Default for TimestampSet<TS> {
-    fn default() -> Self {
-        Self {
-            inner: Default::default(),
-        }
-    }
-}
-
-impl<TS> Deref for TimestampSet<TS> {
-    type Target = BTreeMap<TS, ()>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-
-impl<TS> DerefMut for TimestampSet<TS> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.inner
-    }
+    pub prepared_txns: PreparedTransactions<K, V, TS>,
 }
 
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Copy, Serialize, Deserialize)]
@@ -175,9 +98,9 @@ impl<TS: Timestamp> PrepareResult<TS> {
     }
 }
 
-impl<K: Key, V: Value, TS, M> Store<K, V, TS, M> {
+impl<K: Key, V: Value, TS: Timestamp + Send, M> Store<K, V, TS, M> {
     pub fn shard(&self) -> ShardNumber {
-        self.shard
+        self.prepared_txns.shard()
     }
 
     pub fn new(shard: ShardNumber, linearizable: bool) -> Self
@@ -185,27 +108,17 @@ impl<K: Key, V: Value, TS, M> Store<K, V, TS, M> {
         M: Default,
     {
         Self {
-            shard,
             linearizable,
             inner: Default::default(),
-            prepared: Default::default(),
-            prepared_reads: Default::default(),
-            prepared_writes: Default::default(),
-            range_reads: Vec::new(),
-            max_read_commit_time: None,
+            prepared_txns: PreparedTransactions::new(shard),
         }
     }
 
     pub fn new_with_backend(shard: ShardNumber, linearizable: bool, backend: M) -> Self {
         Self {
-            shard,
             linearizable,
             inner: backend,
-            prepared: Default::default(),
-            prepared_reads: Default::default(),
-            prepared_writes: Default::default(),
-            range_reads: Vec::new(),
-            max_read_commit_time: None,
+            prepared_txns: PreparedTransactions::new(shard),
         }
     }
 }
@@ -246,17 +159,14 @@ impl<K: Key, V: Value, TS: Timestamp + Send, M: MvccBackend<K, V, TS>> Store<K, 
     /// RW→RO direction, symmetric with `commit_get()` which protects the
     /// RO→RW direction.
     pub fn quorum_read(&mut self, key: K, snapshot_ts: TS) -> Result<(Option<V>, TS), PrepareConflict> {
-        if let Some(timestamps) = self.prepared_writes.get(&key)
+        if let Some(timestamps) = self.prepared_txns.prepared_writes().get(&key)
             && timestamps.range(..=&snapshot_ts).next().is_some()
         {
             return Err(PrepareConflict);
         }
         let (value, write_ts) = MvccBackend::get_at(&self.inner, &key, snapshot_ts).unwrap();
         MvccBackend::commit_get(&mut self.inner, key, snapshot_ts, snapshot_ts).unwrap();
-        self.max_read_commit_time = Some(match self.max_read_commit_time {
-            Some(prev) => prev.max(snapshot_ts),
-            None => snapshot_ts,
-        });
+        self.prepared_txns.update_max_read_commit_time(snapshot_ts);
         Ok((value, write_ts))
     }
 
@@ -264,7 +174,7 @@ impl<K: Key, V: Value, TS: Timestamp + Send, M: MvccBackend<K, V, TS>> Store<K, 
     /// Returns `Some(results)` if the range is covered (read_ts >= snapshot_ts),
     /// `None` otherwise (fall back to QuorumScan).
     pub fn scan_validated(&self, start: &K, end: &K, snapshot_ts: TS) -> Option<Vec<(K, Option<V>, TS)>> {
-        let covered = self.range_reads.iter().any(|(rs, re, rts)| {
+        let covered = self.prepared_txns.range_reads().iter().any(|(rs, re, rts)| {
             rs <= start && re >= end && *rts >= snapshot_ts
         });
         if !covered {
@@ -276,7 +186,7 @@ impl<K: Key, V: Value, TS: Timestamp + Send, M: MvccBackend<K, V, TS>> Store<K, 
     /// Record a range-level read timestamp protecting `[start, end]` from
     /// future writes at commit_ts < snapshot_ts.
     pub fn commit_scan(&mut self, start: K, end: K, snapshot_ts: TS) {
-        self.range_reads.push((start, end, snapshot_ts));
+        self.prepared_txns.commit_scan(start, end, snapshot_ts);
     }
 
     /// Read-only scan slow path: scan the MVCC store and record range protection.
@@ -287,13 +197,13 @@ impl<K: Key, V: Value, TS: Timestamp + Send, M: MvccBackend<K, V, TS>> Store<K, 
     /// when the IO::Commit Finalize for a recently committed RW transaction
     /// hasn't arrived yet.
     pub fn quorum_scan(&mut self, start: K, end: K, snapshot_ts: TS) -> Result<Vec<(K, Option<V>, TS)>, PrepareConflict> {
-        for (_key, timestamps) in self.prepared_writes.range(&start..=&end) {
+        for (_key, timestamps) in self.prepared_txns.prepared_writes().range(&start..=&end) {
             if timestamps.range(..=&snapshot_ts).next().is_some() {
                 return Err(PrepareConflict);
             }
         }
         let results = MvccBackend::scan(&self.inner, &start, &end, snapshot_ts).unwrap();
-        self.commit_scan(start, end, snapshot_ts);
+        self.prepared_txns.commit_scan(start, end, snapshot_ts);
         Ok(results)
     }
 
@@ -305,8 +215,7 @@ impl<K: Key, V: Value, TS: Timestamp + Send, M: MvccBackend<K, V, TS>> Store<K, 
     /// Used by resharding to set `raise_min_prepare_time(max(both) + 1)` on
     /// the new shard, subsuming all historical read protections from the source.
     pub(crate) fn min_prepare_baseline(&self) -> (Option<TS>, Option<TS>) {
-        let max_rr = self.range_reads.iter().map(|(_, _, ts)| *ts).max();
-        (max_rr, self.max_read_commit_time)
+        self.prepared_txns.min_prepare_baseline()
     }
 
     pub fn try_prepare_txn(
@@ -316,30 +225,29 @@ impl<K: Key, V: Value, TS: Timestamp + Send, M: MvccBackend<K, V, TS>> Store<K, 
         commit: TS,
         dry_run: bool,
     ) -> PrepareResult<TS> {
-        if let btree_map::Entry::Occupied(occupied) = self.prepared.entry(id) {
-            if occupied.get().0 == commit {
-                // Already prepared at this timestamp.
-                return PrepareResult::Ok;
-            } else if dry_run {
-                // Don't remove from prepared set.
-                let transaction = occupied.get().1.clone();
-                let commit = occupied.get().0;
-                self.remove_prepared_inner(&transaction, commit);
+        if self.prepared_txns.is_prepared_at(&id, &commit) {
+            // Already prepared at this timestamp.
+            return PrepareResult::Ok;
+        }
+
+        if let Some((old_commit, old_txn)) = self.prepared_txns.get_for_suspend(&id) {
+            if dry_run {
+                // Don't remove from prepared set — just suspend caches.
+                self.prepared_txns.suspend_caches(&old_txn, old_commit);
             } else {
                 // Run the checks again for a new timestamp.
-                self.remove_prepared(id);
+                self.prepared_txns.remove(id);
             }
         }
 
         let result = self.occ_check(&transaction, commit);
 
-        // Avoid logical mutation in dry run.
+        // Restore caches after dry run.
         if dry_run
-            && let Some((commit, transaction, _)) = self.prepared.get(&id) {
-                let transaction = transaction.clone();
-                let commit = *commit;
-                self.add_prepared_inner(&transaction, commit);
-            }
+            && let Some((old_commit, old_txn)) = self.prepared_txns.get_for_suspend(&id)
+        {
+            self.prepared_txns.restore_caches(&old_txn, old_commit);
+        }
 
         if result.is_ok() {
             if dry_run {
@@ -347,7 +255,7 @@ impl<K: Key, V: Value, TS: Timestamp + Send, M: MvccBackend<K, V, TS>> Store<K, 
                     proposed: commit.time(),
                 };
             } else {
-                self.add_or_replace_or_finalize_prepared_txn(id, transaction, commit, false);
+                self.prepared_txns.add_or_replace_or_finalize(id, transaction, commit, false);
             }
         }
 
@@ -355,8 +263,10 @@ impl<K: Key, V: Value, TS: Timestamp + Send, M: MvccBackend<K, V, TS>> Store<K, 
     }
 
     fn occ_check(&self, transaction: &Transaction<K, V, TS>, commit: TS) -> PrepareResult<TS> {
+        let shard = self.prepared_txns.shard();
+
         // Check for conflicts with the read set.
-        for (key, read) in transaction.shard_read_set(self.shard) {
+        for (key, read) in transaction.shard_read_set(shard) {
             if read > commit {
                 debug_assert!(false, "client picked too low commit timestamp for read");
                 return PrepareResult::Retry {
@@ -380,7 +290,7 @@ impl<K: Key, V: Value, TS: Timestamp + Send, M: MvccBackend<K, V, TS>> Store<K, 
             }
 
             // There may be a pending write that would invalidate the read version.
-            if let Some(writes) = self.prepared_writes.get(key)
+            if let Some(writes) = self.prepared_txns.prepared_writes().get(key)
                 && writes
                     .range((
                         if self.linearizable {
@@ -399,7 +309,7 @@ impl<K: Key, V: Value, TS: Timestamp + Send, M: MvccBackend<K, V, TS>> Store<K, 
         }
 
         // Check for conflicts with the write set.
-        for (key, _) in transaction.shard_write_set(self.shard) {
+        for (key, _) in transaction.shard_write_set(shard) {
             {
                 let (_, timestamp) = MvccBackend::get(&self.inner, key).unwrap();
                 // If the last commited write is after the write...
@@ -425,20 +335,20 @@ impl<K: Key, V: Value, TS: Timestamp + Send, M: MvccBackend<K, V, TS>> Store<K, 
                 }
             }
 
-            if self.linearizable && let Some(writes) = self.prepared_writes.get(key)
+            if self.linearizable && let Some(writes) = self.prepared_txns.prepared_writes().get(key)
                 && let Some((write, _)) = writes.range((Bound::Excluded(&commit), Bound::Unbounded)).next() {
                     // Write conflicts with later prepared write.
                     return PrepareResult::Retry { proposed: write.time() };
                 }
 
-            if let Some(reads) = self.prepared_reads.get(key)
+            if let Some(reads) = self.prepared_txns.prepared_reads().get(key)
                 && reads.range((Bound::Excluded(&commit), Bound::Unbounded)).next().is_some() {
                     // Write conflicts with later prepared read.
                     return PrepareResult::Abstain;
                 }
 
             // Check for conflicts with range-level reads from read-only QuorumScan.
-            for (start, end, read_ts) in &self.range_reads {
+            for (start, end, read_ts) in self.prepared_txns.range_reads() {
                 if key >= start && key <= end && *read_ts > commit {
                     return PrepareResult::Retry { proposed: read_ts.time() };
                 }
@@ -446,7 +356,7 @@ impl<K: Key, V: Value, TS: Timestamp + Send, M: MvccBackend<K, V, TS>> Store<K, 
         }
 
         // Check for conflicts with the scan set (phantom prevention).
-        for entry in transaction.shard_scan_set(self.shard) {
+        for entry in transaction.shard_scan_set(shard) {
             // Check if any committed writes appeared in the scanned range after the scan.
             if MvccBackend::has_writes_in_range(
                 &self.inner,
@@ -459,7 +369,8 @@ impl<K: Key, V: Value, TS: Timestamp + Send, M: MvccBackend<K, V, TS>> Store<K, 
             }
             // Check if any prepared writes exist in the scanned range.
             for (_key, timestamps) in self
-                .prepared_writes
+                .prepared_txns
+                .prepared_writes()
                 .range(&entry.start_key..=&entry.end_key)
             {
                 if timestamps
@@ -476,49 +387,32 @@ impl<K: Key, V: Value, TS: Timestamp + Send, M: MvccBackend<K, V, TS>> Store<K, 
     }
 
     pub fn commit(&mut self, id: TransactionId, transaction: &Transaction<K, V, TS>, commit: TS) {
+        let shard = self.prepared_txns.shard();
         let reads: Vec<(K, TS)> = transaction
-            .shard_read_set(self.shard)
+            .shard_read_set(shard)
             .map(|(key, read)| (key.clone(), read))
             .collect();
 
         if !reads.is_empty() {
-            self.max_read_commit_time = Some(match self.max_read_commit_time {
-                Some(prev) => prev.max(commit),
-                None => commit,
-            });
+            self.prepared_txns.update_max_read_commit_time(commit);
         }
 
         let writes: Vec<(K, Option<V>)> = transaction
-            .shard_write_set(self.shard)
+            .shard_write_set(shard)
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
 
         MvccBackend::commit_batch_for_transaction(&mut self.inner, id, writes, reads, commit).unwrap();
 
         // Note: Transaction may not be in the prepared list of this particular replica, and that's okay.
-        self.remove_prepared(id);
+        self.prepared_txns.remove(id);
     }
 
     pub fn put(&mut self, key: K, value: Option<V>, timestamp: TS) {
         MvccBackend::put(&mut self.inner, key, value, timestamp).unwrap();
     }
 
-    /// Upsert a prepared transaction with three distinct behaviors:
-    ///
-    /// - **Insert** (vacant): If the transaction ID doesn't exist in `prepared`, inserts
-    ///   the new entry and populates `prepared_reads`/`prepared_writes` caches.
-    ///
-    /// - **Finalize** (same commit timestamp): If the ID already exists with the same
-    ///   commit timestamp, only updates the `finalized` flag. Debug-asserts that the
-    ///   transaction content is identical. Caches are untouched.
-    ///
-    /// - **Replace** (different commit timestamp): If the ID exists but with a different
-    ///   commit timestamp, replaces the entry entirely — removes old cache entries and
-    ///   adds new ones under the new timestamp.
-    ///
-    /// Calling this twice with identical arguments is idempotent (hits the finalize path).
-    /// Calling with a different commit timestamp for the same ID is not idempotent — it
-    /// mutates the caches differently each time.
+    /// Delegate to `PreparedTransactions::add_or_replace_or_finalize`.
     pub fn add_or_replace_or_finalize_prepared_txn(
         &mut self,
         id: TransactionId,
@@ -526,68 +420,12 @@ impl<K: Key, V: Value, TS: Timestamp + Send, M: MvccBackend<K, V, TS>> Store<K, 
         commit: TS,
         finalized: bool,
     ) {
-        trace!("preparing {id:?} at {commit:?} (fin = {finalized})");
-        match self.prepared.entry(id) {
-            btree_map::Entry::Vacant(vacant) => {
-                vacant.insert((commit, transaction.clone(), finalized));
-                self.add_prepared_inner(&transaction, commit);
-            }
-            btree_map::Entry::Occupied(mut occupied) => {
-                if occupied.get().0 == commit {
-                    debug_assert_eq!(*occupied.get().1, *transaction);
-                    occupied.get_mut().2 = finalized;
-                } else {
-                    let old_commit = occupied.get().0;
-                    occupied.insert((commit, transaction.clone(), finalized));
-                    self.remove_prepared_inner(&transaction, old_commit);
-                    self.add_prepared_inner(&transaction, commit);
-                }
-            }
-        }
+        self.prepared_txns.add_or_replace_or_finalize(id, transaction, commit, finalized);
     }
 
-    fn add_prepared_inner(&mut self, transaction: &Transaction<K, V, TS>, commit: TS) {
-        for (key, _) in transaction.shard_read_set(self.shard) {
-            self.prepared_reads
-                .entry(key.clone())
-                .or_default()
-                .insert(commit, ());
-        }
-        for (key, _) in transaction.shard_write_set(self.shard) {
-            self.prepared_writes
-                .entry(key.clone())
-                .or_default()
-                .insert(commit, ());
-        }
-    }
-
+    /// Delegate to `PreparedTransactions::remove`.
     pub fn remove_prepared(&mut self, id: TransactionId) -> bool {
-        if let Some((commit, transaction, finalized)) = self.prepared.remove(&id) {
-            trace!("removing prepared {id:?} at {commit:?} (fin = {finalized})");
-            self.remove_prepared_inner(&transaction, commit);
-            true
-        } else {
-            false
-        }
-    }
-
-    fn remove_prepared_inner(&mut self, transaction: &Transaction<K, V, TS>, commit: TS) {
-        for (key, _) in transaction.shard_read_set(self.shard) {
-            if let btree_map::Entry::Occupied(mut occupied) = self.prepared_reads.entry(key.clone()) {
-                occupied.get_mut().remove(&commit);
-                if occupied.get().is_empty() {
-                    occupied.remove();
-                }
-            }
-        }
-        for (key, _) in transaction.shard_write_set(self.shard) {
-            if let btree_map::Entry::Occupied(mut occupied) = self.prepared_writes.entry(key.clone()) {
-                occupied.get_mut().remove(&commit);
-                if occupied.get().is_empty() {
-                    occupied.remove();
-                }
-            }
-        }
+        self.prepared_txns.remove(id)
     }
 }
 
@@ -894,13 +732,13 @@ mod tests {
         let txn = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
         let id = txn_id(1, 1);
         assert_eq!(store.try_prepare_txn(id, txn, ts(10, 1), false), PrepareResult::Ok);
-        assert!(store.prepared.contains_key(&id));
+        assert!(store.prepared_txns.contains(&id));
 
         // Abort by removing prepared.
-        assert!(store.remove_prepared(id));
-        assert!(!store.prepared.contains_key(&id));
+        assert!(store.prepared_txns.remove(id));
+        assert!(!store.prepared_txns.contains(&id));
         // Prepared caches should also be cleaned up.
-        assert!(store.prepared_writes.is_empty());
+        assert!(store.prepared_txns.prepared_writes().is_empty());
     }
 
     #[test]
@@ -963,8 +801,8 @@ mod tests {
         // Dry run returns Retry (even if occ_check passes) and does not add to prepared.
         let result = store.try_prepare_txn(id, txn, ts(10, 1), true);
         assert_eq!(result, PrepareResult::Retry { proposed: 10 });
-        assert!(!store.prepared.contains_key(&id));
-        assert!(store.prepared_writes.is_empty());
+        assert!(!store.prepared_txns.contains(&id));
+        assert!(store.prepared_txns.prepared_writes().is_empty());
     }
 
     // ── A.3.1 Linearizable read-write conflict ──
@@ -1140,17 +978,17 @@ mod tests {
         let id = txn_id(1, 1);
 
         // First prepare at ts(10,1).
-        store.add_or_replace_or_finalize_prepared_txn(id, txn.clone(), ts(10, 1), false);
-        assert!(store.prepared_writes.get("x").unwrap().contains_key(&ts(10, 1)));
+        store.prepared_txns.add_or_replace_or_finalize(id, txn.clone(), ts(10, 1), false);
+        assert!(store.prepared_txns.prepared_writes().get("x").unwrap().contains_key(&ts(10, 1)));
 
         // Re-prepare same txn at ts(20,1).
-        store.add_or_replace_or_finalize_prepared_txn(id, txn, ts(20, 1), false);
+        store.prepared_txns.add_or_replace_or_finalize(id, txn, ts(20, 1), false);
 
         // Old cache entry removed, new one present.
-        let writes = store.prepared_writes.get("x").unwrap();
+        let writes = store.prepared_txns.prepared_writes().get("x").unwrap();
         assert!(!writes.contains_key(&ts(10, 1)));
         assert!(writes.contains_key(&ts(20, 1)));
-        assert_eq!(store.prepared.get(&id).unwrap().0, ts(20, 1));
+        assert_eq!(store.prepared_txns.get(&id).unwrap().0, &ts(20, 1));
     }
 
     #[test]
@@ -1162,15 +1000,15 @@ mod tests {
 
         // Actually prepare at ts(10,1).
         assert_eq!(store.try_prepare_txn(id, txn.clone(), ts(10, 1), false), PrepareResult::Ok);
-        assert!(store.prepared_writes.get("x").unwrap().contains_key(&ts(10, 1)));
+        assert!(store.prepared_txns.prepared_writes().get("x").unwrap().contains_key(&ts(10, 1)));
 
         // Dry-run re-prepare at ts(20,1). Should not disturb existing prepare.
         let result = store.try_prepare_txn(id, txn, ts(20, 1), true);
         assert_eq!(result, PrepareResult::Retry { proposed: 20 });
 
         // Original prepare still intact.
-        assert!(store.prepared_writes.get("x").unwrap().contains_key(&ts(10, 1)));
-        assert_eq!(store.prepared.get(&id).unwrap().0, ts(10, 1));
+        assert!(store.prepared_txns.prepared_writes().get("x").unwrap().contains_key(&ts(10, 1)));
+        assert_eq!(store.prepared_txns.get(&id).unwrap().0, &ts(10, 1));
     }
 
     // ── get_validated / quorum_read (read-only transactions) ──

@@ -366,8 +366,8 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
     /// skipping a delta at base_view=0 when no view changes occurred before the
     /// freeze.
     ///
-    /// **`pending_prepares` scope**: `self.inner.prepared.len()` — count of ALL
-    /// entries in the OCC store's prepared HashMap. View-agnostic. Entries added on
+    /// **`pending_prepares` scope**: `self.inner.prepared_count()` — count of ALL
+    /// entries in the OCC store's prepared set. View-agnostic. Entries added on
     /// Prepare, removed on Commit/Abort.
     ///
     /// **"Last mile" commits**: When `pending_prepares` reaches 0, resolved
