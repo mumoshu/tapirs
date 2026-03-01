@@ -12,7 +12,6 @@ use std::sync::Arc;
 // Bring OccTimestamp trait into scope for Timestamp::from_time().
 use crate::occ::Timestamp as _;
 
-#[allow(dead_code)]
 impl<K, V, IO: DiskIo> UnifiedStore<K, V, IO>
 where
     K: Clone + Ord + Hash + Debug + Send + Sync + Serialize + for<'de> Deserialize<'de> + 'static,

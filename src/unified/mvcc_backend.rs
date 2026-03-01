@@ -1,4 +1,3 @@
-use super::types::*;
 use super::UnifiedStore;
 use crate::mvcc::backend::MvccBackend;
 use crate::mvcc::disk::disk_io::DiskIo;
@@ -8,7 +7,6 @@ use crate::tapir::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::sync::Arc;
 
 /// Typed adapter that implements `MvccBackend<K, V, Timestamp>` by
 /// delegating to `UnifiedStore`.
@@ -51,68 +49,19 @@ where
     type Error = StorageError;
 
     fn get(&self, key: &K) -> Result<(Option<V>, Timestamp), StorageError> {
-        if let Some((ck, entry)) = self.store.unified_memtable().get_latest(key) {
-            let ts = ck.timestamp.0;
-            let value = self.store.resolve_value(entry)?;
-            return Ok((value, ts));
-        }
-        Ok((None, Timestamp::default()))
+        self.store.get(key)
     }
 
     fn get_at(&self, key: &K, timestamp: Timestamp) -> Result<(Option<V>, Timestamp), StorageError> {
-        if let Some((ck, entry)) = self.store.unified_memtable().get_at(key, timestamp) {
-            let ts = ck.timestamp.0;
-            let value = self.store.resolve_value(entry)?;
-            return Ok((value, ts));
-        }
-        Ok((None, Timestamp::default()))
+        self.store.get_at(key, timestamp)
     }
 
     fn get_range(&self, key: &K, timestamp: Timestamp) -> Result<(Timestamp, Option<Timestamp>), StorageError> {
-        if let Some((ck, _entry)) = self.store.unified_memtable().get_at(key, timestamp) {
-            let write_ts = ck.timestamp.0;
-            let next = self.store.unified_memtable().find_next_version(key, write_ts);
-            return Ok((write_ts, next));
-        }
-        Ok((Timestamp::default(), None))
+        self.store.get_range(key, timestamp)
     }
 
     fn put(&mut self, key: K, value: Option<V>, timestamp: Timestamp) -> Result<(), StorageError> {
-        // For direct puts (not through commit_batch_for_transaction),
-        // create a synthetic prepare entry for this single write.
-        let txn_id = OccTransactionId {
-            client_id: crate::IrClientId(u64::MAX),
-            number: timestamp.time,
-        };
-
-        let value_ref = if value.is_some() {
-            let mut txn = crate::occ::Transaction::default();
-            txn.add_write(crate::tapir::Sharded::from(key.clone()), value);
-            let txn = Arc::new(txn);
-            self.store.register_prepare(txn_id, &txn, timestamp);
-
-            if self.store.resolve_in_memory(&txn_id, 0).is_some() {
-                Some(ValueLocation::InMemory {
-                    txn_id,
-                    write_index: 0,
-                })
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        self.store.unified_memtable_mut().insert(
-            key,
-            timestamp,
-            UnifiedLsmEntry {
-                value_ref,
-                last_read_ts: None,
-            },
-        );
-
-        Ok(())
+        self.store.put(key, value, timestamp)
     }
 
     fn commit_get(
@@ -121,19 +70,11 @@ where
         read: Timestamp,
         commit: Timestamp,
     ) -> Result<(), StorageError> {
-        self.store
-            .unified_memtable_mut()
-            .update_last_read(&key, read, commit.time);
-        Ok(())
+        self.store.commit_get(key, read, commit)
     }
 
     fn get_last_read(&self, key: &K) -> Result<Option<Timestamp>, StorageError> {
-        if let Some((_, entry)) = self.store.unified_memtable().get_latest(key)
-            && let Some(ts) = entry.last_read_ts
-        {
-            return Ok(Some(Timestamp::from_time(ts)));
-        }
-        Ok(None)
+        self.store.get_last_read(key)
     }
 
     fn get_last_read_at(
@@ -141,12 +82,7 @@ where
         key: &K,
         timestamp: Timestamp,
     ) -> Result<Option<Timestamp>, StorageError> {
-        if let Some((_, entry)) = self.store.unified_memtable().get_at(key, timestamp)
-            && let Some(ts) = entry.last_read_ts
-        {
-            return Ok(Some(Timestamp::from_time(ts)));
-        }
-        Ok(None)
+        self.store.get_last_read_at(key, timestamp)
     }
 
     fn scan(
@@ -155,14 +91,7 @@ where
         end: &K,
         timestamp: Timestamp,
     ) -> Result<Vec<(K, Option<V>, Timestamp)>, StorageError> {
-        let results = self.store.unified_memtable().scan(start, end, timestamp);
-        let mut output = Vec::new();
-        for (ck, entry) in results {
-            let ts = ck.timestamp.0;
-            let value = self.store.resolve_value(entry)?;
-            output.push((ck.key.clone(), value, ts));
-        }
-        Ok(output)
+        self.store.scan(start, end, timestamp)
     }
 
     fn has_writes_in_range(
@@ -187,18 +116,9 @@ where
     where
         Timestamp: Copy,
     {
-        for (key, value) in writes {
-            self.put(key, value, commit)?;
-        }
-        for (key, read) in reads {
-            self.commit_get(key, read, commit)?;
-        }
-        Ok(())
+        self.store.commit_batch(writes, reads, commit)
     }
 }
-
-// Bring OccTimestamp trait into scope for Timestamp::from_time().
-use crate::occ::Timestamp as _;
 
 impl<K, V, IO: DiskIo> UnifiedMvccBackend<K, V, IO>
 where
