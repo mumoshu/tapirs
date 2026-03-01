@@ -215,50 +215,14 @@ where
 {
     /// Register a prepared transaction for future zero-copy commit.
     ///
-    /// Extracts typed K, V from the `Transaction` and stores them in
-    /// the prepare_registry.  Must be called before the corresponding
-    /// `commit_batch_for_transaction` so that committed MVCC entries
-    /// can point into the registry via `ValueLocation::InMemory`.
-    ///
-    /// No serialization happens here — that is deferred to seal time.
+    /// Delegates to `UnifiedStore::register_prepare()`.
     pub fn register_prepare(
         &mut self,
         txn_id: OccTransactionId,
         transaction: &crate::occ::Transaction<K, V, Timestamp>,
         commit_ts: Timestamp,
     ) {
-        let shard = crate::tapir::ShardNumber(0); // Unified store serves one shard
-
-        let read_set: Vec<(K, Timestamp)> = transaction
-            .shard_read_set(shard)
-            .map(|(k, ts)| (k.clone(), ts))
-            .collect();
-
-        let write_set: Vec<(K, Option<V>)> = transaction
-            .shard_write_set(shard)
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-
-        let scan_set: Vec<(K, K, Timestamp)> = transaction
-            .shard_scan_set(shard)
-            .map(|entry| {
-                (
-                    entry.start_key.clone(),
-                    entry.end_key.clone(),
-                    entry.timestamp,
-                )
-            })
-            .collect();
-
-        let prepare = Arc::new(CachedPrepare {
-            transaction_id: txn_id,
-            commit_ts,
-            read_set,
-            write_set,
-            scan_set,
-        });
-
-        self.store.register_prepare_raw(txn_id, prepare);
+        self.store.register_prepare(txn_id, transaction, commit_ts);
     }
 
     /// Commit a prepared transaction by creating MVCC index entries.
