@@ -562,6 +562,47 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
     /// - `exec_consensus(RaiseMinPrepareTime)`: explicit raise from client
     ///   (resharding sets `commit.time + 1` to subsume read protections).
     ///
+    /// # Min Prepare Time State Model
+    ///
+    /// Two fields track min_prepare_time:
+    /// - **tentative** (`min_prepare_time`): the working threshold used by
+    ///   `check_prepare_status`. Can be raised speculatively and rolled back.
+    /// - **finalized** (`finalized_min_prepare_time`): quorum-confirmed floor.
+    ///   Monotonically increasing; survives view changes.
+    ///
+    /// The four functions and their effects:
+    ///
+    /// | Function    | tentative                            | finalized      |
+    /// |-------------|--------------------------------------|----------------|
+    /// | `raise`     | `max(t, min(time, min_prepared_ts))` | unchanged      |
+    /// | `finalize`  | `max(t, finalized')`                 | `max(f, time)` |
+    /// | `sync`      | `min(t, finalized')`                 | `max(f, time)` |
+    /// | `reset`     | `= finalized`                        | unchanged      |
+    ///
+    /// **Invariant**: `tentative >= finalized` after `raise`, `finalize`, and
+    /// `reset`. After `sync`, tentative can be **less than** finalized (this
+    /// is intentional — sync rolls back speculative raises the leader didn't
+    /// confirm).
+    ///
+    /// **Observation idiom**: `raise(0)` returns the current tentative value
+    /// without mutation, because `max(current, min(0, any)) = current` for
+    /// any non-negative current. Used in conformance tests to observe state.
+    ///
+    /// **Valid inputs**: All four functions accept any `u64`. Values below the
+    /// current effective threshold are no-ops for monotonic operations (`raise`
+    /// on tentative, `finalize`/`sync` on finalized). `reset` takes no
+    /// argument.
+    ///
+    /// # Interactions
+    ///
+    /// - After `raise(X)`, `finalize(Y)` leaves tentative at `max(X, Y)` (does
+    ///   not lower it). But `sync(Y)` pulls tentative down to
+    ///   `min(X, max(old_finalized, Y))`.
+    /// - After `raise(X)`, `reset()` sets tentative to finalized (discarding X
+    ///   if X > finalized).
+    /// - `raise` is the only function that returns a value. Calling `raise(0)`
+    ///   after any other function reveals the new tentative.
+    ///
     /// # Examples
     ///
     /// ```text
@@ -573,6 +614,27 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
     /// With a prepared txn at ts.time=50, tentative=100:
     ///   raise(200) → 100    // max(100, min(200, 50)) = 100  (capped)
     ///   raise(30)  → 100    // max(100, min(30, 50))  = 100
+    /// ```
+    ///
+    /// # Cross-function example
+    ///
+    /// ```text
+    /// Fresh store:       tentative=0,   finalized=0
+    ///
+    /// raise(100):        tentative=100, finalized=0     // speculative
+    ///   raise(0) → 100
+    ///
+    /// finalize(80):      tentative=100, finalized=80    // quorum confirms 80
+    ///   raise(0) → 100                                  // tentative stays (>= 80)
+    ///
+    /// raise(200):        tentative=200, finalized=80    // another speculative
+    ///   raise(0) → 200
+    ///
+    /// sync(50):          tentative=50,  finalized=80    // rollback! t < f
+    ///   raise(0) → 50
+    ///
+    /// reset():           tentative=80,  finalized=80    // snap to finalized
+    ///   raise(0) → 80
     /// ```
     fn raise_min_prepare_time(&mut self, time: u64) -> u64;
 
@@ -587,6 +649,17 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
     /// `min_prepared_timestamp` — the quorum has agreed on this value, so
     /// it is authoritative even if it exceeds a prepared transaction's
     /// timestamp.
+    ///
+    /// See [`raise_min_prepare_time`] for the two-field state model overview.
+    ///
+    /// # Interactions
+    ///
+    /// - After `finalize(X)`, `raise(0)` returns at least `X` (tentative was
+    ///   raised to `max(tentative, X)`).
+    /// - After `finalize(X)`, `reset()` will set tentative to at least `X`
+    ///   (finalized is now at least `X`).
+    /// - `finalize` does NOT lower tentative. If `raise(200)` was called
+    ///   before `finalize(100)`, tentative stays at 200.
     ///
     /// # Side effects
     ///
@@ -625,6 +698,18 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
     /// uses `min` instead of `max`, allowing rollback of speculative raises
     /// that the leader did not confirm.
     ///
+    /// See [`raise_min_prepare_time`] for the two-field state model overview.
+    ///
+    /// # Interactions
+    ///
+    /// - After `sync(X)`, `raise(0)` may return a **lower** value than before
+    ///   (tentative was pulled down to `min(old_tentative, max(old_finalized,
+    ///   X))`).
+    /// - After `sync`, tentative can be **less than** finalized. This is the
+    ///   only function that breaks the `tentative >= finalized` invariant.
+    /// - After `sync(X)`, `reset()` sets tentative to `max(old_finalized, X)`
+    ///   (the new finalized), which may be higher than the post-sync tentative.
+    ///
     /// # Side effects
     ///
     /// - May lower tentative, causing `check_prepare_status` to stop
@@ -654,6 +739,17 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
     ///
     /// Sets `tentative = finalized`, discarding any speculative raises not
     /// confirmed by quorum. No-op when `tentative == finalized`.
+    ///
+    /// See [`raise_min_prepare_time`] for the two-field state model overview.
+    ///
+    /// # Interactions
+    ///
+    /// - After `reset()`, `raise(0)` returns the finalized value (all
+    ///   speculative raises are discarded).
+    /// - `reset` does not affect finalized. A subsequent `finalize(X)` or
+    ///   `sync(X)` behaves identically to calling it before the reset.
+    /// - If `sync` left tentative < finalized, `reset()` restores the
+    ///   invariant `tentative = finalized`.
     ///
     /// # Side effects
     ///
