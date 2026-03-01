@@ -34,7 +34,7 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
 
     fn do_uncommitted_get(&self, key: &K) -> (Option<V>, Timestamp);
     fn do_uncommitted_get_at(&self, key: &K, ts: Timestamp) -> (Option<V>, Timestamp);
-    fn scan(&self, start: &K, end: &K, ts: Timestamp) -> Vec<(K, Option<V>, Timestamp)>;
+    fn do_uncommitted_scan(&self, start: &K, end: &K, ts: Timestamp) -> Vec<(K, Option<V>, Timestamp)>;
 
     // === OCC Prepare/Commit/Abort ===
 

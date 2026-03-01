@@ -143,7 +143,7 @@ where
         self.occ.get_at(key, ts)
     }
 
-    fn scan(&self, start: &K, end: &K, ts: Timestamp) -> Vec<(K, Option<V>, Timestamp)> {
+    fn do_uncommitted_scan(&self, start: &K, end: &K, ts: Timestamp) -> Vec<(K, Option<V>, Timestamp)> {
         self.occ.scan(start, end, ts)
     }
 

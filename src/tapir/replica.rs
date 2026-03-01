@@ -312,7 +312,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                     time: u64::MAX,
                     client_id: IrClientId(u64::MAX),
                 };
-                let results = self.store.scan(&start_key, &end_key, ts);
+                let results = self.store.do_uncommitted_scan(&start_key, &end_key, ts);
                 let max_ts = results
                     .iter()
                     .map(|(_, _, t)| *t)
@@ -339,7 +339,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                         return UR::OutOfRange;
                     }
                 }
-                let results = self.store.scan(&start_key, &end_key, timestamp);
+                let results = self.store.do_uncommitted_scan(&start_key, &end_key, timestamp);
                 let max_ts = results
                     .iter()
                     .map(|(_, _, t)| *t)
