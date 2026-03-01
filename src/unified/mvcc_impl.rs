@@ -145,6 +145,18 @@ where
         Ok(output)
     }
 
+    pub(crate) fn has_writes_in_range(
+        &self,
+        start: &K,
+        end: &K,
+        after_ts: Timestamp,
+        before_ts: Timestamp,
+    ) -> Result<bool, StorageError> {
+        Ok(self
+            .unified_memtable()
+            .has_writes_in_range(start, end, after_ts, before_ts))
+    }
+
     pub(crate) fn commit_batch(
         &mut self,
         writes: Vec<(K, Option<V>)>,

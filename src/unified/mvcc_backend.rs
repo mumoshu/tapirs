@@ -101,10 +101,7 @@ where
         after_ts: Timestamp,
         before_ts: Timestamp,
     ) -> Result<bool, StorageError> {
-        Ok(self
-            .store
-            .unified_memtable()
-            .has_writes_in_range(start, end, after_ts, before_ts))
+        self.store.has_writes_in_range(start, end, after_ts, before_ts)
     }
 
     fn commit_batch(
