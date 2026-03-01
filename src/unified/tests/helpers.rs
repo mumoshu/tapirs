@@ -103,6 +103,32 @@ pub fn make_txn_with_scans(
     Arc::new(txn)
 }
 
+/// Build a SharedTransaction from pre-extracted IrPayloadInline::Prepare fields.
+///
+/// Used by restore tests that replay committed transactions from IR record data.
+pub fn build_txn_from_parts(
+    read_set: &[(String, Timestamp)],
+    write_set: &[(String, Option<String>)],
+    scan_set: &[(String, String, Timestamp)],
+) -> SharedTransaction<String, String, Timestamp> {
+    let mut txn = Transaction::<String, String, Timestamp>::default();
+    for (k, ts) in read_set {
+        txn.add_read(sharded(k), *ts);
+    }
+    for (k, v) in write_set {
+        txn.add_write(sharded(k), v.clone());
+    }
+    for (start, end, ts) in scan_set {
+        txn.scan_set.push(ScanEntry {
+            shard: ShardNumber(0),
+            start_key: start.clone(),
+            end_key: end.clone(),
+            timestamp: *ts,
+        });
+    }
+    Arc::new(txn)
+}
+
 // === Prepare / Commit Operations ===
 
 /// Register a CO::Prepare: creates IrMemEntry in overlay + registers in

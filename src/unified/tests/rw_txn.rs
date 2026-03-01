@@ -179,15 +179,8 @@ fn unified_store_prepare_registry() {
     let mut store = new_test_store();
 
     let txn_id = test_txn_id(1, 1);
-    let prepare = std::sync::Arc::new(CachedPrepare {
-        transaction_id: txn_id,
-        commit_ts: test_ts(5),
-        read_set: vec![],
-        write_set: vec![("x".to_string(), Some("v1".to_string()))],
-        scan_set: vec![],
-    });
-
-    store.inner_mut().register_prepare_raw(txn_id, prepare);
+    let txn = make_txn(vec![], vec![("x", Some("v1"))]);
+    store.register_prepare(txn_id, &txn, test_ts(5));
 
     // Resolve from registry — verify both key and value
     let entry = store.inner().resolve_in_memory(&txn_id, 0);

@@ -45,7 +45,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedMvccBackend<K, V, IO> {
 impl<K, V, IO: DiskIo> MvccBackend<K, V, Timestamp> for UnifiedMvccBackend<K, V, IO>
 where
     K: Clone + Ord + Hash + Debug + Send + Sync + Serialize + for<'de> Deserialize<'de> + 'static,
-    V: Clone + Debug + Send + Sync + Serialize + for<'de> Deserialize<'de> + 'static,
+    V: Clone + Eq + Hash + Debug + Send + Sync + Serialize + for<'de> Deserialize<'de> + 'static,
     IO: DiskIo,
 {
     type Error = StorageError;
@@ -85,27 +85,20 @@ where
             number: timestamp.time,
         };
 
-        let write_set = if value.is_some() {
-            vec![(key.clone(), value)]
-        } else {
-            vec![]
-        };
+        let value_ref = if value.is_some() {
+            let mut txn = crate::occ::Transaction::default();
+            txn.add_write(crate::tapir::Sharded::from(key.clone()), value);
+            let txn = Arc::new(txn);
+            self.store.register_prepare(txn_id, &txn, timestamp);
 
-        let prepare = Arc::new(CachedPrepare {
-            transaction_id: txn_id,
-            commit_ts: timestamp,
-            read_set: vec![],
-            write_set,
-            scan_set: vec![],
-        });
-
-        self.store.register_prepare_raw(txn_id, prepare);
-
-        let value_ref = if self.store.resolve_in_memory(&txn_id, 0).is_some() {
-            Some(ValueLocation::InMemory {
-                txn_id,
-                write_index: 0,
-            })
+            if self.store.resolve_in_memory(&txn_id, 0).is_some() {
+                Some(ValueLocation::InMemory {
+                    txn_id,
+                    write_index: 0,
+                })
+            } else {
+                None
+            }
         } else {
             None
         };
@@ -210,7 +203,7 @@ use crate::occ::Timestamp as _;
 impl<K, V, IO: DiskIo> UnifiedMvccBackend<K, V, IO>
 where
     K: Clone + Ord + Hash + Debug + Send + Sync + Serialize + for<'de> Deserialize<'de> + 'static,
-    V: Clone + Debug + Send + Sync + Serialize + for<'de> Deserialize<'de> + 'static,
+    V: Clone + Eq + Hash + Debug + Send + Sync + Serialize + for<'de> Deserialize<'de> + 'static,
     IO: DiskIo,
 {
     /// Register a prepared transaction for future zero-copy commit.

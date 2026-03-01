@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use crate::mvcc::backend::MvccBackend;
 use crate::mvcc::disk::memory_io::MemoryIo;
@@ -142,17 +141,9 @@ fn restore_from_ir_record_rebuilds_mvcc() {
                 ..
             } = prepare_payload
             {
-                // Register the prepare in the prepare_registry
-                let cached = Arc::new(CachedPrepare {
-                    transaction_id: *transaction_id,
-                    commit_ts: *commit_ts,
-                    read_set: read_set.clone(),
-                    write_set: write_set.clone(),
-                    scan_set: scan_set.clone(),
-                });
-                restored_store
-                    .inner_mut()
-                    .register_prepare_raw(*transaction_id, cached);
+                // Register the prepare via Transaction
+                let txn = build_txn_from_parts(read_set, write_set, scan_set);
+                restored_store.register_prepare(*transaction_id, &txn, *commit_ts);
 
                 // Write set and read set are already typed — no deserialization needed
                 let writes: Vec<(String, Option<String>)> = write_set.clone();
@@ -357,16 +348,9 @@ fn restore_from_sealed_vlog_rebuilds_mvcc() {
                 ..
             } = prepare
             {
-                let cached = Arc::new(CachedPrepare {
-                    transaction_id: *transaction_id,
-                    commit_ts: *commit_ts,
-                    read_set: read_set.clone(),
-                    write_set: write_set.clone(),
-                    scan_set: scan_set.clone(),
-                });
-                restored
-                    .inner_mut()
-                    .register_prepare_raw(*transaction_id, cached);
+                // Register the prepare via Transaction
+                let txn = build_txn_from_parts(read_set, write_set, scan_set);
+                restored.register_prepare(*transaction_id, &txn, *commit_ts);
 
                 // Write set and read set are already typed — no deserialization needed
                 let writes: Vec<(String, Option<String>)> = write_set.clone();

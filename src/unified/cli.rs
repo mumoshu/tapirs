@@ -214,24 +214,16 @@ fn cmd_prepare(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
         writes.push(parse_kv_pair(kv)?);
     }
 
-    // Build typed write set for IR entry and prepare registry
-    let write_set: Vec<(String, Option<String>)> = writes
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-
-    // Register prepare in the store
-    let prepare = Arc::new(CachedPrepare {
-        transaction_id: txn_id,
-        commit_ts,
-        read_set: vec![],
-        write_set,
-        scan_set: vec![],
-    });
+    // Register prepare in the store via Transaction
+    let mut txn = crate::occ::Transaction::default();
+    for (k, v) in &writes {
+        txn.add_write(crate::tapir::Sharded::from(k.clone()), v.clone());
+    }
+    let txn = Arc::new(txn);
 
     let op_id = ctx.next_op_id();
     let store = ctx.store_mut()?;
-    store.inner_mut().register_prepare_raw(txn_id, prepare);
+    store.register_prepare(txn_id, &txn, commit_ts);
 
     // Insert IR overlay entry with typed payload
     let current_view = store.inner().current_view();

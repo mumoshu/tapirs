@@ -288,7 +288,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
     /// pointing into this registry.  If the view is sealed before
     /// the commit arrives, the prepare is still accessible via
     /// `prepare_vlog_index` + `resolve_on_disk`.
-    pub fn register_prepare_raw(
+    fn register_prepare_raw(
         &mut self,
         txn_id: OccTransactionId,
         prepare: Arc<CachedPrepare<K, V>>,
