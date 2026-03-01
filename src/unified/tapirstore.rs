@@ -200,16 +200,16 @@ impl<K: Key, V: Value, IO: DiskIo> TapirStore<K, V> for UnifiedStore<K, V, IO> {
 
     // === CDC Deltas ===
 
-    fn record_cdc_delta(&mut self, _base_view: u64, _delta: LeaderRecordDelta<K, V>) {
-        todo!()
+    fn record_cdc_delta(&mut self, base_view: u64, delta: LeaderRecordDelta<K, V>) {
+        self.record_delta_during_view.record_cdc_delta(base_view, delta);
     }
 
-    fn cdc_deltas_from(&self, _from_view: u64) -> Vec<LeaderRecordDelta<K, V>> {
-        todo!()
+    fn cdc_deltas_from(&self, from_view: u64) -> Vec<LeaderRecordDelta<K, V>> {
+        self.record_delta_during_view.cdc_deltas_from(from_view)
     }
 
     fn cdc_max_view(&self) -> Option<u64> {
-        todo!()
+        self.record_delta_during_view.cdc_max_view()
     }
 
     // === Resharding ===

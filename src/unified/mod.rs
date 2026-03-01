@@ -17,7 +17,7 @@ use crate::mvcc::disk::error::StorageError;
 use crate::mvcc::disk::memtable::Memtable;
 use crate::occ::{Transaction, TransactionId as OccTransactionId};
 use crate::tapir::{ShardNumber, Timestamp};
-use crate::tapirstore::TransactionLog;
+use crate::tapirstore::{RecordDeltaDuringView, TransactionLog};
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -132,6 +132,9 @@ pub struct UnifiedStore<K: Ord, V, IO: DiskIo> {
 
     /// Transaction log tracking committed/aborted outcomes.
     transaction_log: TransactionLog,
+
+    /// CDC delta storage for resharding catch-up.
+    record_delta_during_view: RecordDeltaDuringView<K, V>,
 }
 
 impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
@@ -207,6 +210,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
             vlog_read_count: Cell::new(0),
             current_view_entry_count: 0,
             transaction_log: TransactionLog::new(),
+            record_delta_during_view: RecordDeltaDuringView::new(),
         })
     }
 
