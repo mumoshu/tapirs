@@ -11,6 +11,11 @@ pub enum UO<K> {
         /// Get a different version instead (not part of normal TAPIR).
         timestamp: Option<Timestamp>,
     },
+    /// Get a specific version at a given timestamp.
+    GetAt {
+        key: K,
+        timestamp: Timestamp,
+    },
     /// For backup coordinators.
     CheckPrepare {
         /// Id of transaction to check the preparedness of.
@@ -69,6 +74,8 @@ pub enum UO<K> {
 pub enum UR<K, V> {
     /// To clients.
     Get(Option<V>, Timestamp),
+    /// Result of a timestamp-specific get.
+    GetAt(Option<V>, Timestamp),
     /// To backup coordinators.
     CheckPrepare(OccPrepareResult<Timestamp>),
     /// CDC scan results: leader record deltas for views >= from_view.

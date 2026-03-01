@@ -63,6 +63,27 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
         }
     }
 
+    pub fn get_at(
+        &self,
+        key: K,
+        timestamp: Timestamp,
+    ) -> impl Future<Output = Result<(Option<V>, Timestamp), TransactionError>> {
+        let future = self.inner.invoke_unlogged(UO::GetAt { key, timestamp });
+
+        async move {
+            let reply = future.await;
+
+            match reply {
+                UR::GetAt(value, timestamp) => Ok((value, timestamp)),
+                UR::OutOfRange => Err(TransactionError::OutOfRange),
+                other => {
+                    debug_assert!(false, "unexpected UR variant for get_at: {other:?}");
+                    Ok((None, Default::default()))
+                }
+            }
+        }
+    }
+
     pub fn scan(
         &self,
         start_key: K,

@@ -286,6 +286,14 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                 };
                 UR::Get(v, ts)
             }
+            UO::GetAt { key, timestamp } => {
+                if let Some(range) = &self.key_range
+                    && !range.contains(&key) {
+                        return UR::OutOfRange;
+                    }
+                let (v, ts) = self.store.get_at(&key, timestamp);
+                UR::GetAt(v, ts)
+            }
             UO::Scan {
                 start_key,
                 end_key,
