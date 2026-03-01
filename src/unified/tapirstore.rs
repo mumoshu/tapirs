@@ -182,20 +182,25 @@ impl<K: Key, V: Value, IO: DiskIo> TapirStore<K, V> for UnifiedStore<K, V, IO> {
 
     // === Min Prepare Time ===
 
-    fn raise_min_prepare_time(&mut self, _time: u64) -> u64 {
-        todo!()
+    fn raise_min_prepare_time(&mut self, time: u64) -> u64 {
+        let min_prepared_ts = self
+            .prepare_registry
+            .values()
+            .map(|p| p.commit_ts.time)
+            .min();
+        self.min_prepare_times.raise(time, min_prepared_ts)
     }
 
-    fn finalize_min_prepare_time(&mut self, _time: u64) {
-        todo!()
+    fn finalize_min_prepare_time(&mut self, time: u64) {
+        self.min_prepare_times.finalize(time);
     }
 
-    fn sync_min_prepare_time(&mut self, _time: u64) {
-        todo!()
+    fn sync_min_prepare_time(&mut self, time: u64) {
+        self.min_prepare_times.sync(time);
     }
 
     fn reset_min_prepare_time_to_finalized(&mut self) {
-        todo!()
+        self.min_prepare_times.reset_to_finalized();
     }
 
     // === CDC Deltas ===
