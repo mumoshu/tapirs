@@ -102,7 +102,7 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
     /// checks the finalized flag. This method is used in TAPIR merge (view
     /// change), where it finalizes tentative prepared transactions that the
     /// quorum agreed on. Unfinalized entries are discarded by
-    /// remove_unfinalized_prepared().
+    /// remove_all_unfinalized_prepared_txns().
     ///
     /// Returns true if the entry existed at the given commit timestamp.
     fn finalize_prepared_txn(&mut self, id: &TransactionId, commit: &Timestamp) -> bool;
@@ -115,7 +115,7 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
     ) -> Option<(TransactionId, Timestamp, SharedTransaction<K, V, Timestamp>)>;
 
     /// Remove all prepared transactions that are NOT finalized.
-    fn remove_unfinalized_prepared(&mut self);
+    fn remove_all_unfinalized_prepared_txns(&mut self);
 
     // === Committed Read/Scan ===
 

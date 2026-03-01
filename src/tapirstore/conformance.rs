@@ -320,7 +320,7 @@ pub(crate) fn test_remove_unfinalized_prepared(
     assert_eq!(store.prepared_count(), 2);
 
     // Remove unfinalized — should remove txn 2 but keep txn 1.
-    store.remove_unfinalized_prepared();
+    store.remove_all_unfinalized_prepared_txns();
 
     assert_eq!(store.prepared_count(), 1);
     assert!(store.get_prepared_txn(&txn_id(1, 1)).is_some());

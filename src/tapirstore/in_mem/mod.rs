@@ -248,7 +248,7 @@ where
             .map(|(id, (ts, txn, _))| (*id, *ts, txn.clone()))
     }
 
-    fn remove_unfinalized_prepared(&mut self) {
+    fn remove_all_unfinalized_prepared_txns(&mut self) {
         let ids: Vec<_> = self
             .occ
             .prepared
