@@ -21,10 +21,23 @@ pub enum CheckPrepareStatus {
 
 /// Abstracts all stateful operations the TAPIR replica needs.
 ///
-/// Implementations hold the OCC store, transaction log, min-prepare-time
-/// tracking, and CDC delta history. The TAPIR replica keeps only transient
-/// protocol state (key_range, phase, counters) and delegates all persistent
-/// state operations through this trait.
+/// Implementations must provide:
+/// - **Versioned reads**: point gets, snapshot reads, and range scans over
+///   committed data, with optional read-protection tracking for
+///   linearizability.
+/// - **Transaction lifecycle**: prepare (with conflict detection), commit,
+///   and abort of transactions, including a registry of currently-prepared
+///   transactions.
+/// - **Transaction log**: durable record of committed and aborted outcomes,
+///   queryable by transaction ID.
+/// - **Min-prepare-time thresholds**: tentative and finalized lower bounds
+///   on acceptable prepare timestamps, used to reject stale transactions.
+/// - **CDC deltas**: per-view change-data-capture history for resharding.
+/// - **Resharding baselines**: read-protection watermarks for safe
+///   cross-shard data transfer.
+///
+/// The TAPIR replica keeps only transient protocol state (key range,
+/// phase, counters) and delegates all persistent state through this trait.
 pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 'static {
     // === Identity ===
 
