@@ -12,7 +12,6 @@ mod tests;
 use crate::ir::OpId;
 use crate::mvcc::disk::disk_io::{DiskIo, OpenFlags};
 use crate::mvcc::disk::error::StorageError;
-use crate::mvcc::disk::lsm::LsmTree;
 use crate::mvcc::disk::memtable::Memtable;
 use crate::occ::TransactionId as OccTransactionId;
 use crate::tapir::Timestamp;
@@ -65,9 +64,6 @@ pub struct UnifiedStore<K: Ord, V, IO: DiskIo> {
 
     /// Unified MVCC memtable using UnifiedLsmEntry with ValueLocation.
     unified_memtable: UnifiedMemtable<K>,
-
-    /// MVCC SSTs from sealed views.
-    mvcc_tree: LsmTree<IO>,
 
     /// Active VLog segment for the current view.
     active_vlog: UnifiedVlogSegment<IO>,
@@ -183,15 +179,6 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
             io_flags,
         )?;
 
-        // Restore MVCC LSM tree
-        let mvcc_tree = LsmTree::<IO>::restore(
-            base_dir.clone(),
-            manifest.mvcc_l0_sstables.clone(),
-            manifest.mvcc_l1_sstables.clone(),
-            manifest.next_sst_id,
-            io_flags,
-        );
-
         let current_view = manifest.current_view;
 
         // Start tracking the current view in the active VLog segment.
@@ -201,7 +188,6 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
         Ok(Self {
             mvcc_memtable: Memtable::new(),
             unified_memtable: UnifiedMemtable::new(),
-            mvcc_tree,
             active_vlog,
             sealed_vlog_segments,
             prepare_registry: BTreeMap::new(),
@@ -410,21 +396,6 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
                 }
             }
         }
-    }
-
-    /// Get a reference to the MVCC memtable.
-    pub fn mvcc_memtable(&self) -> &Memtable<K, Timestamp> {
-        &self.mvcc_memtable
-    }
-
-    /// Get a mutable reference to the MVCC memtable.
-    pub fn mvcc_memtable_mut(&mut self) -> &mut Memtable<K, Timestamp> {
-        &mut self.mvcc_memtable
-    }
-
-    /// Get a reference to the MVCC LSM tree.
-    pub fn mvcc_tree(&self) -> &LsmTree<IO> {
-        &self.mvcc_tree
     }
 
     /// Get a reference to the unified MVCC memtable.
