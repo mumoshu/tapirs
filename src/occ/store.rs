@@ -528,7 +528,6 @@ impl<K: Key, V: Value, TS: Timestamp + Send, M: MvccBackend<K, V, TS>> Store<K, 
                 }
             }
         }
-        MvccBackend::register_prepare(&mut self.inner, id, &transaction, commit);
     }
 
     fn add_prepared_inner(&mut self, transaction: &Transaction<K, V, TS>, commit: TS) {
