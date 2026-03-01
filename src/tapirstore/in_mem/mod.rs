@@ -238,7 +238,7 @@ where
         self.occ.prepared.len()
     }
 
-    fn oldest_prepared(
+    fn get_oldest_prepared_txn(
         &self,
     ) -> Option<(TransactionId, Timestamp, SharedTransaction<K, V, Timestamp>)> {
         self.occ

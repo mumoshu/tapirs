@@ -846,7 +846,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> Replica<K, V, S> {
         }
         let threshold: u64 = transport.time_offset(-500);
         if let Some((transaction_id, commit, transaction)) =
-            self.store.oldest_prepared()
+            self.store.get_oldest_prepared_txn()
         {
             if commit.time > threshold {
                 // Allow the client to finish on its own.

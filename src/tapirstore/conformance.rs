@@ -294,14 +294,14 @@ pub(crate) fn test_finalize_prepared_txn(
 pub(crate) fn test_oldest_prepared_returns_min_timestamp(
     store: &mut impl TapirStore<String, String>,
 ) {
-    assert!(store.oldest_prepared().is_none());
+    assert!(store.get_oldest_prepared_txn().is_none());
 
     let txn1 = make_txn(vec![], vec![("a", Some("v1"))], vec![]);
     let txn2 = make_txn(vec![], vec![("b", Some("v2"))], vec![]);
     store.try_prepare_txn(txn_id(1, 1), txn1, ts(20, 1), false);
     store.try_prepare_txn(txn_id(2, 1), txn2, ts(10, 1), false);
 
-    let (id, commit_ts, _txn) = store.oldest_prepared().unwrap();
+    let (id, commit_ts, _txn) = store.get_oldest_prepared_txn().unwrap();
     assert_eq!(id, txn_id(2, 1));
     assert_eq!(commit_ts, ts(10, 1));
 }
@@ -588,7 +588,7 @@ pub(crate) fn test_min_prepare_baseline_after_quorum_scan(
 pub(crate) fn test_oldest_prepared_is_min_prepared_timestamp(
     store: &mut impl TapirStore<String, String>,
 ) {
-    assert!(store.oldest_prepared().is_none());
+    assert!(store.get_oldest_prepared_txn().is_none());
 
     // Prepare two transactions at different timestamps.
     let txn1 = make_txn(vec![], vec![("a", Some("v1"))], vec![]);
@@ -596,7 +596,7 @@ pub(crate) fn test_oldest_prepared_is_min_prepared_timestamp(
     store.try_prepare_txn(txn_id(1, 1), txn1, ts(20, 1), false);
     store.try_prepare_txn(txn_id(2, 1), txn2, ts(10, 1), false);
 
-    let (_, oldest_ts, _) = store.oldest_prepared().unwrap();
+    let (_, oldest_ts, _) = store.get_oldest_prepared_txn().unwrap();
     assert_eq!(oldest_ts.time, 10);
 }
 

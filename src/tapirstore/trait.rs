@@ -110,7 +110,7 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
     fn prepared_count(&self) -> usize;
 
     /// Returns the oldest prepared transaction (minimum commit timestamp).
-    fn oldest_prepared(
+    fn get_oldest_prepared_txn(
         &self,
     ) -> Option<(TransactionId, Timestamp, SharedTransaction<K, V, Timestamp>)>;
 
