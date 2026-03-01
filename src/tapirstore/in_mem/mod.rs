@@ -95,6 +95,10 @@ impl<K: Key, V: Value, M> InMemTapirStore<K, V, M> {
             .min()
     }
 
+}
+
+#[cfg(test)]
+impl<K: Key, V: Value, M> InMemTapirStore<K, V, M> {
     pub fn min_prepare_time(&self) -> u64 {
         self.min_prepare_time
     }
