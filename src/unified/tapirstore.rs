@@ -159,25 +159,25 @@ impl<K: Key, V: Value, IO: DiskIo> TapirStore<K, V> for UnifiedStore<K, V, IO> {
 
     // === Transaction Log ===
 
-    fn txn_log_get(&self, _id: &TransactionId) -> Option<(Timestamp, bool)> {
-        todo!()
+    fn txn_log_get(&self, id: &TransactionId) -> Option<(Timestamp, bool)> {
+        self.transaction_log.txn_log_get(id)
     }
 
     fn txn_log_insert(
         &mut self,
-        _id: TransactionId,
-        _ts: Timestamp,
-        _committed: bool,
+        id: TransactionId,
+        ts: Timestamp,
+        committed: bool,
     ) -> Option<(Timestamp, bool)> {
-        todo!()
+        self.transaction_log.txn_log_insert(id, ts, committed)
     }
 
-    fn txn_log_contains(&self, _id: &TransactionId) -> bool {
-        todo!()
+    fn txn_log_contains(&self, id: &TransactionId) -> bool {
+        self.transaction_log.txn_log_contains(id)
     }
 
     fn txn_log_len(&self) -> usize {
-        todo!()
+        self.transaction_log.txn_log_len()
     }
 
     // === Min Prepare Time ===
