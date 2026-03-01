@@ -5,7 +5,7 @@ use crate::mvcc::backend::MvccBackend;
 use crate::mvcc::disk::error::StorageError;
 use crate::occ::{PrepareConflict, PrepareResult, SharedTransaction, Store as OccStore, Transaction, TransactionId};
 use crate::tapir::{Key, LeaderRecordDelta, ShardNumber, Timestamp, Value};
-use crate::tapirstore::{CheckPrepareStatus, TapirStore};
+use crate::tapirstore::{CheckPrepareStatus, TapirStore, TransactionLog};
 use crate::util::vectorize_btree;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -24,14 +24,7 @@ pub struct InMemTapirStore<K, V, M> {
     ))]
     occ: OccStore<K, V, Timestamp, M>,
 
-    #[serde(
-        with = "vectorize_btree",
-        bound(
-            serialize = "K: Serialize, V: Serialize",
-            deserialize = "K: Deserialize<'de> + Ord, V: Deserialize<'de>"
-        )
-    )]
-    transaction_log: BTreeMap<TransactionId, (Timestamp, bool)>,
+    transaction_log: TransactionLog,
 
     min_prepare_time: u64,
     finalized_min_prepare_time: u64,
@@ -53,7 +46,7 @@ impl<K: Key, V: Value, M> InMemTapirStore<K, V, M> {
     {
         Self {
             occ: OccStore::new(shard, linearizable),
-            transaction_log: BTreeMap::new(),
+            transaction_log: TransactionLog::new(),
             min_prepare_time: 0,
             finalized_min_prepare_time: 0,
             record_delta_during_view: BTreeMap::new(),
@@ -63,7 +56,7 @@ impl<K: Key, V: Value, M> InMemTapirStore<K, V, M> {
     pub fn new_with_backend(shard: ShardNumber, linearizable: bool, backend: M) -> Self {
         Self {
             occ: OccStore::new_with_backend(shard, linearizable, backend),
-            transaction_log: BTreeMap::new(),
+            transaction_log: TransactionLog::new(),
             min_prepare_time: 0,
             finalized_min_prepare_time: 0,
             record_delta_during_view: BTreeMap::new(),
@@ -166,7 +159,7 @@ where
         txn: &Transaction<K, V, Timestamp>,
         commit: Timestamp,
     ) {
-        let old = self.transaction_log.insert(id, (commit, true));
+        let old = self.transaction_log.txn_log_insert(id, commit, true);
         if let Some((ts, committed)) = old {
             debug_assert!(committed, "{id:?} aborted");
             debug_assert_eq!(ts, commit, "{id:?} committed at (different) {ts:?}");
@@ -202,7 +195,7 @@ where
     }
 
     fn check_prepare_status(&self, id: &TransactionId, commit: &Timestamp) -> CheckPrepareStatus {
-        if let Some((ts, committed)) = self.transaction_log.get(id).copied() {
+        if let Some((ts, committed)) = self.transaction_log.txn_log_get(id) {
             if committed {
                 if ts == *commit {
                     CheckPrepareStatus::CommittedAtTimestamp
@@ -299,7 +292,7 @@ where
     // === Transaction Log ===
 
     fn txn_log_get(&self, id: &TransactionId) -> Option<(Timestamp, bool)> {
-        self.transaction_log.get(id).copied()
+        self.transaction_log.txn_log_get(id)
     }
 
     fn txn_log_insert(
@@ -308,15 +301,15 @@ where
         ts: Timestamp,
         committed: bool,
     ) -> Option<(Timestamp, bool)> {
-        self.transaction_log.insert(id, (ts, committed))
+        self.transaction_log.txn_log_insert(id, ts, committed)
     }
 
     fn txn_log_contains(&self, id: &TransactionId) -> bool {
-        self.transaction_log.contains_key(id)
+        self.transaction_log.txn_log_contains(id)
     }
 
     fn txn_log_len(&self) -> usize {
-        self.transaction_log.len()
+        self.transaction_log.txn_log_len()
     }
 
     // === Min Prepare Time ===

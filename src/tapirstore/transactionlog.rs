@@ -15,6 +15,12 @@ pub struct TransactionLog {
     inner: BTreeMap<TransactionId, (Timestamp, bool)>,
 }
 
+impl Default for TransactionLog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TransactionLog {
     pub fn new() -> Self {
         Self {
