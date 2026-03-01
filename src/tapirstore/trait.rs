@@ -32,8 +32,93 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
 
     // === Uncommitted Reads ===
 
+    /// Read the latest committed version of `key` (any timestamp).
+    ///
+    /// **Pure read** -- takes `&self`, no side effects. Does not record a
+    /// read timestamp, so this read cannot cause future `try_prepare_txn`
+    /// calls to fail OCC checks. Used by the replica for `UO::Get`
+    /// (unlogged single-key reads that skip consensus).
+    ///
+    /// Returns `(value, write_ts)` where `write_ts` is the commit
+    /// timestamp of the version returned. If no version exists, returns
+    /// `(None, Timestamp::default())`.
+    ///
+    /// # Return value transitions
+    ///
+    /// ```text
+    /// // After commit_prepared_txn(_, write("x","v1"), ts(1,1)):
+    /// do_uncommitted_get("x") => (Some("v1"), ts(1,1))
+    ///
+    /// // After commit_prepared_txn(_, write("x","v2"), ts(5,1)):
+    /// do_uncommitted_get("x") => (Some("v2"), ts(5,1))
+    ///
+    /// // Key never written:
+    /// do_uncommitted_get("y") => (None, Timestamp::default())
+    /// ```
     fn do_uncommitted_get(&self, key: &K) -> (Option<V>, Timestamp);
+
+    /// Read the version of `key` visible at snapshot timestamp `ts`.
+    ///
+    /// **Pure read** -- takes `&self`, no side effects. Returns the latest
+    /// committed version with `write_ts <= ts`. Does not record a read
+    /// timestamp, so this read cannot block future OCC prepares. Used by
+    /// the replica for `UO::GetAt` (unlogged point-in-time reads that skip
+    /// consensus).
+    ///
+    /// Returns `(value, write_ts)`. If no version exists at or before `ts`,
+    /// returns `(None, Timestamp::default())`.
+    ///
+    /// # Valid inputs
+    ///
+    /// `ts` acts as an upper bound on which versions are visible. Any
+    /// `Timestamp` is valid, including `Timestamp::default()` (returns only
+    /// versions written at time 0).
+    ///
+    /// # Return value transitions
+    ///
+    /// ```text
+    /// // After commit_prepared_txn(_, write("x","v1"), ts(1,1))
+    /// //   and commit_prepared_txn(_, write("x","v2"), ts(5,1)):
+    /// do_uncommitted_get_at("x", ts(3,1))  => (Some("v1"), ts(1,1))
+    /// do_uncommitted_get_at("x", ts(10,1)) => (Some("v2"), ts(5,1))
+    ///
+    /// // After commit_prepared_txn(_, write("x","v3"), ts(7,1)):
+    /// do_uncommitted_get_at("x", ts(10,1)) => (Some("v3"), ts(7,1))
+    /// do_uncommitted_get_at("x", ts(3,1))  => (Some("v1"), ts(1,1))  // unchanged
+    /// ```
     fn do_uncommitted_get_at(&self, key: &K, ts: Timestamp) -> (Option<V>, Timestamp);
+
+    /// Scan all keys in `[start, end]` (inclusive) at snapshot timestamp `ts`.
+    ///
+    /// **Pure read** -- takes `&self`, no side effects. For each key in
+    /// the range, returns the latest committed version with `write_ts <= ts`.
+    /// Does not record read timestamps or range protections, so this scan
+    /// cannot cause future OCC prepare failures. Used by the replica for
+    /// `UO::Scan` (with `ts = Timestamp::MAX`) and `UO::ScanAt`.
+    ///
+    /// Returns `Vec<(key, value, write_ts)>` sorted by key. Keys with no
+    /// version at or before `ts` are omitted. Returns empty `Vec` if no
+    /// keys exist in the range.
+    ///
+    /// # Valid inputs
+    ///
+    /// `start <= end` in key ordering. Pass `ts` with `time = u64::MAX`
+    /// to scan the latest committed versions of all keys.
+    ///
+    /// # Return value transitions
+    ///
+    /// ```text
+    /// // After commit_prepared_txn(_, write("a","v1"), ts(1,1))
+    /// //   and commit_prepared_txn(_, write("b","v2"), ts(1,1)):
+    /// do_uncommitted_scan("a", "c", ts(10,1))
+    ///   => [("a", Some("v1"), ts(1,1)), ("b", Some("v2"), ts(1,1))]
+    ///
+    /// // After commit_prepared_txn(_, write("b","v3"), ts(5,1)):
+    /// do_uncommitted_scan("a", "c", ts(10,1))
+    ///   => [("a", Some("v1"), ts(1,1)), ("b", Some("v3"), ts(5,1))]
+    /// do_uncommitted_scan("a", "c", ts(3,1))
+    ///   => [("a", Some("v1"), ts(1,1)), ("b", Some("v2"), ts(1,1))]
+    /// ```
     fn do_uncommitted_scan(&self, start: &K, end: &K, ts: Timestamp) -> Vec<(K, Option<V>, Timestamp)>;
 
     // === OCC Prepare/Commit/Abort ===
