@@ -1,5 +1,4 @@
 use super::helpers::*;
-use crate::mvcc::backend::MvccBackend;
 
 // === Test 2: RO Transaction (QuorumRead + QuorumScan) ===
 
@@ -30,13 +29,13 @@ fn ro_txn_quorum_read_scan() {
     assert_last_read_ts(&store, "y", None);
 
     // QuorumRead sets last_read_ts via commit_get
-    MvccBackend::commit_get(&mut store, "x".to_string(), test_ts(5), test_ts(10)).unwrap();
+    store.commit_get("x".to_string(), test_ts(5), test_ts(10)).unwrap();
     assert_last_read_ts(&store, "x", Some(10));
     // y untouched
     assert_last_read_ts(&store, "y", None);
 
     // get_last_read_at should also return the timestamp for the specific version
-    let lr_at = MvccBackend::get_last_read_at(&store, &"x".to_string(), test_ts(5)).unwrap();
+    let lr_at = store.get_last_read_at(&"x".to_string(), test_ts(5)).unwrap();
     assert_eq!(
         lr_at.map(|ts| ts.time),
         Some(10),
@@ -45,7 +44,7 @@ fn ro_txn_quorum_read_scan() {
 
     // QuorumScan returns correct values — verify ALL fields of each result
     let results =
-        MvccBackend::scan(&store, &"a".to_string(), &"z".to_string(), test_ts(10)).unwrap();
+        store.scan(&"a".to_string(), &"z".to_string(), test_ts(10)).unwrap();
     assert_eq!(results.len(), 2, "scan should return 2 entries");
 
     // Results should be sorted by key
@@ -67,15 +66,14 @@ fn ro_txn_quorum_read_scan() {
 
     // Scan with narrower range should only return matching keys
     let narrow =
-        MvccBackend::scan(&store, &"x".to_string(), &"x".to_string(), test_ts(10)).unwrap();
+        store.scan(&"x".to_string(), &"x".to_string(), test_ts(10)).unwrap();
     assert_eq!(narrow.len(), 1, "narrow scan should return 1 entry");
     assert_eq!(narrow[0].0, "x");
     assert_eq!(narrow[0].1.as_deref(), Some("v1"));
     assert_eq!(narrow[0].2, test_ts(5));
 
     // has_writes_in_range should detect writes
-    let has_writes = MvccBackend::has_writes_in_range(
-        &store,
+    let has_writes = store.has_writes_in_range(
         &"a".to_string(),
         &"z".to_string(),
         test_ts(0),
@@ -85,8 +83,7 @@ fn ro_txn_quorum_read_scan() {
     assert!(has_writes, "Expected writes in range (0, 10)");
 
     // No writes in range after ts=5
-    let no_writes = MvccBackend::has_writes_in_range(
-        &store,
+    let no_writes = store.has_writes_in_range(
         &"a".to_string(),
         &"z".to_string(),
         test_ts(5),
@@ -97,7 +94,7 @@ fn ro_txn_quorum_read_scan() {
 
     // Scan before any writes should return empty
     let empty_scan =
-        MvccBackend::scan(&store, &"a".to_string(), &"z".to_string(), test_ts(1)).unwrap();
+        store.scan(&"a".to_string(), &"z".to_string(), test_ts(1)).unwrap();
     assert!(
         empty_scan.is_empty(),
         "Scan before commit_ts should return empty"

@@ -1,8 +1,7 @@
 use super::helpers::*;
-use crate::mvcc::backend::MvccBackend;
 use crate::unified::types::*;
 
-// === Test 1: RW Transaction (prepare→commit→read through MvccBackend) ===
+// === Test 1: RW Transaction (prepare→commit→read through inherent methods) ===
 
 #[test]
 fn rw_txn_prepare_commit_read() {
@@ -27,7 +26,7 @@ fn rw_txn_prepare_commit_read() {
     assert_value_location_in_memory(&store, "x", test_ts(1), true);
 
     // get() returns latest version
-    let (val, ts) = MvccBackend::get(&store, &"x".to_string()).unwrap();
+    let (val, ts) = store.get(&"x".to_string()).unwrap();
     assert_eq!(val.as_deref(), Some("v1"), "get(x): value mismatch");
     assert_eq!(ts, test_ts(1), "get(x): timestamp mismatch");
 
@@ -36,7 +35,7 @@ fn rw_txn_prepare_commit_read() {
 
     // get_range should return the write timestamp with no successor
     let (write_ts, next_ts) =
-        MvccBackend::get_range(&store, &"x".to_string(), test_ts(1)).unwrap();
+        store.get_range(&"x".to_string(), test_ts(1)).unwrap();
     assert_eq!(write_ts, test_ts(1), "get_range: write_ts mismatch");
     assert_eq!(next_ts, None, "get_range: expected no successor version");
 
@@ -68,19 +67,18 @@ fn rw_txn_prepare_commit_read() {
     assert_get_at(&store, "x", test_ts(1), Some("v1"), test_ts(1));
 
     // get() returns latest (v2 at ts=5)
-    let (val, ts) = MvccBackend::get(&store, &"x".to_string()).unwrap();
+    let (val, ts) = store.get(&"x".to_string()).unwrap();
     assert_eq!(val.as_deref(), Some("v2"), "get(x) latest: value mismatch");
     assert_eq!(ts, test_ts(5), "get(x) latest: timestamp mismatch");
 
     // get_range at ts=1 should show successor at ts=5
     let (write_ts, next_ts) =
-        MvccBackend::get_range(&store, &"x".to_string(), test_ts(1)).unwrap();
+        store.get_range(&"x".to_string(), test_ts(1)).unwrap();
     assert_eq!(write_ts, test_ts(1), "get_range ts=1: write_ts");
     assert_eq!(next_ts, Some(test_ts(5)), "get_range ts=1: successor");
 
     // has_writes_in_range should detect the write at ts=5
-    let has_writes = MvccBackend::has_writes_in_range(
-        &store,
+    let has_writes = store.has_writes_in_range(
         &"x".to_string(),
         &"x".to_string(),
         test_ts(1),
@@ -120,12 +118,10 @@ fn sync_replays_prepare_before_commit() {
             scan_set: vec![],
         },
     };
-    store
-        .inner_mut()
-        .insert_ir_entry(test_op_id(1, 1), prepare_entry);
+    store.insert_ir_entry(test_op_id(1, 1), prepare_entry);
     store.register_prepare(test_txn_id(1, 1), &txn, test_ts(5));
 
-    // Step 2: Process IO::Commit → commit_batch_for_transaction
+    // Step 2: Process IO::Commit → commit_prepared
     commit_txn(
         &mut store,
         test_op_id(1, 2),
@@ -143,11 +139,11 @@ fn sync_replays_prepare_before_commit() {
 
     // IR overlay should contain both entries
     assert!(
-        store.inner().ir_entry(&test_op_id(1, 1)).is_some(),
+        store.ir_entry(&test_op_id(1, 1)).is_some(),
         "CO::Prepare should be in IR overlay"
     );
     assert!(
-        store.inner().ir_entry(&test_op_id(1, 2)).is_some(),
+        store.ir_entry(&test_op_id(1, 2)).is_some(),
         "IO::Commit should be in IR overlay"
     );
 
@@ -160,16 +156,15 @@ fn sync_replays_prepare_before_commit() {
 
 #[test]
 fn unified_store_basic_ir_overlay() {
-    let store_backend = new_test_store();
-    let store = store_backend.inner();
+    let store = new_test_store();
 
     assert_eq!(store.current_view(), 0);
     assert_eq!(store.vlog_read_count(), 0);
     assert_eq!(store.sealed_vlog_segments().len(), 0);
 
     // Fresh store: only the active VLog segment file exists (empty)
-    assert_store_file_names(&store_backend, &["vlog_seg_0000.dat"]);
-    assert_store_file_size(&store_backend, "vlog_seg_0000.dat", 0);
+    assert_store_file_names(&store, &["vlog_seg_0000.dat"]);
+    assert_store_file_size(&store, "vlog_seg_0000.dat", 0);
 }
 
 #[test]
@@ -181,7 +176,7 @@ fn unified_store_prepare_registry() {
     store.register_prepare(txn_id, &txn, test_ts(5));
 
     // Resolve from registry — verify both key and value
-    let entry = store.inner().resolve_in_memory(&txn_id, 0);
+    let entry = store.resolve_in_memory(&txn_id, 0);
     assert!(entry.is_some(), "Expected entry in prepare registry");
     let (key, value) = entry.unwrap();
     assert_eq!(key, "x", "Prepare key mismatch");
@@ -189,23 +184,22 @@ fn unified_store_prepare_registry() {
 
     // Out of bounds index
     assert!(
-        store.inner().resolve_in_memory(&txn_id, 1).is_none(),
+        store.resolve_in_memory(&txn_id, 1).is_none(),
         "write_index 1 should be out of bounds"
     );
 
     // Unknown txn_id
     assert!(
         store
-            .inner()
             .resolve_in_memory(&test_txn_id(99, 99), 0)
             .is_none(),
         "Unknown txn_id should return None"
     );
 
     // Unregister and verify removal
-    store.inner_mut().unregister_prepare(&txn_id);
+    store.unregister_prepare(&txn_id);
     assert!(
-        store.inner().resolve_in_memory(&txn_id, 0).is_none(),
+        store.resolve_in_memory(&txn_id, 0).is_none(),
         "After unregister, resolve should return None"
     );
 
@@ -219,7 +213,7 @@ fn unified_store_seal_view() {
     let mut store = new_test_store();
 
     // Insert finalized entries directly into IR overlay
-    store.inner_mut().insert_ir_entry(
+    store.insert_ir_entry(
         test_op_id(1, 1),
         IrMemEntry {
             entry_type: VlogEntryType::Prepare,
@@ -234,7 +228,7 @@ fn unified_store_seal_view() {
         },
     );
 
-    store.inner_mut().insert_ir_entry(
+    store.insert_ir_entry(
         test_op_id(1, 2),
         IrMemEntry {
             entry_type: VlogEntryType::Commit,
@@ -248,7 +242,7 @@ fn unified_store_seal_view() {
     );
 
     // Also insert a tentative entry (should NOT be persisted)
-    store.inner_mut().insert_ir_entry(
+    store.insert_ir_entry(
         test_op_id(2, 1),
         IrMemEntry {
             entry_type: VlogEntryType::Prepare,
@@ -263,16 +257,15 @@ fn unified_store_seal_view() {
         },
     );
 
-    assert_eq!(store.inner().current_view(), 0);
+    assert_eq!(store.current_view(), 0);
 
     // Seal view 0
-    store.inner_mut().seal_current_view().unwrap();
+    store.seal_current_view().unwrap();
 
-    assert_eq!(store.inner().current_view(), 1);
+    assert_eq!(store.current_view(), 1);
 
     // Finalized entries should be in IR base with correct entry types
     let ir_base_prepare = store
-        .inner()
         .lookup_ir_base_entry(test_op_id(1, 1))
         .expect("Finalized Prepare should be in IR base");
     assert_eq!(
@@ -287,7 +280,6 @@ fn unified_store_seal_view() {
     assert_eq!(
         ir_base_prepare.vlog_ptr.segment_id,
         store
-            .inner()
             .lookup_ir_base_entry(test_op_id(1, 2))
             .unwrap()
             .vlog_ptr
@@ -296,7 +288,6 @@ fn unified_store_seal_view() {
     );
 
     let ir_base_commit = store
-        .inner()
         .lookup_ir_base_entry(test_op_id(1, 2))
         .expect("Finalized Commit should be in IR base");
     assert_eq!(
@@ -318,7 +309,6 @@ fn unified_store_seal_view() {
     // Tentative entry should NOT be in IR base
     assert!(
         store
-            .inner()
             .lookup_ir_base_entry(test_op_id(2, 1))
             .is_none(),
         "Tentative entry should not be in IR base"
@@ -326,12 +316,12 @@ fn unified_store_seal_view() {
 
     // Finalized entry in base (via ir_entry which checks overlay then base)
     assert!(
-        store.inner().ir_entry(&test_op_id(1, 1)).is_some(),
+        store.ir_entry(&test_op_id(1, 1)).is_some(),
         "Finalized entry should be findable via ir_entry"
     );
     // Tentative entry dropped from overlay
     assert!(
-        store.inner().ir_entry(&test_op_id(2, 1)).is_none(),
+        store.ir_entry(&test_op_id(2, 1)).is_none(),
         "Tentative entry should be dropped"
     );
 
@@ -358,7 +348,7 @@ fn unified_store_cross_view_read() {
         scan_set: vec![],
     };
 
-    store.inner_mut().insert_ir_entry(
+    store.insert_ir_entry(
         test_op_id(1, 1),
         IrMemEntry {
             entry_type: VlogEntryType::Prepare,
@@ -368,15 +358,14 @@ fn unified_store_cross_view_read() {
     );
 
     // VLog read count should be 0 before any disk reads
-    assert_eq!(store.inner().vlog_read_count(), 0);
+    assert_eq!(store.vlog_read_count(), 0);
 
     // Seal view 0 → view 1
-    store.inner_mut().seal_current_view().unwrap();
-    assert_eq!(store.inner().current_view(), 1);
+    store.seal_current_view().unwrap();
+    assert_eq!(store.current_view(), 1);
 
     // The prepare should be in the IR base (sealed VLog)
     let ir_sst = store
-        .inner()
         .lookup_ir_base_entry(test_op_id(1, 1))
         .unwrap();
     assert_eq!(ir_sst.entry_type, VlogEntryType::Prepare);
@@ -384,7 +373,6 @@ fn unified_store_cross_view_read() {
 
     // Read the prepare from the sealed VLog
     let cached = store
-        .inner()
         .resolve_on_disk(&UnifiedVlogPrepareValuePtr {
             prepare_ptr: vlog_ptr,
             write_index: 0,
@@ -423,19 +411,18 @@ fn unified_store_cross_view_read() {
     assert_eq!(cached.write_set[1].1, Some("value_b".to_string()));
 
     // First read should have incremented vlog_read_count
-    assert_eq!(store.inner().vlog_read_count(), 1, "Expected 1 VLog read");
+    assert_eq!(store.vlog_read_count(), 1, "Expected 1 VLog read");
 
     // Second read should hit cache (check vlog_read_count unchanged)
-    let reads_before = store.inner().vlog_read_count();
+    let reads_before = store.vlog_read_count();
     let cached2 = store
-        .inner()
         .resolve_on_disk(&UnifiedVlogPrepareValuePtr {
             prepare_ptr: vlog_ptr,
             write_index: 1,
         })
         .unwrap();
     assert_eq!(
-        store.inner().vlog_read_count(),
+        store.vlog_read_count(),
         reads_before,
         "Expected LRU cache hit"
     );

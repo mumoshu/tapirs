@@ -1,5 +1,4 @@
 use crate::mvcc::disk::memory_io::MemoryIo;
-use crate::unified::mvcc_backend::UnifiedMvccBackend;
 use crate::unified::UnifiedStore;
 
 use super::helpers::*;
@@ -15,8 +14,7 @@ fn recovery_vlog_and_manifest_survive_reopen() {
     let vlog_size_before_drop;
     let manifest_size_before_drop;
     {
-        let inner = UnifiedStore::<String, String, MemoryIo>::open(path.clone()).unwrap();
-        let mut store = UnifiedMvccBackend::<String, String, MemoryIo>::new(inner);
+        let mut store = UnifiedStore::<String, String, MemoryIo>::open(path.clone()).unwrap();
 
         assert_current_view(&store, 0);
         assert_sealed_segment_count(&store, 0);
@@ -71,8 +69,7 @@ fn recovery_vlog_and_manifest_survive_reopen() {
     // Store dropped here — simulates crash/shutdown
 
     // Phase 2: Reopen from the same path
-    let inner = UnifiedStore::<String, String, MemoryIo>::open(path).unwrap();
-    let store = UnifiedMvccBackend::<String, String, MemoryIo>::new(inner);
+    let store = UnifiedStore::<String, String, MemoryIo>::open(path).unwrap();
 
     // Files should be unchanged after reopen (MemoryIo persists across drop/reopen)
     assert_store_file_names(&store, &["UNIFIED_MANIFEST", "vlog_seg_0000.dat"]);
@@ -83,11 +80,11 @@ fn recovery_vlog_and_manifest_survive_reopen() {
     assert_current_view(&store, 2);
 
     // VLog read count resets on reopen
-    assert_eq!(store.inner().vlog_read_count(), 0, "vlog_read_count should be 0 after reopen");
+    assert_eq!(store.vlog_read_count(), 0, "vlog_read_count should be 0 after reopen");
 
     // Sealed segment count depends on whether data exceeded 256KB threshold
     // (with default 256KB threshold, small test data stays in active segment)
-    let seg_count = store.inner().sealed_vlog_segments().len();
+    let seg_count = store.sealed_vlog_segments().len();
     assert_eq!(seg_count, 0, "Small test data should stay in active segment");
 }
 
@@ -97,9 +94,8 @@ fn recovery_sealed_segments_persist() {
 
     // Phase 1: Create store with small segment threshold to force segment rotation
     {
-        let inner =
+        let mut store =
             UnifiedStore::<String, String, MemoryIo>::open_with_options(path.clone(), 1024).unwrap();
-        let mut store = UnifiedMvccBackend::<String, String, MemoryIo>::new(inner);
 
         assert_current_view(&store, 0);
         assert_sealed_segment_count(&store, 0);
@@ -141,9 +137,8 @@ fn recovery_sealed_segments_persist() {
     }
 
     // Phase 2: Reopen and verify ALL sealed segment metadata
-    let inner =
+    let store =
         UnifiedStore::<String, String, MemoryIo>::open_with_options(path, 1024).unwrap();
-    let store = UnifiedMvccBackend::<String, String, MemoryIo>::new(inner);
 
     // Files should be unchanged after reopen
     assert_store_file_names(
@@ -154,10 +149,10 @@ fn recovery_sealed_segments_persist() {
 
     assert_current_view(&store, 1);
     assert_sealed_segment_count(&store, 1);
-    assert_eq!(store.inner().vlog_read_count(), 0, "vlog_read_count should be 0");
+    assert_eq!(store.vlog_read_count(), 0, "vlog_read_count should be 0");
 
     // Verify sealed segment metadata
-    let sealed_segs = store.inner().sealed_vlog_segments();
+    let sealed_segs = store.sealed_vlog_segments();
     let (&seg_id, seg) = sealed_segs.iter().next().expect("Should have 1 sealed segment");
     assert_eq!(seg_id, seg.id, "Segment ID in map should match segment's own ID");
     assert!(!seg.views.is_empty(), "Sealed segment should have view ranges");

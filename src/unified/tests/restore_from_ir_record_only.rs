@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::mvcc::backend::MvccBackend;
 use crate::mvcc::disk::memory_io::MemoryIo;
-use crate::unified::mvcc_backend::UnifiedMvccBackend;
 use crate::unified::types::*;
 use crate::unified::UnifiedStore;
 
@@ -62,7 +60,7 @@ fn restore_from_ir_record_rebuilds_mvcc() {
     );
 
     // Set a last_read_ts via commit_get on version at ts=5
-    MvccBackend::commit_get(&mut source_store, "x".to_string(), test_ts(5), test_ts(20)).unwrap();
+    source_store.commit_get("x".to_string(), test_ts(5), test_ts(20)).unwrap();
 
     // Verify source state — values
     assert_get_at(&source_store, "x", test_ts(5), Some("v1"), test_ts(5));
@@ -70,7 +68,7 @@ fn restore_from_ir_record_rebuilds_mvcc() {
     assert_get_at(&source_store, "y", test_ts(10), Some("v2"), test_ts(10));
 
     // last_read_ts is set on the version at ts=5, not on the latest version (ts=10)
-    let lr = MvccBackend::get_last_read_at(&source_store, &"x".to_string(), test_ts(5)).unwrap();
+    let lr = source_store.get_last_read_at(&"x".to_string(), test_ts(5)).unwrap();
     assert_eq!(lr.map(|ts| ts.time), Some(20), "Source: last_read_ts at ts=5");
     // Latest version (ts=10) has no last_read_ts
     assert_last_read_ts(&source_store, "x", None);
@@ -146,12 +144,12 @@ fn restore_from_ir_record_rebuilds_mvcc() {
                 restored_store.register_prepare(*transaction_id, &txn, *commit_ts);
 
                 restored_store
-                    .commit_batch_for_transaction(*transaction_id, *commit_ts)
+                    .commit_prepared(*transaction_id, *commit_ts)
                     .unwrap();
 
                 // Also insert the IR entries into the overlay (for completeness)
                 // In a real restore, these would go into the IR base.
-                restored_store.inner_mut().insert_ir_entry(
+                restored_store.insert_ir_entry(
                     *op_id,
                     IrMemEntry {
                         entry_type: VlogEntryType::Commit,
@@ -182,16 +180,16 @@ fn restore_from_ir_record_rebuilds_mvcc() {
     assert_get_none(&restored_store, "z", test_ts(100));
 
     // get() returns latest version
-    let (val, ts) = MvccBackend::get(&restored_store, &"x".to_string()).unwrap();
+    let (val, ts) = restored_store.get(&"x".to_string()).unwrap();
     assert_eq!(val.as_deref(), Some("v1-updated"), "get(x): value mismatch");
     assert_eq!(ts, test_ts(10), "get(x): timestamp mismatch");
 
-    let (val, ts) = MvccBackend::get(&restored_store, &"y".to_string()).unwrap();
+    let (val, ts) = restored_store.get(&"y".to_string()).unwrap();
     assert_eq!(val.as_deref(), Some("v2"), "get(y): value mismatch");
     assert_eq!(ts, test_ts(10), "get(y): timestamp mismatch");
 
     // Key not found returns None
-    let (val, _) = MvccBackend::get(&restored_store, &"nonexistent".to_string()).unwrap();
+    let (val, _) = restored_store.get(&"nonexistent".to_string()).unwrap();
     assert!(val.is_none(), "Nonexistent key should return None");
 
     // Multi-version reads work correctly
@@ -213,7 +211,7 @@ fn restore_from_ir_record_rebuilds_mvcc() {
 
     // get_range should work for multi-version keys
     let (write_ts, next_ts) =
-        MvccBackend::get_range(&restored_store, &"x".to_string(), test_ts(5)).unwrap();
+        restored_store.get_range(&"x".to_string(), test_ts(5)).unwrap();
     assert_eq!(write_ts, test_ts(5), "get_range(x, 5): write_ts");
     assert_eq!(
         next_ts,
@@ -222,8 +220,7 @@ fn restore_from_ir_record_rebuilds_mvcc() {
     );
 
     // Scan returns all committed keys at ts=10
-    let scan_results = MvccBackend::scan(
-        &restored_store,
+    let scan_results = restored_store.scan(
         &"a".to_string(),
         &"z".to_string(),
         test_ts(10),
@@ -262,8 +259,7 @@ fn restore_from_sealed_vlog_rebuilds_mvcc() {
     // === Phase 1: Build state and seal ===
     let ir_record;
     {
-        let inner = UnifiedStore::<String, String, MemoryIo>::open(path.clone()).unwrap();
-        let mut store = UnifiedMvccBackend::<String, String, MemoryIo>::new(inner);
+        let mut store = UnifiedStore::<String, String, MemoryIo>::open(path.clone()).unwrap();
 
         prepare_and_commit(
             &mut store,
@@ -344,7 +340,7 @@ fn restore_from_sealed_vlog_rebuilds_mvcc() {
                 restored.register_prepare(*transaction_id, &txn, *commit_ts);
 
                 restored
-                    .commit_batch_for_transaction(*transaction_id, *commit_ts)
+                    .commit_prepared(*transaction_id, *commit_ts)
                     .unwrap();
             }
         }
@@ -367,8 +363,7 @@ fn restore_from_sealed_vlog_rebuilds_mvcc() {
     assert_value_location_in_memory(&restored, "c", test_ts(10), true);
 
     // Scan
-    let scan = MvccBackend::scan(
-        &restored,
+    let scan = restored.scan(
         &"a".to_string(),
         &"z".to_string(),
         test_ts(10),
@@ -386,8 +381,7 @@ fn restore_from_sealed_vlog_rebuilds_mvcc() {
     assert_eq!(scan[2].2, test_ts(10));
 
     // has_writes_in_range
-    let has = MvccBackend::has_writes_in_range(
-        &restored,
+    let has = restored.has_writes_in_range(
         &"a".to_string(),
         &"z".to_string(),
         test_ts(0),
@@ -396,8 +390,7 @@ fn restore_from_sealed_vlog_rebuilds_mvcc() {
     .unwrap();
     assert!(has, "Should have writes in (0, 20)");
 
-    let no_has = MvccBackend::has_writes_in_range(
-        &restored,
+    let no_has = restored.has_writes_in_range(
         &"a".to_string(),
         &"z".to_string(),
         test_ts(10),
@@ -421,13 +414,12 @@ fn restore_from_sealed_vlog_rebuilds_mvcc() {
 /// Extract the full IR record from a store's overlay (all entries, including
 /// tentative ones for completeness — the replay logic only processes Commits).
 fn extract_ir_record(
-    store: &UnifiedMvccBackend<String, String, MemoryIo>,
+    store: &TestStore,
 ) -> Vec<(crate::ir::OpId, IrMemEntry<String, String>)> {
     // In a real system, this would be extract_finalized_entries() from the
     // merged record after view change. Here we extract everything from the
     // overlay for testing.
     store
-        .inner()
         .ir_overlay_entries()
         .map(|(op_id, entry)| (*op_id, entry.clone()))
         .collect()

@@ -1,5 +1,4 @@
 use super::helpers::*;
-use crate::mvcc::backend::MvccBackend;
 use crate::unified::types::*;
 
 // === Test 3: View Change (seal + merge + MVCC reads across views) ===
@@ -47,10 +46,10 @@ fn view_change_seal_merge_sync() {
     assert_store_file_size_positive(&store, "vlog_seg_0000.dat");
 
     // Verify VLog read count is still 0 (no disk reads yet)
-    assert_eq!(store.inner().vlog_read_count(), 0);
+    assert_eq!(store.vlog_read_count(), 0);
 
     // Phase 3-4: Install merged record (tentative txn_2 dropped by leader merge)
-    let merged = store.inner().extract_finalized_entries();
+    let merged = store.extract_finalized_entries();
     // extract_finalized_entries only returns finalized overlay entries,
     // but overlay was cleared at seal. So merged should be empty.
     assert!(
@@ -59,7 +58,6 @@ fn view_change_seal_merge_sync() {
     );
 
     store
-        .inner_mut()
         .install_merged_record(merged, 1)
         .unwrap();
     assert_current_view(&store, 1);
@@ -78,7 +76,7 @@ fn view_change_seal_merge_sync() {
     assert_last_read_ts(&store, "a", None);
 
     // get() returns the latest version of "a"
-    let (val, ts) = MvccBackend::get(&store, &"a".to_string()).unwrap();
+    let (val, ts) = store.get(&"a".to_string()).unwrap();
     assert_eq!(val.as_deref(), Some("v1"), "get(a): value mismatch");
     assert_eq!(ts, test_ts(5), "get(a): timestamp mismatch");
 }
@@ -113,11 +111,10 @@ fn cross_view_prepare_commit() {
     assert_store_file_size_positive(&store, "vlog_seg_0000.dat");
 
     // VLog read count should be 0 (no reads yet)
-    assert_eq!(store.inner().vlog_read_count(), 0);
+    assert_eq!(store.vlog_read_count(), 0);
 
     // View 1: Commit with CrossView PrepareRef
     let ir_base_entry = store
-        .inner()
         .lookup_ir_base_entry(test_op_id(1, 1))
         .expect("Prepare should be in IR base SST");
     assert_eq!(
@@ -145,13 +142,13 @@ fn cross_view_prepare_commit() {
     assert_value_location_in_memory(&store, "x", test_ts(5), false);
 
     // First read should have triggered exactly 1 VLog read
-    let io_after_first = store.inner().vlog_read_count();
+    let io_after_first = store.vlog_read_count();
     assert_eq!(io_after_first, 1, "Expected exactly 1 VLog read");
 
     // Second read: LRU cache hit (zero additional VLog I/O)
     assert_get_at(&store, "x", test_ts(5), Some("v1"), test_ts(5));
     assert_eq!(
-        store.inner().vlog_read_count(),
+        store.vlog_read_count(),
         io_after_first,
         "Expected LRU cache hit (no additional VLog reads)"
     );
@@ -211,7 +208,7 @@ fn multi_client_merged_record() {
     assert_get_at(&store, "b", test_ts_client(10, 2), Some("from_c2"), test_ts_client(10, 2));
 
     // Extract finalized entries and build a merged record for view 1
-    let finalized = store.inner().extract_finalized_entries();
+    let finalized = store.extract_finalized_entries();
     assert_eq!(finalized.len(), 4, "Should have 4 finalized entries (2 prepare + 2 commit)");
 
     let merged = build_merged_record(finalized, 1);
@@ -226,7 +223,7 @@ fn multi_client_merged_record() {
     assert_current_view(&store, 1);
 
     // Install merged record (simulates leader's merge)
-    store.inner_mut().install_merged_record(merged, 1).unwrap();
+    store.install_merged_record(merged, 1).unwrap();
     assert_current_view(&store, 1);
 
     // Data still readable after merge (OnDisk)
@@ -234,8 +231,7 @@ fn multi_client_merged_record() {
     assert_get_at(&store, "b", test_ts_client(10, 2), Some("from_c2"), test_ts_client(10, 2));
 
     // Scan returns both keys
-    let scan = MvccBackend::scan(
-        &store,
+    let scan = store.scan(
         &"a".to_string(),
         &"z".to_string(),
         test_ts_client(20, 1),

@@ -1,12 +1,11 @@
 use super::helpers::*;
-use crate::mvcc::backend::MvccBackend;
 
 // === Test 8: Multi-view data integrity (MVCC SST compaction precursor) ===
 //
 // SST flush from UnifiedMemtable is not yet implemented (seal path has a TODO).
 // This test exercises the multi-view OnDisk resolution path that SST compaction
 // would eventually replace: commit data across several sealed views, then verify
-// all values are still readable through the MvccBackend.
+// all values are still readable through inherent methods.
 
 #[test]
 fn multi_view_data_integrity() {
@@ -72,7 +71,7 @@ fn multi_view_data_integrity() {
     assert_current_view(&store, 3);
 
     // All sealed segments should exist (64-byte threshold is tiny)
-    let seg_count = store.inner().sealed_vlog_segments().len();
+    let seg_count = store.sealed_vlog_segments().len();
     assert!(
         seg_count >= 1,
         "Expected at least 1 sealed segment, got {seg_count}"
@@ -104,7 +103,7 @@ fn multi_view_data_integrity() {
     assert_last_read_ts(&store, "c", None);
 
     // get() returns latest version of "a" (v1-updated at ts=2)
-    let (val, ts) = MvccBackend::get(&store, &"a".to_string()).unwrap();
+    let (val, ts) = store.get(&"a".to_string()).unwrap();
     assert_eq!(
         val.as_deref(),
         Some("v1-updated"),
@@ -114,7 +113,7 @@ fn multi_view_data_integrity() {
 
     // Scan returns all 3 unique keys at ts=3
     let results =
-        MvccBackend::scan(&store, &"a".to_string(), &"z".to_string(), test_ts(3)).unwrap();
+        store.scan(&"a".to_string(), &"z".to_string(), test_ts(3)).unwrap();
     assert_eq!(results.len(), 3, "scan should return 3 entries at ts=3");
     // Verify each result's key, value, AND timestamp
     assert_eq!(results[0].0, "a");

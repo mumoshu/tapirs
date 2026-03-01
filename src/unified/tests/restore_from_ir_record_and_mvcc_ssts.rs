@@ -1,9 +1,7 @@
 use std::collections::BTreeMap;
 
-use crate::mvcc::backend::MvccBackend;
 use crate::mvcc::disk::memory_io::MemoryIo;
 use crate::tapir::Timestamp;
-use crate::unified::mvcc_backend::UnifiedMvccBackend;
 use crate::unified::types::*;
 use crate::unified::UnifiedStore;
 
@@ -35,9 +33,8 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
 
     // === Phase 1: Build state across multiple views ===
     {
-        let inner =
+        let mut store =
             UnifiedStore::<String, String, MemoryIo>::open_with_options(path.clone(), 64).unwrap();
-        let mut store = UnifiedMvccBackend::<String, String, MemoryIo>::new(inner);
 
         // Fresh store: only active VLog segment
         assert_store_file_names(&store, &["vlog_seg_0000.dat"]);
@@ -83,7 +80,6 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
         // This captures all MVCC memtable entries (which are now OnDisk).
         // In a real system, this would be the persisted SST file content.
         mvcc_sst_snapshot = store
-            .inner()
             .unified_memtable()
             .iter()
             .map(|(ck, entry)| (ck.key.clone(), ck.timestamp.0, entry.clone()))
@@ -105,7 +101,6 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
 
         // === Take "IR record" for unsealed view ===
         unsealedview_ir = store
-            .inner()
             .ir_overlay_entries()
             .map(|(op, e)| (*op, e.clone()))
             .collect();
@@ -123,15 +118,13 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
     // We use the same path so the VLog files are available (MemoryIo persists).
     // In a real backup scenario, you'd copy the VLog files to the restore target.
 
-    let inner =
+    let mut restored =
         UnifiedStore::<String, String, MemoryIo>::open_with_options(path, 64).unwrap();
-    let mut restored = UnifiedMvccBackend::<String, String, MemoryIo>::new(inner);
 
     // Step 1: Load MVCC SST entries into the unified_memtable
     // These entries have OnDisk(ptr) ValueLocations pointing to the sealed VLog.
     for (key, ts, entry) in &mvcc_sst_snapshot {
         restored
-            .inner_mut()
             .unified_memtable_mut()
             .insert(key.clone(), *ts, entry.clone());
     }
@@ -179,7 +172,7 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
                 restored.register_prepare(*transaction_id, &txn, *commit_ts);
 
                 restored
-                    .commit_batch_for_transaction(*transaction_id, *commit_ts)
+                    .commit_prepared(*transaction_id, *commit_ts)
                     .unwrap();
             }
         }
@@ -209,17 +202,17 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
     assert_get_at(&restored, "a", test_ts(15), Some("val_a"), test_ts(5));
 
     // get() returns latest version
-    let (val, ts) = MvccBackend::get(&restored, &"a".to_string()).unwrap();
+    let (val, ts) = restored.get(&"a".to_string()).unwrap();
     assert_eq!(val.as_deref(), Some("val_a_v2"), "get(a): latest value");
     assert_eq!(ts, test_ts(20), "get(a): latest timestamp");
 
-    let (val, ts) = MvccBackend::get(&restored, &"d".to_string()).unwrap();
+    let (val, ts) = restored.get(&"d".to_string()).unwrap();
     assert_eq!(val.as_deref(), Some("val_d"), "get(d): value");
     assert_eq!(ts, test_ts(20), "get(d): timestamp");
 
     // get_range for multi-version key
     let (write_ts, next_ts) =
-        MvccBackend::get_range(&restored, &"a".to_string(), test_ts(5)).unwrap();
+        restored.get_range(&"a".to_string(), test_ts(5)).unwrap();
     assert_eq!(write_ts, test_ts(5), "get_range(a, 5): write_ts");
     assert_eq!(
         next_ts,
@@ -228,8 +221,7 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
     );
 
     // Scan at ts=20 returns all 4 unique keys
-    let scan = MvccBackend::scan(
-        &restored,
+    let scan = restored.scan(
         &"a".to_string(),
         &"z".to_string(),
         test_ts(20),
@@ -250,8 +242,7 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
     assert_eq!(scan[3].2, test_ts(20));
 
     // Scan at ts=10 returns only sealed-view keys (before view 1 data)
-    let scan_early = MvccBackend::scan(
-        &restored,
+    let scan_early = restored.scan(
         &"a".to_string(),
         &"z".to_string(),
         test_ts(10),
@@ -268,8 +259,7 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
     assert_eq!(scan_early[2].0, "c");
 
     // has_writes_in_range
-    let has = MvccBackend::has_writes_in_range(
-        &restored,
+    let has = restored.has_writes_in_range(
         &"a".to_string(),
         &"z".to_string(),
         test_ts(10),
@@ -278,8 +268,7 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
     .unwrap();
     assert!(has, "Should have writes in (10, 30) from view 1");
 
-    let no_has = MvccBackend::has_writes_in_range(
-        &restored,
+    let no_has = restored.has_writes_in_range(
         &"b".to_string(),
         &"b".to_string(),
         test_ts(5),

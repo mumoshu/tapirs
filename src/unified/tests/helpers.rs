@@ -1,9 +1,7 @@
 use crate::ir::OpId;
-use crate::mvcc::backend::MvccBackend;
 use crate::mvcc::disk::memory_io::MemoryIo;
 use crate::occ::{ScanEntry, SharedTransaction, Transaction, TransactionId};
 use crate::tapir::{ShardNumber, Sharded, Timestamp};
-use crate::unified::mvcc_backend::UnifiedMvccBackend;
 use crate::unified::types::*;
 use crate::unified::UnifiedStore;
 use crate::IrClientId;
@@ -11,22 +9,18 @@ use std::sync::Arc;
 
 // === Type Aliases ===
 
-pub type TestStore = UnifiedMvccBackend<String, String, MemoryIo>;
-pub type TestUnifiedStore = UnifiedStore<String, String, MemoryIo>;
+pub type TestStore = UnifiedStore<String, String, MemoryIo>;
 
 // === Factory Helpers ===
 
-/// Create a fresh UnifiedMvccBackend at view 0 with MemoryIo.
+/// Create a fresh UnifiedStore at view 0 with MemoryIo.
 pub fn new_test_store() -> TestStore {
-    let store = TestUnifiedStore::open(MemoryIo::temp_path()).unwrap();
-    TestStore::new(store)
+    TestStore::open(MemoryIo::temp_path()).unwrap()
 }
 
 /// Create a fresh store with custom minimum VLog segment size.
 pub fn new_test_store_with_min_vlog_size(size: u64) -> TestStore {
-    let store =
-        TestUnifiedStore::open_with_options(MemoryIo::temp_path(), size).unwrap();
-    TestStore::new(store)
+    TestStore::open_with_options(MemoryIo::temp_path(), size).unwrap()
 }
 
 /// Create a Timestamp from a time value (client_id=1 by default).
@@ -142,8 +136,8 @@ pub fn prepare_txn(
     finalized: bool,
 ) {
     // Insert CO::Prepare IrMemEntry into the IR overlay
-    let current_view = store.inner().current_view();
-    store.inner_mut().insert_ir_entry(
+    let current_view = store.current_view();
+    store.insert_ir_entry(
         op_id,
         IrMemEntry {
             entry_type: VlogEntryType::Prepare,
@@ -182,8 +176,8 @@ pub fn commit_txn(
     prepare_ref: PrepareRef,
 ) {
     // Insert IO::Commit IrMemEntry into the IR overlay
-    let current_view = store.inner().current_view();
-    store.inner_mut().insert_ir_entry(
+    let current_view = store.current_view();
+    store.insert_ir_entry(
         op_id,
         IrMemEntry {
             entry_type: VlogEntryType::Commit,
@@ -196,9 +190,9 @@ pub fn commit_txn(
         },
     );
 
-    // Commit via inherent method (mirrors OccStore::commit → commit_batch_for_transaction)
+    // Commit via inherent method (mirrors OccStore::commit → commit_prepared)
     store
-        .commit_batch_for_transaction(txn_id, commit_ts)
+        .commit_prepared(txn_id, commit_ts)
         .unwrap();
 }
 
@@ -233,7 +227,7 @@ pub fn prepare_and_commit(
 
 /// Seal the current view.
 pub fn seal_view(store: &mut TestStore) {
-    store.inner_mut().seal_current_view().unwrap();
+    store.seal_current_view().unwrap();
 }
 
 /// Build a minimal merged record containing given finalized entries.
@@ -261,7 +255,7 @@ pub fn assert_get_at(
     expected_ts: Timestamp,
 ) {
     let (actual_value, actual_ts) =
-        MvccBackend::get_at(store, &key.to_string(), ts).unwrap();
+        store.get_at(&key.to_string(), ts).unwrap();
     assert_eq!(
         actual_value.as_deref(),
         expected_value,
@@ -276,7 +270,7 @@ pub fn assert_get_at(
 /// Assert that get_at(key, ts) returns None (key doesn't exist at this ts).
 pub fn assert_get_none(store: &TestStore, key: &str, ts: Timestamp) {
     let (actual_value, _) =
-        MvccBackend::get_at(store, &key.to_string(), ts).unwrap();
+        store.get_at(&key.to_string(), ts).unwrap();
     assert!(
         actual_value.is_none(),
         "get_at({key:?}, {ts:?}): expected None, got {actual_value:?}"
@@ -293,7 +287,6 @@ pub fn assert_value_location_in_memory(
     expect_in_memory: bool,
 ) {
     let (_, entry) = store
-        .inner()
         .unified_memtable()
         .get_at(&key.to_string(), ts)
         .expect("MVCC entry not found");
@@ -310,7 +303,7 @@ pub fn assert_value_location_in_memory(
 
 /// Assert that the last_read_ts for a key matches the expected value.
 pub fn assert_last_read_ts(store: &TestStore, key: &str, expected: Option<u64>) {
-    let actual = MvccBackend::get_last_read(store, &key.to_string()).unwrap();
+    let actual = store.get_last_read(&key.to_string()).unwrap();
     let actual_time = actual.map(|ts| ts.time);
     assert_eq!(
         actual_time, expected,
@@ -320,7 +313,7 @@ pub fn assert_last_read_ts(store: &TestStore, key: &str, expected: Option<u64>) 
 
 /// Assert the number of sealed VLog segments in the store.
 pub fn assert_sealed_segment_count(store: &TestStore, expected: usize) {
-    let actual = store.inner().sealed_vlog_segments().len();
+    let actual = store.sealed_vlog_segments().len();
     assert_eq!(
         actual, expected,
         "Expected {expected} sealed segments, got {actual}"
@@ -330,7 +323,7 @@ pub fn assert_sealed_segment_count(store: &TestStore, expected: usize) {
 /// Assert the current view number.
 pub fn assert_current_view(store: &TestStore, expected: u64) {
     assert_eq!(
-        store.inner().current_view(),
+        store.current_view(),
         expected,
         "Unexpected current view"
     );
@@ -339,7 +332,7 @@ pub fn assert_current_view(store: &TestStore, expected: u64) {
 /// List all files under the store's base directory in MemoryIo.
 /// Returns (relative_name, size) pairs sorted by name.
 pub fn list_store_files(store: &TestStore) -> Vec<(String, usize)> {
-    let base_dir = store.inner().base_dir();
+    let base_dir = store.base_dir();
     let files = MemoryIo::list_files(base_dir);
     let prefix = format!("{}/", base_dir.display());
     files
