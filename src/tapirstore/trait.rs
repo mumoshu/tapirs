@@ -38,7 +38,7 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
 
     // === OCC Prepare/Commit/Abort ===
 
-    fn prepare(
+    fn try_prepare_txn(
         &mut self,
         id: TransactionId,
         txn: SharedTransaction<K, V, Timestamp>,

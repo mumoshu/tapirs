@@ -61,7 +61,7 @@ fn quorum_read_conflicts_with_prepared_write() {
     store.put("x".into(), Some("v1".into()), ts(1, 1));
     let txn = make_txn(vec![], vec![("x", Some("v2"))], vec![]);
     assert_eq!(
-        store.prepare(txn_id(1, 1), txn, ts(5, 1), false),
+        store.try_prepare_txn(txn_id(1, 1), txn, ts(5, 1), false),
         PrepareResult::Ok
     );
     assert!(store.quorum_read("x".into(), ts(10, 1)).is_err());
@@ -75,7 +75,7 @@ fn quorum_read_no_conflict_when_prepared_write_is_future() {
     store.put("x".into(), Some("v1".into()), ts(1, 1));
     let txn = make_txn(vec![], vec![("x", Some("v2"))], vec![]);
     assert_eq!(
-        store.prepare(txn_id(1, 1), txn, ts(15, 1), false),
+        store.try_prepare_txn(txn_id(1, 1), txn, ts(15, 1), false),
         PrepareResult::Ok
     );
     let result = store.quorum_read("x".into(), ts(10, 1));
@@ -91,7 +91,7 @@ fn quorum_read_no_conflict_after_commit() {
     store.put("x".into(), Some("v1".into()), ts(1, 1));
     let txn = make_txn(vec![], vec![("x", Some("v2"))], vec![]);
     assert_eq!(
-        store.prepare(txn_id(1, 1), txn.clone(), ts(5, 1), false),
+        store.try_prepare_txn(txn_id(1, 1), txn.clone(), ts(5, 1), false),
         PrepareResult::Ok
     );
     store.commit(txn_id(1, 1), &txn, ts(5, 1));
@@ -108,7 +108,7 @@ fn quorum_read_no_conflict_after_abort() {
     store.put("x".into(), Some("v1".into()), ts(1, 1));
     let txn = make_txn(vec![], vec![("x", Some("v2"))], vec![]);
     assert_eq!(
-        store.prepare(txn_id(1, 1), txn, ts(5, 1), false),
+        store.try_prepare_txn(txn_id(1, 1), txn, ts(5, 1), false),
         PrepareResult::Ok
     );
     store.remove_prepared(txn_id(1, 1));
@@ -124,7 +124,7 @@ fn quorum_scan_conflicts_with_prepared_write_in_range() {
     let (_dir, mut store) = new_store(true);
     let txn = make_txn(vec![], vec![("m", Some("v1"))], vec![]);
     assert_eq!(
-        store.prepare(txn_id(1, 1), txn, ts(5, 1), false),
+        store.try_prepare_txn(txn_id(1, 1), txn, ts(5, 1), false),
         PrepareResult::Ok
     );
     assert!(store
@@ -138,7 +138,7 @@ fn quorum_scan_no_conflict_when_prepared_write_outside_range() {
     let (_dir, mut store) = new_store(true);
     let txn = make_txn(vec![], vec![("z", Some("v1"))], vec![]);
     assert_eq!(
-        store.prepare(txn_id(1, 1), txn, ts(5, 1), false),
+        store.try_prepare_txn(txn_id(1, 1), txn, ts(5, 1), false),
         PrepareResult::Ok
     );
     assert!(store
@@ -154,7 +154,7 @@ fn quorum_read_conflicts_at_exact_timestamp() {
     store.put("x".into(), Some("v1".into()), ts(1, 1));
     let txn = make_txn(vec![], vec![("x", Some("v2"))], vec![]);
     assert_eq!(
-        store.prepare(txn_id(1, 1), txn, ts(5, 1), false),
+        store.try_prepare_txn(txn_id(1, 1), txn, ts(5, 1), false),
         PrepareResult::Ok
     );
     assert!(store.quorum_read("x".into(), ts(5, 1)).is_err());

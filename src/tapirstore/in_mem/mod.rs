@@ -149,14 +149,14 @@ where
 
     // === OCC Prepare/Commit/Abort ===
 
-    fn prepare(
+    fn try_prepare_txn(
         &mut self,
         id: TransactionId,
         txn: SharedTransaction<K, V, Timestamp>,
         commit: Timestamp,
         dry_run: bool,
     ) -> PrepareResult<Timestamp> {
-        self.occ.prepare(id, txn, commit, dry_run)
+        self.occ.try_prepare_txn(id, txn, commit, dry_run)
     }
 
     fn commit_and_log(
