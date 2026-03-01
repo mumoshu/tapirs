@@ -136,8 +136,6 @@ fn execute_command<W: Write>(
     match parts[0] {
         "open" => cmd_open(ctx, parts),
         "open-with" => cmd_open_with(ctx, parts),
-        "put" => cmd_put(ctx, parts),
-        "delete" => cmd_delete(ctx, parts),
         "prepare" => cmd_prepare(ctx, parts),
         "commit" => cmd_commit(ctx, parts),
         "get" => cmd_get(ctx, parts, stdout),
@@ -176,29 +174,6 @@ fn cmd_open_with(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
         .map_err(|e| format!("open-with failed: {e}"))?;
     ctx.store = Some(store);
     Ok(())
-}
-
-fn cmd_put(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
-    if parts.len() != 4 {
-        return Err("usage: put <key> <value> <ts>".to_string());
-    }
-    let key = parts[1].to_string();
-    let value = parts[2].to_string();
-    let ts = parse_ts(parts[3])?;
-    let store = ctx.store_mut()?;
-    store.put(key, Some(value), ts)
-        .map_err(|e| format!("put failed: {e}"))
-}
-
-fn cmd_delete(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
-    if parts.len() != 3 {
-        return Err("usage: delete <key> <ts>".to_string());
-    }
-    let key = parts[1].to_string();
-    let ts = parse_ts(parts[2])?;
-    let store = ctx.store_mut()?;
-    store.put(key, None, ts)
-        .map_err(|e| format!("delete failed: {e}"))
 }
 
 fn cmd_prepare(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {

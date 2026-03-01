@@ -1,13 +1,10 @@
 use crate::mvcc::disk::disk_io::DiskIo;
 use crate::mvcc::disk::error::StorageError;
-use crate::occ::TransactionId as OccTransactionId;
 use crate::tapir::Timestamp;
-use super::types::{UnifiedLsmEntry, ValueLocation};
 use super::UnifiedStore;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::sync::Arc;
 
 // Bring OccTimestamp trait into scope for Timestamp::from_time().
 #[cfg(test)]
@@ -52,49 +49,6 @@ where
             return Ok((write_ts, next));
         }
         Ok((Timestamp::default(), None))
-    }
-
-    pub(crate) fn put(
-        &mut self,
-        key: K,
-        value: Option<V>,
-        timestamp: Timestamp,
-    ) -> Result<(), StorageError> {
-        // For direct puts (not through commit_batch_for_transaction),
-        // create a synthetic prepare entry for this single write.
-        let txn_id = OccTransactionId {
-            client_id: crate::IrClientId(u64::MAX),
-            number: timestamp.time,
-        };
-
-        let value_ref = if value.is_some() {
-            let mut txn = crate::occ::Transaction::default();
-            txn.add_write(crate::tapir::Sharded::from(key.clone()), value);
-            let txn = Arc::new(txn);
-            self.register_prepare(txn_id, &txn, timestamp);
-
-            if self.resolve_in_memory(&txn_id, 0).is_some() {
-                Some(ValueLocation::InMemory {
-                    txn_id,
-                    write_index: 0,
-                })
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        self.unified_memtable_mut().insert(
-            key,
-            timestamp,
-            UnifiedLsmEntry {
-                value_ref,
-                last_read_ts: None,
-            },
-        );
-
-        Ok(())
     }
 
     #[cfg(test)]
