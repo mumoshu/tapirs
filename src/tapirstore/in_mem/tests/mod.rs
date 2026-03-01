@@ -1,13 +1,3 @@
-mod cdc_deltas;
-mod fast_path;
-mod min_prepare_time;
-mod prepare_abort;
-mod prepare_commit;
-mod prepared_queries;
-mod quorum_read_scan;
-mod resharding;
-mod transaction_log;
-
 use crate::mvcc::disk::{DiskStore, disk_io::BufferedIo};
 use crate::occ::{ScanEntry, SharedTransaction, Transaction, TransactionId};
 use crate::tapir::{ShardNumber, Sharded, Timestamp};
@@ -61,4 +51,59 @@ fn make_txn(
     }
     txn.scan_set = scans;
     Arc::new(txn)
+}
+
+// ---------------------------------------------------------------------------
+// Conformance tests (generated via macro — trait-only, reusable)
+// ---------------------------------------------------------------------------
+
+crate::tapir_store_conformance_tests!(new_store());
+
+// ---------------------------------------------------------------------------
+// Impl-specific tests (use InMemTapirStore-only methods)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn min_prepare_time_round_trip() {
+    let (_dir, mut store) = new_store();
+
+    assert_eq!(store.min_prepare_time(), 0);
+    store.set_min_prepare_time(100);
+    assert_eq!(store.min_prepare_time(), 100);
+}
+
+#[test]
+fn finalized_min_prepare_time_round_trip() {
+    let (_dir, mut store) = new_store();
+
+    assert_eq!(store.finalized_min_prepare_time(), 0);
+    store.set_finalized_min_prepare_time(200);
+    assert_eq!(store.finalized_min_prepare_time(), 200);
+}
+
+#[test]
+fn commit_records_in_txn_log() {
+    use crate::tapirstore::TapirStore;
+
+    let (_dir, mut store) = new_store();
+
+    store.occ_mut().put("x".into(), Some("v1".into()), ts(1, 1));
+
+    let txn = make_txn(
+        vec![("x", ts(1, 1))],
+        vec![("x", Some("v2"))],
+        vec![],
+    );
+    store.prepare(txn_id(1, 1), txn.clone(), ts(5, 1), false);
+
+    // Before commit, txn_log should be empty.
+    assert!(store.txn_log_get(&txn_id(1, 1)).is_none());
+
+    // Record outcome in txn_log (as TapirReplica does in exec_inconsistent).
+    store.txn_log_insert(txn_id(1, 1), ts(5, 1), true);
+    store.commit(txn_id(1, 1), &txn, ts(5, 1));
+
+    let (log_ts, committed) = store.txn_log_get(&txn_id(1, 1)).unwrap();
+    assert_eq!(log_ts, ts(5, 1));
+    assert!(committed);
 }

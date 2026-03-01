@@ -1,3 +1,5 @@
+#[cfg(test)]
+pub(crate) mod conformance;
 mod r#trait;
 pub mod in_mem;
 
