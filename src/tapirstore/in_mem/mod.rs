@@ -159,7 +159,7 @@ where
         self.occ.try_prepare_txn(id, txn, commit, dry_run)
     }
 
-    fn commit_and_log(
+    fn commit_prepared_txn(
         &mut self,
         id: TransactionId,
         txn: &Transaction<K, V, Timestamp>,

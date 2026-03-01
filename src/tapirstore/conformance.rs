@@ -72,7 +72,7 @@ pub(crate) fn seed_value(
         PrepareResult::Ok,
         "seed_value prepare failed for {key}"
     );
-    store.commit_and_log(id, &txn, at);
+    store.commit_prepared_txn(id, &txn, at);
 }
 
 // ---------------------------------------------------------------------------
@@ -222,7 +222,7 @@ pub(crate) fn test_prepare_commit_read(
     assert_eq!(result, PrepareResult::Ok);
 
     // Commit via trait method.
-    store.commit_and_log(txn_id(1, 1), &txn, ts(5, 1));
+    store.commit_prepared_txn(txn_id(1, 1), &txn, ts(5, 1));
 
     // MVCC read should return committed value.
     let (val, write_ts) = store.do_uncommitted_get_at(&"x".to_string(), ts(10, 1));
@@ -230,7 +230,7 @@ pub(crate) fn test_prepare_commit_read(
     assert_eq!(write_ts, ts(5, 1));
 }
 
-pub(crate) fn test_commit_and_log_writes_both(
+pub(crate) fn test_commit_prepared_txn_writes_both(
     store: &mut impl TapirStore<String, String>,
 ) {
     seed_value(store, "x", "v1", ts(1, 1));
@@ -238,8 +238,8 @@ pub(crate) fn test_commit_and_log_writes_both(
     let txn = make_txn(vec![("x", ts(1, 1))], vec![("x", Some("v2"))], vec![]);
     store.try_prepare_txn(txn_id(1, 1), txn.clone(), ts(5, 1), false);
 
-    // commit_and_log should record in txn_log and apply writes.
-    store.commit_and_log(txn_id(1, 1), &txn, ts(5, 1));
+    // commit_prepared_txn should record in txn_log and apply writes.
+    store.commit_prepared_txn(txn_id(1, 1), &txn, ts(5, 1));
 
     // txn_log should have the entry.
     let (log_ts, committed) = store.txn_log_get(&txn_id(1, 1)).unwrap();
@@ -252,7 +252,7 @@ pub(crate) fn test_commit_and_log_writes_both(
     assert_eq!(write_ts, ts(5, 1));
 
     // Idempotent: calling again should not panic.
-    store.commit_and_log(txn_id(1, 1), &txn, ts(5, 1));
+    store.commit_prepared_txn(txn_id(1, 1), &txn, ts(5, 1));
 }
 
 // ---------------------------------------------------------------------------
@@ -367,7 +367,7 @@ pub(crate) fn test_check_prepare_status_committed(
     let commit = ts(5, 1);
     let txn = make_txn(vec![], vec![("a", Some("v1"))], vec![]);
     store.try_prepare_txn(txn_id(1, 1), txn.clone(), commit, false);
-    store.commit_and_log(txn_id(1, 1), &txn, commit);
+    store.commit_prepared_txn(txn_id(1, 1), &txn, commit);
 
     // Same timestamp → CommittedAtTimestamp.
     assert_eq!(
@@ -444,7 +444,7 @@ pub(crate) fn test_quorum_read_returns_committed_value(
     // Prepare + commit a write via trait method.
     let txn = make_txn(vec![("x", ts(1, 1))], vec![("x", Some("v2"))], vec![]);
     store.try_prepare_txn(txn_id(1, 1), txn.clone(), ts(5, 1), false);
-    store.commit_and_log(txn_id(1, 1), &txn, ts(5, 1));
+    store.commit_prepared_txn(txn_id(1, 1), &txn, ts(5, 1));
 
     // Quorum read should return v2 at snapshot_ts >= 5.
     let (val, write_ts) = store.do_committed_get("x".into(), ts(10, 1)).unwrap();
@@ -750,9 +750,9 @@ macro_rules! tapir_store_conformance_tests {
             $crate::tapirstore::conformance::test_prepare_commit_read(&mut s);
         }
         #[test]
-        fn commit_and_log_writes_both() {
+        fn commit_prepared_txn_writes_both() {
             let (_g, mut s) = $new_store;
-            $crate::tapirstore::conformance::test_commit_and_log_writes_both(&mut s);
+            $crate::tapirstore::conformance::test_commit_prepared_txn_writes_both(&mut s);
         }
 
         // Prepared queries

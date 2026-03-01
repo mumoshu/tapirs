@@ -432,7 +432,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                 transaction,
                 commit,
             } => {
-                self.store.commit_and_log(*transaction_id, transaction, *commit);
+                self.store.commit_prepared_txn(*transaction_id, transaction, *commit);
                 self.counters.commit_count.fetch_add(1, Ordering::Relaxed);
                 None
             }
