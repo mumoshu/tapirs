@@ -274,21 +274,21 @@ pub(crate) fn test_prepared_get(store: &mut impl TapirStore<String, String>) {
     assert!(store.prepared_get(&txn_id(99, 99)).is_none());
 }
 
-pub(crate) fn test_set_prepared_finalized(
+pub(crate) fn test_finalize_prepared_txn(
     store: &mut impl TapirStore<String, String>,
 ) {
     let txn = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
     store.try_prepare_txn(txn_id(1, 1), txn, ts(5, 1), false);
 
     // Mark as finalized.
-    assert!(store.set_prepared_finalized(&txn_id(1, 1), &ts(5, 1)));
+    assert!(store.finalize_prepared_txn(&txn_id(1, 1), &ts(5, 1)));
 
     // Verify it's finalized.
     let entry = store.prepared_get(&txn_id(1, 1)).unwrap();
     assert!(entry.2); // finalized flag
 
     // Wrong timestamp returns false.
-    assert!(!store.set_prepared_finalized(&txn_id(1, 1), &ts(99, 1)));
+    assert!(!store.finalize_prepared_txn(&txn_id(1, 1), &ts(99, 1)));
 }
 
 pub(crate) fn test_oldest_prepared_returns_min_timestamp(
@@ -315,7 +315,7 @@ pub(crate) fn test_remove_unfinalized_prepared(
     store.try_prepare_txn(txn_id(2, 1), txn2, ts(10, 1), false);
 
     // Finalize only txn 1.
-    store.set_prepared_finalized(&txn_id(1, 1), &ts(5, 1));
+    store.finalize_prepared_txn(&txn_id(1, 1), &ts(5, 1));
 
     assert_eq!(store.prepared_count(), 2);
 
@@ -354,7 +354,7 @@ pub(crate) fn test_check_prepare_status_prepared(
     );
 
     // Mark as finalized.
-    store.set_prepared_finalized(&txn_id(1, 1), &commit);
+    store.finalize_prepared_txn(&txn_id(1, 1), &commit);
     assert_eq!(
         store.check_prepare_status(&txn_id(1, 1), &commit),
         CheckPrepareStatus::PreparedAtTimestamp { finalized: true },
@@ -762,9 +762,9 @@ macro_rules! tapir_store_conformance_tests {
             $crate::tapirstore::conformance::test_prepared_get(&mut s);
         }
         #[test]
-        fn set_prepared_finalized() {
+        fn finalize_prepared_txn() {
             let (_g, mut s) = $new_store;
-            $crate::tapirstore::conformance::test_set_prepared_finalized(&mut s);
+            $crate::tapirstore::conformance::test_finalize_prepared_txn(&mut s);
         }
         #[test]
         fn oldest_prepared_returns_min_timestamp() {

@@ -600,7 +600,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                 ..
             } => {
                 if matches!(res, CR::Prepare(OccPrepareResult::Ok))
-                    && self.store.set_prepared_finalized(transaction_id, commit)
+                    && self.store.finalize_prepared_txn(transaction_id, commit)
                 {
                     trace!("confirming prepare {transaction_id:?} at {commit:?}");
                 }

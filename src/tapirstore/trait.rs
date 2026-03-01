@@ -80,9 +80,16 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
     /// returning a typed status that callers map to their own result type.
     fn check_prepare_status(&self, id: &TransactionId, commit: &Timestamp) -> CheckPrepareStatus;
 
-    /// Mark a prepared transaction as finalized (IR quorum confirmed).
+    /// Finalize a tentatively prepared transaction after IR quorum confirmation.
+    ///
+    /// The normal commit path (exec_inconsistent → commit_prepared_txn) never
+    /// checks the finalized flag. This method is used in TAPIR merge (view
+    /// change), where it finalizes tentative prepared transactions that the
+    /// quorum agreed on. Unfinalized entries are discarded by
+    /// remove_unfinalized_prepared().
+    ///
     /// Returns true if the entry existed at the given commit timestamp.
-    fn set_prepared_finalized(&mut self, id: &TransactionId, commit: &Timestamp) -> bool;
+    fn finalize_prepared_txn(&mut self, id: &TransactionId, commit: &Timestamp) -> bool;
 
     fn prepared_count(&self) -> usize;
 

@@ -223,7 +223,7 @@ where
         }
     }
 
-    fn set_prepared_finalized(&mut self, id: &TransactionId, commit: &Timestamp) -> bool {
+    fn finalize_prepared_txn(&mut self, id: &TransactionId, commit: &Timestamp) -> bool {
         if let Some((ts, _, finalized)) = self.occ.prepared.get_mut(id)
             && ts == commit
         {
