@@ -578,8 +578,84 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
 
     // === CDC Deltas ===
 
+    /// Record a CDC delta for a completed view change.
+    ///
+    /// Stores the delta keyed by `base_view` (the view the replica was in
+    /// before the transition). If a delta for `base_view` already exists,
+    /// it is replaced.
+    ///
+    /// Each delta captures the committed KV changes that were finalized
+    /// during the view transition from `base_view` to some `to_view`.
+    ///
+    /// # Side effects
+    ///
+    /// - `cdc_max_view()` may increase to `base_view`.
+    /// - `cdc_deltas_from(v)` for `v <= base_view` will include this delta.
+    ///
+    /// # Callers
+    ///
+    /// - View-change handler in the replica: called once per view change
+    ///   after finalizing operations, with the changes committed during
+    ///   that transition.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// Fresh store:
+    ///   cdc_max_view() → None
+    ///
+    /// After record_cdc_delta(0, delta_0):
+    ///   cdc_max_view() → Some(0)
+    ///   cdc_deltas_from(0) → [delta_0]
+    ///
+    /// After record_cdc_delta(3, delta_3):
+    ///   cdc_max_view() → Some(3)
+    ///   cdc_deltas_from(0) → [delta_0, delta_3]
+    /// ```
     fn record_cdc_delta(&mut self, base_view: u64, delta: LeaderRecordDelta<K, V>);
+
+    /// Retrieve all CDC deltas with `base_view >= from_view`.
+    ///
+    /// Returns deltas in ascending `base_view` order. The range is
+    /// inclusive on the lower bound (`from_view..`). Returns an empty
+    /// `Vec` if no deltas exist at or above `from_view`.
+    ///
+    /// # Callers
+    ///
+    /// - `exec_unlogged(ScanChanges)`: called by the resharding catch-up
+    ///   client. The caller advances its cursor as
+    ///   `next_from = cdc_max_view + 1` to get only new deltas.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// After record_cdc_delta(0, d0), (1, d1), (3, d3):
+    ///   cdc_deltas_from(0) → [d0, d1, d3]
+    ///   cdc_deltas_from(1) → [d1, d3]
+    ///   cdc_deltas_from(2) → [d3]      // no delta at 2, next is 3
+    ///   cdc_deltas_from(4) → []         // nothing at or above 4
+    /// ```
     fn cdc_deltas_from(&self, from_view: u64) -> Vec<LeaderRecordDelta<K, V>>;
+
+    /// Return the highest `base_view` among recorded CDC deltas.
+    ///
+    /// Returns `None` if no deltas have been recorded. Returns `Some(0)`
+    /// if the only delta was recorded at `base_view = 0`. This distinction
+    /// matters: `None` means "no CDC history" while `Some(0)` means
+    /// "changes from view 0 exist, scan from view 1 next".
+    ///
+    /// # Callers
+    ///
+    /// - `exec_unlogged(ScanChanges)`: returned as `effective_end_view`,
+    ///   used by the resharding client as a cursor to track consumption.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// Fresh store:                         cdc_max_view() → None
+    /// After record_cdc_delta(0, d0):       cdc_max_view() → Some(0)
+    /// After record_cdc_delta(3, d3):       cdc_max_view() → Some(3)
+    /// ```
     fn cdc_max_view(&self) -> Option<u64>;
 
     // === Resharding ===
