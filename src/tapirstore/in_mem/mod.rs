@@ -5,10 +5,8 @@ use crate::mvcc::backend::MvccBackend;
 use crate::mvcc::disk::error::StorageError;
 use crate::occ::{PrepareConflict, PrepareResult, SharedTransaction, Store as OccStore, Transaction, TransactionId};
 use crate::tapir::{Key, LeaderRecordDelta, ShardNumber, Timestamp, Value};
-use crate::tapirstore::{CheckPrepareStatus, TapirStore, TransactionLog};
-use crate::util::vectorize_btree;
+use crate::tapirstore::{CheckPrepareStatus, RecordDeltaDuringView, TapirStore, TransactionLog};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use std::collections::BTreeMap;
 use std::hash::Hash;
 
 /// In-memory TapirStore wrapping OccStore + transaction log + min-prepare-time + CDC deltas.
@@ -29,14 +27,11 @@ pub struct InMemTapirStore<K, V, M> {
     min_prepare_time: u64,
     finalized_min_prepare_time: u64,
 
-    #[serde(
-        with = "vectorize_btree",
-        bound(
-            serialize = "K: Serialize, V: Serialize",
-            deserialize = "K: Deserialize<'de>, V: Deserialize<'de>"
-        )
-    )]
-    record_delta_during_view: BTreeMap<u64, LeaderRecordDelta<K, V>>,
+    #[serde(bound(
+        serialize = "K: Serialize, V: Serialize",
+        deserialize = "K: Deserialize<'de>, V: Deserialize<'de>"
+    ))]
+    record_delta_during_view: RecordDeltaDuringView<K, V>,
 }
 
 impl<K: Key, V: Value, M> InMemTapirStore<K, V, M> {
@@ -49,7 +44,7 @@ impl<K: Key, V: Value, M> InMemTapirStore<K, V, M> {
             transaction_log: TransactionLog::new(),
             min_prepare_time: 0,
             finalized_min_prepare_time: 0,
-            record_delta_during_view: BTreeMap::new(),
+            record_delta_during_view: RecordDeltaDuringView::new(),
         }
     }
 
@@ -59,7 +54,7 @@ impl<K: Key, V: Value, M> InMemTapirStore<K, V, M> {
             transaction_log: TransactionLog::new(),
             min_prepare_time: 0,
             finalized_min_prepare_time: 0,
-            record_delta_during_view: BTreeMap::new(),
+            record_delta_during_view: RecordDeltaDuringView::new(),
         }
     }
 
@@ -339,18 +334,15 @@ where
     // === CDC Deltas ===
 
     fn record_cdc_delta(&mut self, base_view: u64, delta: LeaderRecordDelta<K, V>) {
-        self.record_delta_during_view.insert(base_view, delta);
+        self.record_delta_during_view.record_cdc_delta(base_view, delta);
     }
 
     fn cdc_deltas_from(&self, from_view: u64) -> Vec<LeaderRecordDelta<K, V>> {
-        self.record_delta_during_view
-            .range(from_view..)
-            .map(|(_, delta)| delta.clone())
-            .collect()
+        self.record_delta_during_view.cdc_deltas_from(from_view)
     }
 
     fn cdc_max_view(&self) -> Option<u64> {
-        self.record_delta_during_view.keys().next_back().copied()
+        self.record_delta_during_view.cdc_max_view()
     }
 
     // === Resharding ===
