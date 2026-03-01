@@ -16,7 +16,7 @@ pub mod tls;
 mod transport;
 pub mod unified;
 pub mod util;
-mod mvcc_deprecated;
+
 
 #[cfg(test)]
 pub mod testing;

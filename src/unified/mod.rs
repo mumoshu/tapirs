@@ -6,6 +6,8 @@ pub mod types;
 pub(crate) mod unified_memtable;
 mod vlog;
 
+mod mvcc_impl;
+
 #[cfg(test)]
 mod tests;
 
