@@ -18,21 +18,38 @@ where
 
     // === Uncommitted Reads ===
 
-    fn do_uncommitted_get(&self, _key: &K) -> (Option<V>, Timestamp) {
-        todo!()
+    fn do_uncommitted_get(&self, key: &K) -> (Option<V>, Timestamp) {
+        if let Some((ck, entry)) = self.unified_memtable().get_latest(key) {
+            let ts = ck.timestamp.0;
+            let value = self.resolve_value(entry).expect("resolve_value failed");
+            return (value, ts);
+        }
+        (None, Timestamp::default())
     }
 
-    fn do_uncommitted_get_at(&self, _key: &K, _ts: Timestamp) -> (Option<V>, Timestamp) {
-        todo!()
+    fn do_uncommitted_get_at(&self, key: &K, ts: Timestamp) -> (Option<V>, Timestamp) {
+        if let Some((ck, entry)) = self.unified_memtable().get_at(key, ts) {
+            let write_ts = ck.timestamp.0;
+            let value = self.resolve_value(entry).expect("resolve_value failed");
+            return (value, write_ts);
+        }
+        (None, Timestamp::default())
     }
 
     fn do_uncommitted_scan(
         &self,
-        _start: &K,
-        _end: &K,
-        _ts: Timestamp,
+        start: &K,
+        end: &K,
+        ts: Timestamp,
     ) -> Vec<(K, Option<V>, Timestamp)> {
-        todo!()
+        let results = self.unified_memtable().scan(start, end, ts);
+        let mut output = Vec::new();
+        for (ck, entry) in results {
+            let write_ts = ck.timestamp.0;
+            let value = self.resolve_value(entry).expect("resolve_value failed");
+            output.push((ck.key.clone(), value, write_ts));
+        }
+        output
     }
 
     // === OCC Prepare/Commit/Abort ===
