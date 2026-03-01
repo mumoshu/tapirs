@@ -225,7 +225,7 @@ pub(crate) fn test_prepare_commit_read(
     store.commit_prepared_txn(txn_id(1, 1), &txn, ts(5, 1));
 
     // MVCC read should return committed value.
-    let (val, write_ts) = store.do_uncommitted_get_at(&"x".to_string(), ts(10, 1));
+    let (val, write_ts) = store.do_uncommitted_get_at(&"x".to_string(), ts(10, 1)).unwrap();
     assert_eq!(val, Some("v2".to_string()));
     assert_eq!(write_ts, ts(5, 1));
 }
@@ -247,7 +247,7 @@ pub(crate) fn test_commit_prepared_txn_writes_both(
     assert!(committed);
 
     // MVCC read should return committed value.
-    let (val, write_ts) = store.do_uncommitted_get_at(&"x".to_string(), ts(10, 1));
+    let (val, write_ts) = store.do_uncommitted_get_at(&"x".to_string(), ts(10, 1)).unwrap();
     assert_eq!(val, Some("v2".to_string()));
     assert_eq!(write_ts, ts(5, 1));
 

@@ -2,6 +2,7 @@
 mod tests;
 
 use crate::mvcc::backend::MvccBackend;
+use crate::mvcc::disk::error::StorageError;
 use crate::occ::{PrepareConflict, PrepareResult, SharedTransaction, Store as OccStore, Transaction, TransactionId};
 use crate::tapir::{Key, LeaderRecordDelta, ShardNumber, Timestamp, Value};
 use crate::tapirstore::{CheckPrepareStatus, TapirStore};
@@ -135,16 +136,16 @@ where
 
     // === Uncommitted Reads ===
 
-    fn do_uncommitted_get(&self, key: &K) -> (Option<V>, Timestamp) {
-        self.occ.get(key)
+    fn do_uncommitted_get(&self, key: &K) -> Result<(Option<V>, Timestamp), StorageError> {
+        Ok(self.occ.get(key))
     }
 
-    fn do_uncommitted_get_at(&self, key: &K, ts: Timestamp) -> (Option<V>, Timestamp) {
-        self.occ.get_at(key, ts)
+    fn do_uncommitted_get_at(&self, key: &K, ts: Timestamp) -> Result<(Option<V>, Timestamp), StorageError> {
+        Ok(self.occ.get_at(key, ts))
     }
 
-    fn do_uncommitted_scan(&self, start: &K, end: &K, ts: Timestamp) -> Vec<(K, Option<V>, Timestamp)> {
-        self.occ.scan(start, end, ts)
+    fn do_uncommitted_scan(&self, start: &K, end: &K, ts: Timestamp) -> Result<Vec<(K, Option<V>, Timestamp)>, StorageError> {
+        Ok(self.occ.scan(start, end, ts))
     }
 
     // === OCC Prepare/Commit/Abort ===

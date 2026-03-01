@@ -1,3 +1,4 @@
+use crate::mvcc::disk::error::StorageError;
 use crate::occ::{PrepareConflict, PrepareResult, SharedTransaction, Transaction, TransactionId};
 use crate::tapir::{Key, LeaderRecordDelta, ShardNumber, Timestamp, Value};
 use serde::{de::DeserializeOwned, Serialize};
@@ -68,7 +69,7 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
     /// // Key never written:
     /// do_uncommitted_get("y") => (None, Timestamp::default())
     /// ```
-    fn do_uncommitted_get(&self, key: &K) -> (Option<V>, Timestamp);
+    fn do_uncommitted_get(&self, key: &K) -> Result<(Option<V>, Timestamp), StorageError>;
 
     /// Read the version of `key` visible at snapshot timestamp `ts`.
     ///
@@ -99,7 +100,7 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
     /// do_uncommitted_get_at("x", ts(10,1)) => (Some("v3"), ts(7,1))
     /// do_uncommitted_get_at("x", ts(3,1))  => (Some("v1"), ts(1,1))  // unchanged
     /// ```
-    fn do_uncommitted_get_at(&self, key: &K, ts: Timestamp) -> (Option<V>, Timestamp);
+    fn do_uncommitted_get_at(&self, key: &K, ts: Timestamp) -> Result<(Option<V>, Timestamp), StorageError>;
 
     /// Scan all keys in `[start, end]` (inclusive) at snapshot timestamp `ts`.
     ///
@@ -132,7 +133,7 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
     /// do_uncommitted_scan("a", "c", ts(3,1))
     ///   => [("a", Some("v1"), ts(1,1)), ("b", Some("v2"), ts(1,1))]
     /// ```
-    fn do_uncommitted_scan(&self, start: &K, end: &K, ts: Timestamp) -> Vec<(K, Option<V>, Timestamp)>;
+    fn do_uncommitted_scan(&self, start: &K, end: &K, ts: Timestamp) -> Result<Vec<(K, Option<V>, Timestamp)>, StorageError>;
 
     // === OCC Prepare/Commit/Abort ===
 

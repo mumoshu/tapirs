@@ -1,4 +1,5 @@
 use crate::mvcc::disk::disk_io::DiskIo;
+use crate::mvcc::disk::error::StorageError;
 use crate::occ::{PrepareConflict, PrepareResult, SharedTransaction, Transaction, TransactionId};
 use crate::tapir::{Key, LeaderRecordDelta, ShardNumber, Timestamp, Value};
 use crate::tapirstore::{CheckPrepareStatus, TapirStore};
@@ -18,22 +19,22 @@ where
 
     // === Uncommitted Reads ===
 
-    fn do_uncommitted_get(&self, key: &K) -> (Option<V>, Timestamp) {
+    fn do_uncommitted_get(&self, key: &K) -> Result<(Option<V>, Timestamp), StorageError> {
         if let Some((ck, entry)) = self.unified_memtable().get_latest(key) {
             let ts = ck.timestamp.0;
-            let value = self.resolve_value(entry).expect("resolve_value failed");
-            return (value, ts);
+            let value = self.resolve_value(entry)?;
+            return Ok((value, ts));
         }
-        (None, Timestamp::default())
+        Ok((None, Timestamp::default()))
     }
 
-    fn do_uncommitted_get_at(&self, key: &K, ts: Timestamp) -> (Option<V>, Timestamp) {
+    fn do_uncommitted_get_at(&self, key: &K, ts: Timestamp) -> Result<(Option<V>, Timestamp), StorageError> {
         if let Some((ck, entry)) = self.unified_memtable().get_at(key, ts) {
             let write_ts = ck.timestamp.0;
-            let value = self.resolve_value(entry).expect("resolve_value failed");
-            return (value, write_ts);
+            let value = self.resolve_value(entry)?;
+            return Ok((value, write_ts));
         }
-        (None, Timestamp::default())
+        Ok((None, Timestamp::default()))
     }
 
     fn do_uncommitted_scan(
@@ -41,15 +42,15 @@ where
         start: &K,
         end: &K,
         ts: Timestamp,
-    ) -> Vec<(K, Option<V>, Timestamp)> {
+    ) -> Result<Vec<(K, Option<V>, Timestamp)>, StorageError> {
         let results = self.unified_memtable().scan(start, end, ts);
         let mut output = Vec::new();
         for (ck, entry) in results {
             let write_ts = ck.timestamp.0;
-            let value = self.resolve_value(entry).expect("resolve_value failed");
+            let value = self.resolve_value(entry)?;
             output.push((ck.key.clone(), value, write_ts));
         }
-        output
+        Ok(output)
     }
 
     // === OCC Prepare/Commit/Abort ===
