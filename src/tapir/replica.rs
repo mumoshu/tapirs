@@ -452,7 +452,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                             "{transaction_id:?} committed at {commit:?}"
                         );
                         self.store
-                            .prepared_get(transaction_id)
+                            .get_prepared_txn(transaction_id)
                             .map(|(ts, _, _)| *ts == commit)
                             .unwrap_or(true)
                     })
@@ -633,7 +633,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                     if matches!(entry.result, CR::Prepare(OccPrepareResult::Ok)) {
                         if self
                             .store
-                            .prepared_get(transaction_id)
+                            .get_prepared_txn(transaction_id)
                             .map(|(ts, _, _)| ts == commit)
                             .unwrap_or(true)
                             && !self.store.txn_log_contains(transaction_id)
@@ -643,7 +643,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                             //
                             // Finalize it immediately since we are syncing
                             // from the leader's record.
-                            trace!("syncing successful {op_id:?} prepare for {transaction_id:?} at {commit:?} (had {:?})", self.store.prepared_get(transaction_id));
+                            trace!("syncing successful {op_id:?} prepare for {transaction_id:?} at {commit:?} (had {:?})", self.store.get_prepared_txn(transaction_id));
                             self.store.add_or_replace_or_finalize_prepared_txn(
                                 *transaction_id,
                                 transaction.clone(),
@@ -653,7 +653,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                         }
                     } else if self
                         .store
-                        .prepared_get(transaction_id)
+                        .get_prepared_txn(transaction_id)
                         .map(|(ts, _, _)| ts == commit)
                         .unwrap_or(false)
                     {
@@ -950,7 +950,7 @@ mod tests {
             matches!(result, CR::Prepare(OccPrepareResult::Ok)),
             "prepare should succeed"
         );
-        assert!(replica.store.prepared_get(&txn_id).is_some());
+        assert!(replica.store.get_prepared_txn(&txn_id).is_some());
 
         // Abort at ts2 (different timestamp) should NOT remove the prepare at ts1.
         replica.exec_inconsistent(&IO::Abort {
@@ -958,7 +958,7 @@ mod tests {
             commit: Some(ts2),
         });
         assert!(
-            replica.store.prepared_get(&txn_id).is_some(),
+            replica.store.get_prepared_txn(&txn_id).is_some(),
             "abort at different timestamp must not remove the prepared entry"
         );
     }
@@ -980,7 +980,7 @@ mod tests {
             matches!(result, CR::Prepare(OccPrepareResult::Ok)),
             "prepare should succeed"
         );
-        assert!(replica.store.prepared_get(&txn_id).is_some());
+        assert!(replica.store.get_prepared_txn(&txn_id).is_some());
 
         // Abort at ts1 (matching timestamp) should remove the prepare.
         replica.exec_inconsistent(&IO::Abort {
@@ -988,7 +988,7 @@ mod tests {
             commit: Some(ts1),
         });
         assert!(
-            replica.store.prepared_get(&txn_id).is_none(),
+            replica.store.get_prepared_txn(&txn_id).is_none(),
             "abort at matching timestamp must remove the prepared entry"
         );
     }
@@ -1010,13 +1010,13 @@ mod tests {
             matches!(result, CR::Prepare(OccPrepareResult::Ok)),
             "prepare should succeed"
         );
-        assert!(replica.store.prepared_get(&txn_id).is_some());
+        assert!(replica.store.get_prepared_txn(&txn_id).is_some());
 
         // gc_stale_state must NOT remove prepared entries — they are resolved
         // exclusively by the coordinator system (IO::Commit / IO::Abort).
         replica.gc_stale_state();
         assert!(
-            replica.store.prepared_get(&txn_id).is_some(),
+            replica.store.get_prepared_txn(&txn_id).is_some(),
             "prepared entries must not be removed by gc_stale_state"
         );
     }

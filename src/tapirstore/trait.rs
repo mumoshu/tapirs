@@ -85,7 +85,7 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
     // === Prepared Queries ===
 
     /// Look up a prepared transaction by ID.
-    fn prepared_get(
+    fn get_prepared_txn(
         &self,
         id: &TransactionId,
     ) -> Option<(&Timestamp, &SharedTransaction<K, V, Timestamp>, bool)>;

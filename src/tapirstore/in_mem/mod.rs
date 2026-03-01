@@ -190,7 +190,7 @@ where
 
     // === Prepared Queries ===
 
-    fn prepared_get(
+    fn get_prepared_txn(
         &self,
         id: &TransactionId,
     ) -> Option<(&Timestamp, &SharedTransaction<K, V, Timestamp>, bool)> {

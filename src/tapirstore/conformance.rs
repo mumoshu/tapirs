@@ -264,14 +264,14 @@ pub(crate) fn test_prepared_get(store: &mut impl TapirStore<String, String>) {
     store.try_prepare_txn(txn_id(1, 1), txn, ts(5, 1), false);
 
     // prepared_get returns the entry.
-    let entry = store.prepared_get(&txn_id(1, 1));
+    let entry = store.get_prepared_txn(&txn_id(1, 1));
     assert!(entry.is_some());
     let (commit_ts, _txn, finalized) = entry.unwrap();
     assert_eq!(*commit_ts, ts(5, 1));
     assert!(!finalized);
 
     // Non-existent txn returns None.
-    assert!(store.prepared_get(&txn_id(99, 99)).is_none());
+    assert!(store.get_prepared_txn(&txn_id(99, 99)).is_none());
 }
 
 pub(crate) fn test_finalize_prepared_txn(
@@ -284,7 +284,7 @@ pub(crate) fn test_finalize_prepared_txn(
     assert!(store.finalize_prepared_txn(&txn_id(1, 1), &ts(5, 1)));
 
     // Verify it's finalized.
-    let entry = store.prepared_get(&txn_id(1, 1)).unwrap();
+    let entry = store.get_prepared_txn(&txn_id(1, 1)).unwrap();
     assert!(entry.2); // finalized flag
 
     // Wrong timestamp returns false.
@@ -323,8 +323,8 @@ pub(crate) fn test_remove_unfinalized_prepared(
     store.remove_unfinalized_prepared();
 
     assert_eq!(store.prepared_count(), 1);
-    assert!(store.prepared_get(&txn_id(1, 1)).is_some());
-    assert!(store.prepared_get(&txn_id(2, 1)).is_none());
+    assert!(store.get_prepared_txn(&txn_id(1, 1)).is_some());
+    assert!(store.get_prepared_txn(&txn_id(2, 1)).is_none());
 }
 
 // ---------------------------------------------------------------------------
