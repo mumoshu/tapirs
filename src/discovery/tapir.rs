@@ -180,7 +180,7 @@ where
                     ro.get(key.to_string()).await
                 }
                 ReadMode::Eventual => sc
-                    .get(key.to_string(), None)
+                    .get(key.to_string())
                     .await
                     .map(|(v, _)| v),
             };

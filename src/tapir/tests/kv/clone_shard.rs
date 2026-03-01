@@ -67,20 +67,20 @@ async fn test_clone_shard_basic() {
         .unwrap();
 
     // Verify: read data from destination shard via unlogged get.
-    let (val, _ts) = dest_client.get(100, None).await.unwrap();
+    let (val, _ts) = dest_client.get(100).await.unwrap();
     assert_eq!(val, Some(1000), "key 100 should be cloned to dest");
 
-    let (val, _ts) = dest_client.get(200, None).await.unwrap();
+    let (val, _ts) = dest_client.get(200).await.unwrap();
     assert_eq!(val, Some(2000), "key 200 should be cloned to dest");
 
-    let (val, _ts) = dest_client.get(300, None).await.unwrap();
+    let (val, _ts) = dest_client.get(300).await.unwrap();
     assert_eq!(val, Some(3000), "key 300 should be cloned to dest");
 
-    let (val, _ts) = dest_client.get(400, None).await.unwrap();
+    let (val, _ts) = dest_client.get(400).await.unwrap();
     assert_eq!(val, Some(4000), "key 400 should be cloned to dest");
 
     // Verify: key that was never written should not exist on dest.
-    let (val, _ts) = dest_client.get(999, None).await.unwrap();
+    let (val, _ts) = dest_client.get(999).await.unwrap();
     assert_eq!(val, None, "key 999 should not exist on dest");
 
     drop(_replicas_0);

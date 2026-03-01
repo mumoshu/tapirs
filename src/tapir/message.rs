@@ -8,8 +8,6 @@ pub enum UO<K> {
     Get {
         /// Key to get the latest version of
         key: K,
-        /// Get a different version instead (not part of normal TAPIR).
-        timestamp: Option<Timestamp>,
     },
     /// Get a specific version at a given timestamp.
     GetAt {

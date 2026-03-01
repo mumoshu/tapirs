@@ -45,9 +45,8 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
     pub fn get(
         &self,
         key: K,
-        timestamp: Option<Timestamp>,
     ) -> impl Future<Output = Result<(Option<V>, Timestamp), TransactionError>> {
-        let future = self.inner.invoke_unlogged(UO::Get { key, timestamp });
+        let future = self.inner.invoke_unlogged(UO::Get { key });
 
         async move {
             let reply = future.await;

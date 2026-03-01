@@ -274,16 +274,12 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
 
     fn exec_unlogged(&self, op: Self::UO) -> Self::UR {
         match op {
-            UO::Get { key, timestamp } => {
+            UO::Get { key } => {
                 if let Some(range) = &self.key_range
                     && !range.contains(&key) {
                         return UR::OutOfRange;
                     }
-                let (v, ts) = if let Some(timestamp) = timestamp {
-                    self.store.get_at(&key, timestamp)
-                } else {
-                    self.store.get(&key)
-                };
+                let (v, ts) = self.store.get(&key);
                 UR::Get(v, ts)
             }
             UO::GetAt { key, timestamp } => {

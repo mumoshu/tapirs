@@ -214,7 +214,7 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Transaction<K, V, T> {
                 }
             }
 
-            let (value, timestamp) = client.get(key.key.clone(), None).await?;
+            let (value, timestamp) = client.get(key.key.clone()).await?;
 
             let mut lock = inner.lock().unwrap();
 
