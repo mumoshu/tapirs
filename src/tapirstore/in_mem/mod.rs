@@ -133,9 +133,9 @@ where
         self.occ.shard()
     }
 
-    // === MVCC Reads ===
+    // === Uncommitted Reads ===
 
-    fn get(&self, key: &K) -> (Option<V>, Timestamp) {
+    fn do_uncommitted_get(&self, key: &K) -> (Option<V>, Timestamp) {
         self.occ.get(key)
     }
 
