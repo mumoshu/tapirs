@@ -252,7 +252,7 @@ where
                     ro.scan(start, end).await
                 }
                 ReadMode::Eventual => {
-                    sc.scan(SCAN_START.to_string(), SCAN_END.to_string(), None)
+                    sc.scan(SCAN_START.to_string(), SCAN_END.to_string())
                         .await
                         .map(|(results, _ts)| {
                             results

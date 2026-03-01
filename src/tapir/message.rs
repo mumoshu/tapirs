@@ -25,7 +25,6 @@ pub enum UO<K> {
     Scan {
         start_key: K,
         end_key: K,
-        timestamp: Option<Timestamp>,
     },
     /// Range scan at a specific timestamp.
     ScanAt {

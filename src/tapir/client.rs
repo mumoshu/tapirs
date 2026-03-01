@@ -268,7 +268,7 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Transaction<K, V, T> {
         async move {
             let sc = Inner::shard_client(&client, shard).await;
 
-            let (results, ts) = sc.scan(start.key.clone(), end.key.clone(), None).await?;
+            let (results, ts) = sc.scan(start.key.clone(), end.key.clone()).await?;
 
             // Record the scan entry for phantom prevention.
             {

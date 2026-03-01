@@ -345,7 +345,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
     /// # Downtime analysis
     ///
     /// `ShardPhase::ReadOnly` is ONLY checked in `exec_consensus` for `CO::Prepare`. All
-    /// unlogged and inconsistent operations (`UO::Get`, `UO::GetAt`, `UO::Scan`,
+    /// unlogged and inconsistent operations (`UO::Get`, `UO::GetAt`, `UO::Scan`, `UO::ScanAt`,
     /// `IO::QuorumRead`, `IO::QuorumScan`, `IO::Commit`, `IO::Abort`) do NOT
     /// check `phase`.
     ///
@@ -617,7 +617,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
     /// # Downtime analysis
     ///
     /// `ShardPhase::ReadOnly` is ONLY checked in `exec_consensus` for `CO::Prepare`. All
-    /// unlogged and inconsistent operations (`UO::Get`, `UO::GetAt`, `UO::Scan`,
+    /// unlogged and inconsistent operations (`UO::Get`, `UO::GetAt`, `UO::Scan`, `UO::ScanAt`,
     /// `IO::QuorumRead`, `IO::QuorumScan`, `IO::Commit`, `IO::Abort`) do NOT
     /// check `phase`.
     ///

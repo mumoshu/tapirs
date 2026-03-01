@@ -293,7 +293,6 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
             UO::Scan {
                 start_key,
                 end_key,
-                timestamp,
             } => {
                 if let Some(range) = &self.key_range {
                     // start_key must be within [range.start, range.end).
@@ -309,14 +308,10 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                         return UR::OutOfRange;
                     }
                 }
-                // When no timestamp is specified, use latest (same semantics as Get).
-                let ts = timestamp.unwrap_or({
-                    // Use maximum possible timestamp to get latest versions.
-                    Timestamp {
-                        time: u64::MAX,
-                        client_id: IrClientId(u64::MAX),
-                    }
-                });
+                let ts = Timestamp {
+                    time: u64::MAX,
+                    client_id: IrClientId(u64::MAX),
+                };
                 let results = self.store.scan(&start_key, &end_key, ts);
                 let max_ts = results
                     .iter()
