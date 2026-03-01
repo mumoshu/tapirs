@@ -498,7 +498,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                     && !range.contains(key) {
                         return Some(IR::OutOfRange);
                     }
-                match self.store.quorum_read(key.clone(), *timestamp) {
+                match self.store.do_committed_get(key.clone(), *timestamp) {
                     Ok((value, write_ts)) => Some(IR::QuorumRead(value, write_ts)),
                     Err(_) => Some(IR::PrepareConflict),
                 }

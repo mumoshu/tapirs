@@ -94,9 +94,9 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
     /// Remove all prepared transactions that are NOT finalized.
     fn remove_unfinalized_prepared(&mut self);
 
-    // === Quorum Read/Scan ===
+    // === Committed Read/Scan ===
 
-    fn quorum_read(
+    fn do_committed_get(
         &mut self,
         key: K,
         ts: Timestamp,

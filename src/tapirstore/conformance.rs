@@ -447,7 +447,7 @@ pub(crate) fn test_quorum_read_returns_committed_value(
     store.commit_and_log(txn_id(1, 1), &txn, ts(5, 1));
 
     // Quorum read should return v2 at snapshot_ts >= 5.
-    let (val, write_ts) = store.quorum_read("x".into(), ts(10, 1)).unwrap();
+    let (val, write_ts) = store.do_committed_get("x".into(), ts(10, 1)).unwrap();
     assert_eq!(val, Some("v2".to_string()));
     assert_eq!(write_ts, ts(5, 1));
 }
@@ -478,7 +478,7 @@ pub(crate) fn test_quorum_read_conflicts_with_prepared_write(
     store.prepare(txn_id(1, 1), txn, ts(5, 1), false);
 
     // Quorum read at snapshot_ts >= 5 should conflict.
-    assert!(store.quorum_read("x".into(), ts(10, 1)).is_err());
+    assert!(store.do_committed_get("x".into(), ts(10, 1)).is_err());
 }
 
 // ---------------------------------------------------------------------------
@@ -500,7 +500,7 @@ pub(crate) fn test_get_validated_returns_some_after_quorum_read(
     seed_value(store, "x", "v1", ts(1, 1));
 
     // Quorum read at ts(5,1) sets read_ts.
-    store.quorum_read("x".into(), ts(5, 1)).unwrap();
+    store.do_committed_get("x".into(), ts(5, 1)).unwrap();
 
     // Now get_validated at same ts should return the value.
     let result = store.get_validated(&"x".to_string(), ts(5, 1));
@@ -557,7 +557,7 @@ pub(crate) fn test_min_prepare_baseline_after_quorum_read(
     seed_value(store, "x", "v1", ts(1, 1));
 
     // Quorum read updates max_read_commit_time.
-    store.quorum_read("x".into(), ts(5, 1)).unwrap();
+    store.do_committed_get("x".into(), ts(5, 1)).unwrap();
 
     let (max_rr, max_rc) = store.min_prepare_baseline();
     // No range reads yet.

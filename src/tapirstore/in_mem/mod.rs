@@ -260,9 +260,9 @@ where
         }
     }
 
-    // === Quorum Read/Scan ===
+    // === Committed Read/Scan ===
 
-    fn quorum_read(
+    fn do_committed_get(
         &mut self,
         key: K,
         ts: Timestamp,
