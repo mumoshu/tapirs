@@ -204,12 +204,109 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
 
     // === Committed Read/Scan ===
 
+    /// Read `key` at snapshot `ts` with conflict detection and read
+    /// protection.
+    ///
+    /// **Mutating** -- takes `&mut self`. Used by the replica for
+    /// `IO::QuorumRead` (read-only transaction reads that go through IR
+    /// inconsistent consensus for linearizability).
+    ///
+    /// # Side effects
+    ///
+    /// 1. **Conflict check**: If any prepared-but-uncommitted transaction
+    ///    has a write on `key` with `commit_ts <= ts`, returns
+    ///    `Err(PrepareConflict)` immediately with no state change. This
+    ///    prevents reading stale data when a concurrent RW transaction's
+    ///    finalize has not yet reached this replica.
+    ///
+    /// 2. **Read protection**: On success, records `commit_get(key, ts)`
+    ///    in the MVCC store, updating `last_read_ts` for the version at
+    ///    `ts`. Future `try_prepare_txn` calls writing to this key will
+    ///    fail OCC checks if their `commit_ts <= ts`.
+    ///
+    /// 3. **Read-commit tracking**: Updates `max_read_commit_time =
+    ///    max(prev, ts)`, observable via `min_prepare_baseline()` and
+    ///    used by resharding to carry forward read protections.
+    ///
+    /// 4. **Enables fast-path validation**: After this call,
+    ///    `do_uncommitted_get_validated(key, ts)` returns `Some` instead
+    ///    of `None` for the same key and timestamp.
+    ///
+    /// # Valid inputs
+    ///
+    /// `ts` is the client's snapshot timestamp. Any `Timestamp` is valid.
+    /// `key` is moved (not borrowed) because it is stored in the MVCC
+    /// read log.
+    ///
+    /// # Return value transitions
+    ///
+    /// ```text
+    /// // After commit_prepared_txn(_, write("x","v1"), ts(1,1)):
+    /// do_committed_get("x", ts(5,1)) => Ok((Some("v1"), ts(1,1)))
+    ///
+    /// // After try_prepare_txn(_, write("x","v2"), ts(5,1)):
+    /// do_committed_get("x", ts(10,1)) => Err(PrepareConflict)
+    ///
+    /// // After remove_prepared_txn(_):
+    /// do_committed_get("x", ts(10,1)) => Ok((Some("v1"), ts(1,1)))
+    ///
+    /// // After commit_prepared_txn(_, write("x","v2"), ts(5,1)):
+    /// do_committed_get("x", ts(10,1)) => Ok((Some("v2"), ts(5,1)))
+    /// ```
     fn do_committed_get(
         &mut self,
         key: K,
         ts: Timestamp,
     ) -> Result<(Option<V>, Timestamp), PrepareConflict>;
 
+    /// Scan `[start, end]` (inclusive) at snapshot `ts` with conflict
+    /// detection and range-level read protection.
+    ///
+    /// **Mutating** -- takes `&mut self`. Used by the replica for
+    /// `IO::QuorumScan` (read-only transaction range scans that go through
+    /// IR inconsistent consensus for linearizability).
+    ///
+    /// # Side effects
+    ///
+    /// 1. **Conflict check**: If *any* key in `[start, end]` has a
+    ///    prepared-but-uncommitted write with `commit_ts <= ts`, returns
+    ///    `Err(PrepareConflict)` immediately with no state change. This
+    ///    prevents phantom reads when a concurrent RW transaction's
+    ///    finalize has not yet reached this replica.
+    ///
+    /// 2. **Range read protection**: On success, records
+    ///    `commit_scan(start, end, ts)` which appends to `range_reads`.
+    ///    Future `try_prepare_txn` calls writing to any key in
+    ///    `[start, end]` will fail OCC checks if their `commit_ts <= ts`.
+    ///
+    /// 3. **Read-commit tracking**: Updates `max_read_commit_time =
+    ///    max(prev, ts)`, observable via `min_prepare_baseline()`.
+    ///
+    /// 4. **Enables fast-path validation**: After this call,
+    ///    `do_uncommitted_scan_validated(start, end, ts)` returns `Some`
+    ///    instead of `None` for the same range and timestamp.
+    ///
+    /// # Valid inputs
+    ///
+    /// `start <= end` in key ordering. `ts` is the client's snapshot
+    /// timestamp. `start` and `end` are moved (not borrowed) because they
+    /// are stored in the range-read protection list.
+    ///
+    /// # Return value transitions
+    ///
+    /// ```text
+    /// // After commit_prepared_txn(_, write("a","v1"), ts(1,1))
+    /// //   and commit_prepared_txn(_, write("b","v2"), ts(1,1)):
+    /// do_committed_scan("a", "b", ts(5,1))
+    ///   => Ok([("a", Some("v1"), ts(1,1)), ("b", Some("v2"), ts(1,1))])
+    ///
+    /// // After try_prepare_txn(_, write("a","v3"), ts(3,1)):
+    /// do_committed_scan("a", "b", ts(5,1)) => Err(PrepareConflict)
+    ///
+    /// // After remove_prepared_txn(_):
+    /// do_committed_scan("a", "b", ts(5,1))
+    ///   => Ok([("a", Some("v1"), ts(1,1)), ("b", Some("v2"), ts(1,1))])
+    /// ```
     fn do_committed_scan(
         &mut self,
         start: K,
