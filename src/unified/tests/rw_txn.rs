@@ -1,4 +1,5 @@
 use super::helpers::*;
+use crate::tapirstore::TapirStore;
 use crate::unified::types::*;
 
 // === Test 1: RW Transaction (prepare→commit→read through inherent methods) ===
@@ -25,8 +26,8 @@ fn rw_txn_prepare_commit_read() {
     // ValueLocation should be InMemory (not yet sealed)
     assert_value_location_in_memory(&store, "x", test_ts(1), true);
 
-    // get() returns latest version
-    let (val, ts) = store.get(&"x".to_string()).unwrap();
+    // do_uncommitted_get() returns latest version
+    let (val, ts) = store.do_uncommitted_get(&"x".to_string()).unwrap();
     assert_eq!(val.as_deref(), Some("v1"), "get(x): value mismatch");
     assert_eq!(ts, test_ts(1), "get(x): timestamp mismatch");
 
@@ -66,8 +67,8 @@ fn rw_txn_prepare_commit_read() {
     assert_get_at(&store, "x", test_ts(5), Some("v2"), test_ts(5));
     assert_get_at(&store, "x", test_ts(1), Some("v1"), test_ts(1));
 
-    // get() returns latest (v2 at ts=5)
-    let (val, ts) = store.get(&"x".to_string()).unwrap();
+    // do_uncommitted_get() returns latest (v2 at ts=5)
+    let (val, ts) = store.do_uncommitted_get(&"x".to_string()).unwrap();
     assert_eq!(val.as_deref(), Some("v2"), "get(x) latest: value mismatch");
     assert_eq!(ts, test_ts(5), "get(x) latest: timestamp mismatch");
 

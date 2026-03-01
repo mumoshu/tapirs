@@ -1,4 +1,5 @@
 use super::helpers::*;
+use crate::tapirstore::TapirStore;
 
 // === Test 2: RO Transaction (QuorumRead + QuorumScan) ===
 
@@ -44,7 +45,7 @@ fn ro_txn_quorum_read_scan() {
 
     // QuorumScan returns correct values — verify ALL fields of each result
     let results =
-        store.scan(&"a".to_string(), &"z".to_string(), test_ts(10)).unwrap();
+        store.do_uncommitted_scan(&"a".to_string(), &"z".to_string(), test_ts(10)).unwrap();
     assert_eq!(results.len(), 2, "scan should return 2 entries");
 
     // Results should be sorted by key
@@ -66,7 +67,7 @@ fn ro_txn_quorum_read_scan() {
 
     // Scan with narrower range should only return matching keys
     let narrow =
-        store.scan(&"x".to_string(), &"x".to_string(), test_ts(10)).unwrap();
+        store.do_uncommitted_scan(&"x".to_string(), &"x".to_string(), test_ts(10)).unwrap();
     assert_eq!(narrow.len(), 1, "narrow scan should return 1 entry");
     assert_eq!(narrow[0].0, "x");
     assert_eq!(narrow[0].1.as_deref(), Some("v1"));
@@ -94,7 +95,7 @@ fn ro_txn_quorum_read_scan() {
 
     // Scan before any writes should return empty
     let empty_scan =
-        store.scan(&"a".to_string(), &"z".to_string(), test_ts(1)).unwrap();
+        store.do_uncommitted_scan(&"a".to_string(), &"z".to_string(), test_ts(1)).unwrap();
     assert!(
         empty_scan.is_empty(),
         "Scan before commit_ts should return empty"

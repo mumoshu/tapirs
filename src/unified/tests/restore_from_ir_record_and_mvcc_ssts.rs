@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::mvcc::disk::memory_io::MemoryIo;
 use crate::tapir::Timestamp;
+use crate::tapirstore::TapirStore;
 use crate::unified::types::*;
 use crate::unified::UnifiedStore;
 
@@ -201,12 +202,12 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
     assert_get_at(&restored, "a", test_ts(20), Some("val_a_v2"), test_ts(20));
     assert_get_at(&restored, "a", test_ts(15), Some("val_a"), test_ts(5));
 
-    // get() returns latest version
-    let (val, ts) = restored.get(&"a".to_string()).unwrap();
+    // do_uncommitted_get() returns latest version
+    let (val, ts) = restored.do_uncommitted_get(&"a".to_string()).unwrap();
     assert_eq!(val.as_deref(), Some("val_a_v2"), "get(a): latest value");
     assert_eq!(ts, test_ts(20), "get(a): latest timestamp");
 
-    let (val, ts) = restored.get(&"d".to_string()).unwrap();
+    let (val, ts) = restored.do_uncommitted_get(&"d".to_string()).unwrap();
     assert_eq!(val.as_deref(), Some("val_d"), "get(d): value");
     assert_eq!(ts, test_ts(20), "get(d): timestamp");
 
@@ -221,7 +222,7 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
     );
 
     // Scan at ts=20 returns all 4 unique keys
-    let scan = restored.scan(
+    let scan = restored.do_uncommitted_scan(
         &"a".to_string(),
         &"z".to_string(),
         test_ts(20),
@@ -242,7 +243,7 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
     assert_eq!(scan[3].2, test_ts(20));
 
     // Scan at ts=10 returns only sealed-view keys (before view 1 data)
-    let scan_early = restored.scan(
+    let scan_early = restored.do_uncommitted_scan(
         &"a".to_string(),
         &"z".to_string(),
         test_ts(10),

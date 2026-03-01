@@ -2,6 +2,7 @@ use crate::ir::OpId;
 use crate::mvcc::disk::memory_io::MemoryIo;
 use crate::occ::{ScanEntry, SharedTransaction, Transaction, TransactionId};
 use crate::tapir::{ShardNumber, Sharded, Timestamp};
+use crate::tapirstore::TapirStore;
 use crate::unified::types::*;
 use crate::unified::UnifiedStore;
 use crate::IrClientId;
@@ -255,7 +256,7 @@ pub fn assert_get_at(
     expected_ts: Timestamp,
 ) {
     let (actual_value, actual_ts) =
-        store.get_at(&key.to_string(), ts).unwrap();
+        store.do_uncommitted_get_at(&key.to_string(), ts).unwrap();
     assert_eq!(
         actual_value.as_deref(),
         expected_value,
@@ -270,7 +271,7 @@ pub fn assert_get_at(
 /// Assert that get_at(key, ts) returns None (key doesn't exist at this ts).
 pub fn assert_get_none(store: &TestStore, key: &str, ts: Timestamp) {
     let (actual_value, _) =
-        store.get_at(&key.to_string(), ts).unwrap();
+        store.do_uncommitted_get_at(&key.to_string(), ts).unwrap();
     assert!(
         actual_value.is_none(),
         "get_at({key:?}, {ts:?}): expected None, got {actual_value:?}"

@@ -16,11 +16,21 @@ impl<K: Key, V: Value, IO: DiskIo> TapirStore<K, V> for UnifiedStore<K, V, IO> {
     // === Uncommitted Reads ===
 
     fn do_uncommitted_get(&self, key: &K) -> Result<(Option<V>, Timestamp), StorageError> {
-        self.get(key)
+        if let Some((ck, entry)) = self.unified_memtable().get_latest(key) {
+            let ts = ck.timestamp.0;
+            let value = self.resolve_value(entry)?;
+            return Ok((value, ts));
+        }
+        Ok((None, Timestamp::default()))
     }
 
     fn do_uncommitted_get_at(&self, key: &K, ts: Timestamp) -> Result<(Option<V>, Timestamp), StorageError> {
-        self.get_at(key, ts)
+        if let Some((ck, entry)) = self.unified_memtable().get_at(key, ts) {
+            let write_ts = ck.timestamp.0;
+            let value = self.resolve_value(entry)?;
+            return Ok((value, write_ts));
+        }
+        Ok((None, Timestamp::default()))
     }
 
     fn do_uncommitted_scan(
@@ -29,7 +39,14 @@ impl<K: Key, V: Value, IO: DiskIo> TapirStore<K, V> for UnifiedStore<K, V, IO> {
         end: &K,
         ts: Timestamp,
     ) -> Result<Vec<(K, Option<V>, Timestamp)>, StorageError> {
-        self.scan(start, end, ts)
+        let results = self.unified_memtable().scan(start, end, ts);
+        let mut output = Vec::new();
+        for (ck, entry) in results {
+            let write_ts = ck.timestamp.0;
+            let value = self.resolve_value(entry)?;
+            output.push((ck.key.clone(), value, write_ts));
+        }
+        Ok(output)
     }
 
     // === OCC Prepare/Commit/Abort ===

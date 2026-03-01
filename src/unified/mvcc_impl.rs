@@ -16,44 +16,6 @@ where
     V: Clone + Eq + Hash + Debug + Send + Sync + Serialize + for<'de> Deserialize<'de> + 'static,
     IO: DiskIo,
 {
-    pub(crate) fn get(&self, key: &K) -> Result<(Option<V>, Timestamp), StorageError> {
-        if let Some((ck, entry)) = self.unified_memtable().get_latest(key) {
-            let ts = ck.timestamp.0;
-            let value = self.resolve_value(entry)?;
-            return Ok((value, ts));
-        }
-        Ok((None, Timestamp::default()))
-    }
-
-    pub(crate) fn get_at(
-        &self,
-        key: &K,
-        timestamp: Timestamp,
-    ) -> Result<(Option<V>, Timestamp), StorageError> {
-        if let Some((ck, entry)) = self.unified_memtable().get_at(key, timestamp) {
-            let ts = ck.timestamp.0;
-            let value = self.resolve_value(entry)?;
-            return Ok((value, ts));
-        }
-        Ok((None, Timestamp::default()))
-    }
-
-    pub(crate) fn scan(
-        &self,
-        start: &K,
-        end: &K,
-        timestamp: Timestamp,
-    ) -> Result<Vec<(K, Option<V>, Timestamp)>, StorageError> {
-        let results = self.unified_memtable().scan(start, end, timestamp);
-        let mut output = Vec::new();
-        for (ck, entry) in results {
-            let ts = ck.timestamp.0;
-            let value = self.resolve_value(entry)?;
-            output.push((ck.key.clone(), value, ts));
-        }
-        Ok(output)
-    }
-
     pub(crate) fn get_range(
         &self,
         key: &K,

@@ -8,6 +8,7 @@ use crate::mvcc::disk::disk_io::BufferedIo;
 use crate::occ::TransactionId as OccTransactionId;
 use crate::tapir::Timestamp;
 use crate::unified::types::*;
+use crate::tapirstore::TapirStore;
 use crate::unified::UnifiedStore;
 use crate::IrClientId;
 
@@ -278,7 +279,7 @@ fn cmd_get<W: Write>(ctx: &mut Context, parts: &[&str], stdout: &mut W) -> Resul
     let key = parts[1].to_string();
     let store = ctx.store()?;
     let (value, ts) =
-        store.get(&key).map_err(|e| format!("get failed: {e}"))?;
+        store.do_uncommitted_get(&key).map_err(|e| format!("get failed: {e}"))?;
     write_kv_result(stdout, &key, value.as_deref(), ts)
 }
 
@@ -294,7 +295,7 @@ fn cmd_get_at<W: Write>(
     let ts = parse_ts(parts[2])?;
     let store = ctx.store()?;
     let (value, actual_ts) =
-        store.get_at(&key, ts).map_err(|e| format!("get-at failed: {e}"))?;
+        store.do_uncommitted_get_at(&key, ts).map_err(|e| format!("get-at failed: {e}"))?;
     write_kv_result(stdout, &key, value.as_deref(), actual_ts)
 }
 
@@ -328,7 +329,7 @@ fn cmd_scan<W: Write>(ctx: &mut Context, parts: &[&str], stdout: &mut W) -> Resu
     let ts = parse_ts(parts[3])?;
     let store = ctx.store()?;
     let results =
-        store.scan(&start, &end, ts).map_err(|e| format!("scan failed: {e}"))?;
+        store.do_uncommitted_scan(&start, &end, ts).map_err(|e| format!("scan failed: {e}"))?;
     for (key, value, entry_ts) in &results {
         write_kv_result(stdout, key, value.as_deref(), *entry_ts)?;
     }

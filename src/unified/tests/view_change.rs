@@ -1,4 +1,5 @@
 use super::helpers::*;
+use crate::tapirstore::TapirStore;
 use crate::unified::types::*;
 
 // === Test 3: View Change (seal + merge + MVCC reads across views) ===
@@ -75,8 +76,8 @@ fn view_change_seal_merge_sync() {
     // No last_read_ts set
     assert_last_read_ts(&store, "a", None);
 
-    // get() returns the latest version of "a"
-    let (val, ts) = store.get(&"a".to_string()).unwrap();
+    // do_uncommitted_get() returns the latest version of "a"
+    let (val, ts) = store.do_uncommitted_get(&"a".to_string()).unwrap();
     assert_eq!(val.as_deref(), Some("v1"), "get(a): value mismatch");
     assert_eq!(ts, test_ts(5), "get(a): timestamp mismatch");
 }
@@ -231,7 +232,7 @@ fn multi_client_merged_record() {
     assert_get_at(&store, "b", test_ts_client(10, 2), Some("from_c2"), test_ts_client(10, 2));
 
     // Scan returns both keys
-    let scan = store.scan(
+    let scan = store.do_uncommitted_scan(
         &"a".to_string(),
         &"z".to_string(),
         test_ts_client(20, 1),
