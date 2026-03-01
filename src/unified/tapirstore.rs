@@ -20,21 +20,11 @@ where
     // === Uncommitted Reads ===
 
     fn do_uncommitted_get(&self, key: &K) -> Result<(Option<V>, Timestamp), StorageError> {
-        if let Some((ck, entry)) = self.unified_memtable().get_latest(key) {
-            let ts = ck.timestamp.0;
-            let value = self.resolve_value(entry)?;
-            return Ok((value, ts));
-        }
-        Ok((None, Timestamp::default()))
+        self.get(key)
     }
 
     fn do_uncommitted_get_at(&self, key: &K, ts: Timestamp) -> Result<(Option<V>, Timestamp), StorageError> {
-        if let Some((ck, entry)) = self.unified_memtable().get_at(key, ts) {
-            let write_ts = ck.timestamp.0;
-            let value = self.resolve_value(entry)?;
-            return Ok((value, write_ts));
-        }
-        Ok((None, Timestamp::default()))
+        self.get_at(key, ts)
     }
 
     fn do_uncommitted_scan(
@@ -43,14 +33,7 @@ where
         end: &K,
         ts: Timestamp,
     ) -> Result<Vec<(K, Option<V>, Timestamp)>, StorageError> {
-        let results = self.unified_memtable().scan(start, end, ts);
-        let mut output = Vec::new();
-        for (ck, entry) in results {
-            let write_ts = ck.timestamp.0;
-            let value = self.resolve_value(entry)?;
-            output.push((ck.key.clone(), value, write_ts));
-        }
-        Ok(output)
+        self.scan(start, end, ts)
     }
 
     // === OCC Prepare/Commit/Abort ===

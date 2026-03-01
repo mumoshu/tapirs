@@ -38,6 +38,22 @@ where
         Ok((None, Timestamp::default()))
     }
 
+    pub(crate) fn scan(
+        &self,
+        start: &K,
+        end: &K,
+        timestamp: Timestamp,
+    ) -> Result<Vec<(K, Option<V>, Timestamp)>, StorageError> {
+        let results = self.unified_memtable().scan(start, end, timestamp);
+        let mut output = Vec::new();
+        for (ck, entry) in results {
+            let ts = ck.timestamp.0;
+            let value = self.resolve_value(entry)?;
+            output.push((ck.key.clone(), value, ts));
+        }
+        Ok(output)
+    }
+
     pub(crate) fn get_range(
         &self,
         key: &K,
@@ -85,22 +101,6 @@ where
             return Ok(Some(Timestamp::from_time(ts)));
         }
         Ok(None)
-    }
-
-    pub(crate) fn scan(
-        &self,
-        start: &K,
-        end: &K,
-        timestamp: Timestamp,
-    ) -> Result<Vec<(K, Option<V>, Timestamp)>, StorageError> {
-        let results = self.unified_memtable().scan(start, end, timestamp);
-        let mut output = Vec::new();
-        for (ck, entry) in results {
-            let ts = ck.timestamp.0;
-            let value = self.resolve_value(entry)?;
-            output.push((ck.key.clone(), value, ts));
-        }
-        Ok(output)
     }
 
     pub(crate) fn has_writes_in_range(
