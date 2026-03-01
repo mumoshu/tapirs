@@ -287,7 +287,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                     && !range.contains(&key) {
                         return UR::OutOfRange;
                     }
-                let (v, ts) = self.store.get_at(&key, timestamp);
+                let (v, ts) = self.store.do_uncommitted_get_at(&key, timestamp);
                 UR::GetAt(v, ts)
             }
             UO::Scan {

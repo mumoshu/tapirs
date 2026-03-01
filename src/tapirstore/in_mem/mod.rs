@@ -139,7 +139,7 @@ where
         self.occ.get(key)
     }
 
-    fn get_at(&self, key: &K, ts: Timestamp) -> (Option<V>, Timestamp) {
+    fn do_uncommitted_get_at(&self, key: &K, ts: Timestamp) -> (Option<V>, Timestamp) {
         self.occ.get_at(key, ts)
     }
 
