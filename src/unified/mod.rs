@@ -346,6 +346,103 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
         self.register_prepare_raw(txn_id, prepare);
     }
 
+    /// Commit a prepared transaction by creating MVCC index entries.
+    ///
+    /// Two paths, tried in order:
+    ///
+    /// 1. **InMemory** — prepare is in the current view's `prepare_registry`.
+    ///    MVCC entries get `ValueLocation::InMemory { txn_id, write_index }`.
+    ///    This is the common case and avoids any VLog I/O.
+    ///
+    /// 2. **OnDisk** — prepare was sealed into the VLog (cross-view commit).
+    ///    MVCC entries get `ValueLocation::OnDisk(ptr)` using the
+    ///    `prepare_vlog_index`.  Value reads later go through the LRU cache.
+    ///
+    /// Returns `Err(StorageError::PrepareNotFound)` if neither the
+    /// `prepare_registry` nor `prepare_vlog_index` has the transaction.
+    pub fn commit_prepared(
+        &mut self,
+        txn_id: OccTransactionId,
+        commit: Timestamp,
+    ) -> Result<(), StorageError>
+    where
+        K: serde::de::DeserializeOwned,
+        V: serde::de::DeserializeOwned,
+    {
+        // Clone the Arc to release the immutable borrow, allowing
+        // subsequent unified_memtable_mut() calls.
+        let prepare = self.prepare_registry.get(&txn_id).cloned();
+        let cross_view_ptr = self.prepare_vlog_index.get(&txn_id).copied();
+
+        if let Some(prepare) = prepare {
+            // InMemory path: prepare is in current view's prepare_registry
+            for (i, (key, value)) in prepare.write_set.iter().enumerate() {
+                let value_ref = if value.is_some() {
+                    Some(ValueLocation::InMemory {
+                        txn_id,
+                        write_index: i as u16,
+                    })
+                } else {
+                    None
+                };
+
+                self.unified_memtable_mut().insert(
+                    key.clone(),
+                    commit,
+                    UnifiedLsmEntry {
+                        value_ref,
+                        last_read_ts: None,
+                    },
+                );
+            }
+
+            // Update read timestamps
+            for (key, read) in &prepare.read_set {
+                self.unified_memtable_mut()
+                    .update_last_read(key, *read, commit.time);
+            }
+        } else if let Some(vlog_ptr) = cross_view_ptr {
+            // OnDisk path: prepare is in a sealed VLog (cross-view commit)
+            let cached = self.resolve_on_disk(&UnifiedVlogPrepareValuePtr {
+                prepare_ptr: vlog_ptr,
+                write_index: 0,
+            })?;
+
+            for (i, (key, value)) in cached.write_set.iter().enumerate() {
+                let value_ref = if value.is_some() {
+                    Some(ValueLocation::OnDisk(UnifiedVlogPrepareValuePtr {
+                        prepare_ptr: vlog_ptr,
+                        write_index: i as u16,
+                    }))
+                } else {
+                    None
+                };
+
+                self.unified_memtable_mut().insert(
+                    key.clone(),
+                    commit,
+                    UnifiedLsmEntry {
+                        value_ref,
+                        last_read_ts: None,
+                    },
+                );
+            }
+
+            // Update read timestamps
+            for (key, read) in &cached.read_set {
+                self.unified_memtable_mut()
+                    .update_last_read(key, *read, commit.time);
+            }
+        } else {
+            return Err(StorageError::PrepareNotFound {
+                client_id: txn_id.client_id.0,
+                txn_number: txn_id.number,
+            });
+        }
+
+        Ok(())
+    }
+
     /// Remove a prepare from the in-memory registry.
     pub fn unregister_prepare(&mut self, txn_id: &OccTransactionId) {
         self.prepare_registry.remove(txn_id);

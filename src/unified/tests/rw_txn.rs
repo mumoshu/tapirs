@@ -54,7 +54,6 @@ fn rw_txn_prepare_commit_read() {
         &mut store,
         test_op_id(1, 2),
         test_txn_id(1, 1),
-        &txn,
         test_ts(5),
         PrepareRef::SameView(test_op_id(1, 1)),
     );
@@ -131,7 +130,6 @@ fn sync_replays_prepare_before_commit() {
         &mut store,
         test_op_id(1, 2),
         test_txn_id(1, 1),
-        &txn,
         test_ts(5),
         PrepareRef::SameView(test_op_id(1, 1)),
     );

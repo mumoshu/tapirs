@@ -131,7 +131,6 @@ fn cross_view_prepare_commit() {
         &mut store,
         test_op_id(1, 2),
         test_txn_id(1, 1),
-        &txn,
         test_ts(5),
         PrepareRef::CrossView {
             view: 0,
@@ -196,7 +195,6 @@ fn multi_client_merged_record() {
         &mut store,
         test_op_id(1, 2),
         test_txn_id(1, 1),
-        &txn1,
         test_ts_client(5, 1),
         PrepareRef::SameView(test_op_id(1, 1)),
     );
@@ -204,7 +202,6 @@ fn multi_client_merged_record() {
         &mut store,
         test_op_id(2, 2),
         test_txn_id(2, 1),
-        &txn2,
         test_ts_client(10, 2),
         PrepareRef::SameView(test_op_id(2, 1)),
     );

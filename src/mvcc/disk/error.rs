@@ -122,6 +122,18 @@ pub enum StorageError {
         offset: u64,
     },
 
+    /// No prepared transaction found for the given transaction ID.
+    ///
+    /// Returned by `commit_batch_for_transaction` when neither the
+    /// in-memory `prepare_registry` nor the on-disk `prepare_vlog_index`
+    /// contains the transaction. This indicates either a caller bug
+    /// (forgot to call `register_prepare` before commit) or data loss
+    /// (UnifiedStore lost a previously prepared transaction).
+    PrepareNotFound {
+        client_id: u64,
+        txn_number: u64,
+    },
+
     /// Underlying I/O error.
     Io(io::Error),
     /// Serialization/deserialization error.
@@ -170,6 +182,13 @@ impl fmt::Display for StorageError {
                 f,
                 "vlog key mismatch in {file} at offset {offset}: \
                  entry key does not match expected key from LSM"
+            ),
+            Self::PrepareNotFound {
+                client_id,
+                txn_number,
+            } => write!(
+                f,
+                "prepare not found: client_id={client_id}, txn_number={txn_number}"
             ),
             Self::Io(e) => write!(f, "I/O error: {e}"),
             Self::Codec(msg) => write!(f, "codec error: {msg}"),

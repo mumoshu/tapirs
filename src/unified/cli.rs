@@ -45,7 +45,7 @@ where
     let mut ctx = Context {
         store: None,
         // Track prepared transactions for commit lookup
-        prepared_writes: BTreeMap::new(),
+        prepared_txns: BTreeMap::new(),
         op_counter: 0,
         had_error: false,
     };
@@ -71,9 +71,9 @@ where
 
 struct Context {
     store: Option<Store>,
-    /// Cached write sets from prepare commands, keyed by txn_id.
-    /// Stores (prepare_op_id, prepare_view, writes).
-    prepared_writes: BTreeMap<OccTransactionId, (OpId, u64, Vec<(String, Option<String>)>)>,
+    /// Metadata for prepared transactions, keyed by txn_id.
+    /// Stores (prepare_op_id, prepare_view).
+    prepared_txns: BTreeMap<OccTransactionId, (OpId, u64)>,
     /// Auto-incrementing OpId counter.
     op_counter: u64,
     had_error: bool,
@@ -245,9 +245,9 @@ fn cmd_prepare(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
         },
     );
 
-    // Cache writes, op_id, and view for commit lookup
-    ctx.prepared_writes
-        .insert(txn_id, (op_id, current_view, writes));
+    // Cache op_id and view for commit lookup
+    ctx.prepared_txns
+        .insert(txn_id, (op_id, current_view));
     Ok(())
 }
 
@@ -258,8 +258,8 @@ fn cmd_commit(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
     let txn_id = parse_txn_id(parts[1])?;
     let commit_ts = parse_ts(parts[2])?;
 
-    let (prepare_op_id, prepare_view, writes) = ctx
-        .prepared_writes
+    let (prepare_op_id, prepare_view) = ctx
+        .prepared_txns
         .remove(&txn_id)
         .ok_or_else(|| format!("no prepared transaction: {}", parts[1]))?;
 
@@ -291,9 +291,9 @@ fn cmd_commit(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
         },
     );
 
-    // Commit through MvccBackend
+    // Commit through inherent method (reads write_set from prepare_registry)
     store
-        .commit_batch_for_transaction(txn_id, writes, vec![], commit_ts)
+        .commit_batch_for_transaction(txn_id, commit_ts)
         .map_err(|e| format!("commit failed: {e}"))
 }
 

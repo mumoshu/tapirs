@@ -178,7 +178,6 @@ pub fn commit_txn(
     store: &mut TestStore,
     op_id: OpId,
     txn_id: TransactionId,
-    txn: &SharedTransaction<String, String, Timestamp>,
     commit_ts: Timestamp,
     prepare_ref: PrepareRef,
 ) {
@@ -197,17 +196,9 @@ pub fn commit_txn(
         },
     );
 
-    // Commit via MvccBackend (mirrors OccStore::commit → commit_batch_for_transaction)
-    let writes: Vec<(String, Option<String>)> = txn
-        .shard_write_set(ShardNumber(0))
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-    let reads: Vec<(String, Timestamp)> = txn
-        .shard_read_set(ShardNumber(0))
-        .map(|(k, ts)| (k.clone(), ts))
-        .collect();
+    // Commit via inherent method (mirrors OccStore::commit → commit_batch_for_transaction)
     store
-        .commit_batch_for_transaction(txn_id, writes, reads, commit_ts)
+        .commit_batch_for_transaction(txn_id, commit_ts)
         .unwrap();
 }
 
@@ -233,7 +224,6 @@ pub fn prepare_and_commit(
         store,
         commit_op_id,
         txn_id,
-        &txn,
         commit_ts,
         PrepareRef::SameView(prepare_op_id),
     );

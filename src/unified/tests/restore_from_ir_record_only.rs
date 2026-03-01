@@ -145,17 +145,8 @@ fn restore_from_ir_record_rebuilds_mvcc() {
                 let txn = build_txn_from_parts(read_set, write_set, scan_set);
                 restored_store.register_prepare(*transaction_id, &txn, *commit_ts);
 
-                // Write set and read set are already typed — no deserialization needed
-                let writes: Vec<(String, Option<String>)> = write_set.clone();
-                let reads: Vec<(String, crate::tapir::Timestamp)> = read_set.clone();
-
                 restored_store
-                    .commit_batch_for_transaction(
-                        *transaction_id,
-                        writes,
-                        reads,
-                        *commit_ts,
-                    )
+                    .commit_batch_for_transaction(*transaction_id, *commit_ts)
                     .unwrap();
 
                 // Also insert the IR entries into the overlay (for completeness)
@@ -352,12 +343,8 @@ fn restore_from_sealed_vlog_rebuilds_mvcc() {
                 let txn = build_txn_from_parts(read_set, write_set, scan_set);
                 restored.register_prepare(*transaction_id, &txn, *commit_ts);
 
-                // Write set and read set are already typed — no deserialization needed
-                let writes: Vec<(String, Option<String>)> = write_set.clone();
-                let reads: Vec<(String, crate::tapir::Timestamp)> = read_set.clone();
-
                 restored
-                    .commit_batch_for_transaction(*transaction_id, writes, reads, *commit_ts)
+                    .commit_batch_for_transaction(*transaction_id, *commit_ts)
                     .unwrap();
             }
         }

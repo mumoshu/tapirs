@@ -220,81 +220,12 @@ where
 
     /// Commit a prepared transaction by creating MVCC index entries.
     ///
-    /// Three paths, tried in order:
-    ///
-    /// 1. **InMemory** — prepare is in the current view's `prepare_registry`.
-    ///    MVCC entries get `ValueLocation::InMemory { txn_id, write_index }`.
-    ///    This is the common case and avoids any VLog I/O.
-    ///
-    /// 2. **OnDisk** — prepare was sealed into the VLog (cross-view commit).
-    ///    MVCC entries get `ValueLocation::OnDisk(ptr)` using the
-    ///    `prepare_vlog_index`.  Value reads later go through the LRU cache.
-    ///
-    /// 3. **Fallback** — neither registry nor VLog index has the prepare.
-    ///    Falls back to `commit_batch` which creates a synthetic prepare
-    ///    per write (less efficient, but correct).
+    /// Delegates to `UnifiedStore::commit_prepared()`.
     pub fn commit_batch_for_transaction(
         &mut self,
         txn_id: OccTransactionId,
-        writes: Vec<(K, Option<V>)>,
-        reads: Vec<(K, Timestamp)>,
         commit: Timestamp,
     ) -> Result<(), StorageError> {
-        let has_prepare = self.store.prepare_registry.contains_key(&txn_id);
-        let cross_view_ptr = self.store.prepare_vlog_index.get(&txn_id).copied();
-
-        if has_prepare {
-            // InMemory path: prepare is in current view's prepare_registry
-            for (i, (key, value)) in writes.iter().enumerate() {
-                let value_ref = if value.is_some() {
-                    Some(ValueLocation::InMemory {
-                        txn_id,
-                        write_index: i as u16,
-                    })
-                } else {
-                    None
-                };
-
-                self.store.unified_memtable_mut().insert(
-                    key.clone(),
-                    commit,
-                    UnifiedLsmEntry {
-                        value_ref,
-                        last_read_ts: None,
-                    },
-                );
-            }
-        } else if let Some(vlog_ptr) = cross_view_ptr {
-            // OnDisk path: prepare is in a sealed VLog (cross-view commit)
-            for (i, (key, value)) in writes.iter().enumerate() {
-                let value_ref = if value.is_some() {
-                    Some(ValueLocation::OnDisk(UnifiedVlogPrepareValuePtr {
-                        prepare_ptr: vlog_ptr,
-                        write_index: i as u16,
-                    }))
-                } else {
-                    None
-                };
-
-                self.store.unified_memtable_mut().insert(
-                    key.clone(),
-                    commit,
-                    UnifiedLsmEntry {
-                        value_ref,
-                        last_read_ts: None,
-                    },
-                );
-            }
-        } else {
-            // Fallback: no prepare registered and not in VLog index
-            return self.commit_batch(writes, reads, commit);
-        }
-
-        // Update read timestamps
-        for (key, read) in reads {
-            MvccBackend::commit_get(self, key, read, commit)?;
-        }
-
-        Ok(())
+        self.store.commit_prepared(txn_id, commit)
     }
 }

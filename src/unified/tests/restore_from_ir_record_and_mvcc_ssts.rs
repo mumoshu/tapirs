@@ -178,17 +178,8 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
                 let txn = build_txn_from_parts(read_set, write_set, scan_set);
                 restored.register_prepare(*transaction_id, &txn, *commit_ts);
 
-                // Write set and read set are already typed — no deserialization needed
-                let writes: Vec<(String, Option<String>)> = write_set.clone();
-                let reads: Vec<(String, Timestamp)> = read_set.clone();
-
                 restored
-                    .commit_batch_for_transaction(
-                        *transaction_id,
-                        writes,
-                        reads,
-                        *commit_ts,
-                    )
+                    .commit_batch_for_transaction(*transaction_id, *commit_ts)
                     .unwrap();
             }
         }
