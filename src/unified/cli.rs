@@ -4,16 +4,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::ir::OpId;
-use crate::mvcc::backend::MvccBackend;
 use crate::mvcc::disk::disk_io::BufferedIo;
 use crate::occ::TransactionId as OccTransactionId;
 use crate::tapir::Timestamp;
-use crate::unified::mvcc_backend::UnifiedMvccBackend;
 use crate::unified::types::*;
 use crate::unified::UnifiedStore;
 use crate::IrClientId;
 
-type Store = UnifiedMvccBackend<String, String, BufferedIo>;
+type Store = UnifiedStore<String, String, BufferedIo>;
 
 /// Run the tapirstore interpreter.
 ///
@@ -159,9 +157,9 @@ fn cmd_open(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
         return Err("usage: open <dir>".to_string());
     }
     let path = PathBuf::from(parts[1]);
-    let inner = UnifiedStore::<String, String, BufferedIo>::open(path)
+    let store = UnifiedStore::<String, String, BufferedIo>::open(path)
         .map_err(|e| format!("open failed: {e}"))?;
-    ctx.store = Some(UnifiedMvccBackend::new(inner));
+    ctx.store = Some(store);
     Ok(())
 }
 
@@ -173,9 +171,9 @@ fn cmd_open_with(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
     let min_size: u64 = parts[2]
         .parse()
         .map_err(|_| format!("invalid min_vlog_size: {}", parts[2]))?;
-    let inner = UnifiedStore::<String, String, BufferedIo>::open_with_options(path, min_size)
+    let store = UnifiedStore::<String, String, BufferedIo>::open_with_options(path, min_size)
         .map_err(|e| format!("open-with failed: {e}"))?;
-    ctx.store = Some(UnifiedMvccBackend::new(inner));
+    ctx.store = Some(store);
     Ok(())
 }
 
@@ -187,7 +185,7 @@ fn cmd_put(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
     let value = parts[2].to_string();
     let ts = parse_ts(parts[3])?;
     let store = ctx.store_mut()?;
-    MvccBackend::put(store, key, Some(value), ts)
+    store.put(key, Some(value), ts)
         .map_err(|e| format!("put failed: {e}"))
 }
 
@@ -198,7 +196,7 @@ fn cmd_delete(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
     let key = parts[1].to_string();
     let ts = parse_ts(parts[2])?;
     let store = ctx.store_mut()?;
-    MvccBackend::put(store, key, None, ts)
+    store.put(key, None, ts)
         .map_err(|e| format!("delete failed: {e}"))
 }
 
@@ -226,8 +224,8 @@ fn cmd_prepare(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
     store.register_prepare(txn_id, &txn, commit_ts);
 
     // Insert IR overlay entry with typed payload
-    let current_view = store.inner().current_view();
-    store.inner_mut().insert_ir_entry(
+    let current_view = store.current_view();
+    store.insert_ir_entry(
         op_id,
         IrMemEntry {
             entry_type: VlogEntryType::Prepare,
@@ -268,7 +266,7 @@ fn cmd_commit(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
 
     // Determine PrepareRef: if prepare was sealed, use CrossView with VLog ptr;
     // otherwise use SameView with the prepare's op_id.
-    let prepare_ref = if let Some(ir_sst) = store.inner().lookup_ir_base_entry(prepare_op_id) {
+    let prepare_ref = if let Some(ir_sst) = store.lookup_ir_base_entry(prepare_op_id) {
         PrepareRef::CrossView {
             view: prepare_view,
             vlog_ptr: ir_sst.vlog_ptr,
@@ -277,8 +275,8 @@ fn cmd_commit(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
         PrepareRef::SameView(prepare_op_id)
     };
 
-    let current_view = store.inner().current_view();
-    store.inner_mut().insert_ir_entry(
+    let current_view = store.current_view();
+    store.insert_ir_entry(
         op_id,
         IrMemEntry {
             entry_type: VlogEntryType::Commit,
@@ -293,7 +291,7 @@ fn cmd_commit(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
 
     // Commit through inherent method (reads write_set from prepare_registry)
     store
-        .commit_batch_for_transaction(txn_id, commit_ts)
+        .commit_prepared(txn_id, commit_ts)
         .map_err(|e| format!("commit failed: {e}"))
 }
 
@@ -304,7 +302,7 @@ fn cmd_get<W: Write>(ctx: &mut Context, parts: &[&str], stdout: &mut W) -> Resul
     let key = parts[1].to_string();
     let store = ctx.store()?;
     let (value, ts) =
-        MvccBackend::get(store, &key).map_err(|e| format!("get failed: {e}"))?;
+        store.get(&key).map_err(|e| format!("get failed: {e}"))?;
     write_kv_result(stdout, &key, value.as_deref(), ts)
 }
 
@@ -320,7 +318,7 @@ fn cmd_get_at<W: Write>(
     let ts = parse_ts(parts[2])?;
     let store = ctx.store()?;
     let (value, actual_ts) =
-        MvccBackend::get_at(store, &key, ts).map_err(|e| format!("get-at failed: {e}"))?;
+        store.get_at(&key, ts).map_err(|e| format!("get-at failed: {e}"))?;
     write_kv_result(stdout, &key, value.as_deref(), actual_ts)
 }
 
@@ -336,7 +334,7 @@ fn cmd_get_range<W: Write>(
     let ts = parse_ts(parts[2])?;
     let store = ctx.store()?;
     let (write_ts, next_ts) =
-        MvccBackend::get_range(store, &key, ts).map_err(|e| format!("get-range failed: {e}"))?;
+        store.get_range(&key, ts).map_err(|e| format!("get-range failed: {e}"))?;
     let next_str = match next_ts {
         Some(t) => t.time.to_string(),
         None => "none".to_string(),
@@ -354,7 +352,7 @@ fn cmd_scan<W: Write>(ctx: &mut Context, parts: &[&str], stdout: &mut W) -> Resu
     let ts = parse_ts(parts[3])?;
     let store = ctx.store()?;
     let results =
-        MvccBackend::scan(store, &start, &end, ts).map_err(|e| format!("scan failed: {e}"))?;
+        store.scan(&start, &end, ts).map_err(|e| format!("scan failed: {e}"))?;
     for (key, value, entry_ts) in &results {
         write_kv_result(stdout, key, value.as_deref(), *entry_ts)?;
     }
@@ -374,7 +372,7 @@ fn cmd_has_writes<W: Write>(
     let after = parse_ts(parts[3])?;
     let before = parse_ts(parts[4])?;
     let store = ctx.store()?;
-    let has = MvccBackend::has_writes_in_range(store, &start, &end, after, before)
+    let has = store.has_writes_in_range(&start, &end, after, before)
         .map_err(|e| format!("has-writes failed: {e}"))?;
     writeln!(stdout, "{has}").map_err(|e| format!("write failed: {e}"))
 }
@@ -382,7 +380,6 @@ fn cmd_has_writes<W: Write>(
 fn cmd_seal(ctx: &mut Context, _parts: &[&str]) -> Result<(), String> {
     let store = ctx.store_mut()?;
     store
-        .inner_mut()
         .seal_current_view()
         .map_err(|e| format!("seal failed: {e}"))
 }
@@ -393,8 +390,8 @@ fn cmd_status<W: Write>(
     stdout: &mut W,
 ) -> Result<(), String> {
     let store = ctx.store()?;
-    let view = store.inner().current_view();
-    let segments = store.inner().sealed_vlog_segments().len();
+    let view = store.current_view();
+    let segments = store.sealed_vlog_segments().len();
     writeln!(stdout, "view={view} sealed_segments={segments}")
         .map_err(|e| format!("write failed: {e}"))
 }
@@ -407,9 +404,9 @@ fn cmd_list_vlogs<W: Write>(
     let store = ctx.store()?;
 
     // Active segment
-    let active_id = store.inner().active_vlog_id();
-    let active_size = store.inner().active_vlog_write_offset();
-    let active_views = store.inner().active_vlog_views();
+    let active_id = store.active_vlog_id();
+    let active_size = store.active_vlog_write_offset();
+    let active_views = store.active_vlog_views();
     let view_list: Vec<String> = active_views.iter().map(|v| v.view.to_string()).collect();
     writeln!(
         stdout,
@@ -419,7 +416,7 @@ fn cmd_list_vlogs<W: Write>(
     .map_err(|e| format!("write failed: {e}"))?;
 
     // Sealed segments
-    for (id, seg) in store.inner().sealed_vlog_segments() {
+    for (id, seg) in store.sealed_vlog_segments() {
         let size = seg.write_offset();
         let view_list: Vec<String> = seg.views.iter().map(|v| v.view.to_string()).collect();
         writeln!(
@@ -445,7 +442,6 @@ fn cmd_dump_vlog<W: Write>(
         .map_err(|_| format!("invalid segment id: {}", parts[1]))?;
     let store = ctx.store()?;
     let entries = store
-        .inner()
         .dump_vlog_segment(seg_id)
         .map_err(|e| format!("dump-vlog failed: {e}"))?;
     for (offset, op_id, _entry_type, payload) in &entries {
