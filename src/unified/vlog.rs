@@ -22,6 +22,15 @@ const CRC_SIZE: usize = 4;
 const MIN_ENTRY_SIZE: usize = HEADER_SIZE + CRC_SIZE;
 
 /// A physical VLog segment file (either active or sealed).
+///
+/// The struct itself has no `K, V` type parameters because it stores raw
+/// bytes on disk.  Methods like `append_entry`, `read_entry`, and
+/// `read_prepare` are generic over `K, V` — they serialize typed data to
+/// bytes on write and deserialize bytes back to typed data on read.
+///
+/// This keeps the on-disk format (`PreparePayloadSer`) stable regardless
+/// of the Rust types used in memory, and avoids propagating K, V through
+/// the segment management code (open, seal, rotate, manifest).
 pub struct UnifiedVlogSegment<IO: DiskIo> {
     pub id: u64,
     io: Option<IO>,
@@ -69,8 +78,12 @@ impl<IO: DiskIo> UnifiedVlogSegment<IO> {
         &self.path
     }
 
-    /// Serialize an IR entry payload to bytes (bitcode).
-    /// Converts typed K, V fields to byte vectors for on-disk storage.
+    /// Serialize a typed IR payload to bytes for on-disk storage.
+    ///
+    /// Each key/value is individually bitcode-serialized into `Vec<u8>`
+    /// within `PreparePayloadSer`.  A `None` value (tombstone) is
+    /// represented as an empty byte vector, distinguishing it from a
+    /// zero-length serialized value.
     fn serialize_payload<K: Serialize, V: Serialize>(
         payload: &IrPayloadInline<K, V>,
     ) -> Result<Vec<u8>, StorageError> {
@@ -190,8 +203,10 @@ impl<IO: DiskIo> UnifiedVlogSegment<IO> {
         Ok(bytes)
     }
 
-    /// Deserialize an IR entry payload from bytes.
-    /// Converts byte vectors back to typed K, V fields.
+    /// Deserialize an on-disk payload back to typed `IrPayloadInline<K, V>`.
+    ///
+    /// Inverse of `serialize_payload`.  Empty byte vectors in the
+    /// write_set are interpreted as `None` (tombstone).
     fn deserialize_payload<K: DeserializeOwned, V: DeserializeOwned>(
         entry_type: VlogEntryType,
         bytes: &[u8],

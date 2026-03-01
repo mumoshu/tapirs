@@ -12,6 +12,18 @@ use std::sync::Arc;
 
 /// Typed adapter that implements `MvccBackend<K, V, Timestamp>` by
 /// delegating to `UnifiedStore`.
+///
+/// Provides two commit paths:
+///
+/// - **`commit_batch`** (from `MvccBackend`) — creates a synthetic prepare
+///   per write.  Used when no prepare was registered beforehand.
+///
+/// - **`commit_batch_for_transaction`** — the normal TAPIR path.  Expects
+///   `register_prepare` to have been called first.  Creates MVCC entries
+///   with `ValueLocation::InMemory` pointing into the prepare_registry,
+///   avoiding value duplication.  Falls back to `commit_batch` if the
+///   prepare is not found (e.g., the prepare arrived in a different view
+///   and was not recorded in the VLog index).
 pub struct UnifiedMvccBackend<K: Ord, V, IO: DiskIo> {
     store: UnifiedStore<K, V, IO>,
 }
@@ -36,11 +48,14 @@ where
     V: Clone + Debug + Send + Sync + Serialize + for<'de> Deserialize<'de> + 'static,
     IO: DiskIo,
 {
-    /// Resolve a value from a UnifiedLsmEntry's ValueLocation.
+    /// Resolve a committed value from its `ValueLocation`.
     ///
-    /// - `InMemory { txn_id, write_index }` → look up in prepare_registry (typed)
-    /// - `OnDisk(ptr)` → read from VLog via prepare_cache (deserialized to typed)
-    /// - `None` → tombstone / metadata-only entry
+    /// Both paths return typed `V` without the caller needing to know
+    /// whether the value is in memory or on disk:
+    ///
+    /// - `InMemory` → zero-copy lookup in `prepare_registry` (current view)
+    /// - `OnDisk` → VLog read + LRU cache lookup (sealed views)
+    /// - `None` → delete tombstone or metadata-only entry (e.g. `commit_get`)
     fn resolve_value(&self, entry: &UnifiedLsmEntry) -> Result<Option<V>, StorageError> {
         match &entry.value_ref {
             None => Ok(None),
@@ -236,7 +251,13 @@ where
     IO: DiskIo,
 {
     /// Register a prepared transaction for future zero-copy commit.
-    /// Stores typed K, V directly — no serialization to bytes.
+    ///
+    /// Extracts typed K, V from the `Transaction` and stores them in
+    /// the prepare_registry.  Must be called before the corresponding
+    /// `commit_batch_for_transaction` so that committed MVCC entries
+    /// can point into the registry via `ValueLocation::InMemory`.
+    ///
+    /// No serialization happens here — that is deferred to seal time.
     pub fn register_prepare(
         &mut self,
         txn_id: OccTransactionId,
@@ -277,9 +298,21 @@ where
         self.store.register_prepare_raw(txn_id, prepare);
     }
 
-    /// Commit with transaction identity for PrepareRef lookup.
-    /// Creates MVCC entries with ValueLocation::InMemory pointing to
-    /// the prepare_registry, avoiding value duplication in the VLog.
+    /// Commit a prepared transaction by creating MVCC index entries.
+    ///
+    /// Three paths, tried in order:
+    ///
+    /// 1. **InMemory** — prepare is in the current view's `prepare_registry`.
+    ///    MVCC entries get `ValueLocation::InMemory { txn_id, write_index }`.
+    ///    This is the common case and avoids any VLog I/O.
+    ///
+    /// 2. **OnDisk** — prepare was sealed into the VLog (cross-view commit).
+    ///    MVCC entries get `ValueLocation::OnDisk(ptr)` using the
+    ///    `prepare_vlog_index`.  Value reads later go through the LRU cache.
+    ///
+    /// 3. **Fallback** — neither registry nor VLog index has the prepare.
+    ///    Falls back to `commit_batch` which creates a synthetic prepare
+    ///    per write (less efficient, but correct).
     pub fn commit_batch_for_transaction(
         &mut self,
         txn_id: OccTransactionId,

@@ -79,20 +79,22 @@ pub enum VlogEntryType {
     RaiseMinPrepareTime = 0x06,
 }
 
-/// IR memtable entry. Holds data in memory for the current view's overlay.
+/// IR memtable entry — lives only in the current view's in-memory overlay.
+///
+/// Generic over `K, V` because it wraps `IrPayloadInline<K, V>`.  There is
+/// no `vlog_ptr` field: VLog writes are deferred to view seal time.  There
+/// is no `modified_view` field: overlay entries always belong to the current
+/// view, so the field would be redundant.
+///
+/// At seal time, each finalized `IrMemEntry` is serialized into the VLog
+/// and replaced by an `IrSstEntry` (which *does* carry a `vlog_ptr`).
 pub struct IrMemEntry<K, V> {
     /// Which IR operation type this entry represents.
     pub entry_type: VlogEntryType,
     /// Whether this entry is Tentative or Finalized.
     pub state: IrState,
-    // NOTE: No `modified_view` field. IrMemEntry only exists in the
-    // overlay during the current view. modified_view would always
-    // equal store.current_view().
     /// The full operation payload held inline in memory.
     pub payload: IrPayloadInline<K, V>,
-    // NOTE: No `vlog_ptr` field. VLog writes are deferred to view seal
-    // time. At seal time, the overlay is discarded and replaced by
-    // `IrSstEntry` records (which DO have `vlog_ptr`).
 }
 
 impl<K: Debug, V: Debug> Debug for IrMemEntry<K, V> {
@@ -124,10 +126,17 @@ pub enum IrState {
     Finalized(u64),
 }
 
-/// Inline payload for IR entries.
+/// Inline payload for IR entries — the source of truth for transaction data.
 ///
-/// Uses typed `K` and `V` for keys and values while in memory.
-/// Serialized to bytes at view seal time for VLog persistence.
+/// Generic over `K` and `V` so that prepared transactions can be inspected,
+/// indexed, and committed without a serialization round-trip while they live
+/// in memory.  Serialization to bytes happens exactly once, at view seal
+/// time (`seal_current_view`), via `UnifiedVlogSegment::serialize_payload`.
+/// Deserialization from the VLog happens only for cross-view reads (rare).
+///
+/// Because `Commit` and `Abort` variants carry no K/V data, they are
+/// unaffected by the type parameters.  Only `Prepare`, `QuorumRead`, and
+/// `QuorumScan` hold typed fields.
 pub enum IrPayloadInline<K, V> {
     /// CO::Prepare payload — the full transaction data for OCC validation.
     /// This is the SOLE carrier of write_set values; IO::Commit only has
@@ -286,8 +295,19 @@ pub struct IrSstEntry {
 
 /// Deserialized CO::Prepare payload with typed keys and values.
 ///
-/// Stored in the `prepare_registry` (in-memory, current view) and the
-/// `prepare_cache` (LRU cache for sealed VLog reads).
+/// Shared via `Arc` between two lookup paths:
+///
+/// - **`prepare_registry`** — current view's in-memory prepares.  Populated
+///   by `register_prepare()`, read by `resolve_in_memory()`.  Cleared at
+///   seal time because the data moves to the VLog.
+///
+/// - **`prepare_cache`** — LRU cache for prepares deserialized from sealed
+///   VLog segments.  Populated on first `resolve_on_disk()` miss.  Avoids
+///   repeated VLog reads for hot cross-view transactions.
+///
+/// The `write_set` uses `Option<V>` where `None` represents a delete
+/// tombstone (matching OCC convention).  MVCC index entries reference
+/// individual write_set items via `write_index`.
 pub struct CachedPrepare<K, V> {
     pub transaction_id: OccTransactionId,
     pub commit_ts: Timestamp,

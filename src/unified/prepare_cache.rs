@@ -2,10 +2,16 @@ use super::types::CachedPrepare;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-/// LRU cache for deserialized CO::Prepare payloads.
+/// LRU cache for deserialized CO::Prepare payloads from sealed VLog segments.
 ///
-/// Avoids repeated VLog reads + deserialization for hot transactions.
-/// Keyed by (segment_id, offset) which uniquely identifies a VLog entry.
+/// Only used by the `OnDisk` value resolution path (`resolve_on_disk`).
+/// A single CO::Prepare entry may be referenced by multiple MVCC index
+/// entries (one per `write_set` item), so caching the deserialized
+/// `CachedPrepare` avoids repeated VLog reads when reading multiple keys
+/// committed by the same transaction.
+///
+/// Keyed by `(segment_id, offset)` which uniquely identifies a VLog entry.
+/// Uses `BTreeMap` (not `HashMap`) for deterministic eviction order.
 pub struct PrepareCache<K, V> {
     /// Cache entries, keyed by (segment_id, offset).
     entries: BTreeMap<(u64, u64), CacheEntry<K, V>>,

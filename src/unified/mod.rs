@@ -38,9 +38,27 @@ const DEFAULT_MIN_VIEW_VLOG_SIZE: u64 = 256 * 1024;
 /// The unified storage engine backing both IR record persistence
 /// and MVCC value storage through a shared VLog.
 ///
-/// Uses typed `K` and `V` for in-memory data structures (ir_overlay,
-/// prepare_registry). Values are serialized to bytes only at view seal
-/// time for VLog persistence.
+/// # Data lifecycle
+///
+/// `K` and `V` are stored **typed** in memory (`ir_overlay`,
+/// `prepare_registry`) so that prepared transactions can be inspected,
+/// indexed, and committed without a serialization round-trip.
+/// Serialization to bytes happens exactly once at `seal_current_view()`
+/// time when the data is written to the VLog.  Deserialization from the
+/// VLog happens only for cross-view reads (rare), and the result is
+/// cached in `prepare_cache` to avoid repeated VLog I/O.
+///
+/// Because of this, `K` and `V` must be `Send + Sync` (required by
+/// `Arc<CachedPrepare<K, V>>` which must be `Send` for the `MvccBackend`
+/// trait), and `Serialize + DeserializeOwned` (for VLog persistence).
+///
+/// # Value indirection
+///
+/// Committed values are NOT duplicated in the MVCC index.  Instead,
+/// each MVCC entry (`UnifiedLsmEntry`) holds a `ValueLocation` that
+/// points either to the `prepare_registry` (current view) or to a
+/// CO::Prepare entry in the VLog (sealed views).  Reading a committed
+/// value always goes through `resolve_in_memory` or `resolve_on_disk`.
 pub struct UnifiedStore<K: Ord, V, IO: DiskIo> {
     /// MVCC memtable: current view's committed values + read timestamps.
     mvcc_memtable: Memtable<K, Timestamp>,
@@ -57,12 +75,19 @@ pub struct UnifiedStore<K: Ord, V, IO: DiskIo> {
     /// Sealed VLog segments (immutable, one per view group).
     sealed_vlog_segments: BTreeMap<u64, UnifiedVlogSegment<IO>>,
 
-    /// Maps transaction_id → in-memory typed Prepare payload.
-    /// Populated by `register_prepare()`, consumed by MVCC reads.
+    /// Current view's typed Prepare payloads, keyed by transaction_id.
+    ///
+    /// This is the fast path for value resolution: MVCC entries with
+    /// `ValueLocation::InMemory` look up values here instead of reading
+    /// the VLog.  Cleared at `seal_current_view()` because the data moves
+    /// to the VLog and future reads go through `prepare_cache` instead.
     prepare_registry: BTreeMap<OccTransactionId, Arc<CachedPrepare<K, V>>>,
 
-    /// LRU cache for deserialized CO::Prepare payloads from sealed VLog.
-    /// Uses RefCell for interior mutability (MvccBackend::get takes &self).
+    /// LRU cache for Prepare payloads deserialized from sealed VLog segments.
+    ///
+    /// Only consulted for `ValueLocation::OnDisk` reads (cross-view commits
+    /// or reads after seal).  Uses `RefCell` for interior mutability because
+    /// `MvccBackend::get` takes `&self`.
     prepare_cache: RefCell<PrepareCache<K, V>>,
 
     /// Current view number.
@@ -71,7 +96,12 @@ pub struct UnifiedStore<K: Ord, V, IO: DiskIo> {
     /// Persisted manifest.
     manifest: UnifiedManifest,
 
-    /// IR overlay: current view's IR entries (in-memory only).
+    /// Current view's IR entries (in-memory only).
+    ///
+    /// At seal time, finalized entries are serialized to the VLog and
+    /// replaced by `IrSstEntry` records in `ir_base`.  The overlay is
+    /// then cleared.  Typed K, V so that `Prepare` entries can be
+    /// inspected without deserializing from the VLog.
     ir_overlay: BTreeMap<OpId, IrMemEntry<K, V>>,
 
     /// IR base: maps OpId → IrSstEntry for the sealed IR base record.
@@ -80,8 +110,11 @@ pub struct UnifiedStore<K: Ord, V, IO: DiskIo> {
     ir_base: BTreeMap<OpId, IrSstEntry>,
 
     /// Maps transaction_id → VLog pointer for sealed CO::Prepare entries.
-    /// Populated at seal time, used by cross-view commit to create OnDisk
-    /// MVCC entries without re-reading the prepare from VLog.
+    ///
+    /// Populated at seal time.  Used by `commit_batch_for_transaction` when
+    /// the commit arrives after the prepare's view has been sealed (cross-view
+    /// commit).  Without this index, the commit path would have to scan the
+    /// VLog to find the prepare.
     pub(crate) prepare_vlog_index: BTreeMap<OccTransactionId, UnifiedVlogPtr>,
 
     /// Base directory for all on-disk files.
@@ -262,8 +295,13 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
         self.ir_base.get(&op_id)
     }
 
-    /// Register a prepare in the in-memory registry.
-    /// Called from `MvccBackend::register_prepare`.
+    /// Register a typed Prepare payload in the in-memory registry.
+    ///
+    /// Must be called before `commit_batch_for_transaction` so that
+    /// the commit path can create `ValueLocation::InMemory` entries
+    /// pointing into this registry.  If the view is sealed before
+    /// the commit arrives, the prepare is still accessible via
+    /// `prepare_vlog_index` + `resolve_on_disk`.
     pub fn register_prepare_raw(
         &mut self,
         txn_id: OccTransactionId,
@@ -278,7 +316,10 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
     }
 
     /// Resolve a value from the prepare registry (InMemory path).
-    /// Returns a reference to the typed (key, Option<value>) pair.
+    ///
+    /// Returns a reference to the typed `(key, Option<value>)` pair
+    /// from the current view's `prepare_registry`.  Returns `None` if
+    /// the transaction has been sealed or was never registered.
     pub fn resolve_in_memory(
         &self,
         txn_id: &OccTransactionId,
@@ -290,9 +331,13 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
     }
 
     /// Resolve a value from a sealed VLog (OnDisk path).
-    /// Uses the prepare cache to avoid repeated reads.
-    /// Takes `&self` via interior mutability (RefCell/Cell) so it can be
-    /// called from `MvccBackend::get(&self)`.
+    ///
+    /// Reads and deserializes the full CO::Prepare entry from the VLog,
+    /// then caches it in `prepare_cache` so subsequent reads for the same
+    /// transaction (or different write_set indices within it) avoid VLog I/O.
+    ///
+    /// Takes `&self` via interior mutability (`RefCell`/`Cell`) so it can
+    /// be called from `MvccBackend::get(&self)`.
     pub fn resolve_on_disk(
         &self,
         ptr: &UnifiedVlogPrepareValuePtr,
@@ -358,8 +403,13 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
         &mut self.unified_memtable
     }
 
-    /// Seal the current view: write VLog entries, flush MVCC memtable → SST,
-    /// update manifest, advance to next view.
+    /// Seal the current view: serialize typed overlay entries to the VLog,
+    /// convert `InMemory` MVCC entries to `OnDisk`, clear overlay and
+    /// registry, advance to the next view.
+    ///
+    /// This is the only point where typed `K, V` are serialized to bytes.
+    /// After seal, all value resolution for this view goes through
+    /// `resolve_on_disk` (VLog read + `prepare_cache`).
     pub fn seal_current_view(&mut self) -> Result<(), StorageError>
     where
         K: serde::Serialize + Clone,
@@ -533,7 +583,12 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
     }
 }
 
-/// Reference to an IR entry (either in overlay or base).
+/// Reference to an IR entry — either a typed in-memory overlay entry
+/// or a byte-level base SST entry.
+///
+/// Callers must handle both variants: `Overlay` gives direct access to
+/// typed payload fields, while `Base` only provides a VLog pointer
+/// (requires a VLog read to access the payload).
 pub enum IrEntryRef<'a, K, V> {
     Overlay(&'a IrMemEntry<K, V>),
     Base(&'a IrSstEntry),
