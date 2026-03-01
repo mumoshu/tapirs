@@ -30,7 +30,7 @@ fn run_raw_script(script: &str) -> (String, String, i32) {
 
 #[test]
 fn test_put_get_roundtrip() {
-    let (stdout, stderr, code) = run_script("put k1 v1 5; get k1");
+    let (stdout, stderr, code) = run_script("prepare 1:1 5 k1=v1; commit 1:1 5; get k1");
     assert_eq!(stderr, "");
     assert_eq!(code, 0);
     assert_eq!(stdout, "k1=v1 @5\n");
@@ -47,8 +47,12 @@ fn test_prepare_commit_get() {
 
 #[test]
 fn test_scan() {
-    let (stdout, stderr, code) =
-        run_script("put a v1 5; put b v2 10; put c v3 15; scan a d 20");
+    let (stdout, stderr, code) = run_script(
+        "prepare 1:1 5 a=v1; commit 1:1 5; \
+         prepare 1:2 10 b=v2; commit 1:2 10; \
+         prepare 1:3 15 c=v3; commit 1:3 15; \
+         scan a d 20",
+    );
     assert_eq!(stderr, "");
     assert_eq!(code, 0);
     assert_eq!(stdout, "a=v1 @5\nb=v2 @10\nc=v3 @15\n");
@@ -81,8 +85,11 @@ fn test_seal_and_list_vlogs() {
 
 #[test]
 fn test_get_range() {
-    let (stdout, stderr, code) =
-        run_script("put k v1 5; put k v2 20; get-range k 5");
+    let (stdout, stderr, code) = run_script(
+        "prepare 1:1 5 k=v1; commit 1:1 5; \
+         prepare 1:2 20 k=v2; commit 1:2 20; \
+         get-range k 5",
+    );
     assert_eq!(stderr, "");
     assert_eq!(code, 0);
     assert_eq!(stdout, "write_ts=5 next_ts=20\n");
@@ -90,8 +97,10 @@ fn test_get_range() {
 
 #[test]
 fn test_has_writes() {
-    let (stdout, stderr, code) =
-        run_script("put x v1 10; has-writes a z 0 100; has-writes a z 50 100");
+    let (stdout, stderr, code) = run_script(
+        "prepare 1:1 10 x=v1; commit 1:1 10; \
+         has-writes a z 0 100; has-writes a z 50 100",
+    );
     assert_eq!(stderr, "");
     assert_eq!(code, 0);
     assert_eq!(stdout, "true\nfalse\n");
@@ -99,8 +108,11 @@ fn test_has_writes() {
 
 #[test]
 fn test_delete() {
-    let (stdout, stderr, code) =
-        run_script("put k v1 5; delete k 10; get-at k 10; get-at k 5");
+    let (stdout, stderr, code) = run_script(
+        "prepare 1:1 5 k=v1; commit 1:1 5; \
+         prepare 1:2 10 k; commit 1:2 10; \
+         get-at k 10; get-at k 5",
+    );
     assert_eq!(stderr, "");
     assert_eq!(code, 0);
     assert_eq!(stdout, "k=<none> @10\nk=v1 @5\n");
@@ -272,7 +284,7 @@ fn test_unknown_command() {
 fn test_stdin_input() {
     let dir = tempfile::TempDir::new().unwrap();
     let script = format!(
-        "open {}\nput x hello 5\nget x\nstatus",
+        "open {}\nprepare 1:1 5 x=hello\ncommit 1:1 5\nget x\nstatus",
         dir.path().display()
     );
     let mut stdout = Vec::new();
