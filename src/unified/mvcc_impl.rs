@@ -10,6 +10,7 @@ use std::hash::Hash;
 use std::sync::Arc;
 
 // Bring OccTimestamp trait into scope for Timestamp::from_time().
+#[cfg(test)]
 use crate::occ::Timestamp as _;
 
 impl<K, V, IO: DiskIo> UnifiedStore<K, V, IO>
@@ -96,6 +97,7 @@ where
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn commit_get(
         &mut self,
         key: K,
@@ -107,6 +109,7 @@ where
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn get_last_read(&self, key: &K) -> Result<Option<Timestamp>, StorageError> {
         if let Some((_, entry)) = self.unified_memtable().get_latest(key)
             && let Some(ts) = entry.last_read_ts
@@ -116,6 +119,7 @@ where
         Ok(None)
     }
 
+    #[cfg(test)]
     pub(crate) fn get_last_read_at(
         &self,
         key: &K,
@@ -157,18 +161,4 @@ where
             .has_writes_in_range(start, end, after_ts, before_ts))
     }
 
-    pub(crate) fn commit_batch(
-        &mut self,
-        writes: Vec<(K, Option<V>)>,
-        reads: Vec<(K, Timestamp)>,
-        commit: Timestamp,
-    ) -> Result<(), StorageError> {
-        for (key, value) in writes {
-            self.put(key, value, commit)?;
-        }
-        for (key, read) in reads {
-            self.commit_get(key, read, commit)?;
-        }
-        Ok(())
-    }
 }

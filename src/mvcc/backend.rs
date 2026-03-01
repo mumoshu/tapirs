@@ -50,7 +50,7 @@ pub trait MvccBackend<K, V, TS>: Send {
     /// implementation delegates to `commit_batch()` so existing backends work
     /// unchanged.
     ///
-    /// `UnifiedMvccBackend` overrides this to create MVCC entries with
+    /// `UnifiedStore` overrides this to create MVCC entries with
     /// `ValueLocation::InMemory` pointing to the prepare_registry, avoiding
     /// value duplication in the VLog.
     fn commit_batch_for_transaction(

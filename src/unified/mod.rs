@@ -1,6 +1,5 @@
 pub mod cli;
 mod manifest;
-mod mvcc_backend;
 mod prepare_cache;
 pub mod types;
 pub(crate) mod unified_memtable;
@@ -27,8 +26,6 @@ use prepare_cache::PrepareCache;
 use types::*;
 use unified_memtable::UnifiedMemtable;
 use vlog::UnifiedVlogSegment;
-
-pub use mvcc_backend::UnifiedMvccBackend;
 
 /// Default prepare cache capacity.
 const DEFAULT_PREPARE_CACHE_CAPACITY: usize = 1024;
@@ -85,7 +82,7 @@ pub struct UnifiedStore<K: Ord, V, IO: DiskIo> {
     ///
     /// Only consulted for `ValueLocation::OnDisk` reads (cross-view commits
     /// or reads after seal).  Uses `RefCell` for interior mutability because
-    /// `MvccBackend::get` takes `&self`.
+    /// `get()` takes `&self`.
     prepare_cache: RefCell<PrepareCache<K, V>>,
 
     /// Current view number.
@@ -125,7 +122,7 @@ pub struct UnifiedStore<K: Ord, V, IO: DiskIo> {
     min_view_vlog_size: u64,
 
     /// Number of VLog reads performed (for testing LRU cache effectiveness).
-    /// Uses Cell for interior mutability (MvccBackend::get takes &self).
+    /// Uses Cell for interior mutability (get() takes &self).
     vlog_read_count: Cell<u64>,
 
     /// Number of entries written to the current view's VLog (for view seal).
@@ -479,7 +476,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
     /// transaction (or different write_set indices within it) avoid VLog I/O.
     ///
     /// Takes `&self` via interior mutability (`RefCell`/`Cell`) so it can
-    /// be called from `MvccBackend::get(&self)`.
+    /// be called from `get(&self)`.
     fn resolve_on_disk(
         &self,
         ptr: &UnifiedVlogPrepareValuePtr,
