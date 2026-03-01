@@ -388,7 +388,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                         return UR::OutOfRange;
                     }
                 }
-                UR::ScanValidated(self.store.scan_validated(&start_key, &end_key, snapshot_ts))
+                UR::ScanValidated(self.store.do_uncommitted_scan_validated(&start_key, &end_key, snapshot_ts))
             }
             UO::MinPrepareBaseline => {
                 if self.phase != ShardPhase::Decommissioning {

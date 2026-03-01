@@ -517,7 +517,7 @@ pub(crate) fn test_scan_validated_returns_none_before_quorum_scan(
     seed_value(store, "b", "v2", ts(1, 1));
 
     assert!(store
-        .scan_validated(&"a".to_string(), &"b".to_string(), ts(5, 1))
+        .do_uncommitted_scan_validated(&"a".to_string(), &"b".to_string(), ts(5, 1))
         .is_none());
 }
 
@@ -533,7 +533,7 @@ pub(crate) fn test_scan_validated_returns_some_after_quorum_scan(
         .unwrap();
 
     // scan_validated at same range + ts should return results.
-    let result = store.scan_validated(&"a".to_string(), &"b".to_string(), ts(5, 1));
+    let result = store.do_uncommitted_scan_validated(&"a".to_string(), &"b".to_string(), ts(5, 1));
     assert!(result.is_some());
     let entries = result.unwrap();
     assert_eq!(entries.len(), 2);

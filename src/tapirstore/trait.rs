@@ -112,7 +112,7 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
     // === Uncommitted Validated Reads ===
 
     fn do_uncommitted_get_validated(&self, key: &K, ts: Timestamp) -> Option<(Option<V>, Timestamp)>;
-    fn scan_validated(
+    fn do_uncommitted_scan_validated(
         &self,
         start: &K,
         end: &K,

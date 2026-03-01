@@ -285,7 +285,7 @@ where
         self.occ.get_validated(key, ts)
     }
 
-    fn scan_validated(
+    fn do_uncommitted_scan_validated(
         &self,
         start: &K,
         end: &K,
