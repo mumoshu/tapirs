@@ -1,6 +1,7 @@
 use super::{SharedTransaction, Timestamp, Transaction, TransactionId};
 use crate::{
     tapir::{Key, ShardNumber, Value},
+    tapirstore::CheckPrepareStatus,
     util::vectorize_btree,
 };
 use serde::{Deserialize, Serialize};
@@ -351,6 +352,48 @@ impl<K: Key, V: Value, TS: Timestamp + Send> PreparedTransactions<K, V, TS> {
     pub(crate) fn min_prepare_baseline(&self) -> (Option<TS>, Option<TS>) {
         let max_rr = self.range_reads.iter().map(|(_, _, ts)| *ts).max();
         (max_rr, self.max_read_commit_time)
+    }
+
+    /// Cascading lookup to determine the prepare status of a transaction.
+    ///
+    /// Takes external state as parameters to keep `PreparedTransactions`
+    /// decoupled from `TransactionLog` and `MinPrepareTimes`:
+    /// - `txn_log_entry`: result of `TransactionLog::txn_log_get(id)`
+    /// - `min_prepare_time`: current min_prepare_time from `MinPrepareTimes`
+    pub fn check_prepare_status(
+        &self,
+        txn_log_entry: Option<(TS, bool)>,
+        min_prepare_time: u64,
+        id: &TransactionId,
+        commit: &TS,
+    ) -> CheckPrepareStatus
+    where
+        TS: Timestamp<Time = u64>,
+    {
+        if let Some((ts, committed)) = txn_log_entry {
+            if committed {
+                if ts == *commit {
+                    CheckPrepareStatus::CommittedAtTimestamp
+                } else {
+                    CheckPrepareStatus::CommittedDifferent {
+                        proposed: ts.time(),
+                    }
+                }
+            } else {
+                CheckPrepareStatus::Aborted
+            }
+        } else if let Some(finalized) = self.prepared_at_timestamp(id, commit) {
+            CheckPrepareStatus::PreparedAtTimestamp { finalized }
+        } else if commit.time() < min_prepare_time
+            || self
+                .get(id)
+                .map(|(c, _, _)| c.time() < min_prepare_time)
+                .unwrap_or(false)
+        {
+            CheckPrepareStatus::TooLate
+        } else {
+            CheckPrepareStatus::Unknown
+        }
     }
 
     /// Update the max_read_commit_time watermark.

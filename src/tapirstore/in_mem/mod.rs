@@ -179,27 +179,12 @@ where
     }
 
     fn check_prepare_status(&self, id: &TransactionId, commit: &Timestamp) -> CheckPrepareStatus {
-        if let Some((ts, committed)) = self.transaction_log.txn_log_get(id) {
-            if committed {
-                if ts == *commit {
-                    CheckPrepareStatus::CommittedAtTimestamp
-                } else {
-                    CheckPrepareStatus::CommittedDifferent { proposed: ts.time }
-                }
-            } else {
-                CheckPrepareStatus::Aborted
-            }
-        } else if let Some(finalized) = self.occ.prepared_txns.prepared_at_timestamp(id, commit) {
-            CheckPrepareStatus::PreparedAtTimestamp { finalized }
-        } else if commit.time < self.min_prepare_times.min_prepare_time()
-            || self.occ.prepared_txns.get(id)
-                .map(|(c, _, _)| c.time < self.min_prepare_times.min_prepare_time())
-                .unwrap_or(false)
-        {
-            CheckPrepareStatus::TooLate
-        } else {
-            CheckPrepareStatus::Unknown
-        }
+        self.occ.prepared_txns.check_prepare_status(
+            self.transaction_log.txn_log_get(id),
+            self.min_prepare_times.min_prepare_time(),
+            id,
+            commit,
+        )
     }
 
     fn finalize_prepared_txn(&mut self, id: &TransactionId, commit: &Timestamp) -> bool {
