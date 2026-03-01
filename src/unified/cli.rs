@@ -123,7 +123,8 @@ fn parse_kv_pair(s: &str) -> Result<(String, Option<String>), String> {
     if let Some((k, v)) = s.split_once('=') {
         Ok((k.to_string(), Some(v.to_string())))
     } else {
-        Err(format!("invalid key=value pair: {s}"))
+        // Bare key without =value means tombstone (delete)
+        Ok((s.to_string(), None))
     }
 }
 
