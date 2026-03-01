@@ -220,7 +220,9 @@ where
 
     /// Commit a prepared transaction by creating MVCC index entries.
     ///
-    /// Delegates to `UnifiedStore::commit_prepared()`.
+    /// `commit` is the final commit timestamp (may differ from the
+    /// prepare-time proposal stored in `CachedPrepare::commit_ts`).
+    /// See `UnifiedStore::commit_prepared()` for details.
     pub fn commit_batch_for_transaction(
         &mut self,
         txn_id: OccTransactionId,

@@ -310,6 +310,13 @@ pub struct IrSstEntry {
 /// individual write_set items via `write_index`.
 pub struct CachedPrepare<K, V> {
     pub transaction_id: OccTransactionId,
+    /// Prepare-time (proposed) commit timestamp.
+    ///
+    /// This is the timestamp the client proposed at prepare time, NOT
+    /// necessarily the final commit timestamp.  In TAPIR, replicas may
+    /// return `Retry { proposed }` with a higher timestamp, and the
+    /// coordinator picks the maximum as the final commit timestamp.
+    /// The final timestamp is passed separately to `commit_prepared()`.
     pub commit_ts: Timestamp,
     pub read_set: Vec<(K, Timestamp)>,
     pub write_set: Vec<(K, Option<V>)>,

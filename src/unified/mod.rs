@@ -348,6 +348,13 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
 
     /// Commit a prepared transaction by creating MVCC index entries.
     ///
+    /// The `commit` timestamp is the **final** commit timestamp chosen by
+    /// the TAPIR coordinator.  It may differ from `CachedPrepare::commit_ts`
+    /// (the prepare-time proposal): when replicas return `Retry { proposed }`,
+    /// the coordinator picks the maximum as the final timestamp.  MVCC
+    /// entries must use this final timestamp so that reads at a given
+    /// snapshot see the correct version.
+    ///
     /// Two paths, tried in order:
     ///
     /// 1. **InMemory** — prepare is in the current view's `prepare_registry`.
