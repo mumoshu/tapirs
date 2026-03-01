@@ -58,6 +58,22 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
 
     fn remove_prepared(&mut self, id: TransactionId) -> bool;
 
+    /// Upsert a prepared transaction with three distinct behaviors:
+    ///
+    /// - **Insert** (vacant): If the transaction ID doesn't exist in `prepared`, inserts
+    ///   the new entry and populates `prepared_reads`/`prepared_writes` caches.
+    ///
+    /// - **Finalize** (same commit timestamp): If the ID already exists with the same
+    ///   commit timestamp, only updates the `finalized` flag. Debug-asserts that the
+    ///   transaction content is identical. Caches are untouched.
+    ///
+    /// - **Replace** (different commit timestamp): If the ID exists but with a different
+    ///   commit timestamp, replaces the entry entirely — removes old cache entries and
+    ///   adds new ones under the new timestamp.
+    ///
+    /// Calling this twice with identical arguments is idempotent (hits the finalize path).
+    /// Calling with a different commit timestamp for the same ID is not idempotent — it
+    /// mutates the caches differently each time.
     fn add_or_replace_or_finalize_prepared_txn(
         &mut self,
         id: TransactionId,
