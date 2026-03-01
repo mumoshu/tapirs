@@ -180,8 +180,8 @@ pub(crate) fn test_prepare_abort_removes_from_prepared(
     assert_eq!(result, PrepareResult::Ok);
     assert_eq!(store.prepared_count(), 1);
 
-    // Abort (remove_prepared).
-    let removed = store.remove_prepared(txn_id(1, 1));
+    // Abort (remove_prepared_txn).
+    let removed = store.remove_prepared_txn(txn_id(1, 1));
     assert!(removed);
     assert_eq!(store.prepared_count(), 0);
 }
@@ -189,7 +189,7 @@ pub(crate) fn test_prepare_abort_removes_from_prepared(
 pub(crate) fn test_remove_prepared_returns_false_if_not_found(
     store: &mut impl TapirStore<String, String>,
 ) {
-    assert!(!store.remove_prepared(txn_id(99, 99)));
+    assert!(!store.remove_prepared_txn(txn_id(99, 99)));
 }
 
 pub(crate) fn test_abort_does_not_affect_txn_log(
@@ -200,7 +200,7 @@ pub(crate) fn test_abort_does_not_affect_txn_log(
 
     // Record abort in txn_log.
     store.txn_log_insert(txn_id(1, 1), Timestamp::default(), false);
-    store.remove_prepared(txn_id(1, 1));
+    store.remove_prepared_txn(txn_id(1, 1));
 
     let (_, committed) = store.txn_log_get(&txn_id(1, 1)).unwrap();
     assert!(!committed);

@@ -56,7 +56,7 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
         commit: Timestamp,
     );
 
-    fn remove_prepared(&mut self, id: TransactionId) -> bool;
+    fn remove_prepared_txn(&mut self, id: TransactionId) -> bool;
 
     /// Upsert a prepared transaction with three distinct behaviors:
     ///

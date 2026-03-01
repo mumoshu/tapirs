@@ -173,7 +173,7 @@ where
         self.occ.commit(id, txn, commit);
     }
 
-    fn remove_prepared(&mut self, id: TransactionId) -> bool {
+    fn remove_prepared_txn(&mut self, id: TransactionId) -> bool {
         self.occ.remove_prepared(id)
     }
 

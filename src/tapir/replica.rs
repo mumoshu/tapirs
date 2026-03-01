@@ -479,7 +479,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                         true
                     })
                 {
-                    self.store.remove_prepared(*transaction_id);
+                    self.store.remove_prepared_txn(*transaction_id);
                 }
                 self.counters.abort_count.fetch_add(1, Ordering::Relaxed);
                 None
@@ -661,7 +661,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                             "syncing {:?} {op_id:?} prepare for {transaction_id:?} at {commit:?}",
                             entry.result
                         );
-                        self.store.remove_prepared(*transaction_id);
+                        self.store.remove_prepared_txn(*transaction_id);
                     }
                 }
                 CO::RaiseMinPrepareTime { .. } => {
