@@ -32,36 +32,30 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedMvccBackend<K, V, IO> {
 
 impl<K, V, IO: DiskIo> UnifiedMvccBackend<K, V, IO>
 where
-    K: Clone + Ord + Hash + Debug + Send + Serialize + for<'de> Deserialize<'de> + 'static,
-    V: Clone + Debug + Send + Serialize + for<'de> Deserialize<'de> + 'static,
+    K: Clone + Ord + Hash + Debug + Send + Sync + Serialize + for<'de> Deserialize<'de> + 'static,
+    V: Clone + Debug + Send + Sync + Serialize + for<'de> Deserialize<'de> + 'static,
     IO: DiskIo,
 {
     /// Resolve a value from a UnifiedLsmEntry's ValueLocation.
     ///
-    /// - `InMemory { txn_id, write_index }` → look up in prepare_registry
-    /// - `OnDisk(ptr)` → read from VLog via prepare_cache
+    /// - `InMemory { txn_id, write_index }` → look up in prepare_registry (typed)
+    /// - `OnDisk(ptr)` → read from VLog via prepare_cache (deserialized to typed)
     /// - `None` → tombstone / metadata-only entry
     fn resolve_value(&self, entry: &UnifiedLsmEntry) -> Result<Option<V>, StorageError> {
         match &entry.value_ref {
             None => Ok(None),
             Some(ValueLocation::InMemory { txn_id, write_index }) => {
                 match self.store.resolve_in_memory(txn_id, *write_index) {
-                    Some((_key_bytes, value_bytes)) => {
-                        let value: V = bitcode::deserialize(value_bytes)
-                            .map_err(|e| StorageError::Codec(e.to_string()))?;
-                        Ok(Some(value))
-                    }
+                    Some((_key, value)) => Ok(value.clone()),
                     None => Ok(None),
                 }
             }
             Some(ValueLocation::OnDisk(ptr)) => {
                 let cached = self.store.resolve_on_disk(ptr)?;
-                if let Some((_key_bytes, value_bytes)) =
+                if let Some((_key, value)) =
                     cached.write_set.get(ptr.write_index as usize)
                 {
-                    let value: V = bitcode::deserialize(value_bytes)
-                        .map_err(|e| StorageError::Codec(e.to_string()))?;
-                    Ok(Some(value))
+                    Ok(value.clone())
                 } else {
                     Ok(None)
                 }
@@ -72,8 +66,8 @@ where
 
 impl<K, V, IO: DiskIo> MvccBackend<K, V, Timestamp> for UnifiedMvccBackend<K, V, IO>
 where
-    K: Clone + Ord + Hash + Debug + Send + Serialize + for<'de> Deserialize<'de> + 'static,
-    V: Clone + Debug + Send + Serialize + for<'de> Deserialize<'de> + 'static,
+    K: Clone + Ord + Hash + Debug + Send + Sync + Serialize + for<'de> Deserialize<'de> + 'static,
+    V: Clone + Debug + Send + Sync + Serialize + for<'de> Deserialize<'de> + 'static,
     IO: DiskIo,
 {
     type Error = StorageError;
@@ -108,20 +102,13 @@ where
     fn put(&mut self, key: K, value: Option<V>, timestamp: Timestamp) -> Result<(), StorageError> {
         // For direct puts (not through commit_batch_for_transaction),
         // create a synthetic prepare entry for this single write.
-        let value_bytes = value
-            .as_ref()
-            .map(|v| bitcode::serialize(v).map_err(|e| StorageError::Codec(e.to_string())))
-            .transpose()?;
-        let key_bytes =
-            bitcode::serialize(&key).map_err(|e| StorageError::Codec(e.to_string()))?;
-
         let txn_id = OccTransactionId {
             client_id: crate::IrClientId(u64::MAX),
             number: timestamp.time,
         };
 
-        let write_set = if let Some(vb) = value_bytes {
-            vec![(key_bytes, vb)]
+        let write_set = if value.is_some() {
+            vec![(key.clone(), value)]
         } else {
             vec![]
         };
@@ -136,7 +123,7 @@ where
 
         self.store.register_prepare_raw(txn_id, prepare);
 
-        let value_ref = if value.is_some() {
+        let value_ref = if self.store.resolve_in_memory(&txn_id, 0).is_some() {
             Some(ValueLocation::InMemory {
                 txn_id,
                 write_index: 0,
@@ -244,11 +231,12 @@ use crate::occ::Timestamp as _;
 
 impl<K, V, IO: DiskIo> UnifiedMvccBackend<K, V, IO>
 where
-    K: Clone + Ord + Hash + Debug + Send + Serialize + for<'de> Deserialize<'de> + 'static,
-    V: Clone + Debug + Send + Serialize + for<'de> Deserialize<'de> + 'static,
+    K: Clone + Ord + Hash + Debug + Send + Sync + Serialize + for<'de> Deserialize<'de> + 'static,
+    V: Clone + Debug + Send + Sync + Serialize + for<'de> Deserialize<'de> + 'static,
     IO: DiskIo,
 {
     /// Register a prepared transaction for future zero-copy commit.
+    /// Stores typed K, V directly — no serialization to bytes.
     pub fn register_prepare(
         &mut self,
         txn_id: OccTransactionId,
@@ -257,32 +245,24 @@ where
     ) {
         let shard = crate::tapir::ShardNumber(0); // Unified store serves one shard
 
-        let read_set: Vec<(Vec<u8>, Timestamp)> = transaction
+        let read_set: Vec<(K, Timestamp)> = transaction
             .shard_read_set(shard)
-            .map(|(k, ts)| {
-                let kb = bitcode::serialize(k).unwrap_or_default();
-                (kb, ts)
-            })
+            .map(|(k, ts)| (k.clone(), ts))
             .collect();
 
-        let write_set: Vec<(Vec<u8>, Vec<u8>)> = transaction
+        let write_set: Vec<(K, Option<V>)> = transaction
             .shard_write_set(shard)
-            .map(|(k, v)| {
-                let kb = bitcode::serialize(k).unwrap_or_default();
-                let vb = v
-                    .as_ref()
-                    .map(|val| bitcode::serialize(val).unwrap_or_default())
-                    .unwrap_or_default();
-                (kb, vb)
-            })
+            .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
-        let scan_set: Vec<(Vec<u8>, Vec<u8>, Timestamp)> = transaction
+        let scan_set: Vec<(K, K, Timestamp)> = transaction
             .shard_scan_set(shard)
             .map(|entry| {
-                let start = bitcode::serialize(&entry.start_key).unwrap_or_default();
-                let end = bitcode::serialize(&entry.end_key).unwrap_or_default();
-                (start, end, entry.timestamp)
+                (
+                    entry.start_key.clone(),
+                    entry.end_key.clone(),
+                    entry.timestamp,
+                )
             })
             .collect();
 

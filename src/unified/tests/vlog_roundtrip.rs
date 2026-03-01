@@ -20,11 +20,11 @@ fn vlog_entry_roundtrip_prepare() {
     let mut seg = UnifiedVlogSegment::<MemoryIo>::open(0, path, flags).unwrap();
 
     let op_id = test_op_id(1, 1);
-    let payload = IrPayloadInline::Prepare {
+    let payload = IrPayloadInline::<String, String>::Prepare {
         transaction_id: test_txn_id(1, 1),
         commit_ts: test_ts(5),
-        read_set: vec![(b"key_a".to_vec(), test_ts(3))],
-        write_set: vec![(b"key_a".to_vec(), b"value_a".to_vec())],
+        read_set: vec![("key_a".to_string(), test_ts(3))],
+        write_set: vec![("key_a".to_string(), Some("value_a".to_string()))],
         scan_set: vec![],
     };
 
@@ -37,7 +37,8 @@ fn vlog_entry_roundtrip_prepare() {
     assert!(ptr.length > 0);
 
     // Read it back
-    let (read_op_id, read_type, read_payload) = seg.read_entry(&ptr).unwrap();
+    let (read_op_id, read_type, read_payload) =
+        seg.read_entry::<String, String>(&ptr).unwrap();
     assert_eq!(read_op_id, op_id);
     assert_eq!(read_type, VlogEntryType::Prepare);
 
@@ -52,10 +53,10 @@ fn vlog_entry_roundtrip_prepare() {
             assert_eq!(transaction_id, test_txn_id(1, 1));
             assert_eq!(commit_ts, test_ts(5));
             assert_eq!(read_set.len(), 1);
-            assert_eq!(read_set[0].0, b"key_a");
+            assert_eq!(read_set[0].0, "key_a");
             assert_eq!(write_set.len(), 1);
-            assert_eq!(write_set[0].0, b"key_a");
-            assert_eq!(write_set[0].1, b"value_a");
+            assert_eq!(write_set[0].0, "key_a");
+            assert_eq!(write_set[0].1, Some("value_a".to_string()));
             assert!(scan_set.is_empty());
         }
         _ => panic!("expected Prepare payload"),
@@ -79,7 +80,7 @@ fn vlog_entry_roundtrip_commit() {
     let prepare_op_id = test_op_id(1, 1);
     let commit_op_id = test_op_id(1, 2);
 
-    let payload = IrPayloadInline::Commit {
+    let payload = IrPayloadInline::<String, String>::Commit {
         transaction_id: test_txn_id(1, 1),
         commit_ts: test_ts(5),
         prepare_ref: PrepareRef::SameView(prepare_op_id),
@@ -89,7 +90,8 @@ fn vlog_entry_roundtrip_commit() {
         .append_entry(commit_op_id, VlogEntryType::Commit, &payload)
         .unwrap();
 
-    let (read_op_id, read_type, read_payload) = seg.read_entry(&ptr).unwrap();
+    let (read_op_id, read_type, read_payload) =
+        seg.read_entry::<String, String>(&ptr).unwrap();
     assert_eq!(read_op_id, commit_op_id);
     assert_eq!(read_type, VlogEntryType::Commit);
 
@@ -124,15 +126,15 @@ fn vlog_batch_append() {
 
     let mut seg = UnifiedVlogSegment::<MemoryIo>::open(0, path, flags).unwrap();
 
-    let payload1 = IrPayloadInline::Prepare {
+    let payload1 = IrPayloadInline::<String, String>::Prepare {
         transaction_id: test_txn_id(1, 1),
         commit_ts: test_ts(5),
         read_set: vec![],
-        write_set: vec![(b"x".to_vec(), b"v1".to_vec())],
+        write_set: vec![("x".to_string(), Some("v1".to_string()))],
         scan_set: vec![],
     };
 
-    let payload2 = IrPayloadInline::Commit {
+    let payload2 = IrPayloadInline::<String, String>::Commit {
         transaction_id: test_txn_id(1, 1),
         commit_ts: test_ts(5),
         prepare_ref: PrepareRef::SameView(test_op_id(1, 1)),
@@ -149,10 +151,10 @@ fn vlog_batch_append() {
     assert!(ptrs[1].offset > 0);
 
     // Read both back
-    let (_, t1, _) = seg.read_entry(&ptrs[0]).unwrap();
+    let (_, t1, _) = seg.read_entry::<String, String>(&ptrs[0]).unwrap();
     assert_eq!(t1, VlogEntryType::Prepare);
 
-    let (_, t2, _) = seg.read_entry(&ptrs[1]).unwrap();
+    let (_, t2, _) = seg.read_entry::<String, String>(&ptrs[1]).unwrap();
     assert_eq!(t2, VlogEntryType::Commit);
 }
 
@@ -170,30 +172,30 @@ fn vlog_read_prepare_helper() {
 
     let mut seg = UnifiedVlogSegment::<MemoryIo>::open(0, path, flags).unwrap();
 
-    let payload = IrPayloadInline::Prepare {
+    let payload = IrPayloadInline::<String, String>::Prepare {
         transaction_id: test_txn_id(2, 3),
         commit_ts: test_ts(10),
-        read_set: vec![(b"r1".to_vec(), test_ts(1))],
+        read_set: vec![("r1".to_string(), test_ts(1))],
         write_set: vec![
-            (b"w1".to_vec(), b"val1".to_vec()),
-            (b"w2".to_vec(), b"val2".to_vec()),
+            ("w1".to_string(), Some("val1".to_string())),
+            ("w2".to_string(), Some("val2".to_string())),
         ],
-        scan_set: vec![(b"s1".to_vec(), b"s2".to_vec(), test_ts(5))],
+        scan_set: vec![("s1".to_string(), "s2".to_string(), test_ts(5))],
     };
 
     let ptr = seg
         .append_entry(test_op_id(2, 1), VlogEntryType::Prepare, &payload)
         .unwrap();
 
-    let cached = seg.read_prepare(&ptr).unwrap();
+    let cached = seg.read_prepare::<String, String>(&ptr).unwrap();
     assert_eq!(cached.transaction_id, test_txn_id(2, 3));
     assert_eq!(cached.commit_ts, test_ts(10));
     assert_eq!(cached.read_set.len(), 1);
     assert_eq!(cached.write_set.len(), 2);
-    assert_eq!(cached.write_set[0].0, b"w1");
-    assert_eq!(cached.write_set[0].1, b"val1");
-    assert_eq!(cached.write_set[1].0, b"w2");
-    assert_eq!(cached.write_set[1].1, b"val2");
+    assert_eq!(cached.write_set[0].0, "w1");
+    assert_eq!(cached.write_set[0].1, Some("val1".to_string()));
+    assert_eq!(cached.write_set[1].0, "w2");
+    assert_eq!(cached.write_set[1].1, Some("val2".to_string()));
     assert_eq!(cached.scan_set.len(), 1);
 }
 
@@ -212,14 +214,14 @@ fn vlog_all_entry_types_roundtrip() {
     let mut seg = UnifiedVlogSegment::<MemoryIo>::open(0, path, flags).unwrap();
 
     // Abort
-    let abort_payload = IrPayloadInline::Abort {
+    let abort_payload = IrPayloadInline::<String, String>::Abort {
         transaction_id: test_txn_id(1, 1),
         commit_ts: Some(test_ts(5)),
     };
     let ptr = seg
         .append_entry(test_op_id(1, 1), VlogEntryType::Abort, &abort_payload)
         .unwrap();
-    let (_, t, p) = seg.read_entry(&ptr).unwrap();
+    let (_, t, p) = seg.read_entry::<String, String>(&ptr).unwrap();
     assert_eq!(t, VlogEntryType::Abort);
     match p {
         IrPayloadInline::Abort { transaction_id, commit_ts } => {
@@ -230,45 +232,45 @@ fn vlog_all_entry_types_roundtrip() {
     }
 
     // QuorumRead
-    let qr_payload = IrPayloadInline::QuorumRead {
-        key: b"mykey".to_vec(),
+    let qr_payload = IrPayloadInline::<String, String>::QuorumRead {
+        key: "mykey".to_string(),
         timestamp: test_ts(7),
     };
     let ptr = seg
         .append_entry(test_op_id(1, 2), VlogEntryType::QuorumRead, &qr_payload)
         .unwrap();
-    let (_, t, p) = seg.read_entry(&ptr).unwrap();
+    let (_, t, p) = seg.read_entry::<String, String>(&ptr).unwrap();
     assert_eq!(t, VlogEntryType::QuorumRead);
     match p {
         IrPayloadInline::QuorumRead { key, timestamp } => {
-            assert_eq!(key, b"mykey");
+            assert_eq!(key, "mykey");
             assert_eq!(timestamp, test_ts(7));
         }
         _ => panic!("wrong payload type"),
     }
 
     // QuorumScan
-    let qs_payload = IrPayloadInline::QuorumScan {
-        start_key: b"a".to_vec(),
-        end_key: b"z".to_vec(),
+    let qs_payload = IrPayloadInline::<String, String>::QuorumScan {
+        start_key: "a".to_string(),
+        end_key: "z".to_string(),
         snapshot_ts: test_ts(15),
     };
     let ptr = seg
         .append_entry(test_op_id(1, 3), VlogEntryType::QuorumScan, &qs_payload)
         .unwrap();
-    let (_, t, p) = seg.read_entry(&ptr).unwrap();
+    let (_, t, p) = seg.read_entry::<String, String>(&ptr).unwrap();
     assert_eq!(t, VlogEntryType::QuorumScan);
     match p {
         IrPayloadInline::QuorumScan { start_key, end_key, snapshot_ts } => {
-            assert_eq!(start_key, b"a");
-            assert_eq!(end_key, b"z");
+            assert_eq!(start_key, "a");
+            assert_eq!(end_key, "z");
             assert_eq!(snapshot_ts, test_ts(15));
         }
         _ => panic!("wrong payload type"),
     }
 
     // RaiseMinPrepareTime
-    let rmpt_payload = IrPayloadInline::RaiseMinPrepareTime { time: 42 };
+    let rmpt_payload = IrPayloadInline::<String, String>::RaiseMinPrepareTime { time: 42 };
     let ptr = seg
         .append_entry(
             test_op_id(1, 4),
@@ -276,7 +278,7 @@ fn vlog_all_entry_types_roundtrip() {
             &rmpt_payload,
         )
         .unwrap();
-    let (_, t, p) = seg.read_entry(&ptr).unwrap();
+    let (_, t, p) = seg.read_entry::<String, String>(&ptr).unwrap();
     assert_eq!(t, VlogEntryType::RaiseMinPrepareTime);
     match p {
         IrPayloadInline::RaiseMinPrepareTime { time } => {

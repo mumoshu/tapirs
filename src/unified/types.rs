@@ -2,6 +2,7 @@ use crate::ir::OpId;
 use crate::occ::TransactionId as OccTransactionId;
 use crate::tapir::Timestamp;
 use serde::{Deserialize, Serialize};
+use std::fmt::Debug;
 
 /// Physical pointer to an entry within the unified VLog.
 ///
@@ -79,8 +80,7 @@ pub enum VlogEntryType {
 }
 
 /// IR memtable entry. Holds data in memory for the current view's overlay.
-#[derive(Debug, Clone)]
-pub struct IrMemEntry {
+pub struct IrMemEntry<K, V> {
     /// Which IR operation type this entry represents.
     pub entry_type: VlogEntryType,
     /// Whether this entry is Tentative or Finalized.
@@ -89,10 +89,30 @@ pub struct IrMemEntry {
     // overlay during the current view. modified_view would always
     // equal store.current_view().
     /// The full operation payload held inline in memory.
-    pub payload: IrPayloadInline,
+    pub payload: IrPayloadInline<K, V>,
     // NOTE: No `vlog_ptr` field. VLog writes are deferred to view seal
     // time. At seal time, the overlay is discarded and replaced by
     // `IrSstEntry` records (which DO have `vlog_ptr`).
+}
+
+impl<K: Debug, V: Debug> Debug for IrMemEntry<K, V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IrMemEntry")
+            .field("entry_type", &self.entry_type)
+            .field("state", &self.state)
+            .field("payload", &self.payload)
+            .finish()
+    }
+}
+
+impl<K: Clone, V: Clone> Clone for IrMemEntry<K, V> {
+    fn clone(&self) -> Self {
+        Self {
+            entry_type: self.entry_type,
+            state: self.state,
+            payload: self.payload.clone(),
+        }
+    }
 }
 
 /// IR operation state.
@@ -106,22 +126,22 @@ pub enum IrState {
 
 /// Inline payload for IR entries.
 ///
-/// All keys and values are opaque byte vectors — no encoding assumed.
-#[derive(Debug, Clone)]
-pub enum IrPayloadInline {
+/// Uses typed `K` and `V` for keys and values while in memory.
+/// Serialized to bytes at view seal time for VLog persistence.
+pub enum IrPayloadInline<K, V> {
     /// CO::Prepare payload — the full transaction data for OCC validation.
     /// This is the SOLE carrier of write_set values; IO::Commit only has
     /// a PrepareRef back to this entry.
     Prepare {
         transaction_id: OccTransactionId,
         commit_ts: Timestamp,
-        /// Read set: `(key_bytes, read_timestamp)` per read.
-        read_set: Vec<(Vec<u8>, Timestamp)>,
-        /// Write set: `(key_bytes, value_bytes)` per write.
+        /// Read set: `(key, read_timestamp)` per read.
+        read_set: Vec<(K, Timestamp)>,
+        /// Write set: `(key, value)` per write. `None` = delete tombstone.
         /// MVCC `UnifiedVlogPrepareValuePtr` entries reference `write_set[index]`.
-        write_set: Vec<(Vec<u8>, Vec<u8>)>,
+        write_set: Vec<(K, Option<V>)>,
         /// Scan set: `(start_key, end_key, timestamp)` per scan.
-        scan_set: Vec<(Vec<u8>, Vec<u8>, Timestamp)>,
+        scan_set: Vec<(K, K, Timestamp)>,
         // NOTE: No `result` field — the OCC prepare result is only needed
         // by the IR consensus protocol (wire), not by VLog reads.
     },
@@ -138,19 +158,111 @@ pub enum IrPayloadInline {
     },
     /// IO::QuorumRead payload — RO transaction slow path quorum read.
     QuorumRead {
-        key: Vec<u8>,
+        key: K,
         timestamp: Timestamp,
     },
     /// IO::QuorumScan payload — RO transaction slow path quorum scan.
     QuorumScan {
-        start_key: Vec<u8>,
-        end_key: Vec<u8>,
+        start_key: K,
+        end_key: K,
         snapshot_ts: Timestamp,
     },
     /// CO::RaiseMinPrepareTime payload.
     RaiseMinPrepareTime {
         time: u64,
     },
+}
+
+impl<K: Debug, V: Debug> Debug for IrPayloadInline<K, V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Prepare { transaction_id, commit_ts, read_set, write_set, scan_set } => {
+                f.debug_struct("Prepare")
+                    .field("transaction_id", transaction_id)
+                    .field("commit_ts", commit_ts)
+                    .field("read_set", read_set)
+                    .field("write_set", write_set)
+                    .field("scan_set", scan_set)
+                    .finish()
+            }
+            Self::Commit { transaction_id, commit_ts, prepare_ref } => {
+                f.debug_struct("Commit")
+                    .field("transaction_id", transaction_id)
+                    .field("commit_ts", commit_ts)
+                    .field("prepare_ref", prepare_ref)
+                    .finish()
+            }
+            Self::Abort { transaction_id, commit_ts } => {
+                f.debug_struct("Abort")
+                    .field("transaction_id", transaction_id)
+                    .field("commit_ts", commit_ts)
+                    .finish()
+            }
+            Self::QuorumRead { key, timestamp } => {
+                f.debug_struct("QuorumRead")
+                    .field("key", key)
+                    .field("timestamp", timestamp)
+                    .finish()
+            }
+            Self::QuorumScan { start_key, end_key, snapshot_ts } => {
+                f.debug_struct("QuorumScan")
+                    .field("start_key", start_key)
+                    .field("end_key", end_key)
+                    .field("snapshot_ts", snapshot_ts)
+                    .finish()
+            }
+            Self::RaiseMinPrepareTime { time } => {
+                f.debug_struct("RaiseMinPrepareTime")
+                    .field("time", time)
+                    .finish()
+            }
+        }
+    }
+}
+
+impl<K: Clone, V: Clone> Clone for IrPayloadInline<K, V> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Prepare { transaction_id, commit_ts, read_set, write_set, scan_set } => {
+                Self::Prepare {
+                    transaction_id: *transaction_id,
+                    commit_ts: *commit_ts,
+                    read_set: read_set.clone(),
+                    write_set: write_set.clone(),
+                    scan_set: scan_set.clone(),
+                }
+            }
+            Self::Commit { transaction_id, commit_ts, prepare_ref } => {
+                Self::Commit {
+                    transaction_id: *transaction_id,
+                    commit_ts: *commit_ts,
+                    prepare_ref: prepare_ref.clone(),
+                }
+            }
+            Self::Abort { transaction_id, commit_ts } => {
+                Self::Abort {
+                    transaction_id: *transaction_id,
+                    commit_ts: *commit_ts,
+                }
+            }
+            Self::QuorumRead { key, timestamp } => {
+                Self::QuorumRead {
+                    key: key.clone(),
+                    timestamp: *timestamp,
+                }
+            }
+            Self::QuorumScan { start_key, end_key, snapshot_ts } => {
+                Self::QuorumScan {
+                    start_key: start_key.clone(),
+                    end_key: end_key.clone(),
+                    snapshot_ts: *snapshot_ts,
+                }
+            }
+            Self::RaiseMinPrepareTime { time } => {
+                Self::RaiseMinPrepareTime { time: *time }
+            }
+        }
+    }
 }
 
 /// Reference from an IO::Commit entry to its corresponding CO::Prepare entry.
@@ -172,13 +284,16 @@ pub struct IrSstEntry {
     pub vlog_ptr: UnifiedVlogPtr,
 }
 
-/// Cached deserialized CO::Prepare payload stored in the LRU cache.
-pub struct CachedPrepare {
+/// Deserialized CO::Prepare payload with typed keys and values.
+///
+/// Stored in the `prepare_registry` (in-memory, current view) and the
+/// `prepare_cache` (LRU cache for sealed VLog reads).
+pub struct CachedPrepare<K, V> {
     pub transaction_id: OccTransactionId,
     pub commit_ts: Timestamp,
-    pub read_set: Vec<(Vec<u8>, Timestamp)>,
-    pub write_set: Vec<(Vec<u8>, Vec<u8>)>,
-    pub scan_set: Vec<(Vec<u8>, Vec<u8>, Timestamp)>,
+    pub read_set: Vec<(K, Timestamp)>,
+    pub write_set: Vec<(K, Option<V>)>,
+    pub scan_set: Vec<(K, K, Timestamp)>,
 }
 
 /// Byte range and entry count for one view's entries within a VLog segment.

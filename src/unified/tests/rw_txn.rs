@@ -117,10 +117,7 @@ fn sync_replays_prepare_before_commit() {
             transaction_id: test_txn_id(1, 1),
             commit_ts: test_ts(5),
             read_set: vec![],
-            write_set: vec![(
-                bitcode::serialize(&"x".to_string()).unwrap(),
-                bitcode::serialize(&"v1".to_string()).unwrap(),
-            )],
+            write_set: vec![("x".to_string(), Some("v1".to_string()))],
             scan_set: vec![],
         },
     };
@@ -186,7 +183,7 @@ fn unified_store_prepare_registry() {
         transaction_id: txn_id,
         commit_ts: test_ts(5),
         read_set: vec![],
-        write_set: vec![(b"x".to_vec(), b"v1".to_vec())],
+        write_set: vec![("x".to_string(), Some("v1".to_string()))],
         scan_set: vec![],
     });
 
@@ -196,8 +193,8 @@ fn unified_store_prepare_registry() {
     let entry = store.inner().resolve_in_memory(&txn_id, 0);
     assert!(entry.is_some(), "Expected entry in prepare registry");
     let (key, value) = entry.unwrap();
-    assert_eq!(key, b"x", "Prepare key mismatch");
-    assert_eq!(value, b"v1", "Prepare value mismatch");
+    assert_eq!(key, "x", "Prepare key mismatch");
+    assert_eq!(value.as_deref(), Some("v1"), "Prepare value mismatch");
 
     // Out of bounds index
     assert!(
@@ -240,7 +237,7 @@ fn unified_store_seal_view() {
                 transaction_id: test_txn_id(1, 1),
                 commit_ts: test_ts(5),
                 read_set: vec![],
-                write_set: vec![(b"key1".to_vec(), b"val1".to_vec())],
+                write_set: vec![("key1".to_string(), Some("val1".to_string()))],
                 scan_set: vec![],
             },
         },
@@ -269,7 +266,7 @@ fn unified_store_seal_view() {
                 transaction_id: test_txn_id(2, 1),
                 commit_ts: test_ts(10),
                 read_set: vec![],
-                write_set: vec![(b"key2".to_vec(), b"val2".to_vec())],
+                write_set: vec![("key2".to_string(), Some("val2".to_string()))],
                 scan_set: vec![],
             },
         },
@@ -364,8 +361,8 @@ fn unified_store_cross_view_read() {
         commit_ts: test_ts(5),
         read_set: vec![],
         write_set: vec![
-            (b"key_a".to_vec(), b"value_a".to_vec()),
-            (b"key_b".to_vec(), b"value_b".to_vec()),
+            ("key_a".to_string(), Some("value_a".to_string())),
+            ("key_b".to_string(), Some("value_b".to_string())),
         ],
         scan_set: vec![],
     };
@@ -429,10 +426,10 @@ fn unified_store_cross_view_read() {
         2,
         "CachedPrepare write_set should have 2 entries"
     );
-    assert_eq!(cached.write_set[0].0, b"key_a");
-    assert_eq!(cached.write_set[0].1, b"value_a");
-    assert_eq!(cached.write_set[1].0, b"key_b");
-    assert_eq!(cached.write_set[1].1, b"value_b");
+    assert_eq!(cached.write_set[0].0, "key_a");
+    assert_eq!(cached.write_set[0].1, Some("value_a".to_string()));
+    assert_eq!(cached.write_set[1].0, "key_b");
+    assert_eq!(cached.write_set[1].1, Some("value_b".to_string()));
 
     // First read should have incremented vlog_read_count
     assert_eq!(store.inner().vlog_read_count(), 1, "Expected 1 VLog read");
@@ -465,7 +462,7 @@ fn unified_store_cross_view_read() {
 fn prepare_cache_lru_eviction() {
     use crate::unified::prepare_cache::PrepareCache;
 
-    let mut cache = PrepareCache::new(2);
+    let mut cache = PrepareCache::<String, String>::new(2);
     assert_eq!(cache.len(), 0);
 
     let p1 = std::sync::Arc::new(CachedPrepare {

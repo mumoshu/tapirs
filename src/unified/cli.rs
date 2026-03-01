@@ -214,17 +214,10 @@ fn cmd_prepare(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
         writes.push(parse_kv_pair(kv)?);
     }
 
-    // Build serialized write set for IR entry
-    let write_set: Vec<(Vec<u8>, Vec<u8>)> = writes
+    // Build typed write set for IR entry and prepare registry
+    let write_set: Vec<(String, Option<String>)> = writes
         .iter()
-        .map(|(k, v)| {
-            (
-                bitcode::serialize(k).unwrap_or_default(),
-                v.as_ref()
-                    .map(|s| bitcode::serialize(s).unwrap_or_default())
-                    .unwrap_or_default(),
-            )
-        })
+        .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
 
     // Register prepare in the store
@@ -240,7 +233,7 @@ fn cmd_prepare(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
     let store = ctx.store_mut()?;
     store.inner_mut().register_prepare_raw(txn_id, prepare);
 
-    // Insert IR overlay entry
+    // Insert IR overlay entry with typed payload
     let current_view = store.inner().current_view();
     store.inner_mut().insert_ir_entry(
         op_id,
@@ -253,14 +246,7 @@ fn cmd_prepare(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
                 read_set: vec![],
                 write_set: writes
                     .iter()
-                    .map(|(k, v)| {
-                        (
-                            bitcode::serialize(k).unwrap_or_default(),
-                            v.as_ref()
-                                .map(|s| bitcode::serialize(s).unwrap_or_default())
-                                .unwrap_or_default(),
-                        )
-                    })
+                    .map(|(k, v)| (k.clone(), v.clone()))
                     .collect(),
                 scan_set: vec![],
             },
@@ -490,12 +476,9 @@ fn cmd_dump_vlog<W: Write>(
                     transaction_id.client_id.0, transaction_id.number, commit_ts.time
                 )
                 .map_err(|e| format!("write failed: {e}"))?;
-                for (k_bytes, v_bytes) in write_set {
-                    let k: String = bitcode::deserialize(k_bytes)
-                        .unwrap_or_else(|_| format!("<{} bytes>", k_bytes.len()));
-                    let v: String = bitcode::deserialize(v_bytes)
-                        .unwrap_or_else(|_| format!("<{} bytes>", v_bytes.len()));
-                    write!(stdout, " {k}={v}").map_err(|e| format!("write failed: {e}"))?;
+                for (k, v) in write_set {
+                    let v_str = v.as_deref().unwrap_or("<tombstone>");
+                    write!(stdout, " {k}={v_str}").map_err(|e| format!("write failed: {e}"))?;
                 }
                 writeln!(stdout).map_err(|e| format!("write failed: {e}"))?;
             }
@@ -538,9 +521,7 @@ fn cmd_dump_vlog<W: Write>(
                 .map_err(|e| format!("write failed: {e}"))?;
             }
             IrPayloadInline::QuorumRead { key, timestamp } => {
-                let k: String = bitcode::deserialize(key)
-                    .unwrap_or_else(|_| format!("<{} bytes>", key.len()));
-                writeln!(stdout, "QUORUM_READ key={k} ts={}", timestamp.time)
+                writeln!(stdout, "QUORUM_READ key={key} ts={}", timestamp.time)
                     .map_err(|e| format!("write failed: {e}"))?;
             }
             IrPayloadInline::QuorumScan {
@@ -548,13 +529,9 @@ fn cmd_dump_vlog<W: Write>(
                 end_key,
                 snapshot_ts,
             } => {
-                let sk: String = bitcode::deserialize(start_key)
-                    .unwrap_or_else(|_| format!("<{} bytes>", start_key.len()));
-                let ek: String = bitcode::deserialize(end_key)
-                    .unwrap_or_else(|_| format!("<{} bytes>", end_key.len()));
                 writeln!(
                     stdout,
-                    "QUORUM_SCAN start={sk} end={ek} ts={}",
+                    "QUORUM_SCAN start={start_key} end={end_key} ts={}",
                     snapshot_ts.time
                 )
                 .map_err(|e| format!("write failed: {e}"))?;

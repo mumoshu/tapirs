@@ -18,7 +18,6 @@ use crate::occ::TransactionId as OccTransactionId;
 use crate::tapir::Timestamp;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
-use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -39,8 +38,9 @@ const DEFAULT_MIN_VIEW_VLOG_SIZE: u64 = 256 * 1024;
 /// The unified storage engine backing both IR record persistence
 /// and MVCC value storage through a shared VLog.
 ///
-/// Operates on opaque byte vectors for user keys and values in the VLog,
-/// but uses typed `K` for the in-memory MVCC memtable index.
+/// Uses typed `K` and `V` for in-memory data structures (ir_overlay,
+/// prepare_registry). Values are serialized to bytes only at view seal
+/// time for VLog persistence.
 pub struct UnifiedStore<K: Ord, V, IO: DiskIo> {
     /// MVCC memtable: current view's committed values + read timestamps.
     mvcc_memtable: Memtable<K, Timestamp>,
@@ -57,13 +57,13 @@ pub struct UnifiedStore<K: Ord, V, IO: DiskIo> {
     /// Sealed VLog segments (immutable, one per view group).
     sealed_vlog_segments: BTreeMap<u64, UnifiedVlogSegment<IO>>,
 
-    /// Maps transaction_id → in-memory Prepare payload.
+    /// Maps transaction_id → in-memory typed Prepare payload.
     /// Populated by `register_prepare()`, consumed by MVCC reads.
-    prepare_registry: BTreeMap<OccTransactionId, Arc<CachedPrepare>>,
+    prepare_registry: BTreeMap<OccTransactionId, Arc<CachedPrepare<K, V>>>,
 
     /// LRU cache for deserialized CO::Prepare payloads from sealed VLog.
     /// Uses RefCell for interior mutability (MvccBackend::get takes &self).
-    prepare_cache: RefCell<PrepareCache>,
+    prepare_cache: RefCell<PrepareCache<K, V>>,
 
     /// Current view number.
     current_view: u64,
@@ -72,7 +72,7 @@ pub struct UnifiedStore<K: Ord, V, IO: DiskIo> {
     manifest: UnifiedManifest,
 
     /// IR overlay: current view's IR entries (in-memory only).
-    ir_overlay: BTreeMap<OpId, IrMemEntry>,
+    ir_overlay: BTreeMap<OpId, IrMemEntry<K, V>>,
 
     /// IR base: maps OpId → IrSstEntry for the sealed IR base record.
     /// In a full implementation this would be an on-disk IR SST.
@@ -99,8 +99,6 @@ pub struct UnifiedStore<K: Ord, V, IO: DiskIo> {
 
     /// Number of entries written to the current view's VLog (for view seal).
     current_view_entry_count: u32,
-
-    _v: PhantomData<V>,
 }
 
 impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
@@ -185,7 +183,6 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
             min_view_vlog_size,
             vlog_read_count: Cell::new(0),
             current_view_entry_count: 0,
-            _v: PhantomData,
         })
     }
 
@@ -225,7 +222,11 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
     pub fn dump_vlog_segment(
         &self,
         segment_id: u64,
-    ) -> Result<Vec<(u64, crate::ir::OpId, VlogEntryType, IrPayloadInline)>, StorageError> {
+    ) -> Result<Vec<(u64, crate::ir::OpId, VlogEntryType, IrPayloadInline<K, V>)>, StorageError>
+    where
+        K: serde::de::DeserializeOwned,
+        V: serde::de::DeserializeOwned,
+    {
         if self.active_vlog.id == segment_id {
             self.active_vlog.iter_entries()
         } else if let Some(seg) = self.sealed_vlog_segments.get(&segment_id) {
@@ -238,17 +239,17 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
     }
 
     /// Iterate over all IR overlay entries.
-    pub fn ir_overlay_entries(&self) -> impl Iterator<Item = (&OpId, &IrMemEntry)> {
+    pub fn ir_overlay_entries(&self) -> impl Iterator<Item = (&OpId, &IrMemEntry<K, V>)> {
         self.ir_overlay.iter()
     }
 
     /// Insert an IR entry into the overlay.
-    pub fn insert_ir_entry(&mut self, op_id: OpId, entry: IrMemEntry) {
+    pub fn insert_ir_entry(&mut self, op_id: OpId, entry: IrMemEntry<K, V>) {
         self.ir_overlay.insert(op_id, entry);
     }
 
     /// Look up an IR entry by OpId (overlay first, then base).
-    pub fn ir_entry(&self, op_id: &OpId) -> Option<IrEntryRef<'_>> {
+    pub fn ir_entry(&self, op_id: &OpId) -> Option<IrEntryRef<'_, K, V>> {
         if let Some(mem_entry) = self.ir_overlay.get(op_id) {
             Some(IrEntryRef::Overlay(mem_entry))
         } else {
@@ -266,7 +267,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
     pub fn register_prepare_raw(
         &mut self,
         txn_id: OccTransactionId,
-        prepare: Arc<CachedPrepare>,
+        prepare: Arc<CachedPrepare<K, V>>,
     ) {
         self.prepare_registry.insert(txn_id, prepare);
     }
@@ -277,11 +278,12 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
     }
 
     /// Resolve a value from the prepare registry (InMemory path).
+    /// Returns a reference to the typed (key, Option<value>) pair.
     pub fn resolve_in_memory(
         &self,
         txn_id: &OccTransactionId,
         write_index: u16,
-    ) -> Option<&(Vec<u8>, Vec<u8>)> {
+    ) -> Option<&(K, Option<V>)> {
         self.prepare_registry
             .get(txn_id)
             .and_then(|p| p.write_set.get(write_index as usize))
@@ -294,7 +296,11 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
     pub fn resolve_on_disk(
         &self,
         ptr: &UnifiedVlogPrepareValuePtr,
-    ) -> Result<Arc<CachedPrepare>, StorageError> {
+    ) -> Result<Arc<CachedPrepare<K, V>>, StorageError>
+    where
+        K: serde::de::DeserializeOwned,
+        V: serde::de::DeserializeOwned,
+    {
         let key_seg = ptr.prepare_ptr.segment_id;
         let key_off = ptr.prepare_ptr.offset;
 
@@ -357,9 +363,10 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
     pub fn seal_current_view(&mut self) -> Result<(), StorageError>
     where
         K: serde::Serialize + Clone,
+        V: serde::Serialize + Clone,
     {
         // 1. Write all finalized overlay entries to VLog
-        let finalized_entries: Vec<(OpId, VlogEntryType, IrPayloadInline)> = self
+        let finalized_entries: Vec<(OpId, VlogEntryType, IrPayloadInline<K, V>)> = self
             .ir_overlay
             .iter()
             .filter(|(_, entry)| matches!(entry.state, IrState::Finalized(_)))
@@ -368,7 +375,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
 
         let mut vlog_ptrs = Vec::new();
         if !finalized_entries.is_empty() {
-            let entry_refs: Vec<(OpId, VlogEntryType, &IrPayloadInline)> = finalized_entries
+            let entry_refs: Vec<(OpId, VlogEntryType, &IrPayloadInline<K, V>)> = finalized_entries
                 .iter()
                 .map(|(op, et, p)| (*op, *et, p))
                 .collect();
@@ -470,7 +477,11 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
     }
 
     /// Extract only finalized entries from the overlay (for leader merge simulation).
-    pub fn extract_finalized_entries(&self) -> Vec<(OpId, IrMemEntry)> {
+    pub fn extract_finalized_entries(&self) -> Vec<(OpId, IrMemEntry<K, V>)>
+    where
+        K: Clone,
+        V: Clone,
+    {
         self.ir_overlay
             .iter()
             .filter(|(_, entry)| matches!(entry.state, IrState::Finalized(_)))
@@ -482,14 +493,18 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
     /// All entries are marked Finalized(target_view).
     pub fn install_merged_record(
         &mut self,
-        entries: Vec<(OpId, IrMemEntry)>,
+        entries: Vec<(OpId, IrMemEntry<K, V>)>,
         target_view: u64,
-    ) -> Result<(), StorageError> {
+    ) -> Result<(), StorageError>
+    where
+        K: serde::Serialize,
+        V: serde::Serialize,
+    {
         // Clear old base and install new one
         self.ir_base.clear();
 
         // Write entries to VLog
-        let entry_refs: Vec<(OpId, VlogEntryType, &IrPayloadInline)> = entries
+        let entry_refs: Vec<(OpId, VlogEntryType, &IrPayloadInline<K, V>)> = entries
             .iter()
             .map(|(op, entry)| (*op, entry.entry_type, &entry.payload))
             .collect();
@@ -519,7 +534,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
 }
 
 /// Reference to an IR entry (either in overlay or base).
-pub enum IrEntryRef<'a> {
-    Overlay(&'a IrMemEntry),
+pub enum IrEntryRef<'a, K, V> {
+    Overlay(&'a IrMemEntry<K, V>),
     Base(&'a IrSstEntry),
 }

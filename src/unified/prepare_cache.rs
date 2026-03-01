@@ -6,9 +6,9 @@ use std::sync::Arc;
 ///
 /// Avoids repeated VLog reads + deserialization for hot transactions.
 /// Keyed by (segment_id, offset) which uniquely identifies a VLog entry.
-pub struct PrepareCache {
+pub struct PrepareCache<K, V> {
     /// Cache entries, keyed by (segment_id, offset).
-    entries: BTreeMap<(u64, u64), CacheEntry>,
+    entries: BTreeMap<(u64, u64), CacheEntry<K, V>>,
     /// Access order: maps access_counter → (segment_id, offset).
     /// BTreeMap for deterministic eviction order.
     access_order: BTreeMap<u64, (u64, u64)>,
@@ -20,11 +20,11 @@ pub struct PrepareCache {
     capacity: usize,
 }
 
-struct CacheEntry {
-    value: Arc<CachedPrepare>,
+struct CacheEntry<K, V> {
+    value: Arc<CachedPrepare<K, V>>,
 }
 
-impl PrepareCache {
+impl<K, V> PrepareCache<K, V> {
     pub fn new(capacity: usize) -> Self {
         Self {
             entries: BTreeMap::new(),
@@ -36,7 +36,7 @@ impl PrepareCache {
     }
 
     /// Get a cached prepare entry. Returns None on cache miss.
-    pub fn get(&mut self, segment_id: u64, offset: u64) -> Option<Arc<CachedPrepare>> {
+    pub fn get(&mut self, segment_id: u64, offset: u64) -> Option<Arc<CachedPrepare<K, V>>> {
         let key = (segment_id, offset);
         if let Some(entry) = self.entries.get(&key) {
             let value = entry.value.clone();
@@ -54,7 +54,7 @@ impl PrepareCache {
     }
 
     /// Insert a prepare entry into the cache.
-    pub fn insert(&mut self, segment_id: u64, offset: u64, prepare: Arc<CachedPrepare>) {
+    pub fn insert(&mut self, segment_id: u64, offset: u64, prepare: Arc<CachedPrepare<K, V>>) {
         let key = (segment_id, offset);
 
         // Remove existing entry if present

@@ -8,6 +8,8 @@ use crate::mvcc::disk::error::StorageError;
 use crate::occ::TransactionId as OccTransactionId;
 use crate::tapir::Timestamp;
 use crate::IrClientId;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use std::path::PathBuf;
 
 /// Fixed header size: entry_type(1) + entry_len(4) + op_id.client_id(8) + op_id.number(8) = 21.
@@ -68,9 +70,10 @@ impl<IO: DiskIo> UnifiedVlogSegment<IO> {
     }
 
     /// Serialize an IR entry payload to bytes (bitcode).
-    fn serialize_payload(payload: &IrPayloadInline) -> Result<Vec<u8>, StorageError> {
-        // We use a simple serialization: encode the discriminant + fields.
-        // For simplicity and correctness, use bitcode for the inner payload.
+    /// Converts typed K, V fields to byte vectors for on-disk storage.
+    fn serialize_payload<K: Serialize, V: Serialize>(
+        payload: &IrPayloadInline<K, V>,
+    ) -> Result<Vec<u8>, StorageError> {
         let bytes = match payload {
             IrPayloadInline::Prepare {
                 transaction_id,
@@ -79,14 +82,46 @@ impl<IO: DiskIo> UnifiedVlogSegment<IO> {
                 write_set,
                 scan_set,
             } => {
+                let ser_read_set: Vec<(Vec<u8>, Timestamp)> = read_set
+                    .iter()
+                    .map(|(k, ts)| {
+                        let kb = bitcode::serialize(k)
+                            .map_err(|e| StorageError::Codec(e.to_string()))?;
+                        Ok((kb, *ts))
+                    })
+                    .collect::<Result<_, StorageError>>()?;
+                let ser_write_set: Vec<(Vec<u8>, Vec<u8>)> = write_set
+                    .iter()
+                    .map(|(k, v)| {
+                        let kb = bitcode::serialize(k)
+                            .map_err(|e| StorageError::Codec(e.to_string()))?;
+                        let vb = v
+                            .as_ref()
+                            .map(|val| bitcode::serialize(val))
+                            .transpose()
+                            .map_err(|e| StorageError::Codec(e.to_string()))?
+                            .unwrap_or_default();
+                        Ok((kb, vb))
+                    })
+                    .collect::<Result<_, StorageError>>()?;
+                let ser_scan_set: Vec<(Vec<u8>, Vec<u8>, Timestamp)> = scan_set
+                    .iter()
+                    .map(|(sk, ek, ts)| {
+                        let skb = bitcode::serialize(sk)
+                            .map_err(|e| StorageError::Codec(e.to_string()))?;
+                        let ekb = bitcode::serialize(ek)
+                            .map_err(|e| StorageError::Codec(e.to_string()))?;
+                        Ok((skb, ekb, *ts))
+                    })
+                    .collect::<Result<_, StorageError>>()?;
                 let encodable = PreparePayloadSer {
                     txn_client_id: transaction_id.client_id.0,
                     txn_number: transaction_id.number,
                     commit_time: commit_ts.time,
                     commit_client_id: commit_ts.client_id.0,
-                    read_set: read_set.clone(),
-                    write_set: write_set.clone(),
-                    scan_set: scan_set.clone(),
+                    read_set: ser_read_set,
+                    write_set: ser_write_set,
+                    scan_set: ser_scan_set,
                 };
                 bitcode::serialize(&encodable)
                     .map_err(|e| StorageError::Codec(e.to_string()))?
@@ -119,8 +154,10 @@ impl<IO: DiskIo> UnifiedVlogSegment<IO> {
                     .map_err(|e| StorageError::Codec(e.to_string()))?
             }
             IrPayloadInline::QuorumRead { key, timestamp } => {
+                let key_bytes = bitcode::serialize(key)
+                    .map_err(|e| StorageError::Codec(e.to_string()))?;
                 let encodable = QuorumReadPayloadSer {
-                    key: key.clone(),
+                    key: key_bytes,
                     time: timestamp.time,
                     client_id: timestamp.client_id.0,
                 };
@@ -132,9 +169,13 @@ impl<IO: DiskIo> UnifiedVlogSegment<IO> {
                 end_key,
                 snapshot_ts,
             } => {
+                let start_bytes = bitcode::serialize(start_key)
+                    .map_err(|e| StorageError::Codec(e.to_string()))?;
+                let end_bytes = bitcode::serialize(end_key)
+                    .map_err(|e| StorageError::Codec(e.to_string()))?;
                 let encodable = QuorumScanPayloadSer {
-                    start_key: start_key.clone(),
-                    end_key: end_key.clone(),
+                    start_key: start_bytes,
+                    end_key: end_bytes,
                     time: snapshot_ts.time,
                     client_id: snapshot_ts.client_id.0,
                 };
@@ -150,14 +191,52 @@ impl<IO: DiskIo> UnifiedVlogSegment<IO> {
     }
 
     /// Deserialize an IR entry payload from bytes.
-    fn deserialize_payload(
+    /// Converts byte vectors back to typed K, V fields.
+    fn deserialize_payload<K: DeserializeOwned, V: DeserializeOwned>(
         entry_type: VlogEntryType,
         bytes: &[u8],
-    ) -> Result<IrPayloadInline, StorageError> {
+    ) -> Result<IrPayloadInline<K, V>, StorageError> {
         match entry_type {
             VlogEntryType::Prepare => {
                 let p: PreparePayloadSer = bitcode::deserialize(bytes)
                     .map_err(|e| StorageError::Codec(e.to_string()))?;
+                let read_set: Vec<(K, Timestamp)> = p
+                    .read_set
+                    .iter()
+                    .map(|(kb, ts)| {
+                        let k: K = bitcode::deserialize(kb)
+                            .map_err(|e| StorageError::Codec(e.to_string()))?;
+                        Ok((k, *ts))
+                    })
+                    .collect::<Result<_, StorageError>>()?;
+                let write_set: Vec<(K, Option<V>)> = p
+                    .write_set
+                    .iter()
+                    .map(|(kb, vb)| {
+                        let k: K = bitcode::deserialize(kb)
+                            .map_err(|e| StorageError::Codec(e.to_string()))?;
+                        let v = if vb.is_empty() {
+                            None
+                        } else {
+                            Some(
+                                bitcode::deserialize::<V>(vb)
+                                    .map_err(|e| StorageError::Codec(e.to_string()))?,
+                            )
+                        };
+                        Ok((k, v))
+                    })
+                    .collect::<Result<_, StorageError>>()?;
+                let scan_set: Vec<(K, K, Timestamp)> = p
+                    .scan_set
+                    .iter()
+                    .map(|(skb, ekb, ts)| {
+                        let sk: K = bitcode::deserialize(skb)
+                            .map_err(|e| StorageError::Codec(e.to_string()))?;
+                        let ek: K = bitcode::deserialize(ekb)
+                            .map_err(|e| StorageError::Codec(e.to_string()))?;
+                        Ok((sk, ek, *ts))
+                    })
+                    .collect::<Result<_, StorageError>>()?;
                 Ok(IrPayloadInline::Prepare {
                     transaction_id: OccTransactionId {
                         client_id: IrClientId(p.txn_client_id),
@@ -167,9 +246,9 @@ impl<IO: DiskIo> UnifiedVlogSegment<IO> {
                         time: p.commit_time,
                         client_id: IrClientId(p.commit_client_id),
                     },
-                    read_set: p.read_set,
-                    write_set: p.write_set,
-                    scan_set: p.scan_set,
+                    read_set,
+                    write_set,
+                    scan_set,
                 })
             }
             VlogEntryType::Commit => {
@@ -204,8 +283,10 @@ impl<IO: DiskIo> UnifiedVlogSegment<IO> {
             VlogEntryType::QuorumRead => {
                 let q: QuorumReadPayloadSer = bitcode::deserialize(bytes)
                     .map_err(|e| StorageError::Codec(e.to_string()))?;
+                let key: K = bitcode::deserialize(&q.key)
+                    .map_err(|e| StorageError::Codec(e.to_string()))?;
                 Ok(IrPayloadInline::QuorumRead {
-                    key: q.key,
+                    key,
                     timestamp: Timestamp {
                         time: q.time,
                         client_id: IrClientId(q.client_id),
@@ -215,9 +296,13 @@ impl<IO: DiskIo> UnifiedVlogSegment<IO> {
             VlogEntryType::QuorumScan => {
                 let q: QuorumScanPayloadSer = bitcode::deserialize(bytes)
                     .map_err(|e| StorageError::Codec(e.to_string()))?;
+                let start_key: K = bitcode::deserialize(&q.start_key)
+                    .map_err(|e| StorageError::Codec(e.to_string()))?;
+                let end_key: K = bitcode::deserialize(&q.end_key)
+                    .map_err(|e| StorageError::Codec(e.to_string()))?;
                 Ok(IrPayloadInline::QuorumScan {
-                    start_key: q.start_key,
-                    end_key: q.end_key,
+                    start_key,
+                    end_key,
                     snapshot_ts: Timestamp {
                         time: q.time,
                         client_id: IrClientId(q.client_id),
@@ -238,11 +323,11 @@ impl<IO: DiskIo> UnifiedVlogSegment<IO> {
     /// ```text
     /// [entry_type(1) | entry_len(4) | op_id.client_id(8) | op_id.number(8) | payload(N) | crc32(4)]
     /// ```
-    pub fn append_entry(
+    pub fn append_entry<K: Serialize, V: Serialize>(
         &mut self,
         op_id: OpId,
         entry_type: VlogEntryType,
-        payload: &IrPayloadInline,
+        payload: &IrPayloadInline<K, V>,
     ) -> Result<UnifiedVlogPtr, StorageError> {
         let payload_bytes = Self::serialize_payload(payload)?;
         let total_len = HEADER_SIZE + payload_bytes.len() + CRC_SIZE;
@@ -287,9 +372,9 @@ impl<IO: DiskIo> UnifiedVlogSegment<IO> {
 
     /// Append a batch of IR entries to the segment.
     /// Returns a vector of VLog pointers, one per entry.
-    pub fn append_batch(
+    pub fn append_batch<K: Serialize, V: Serialize>(
         &mut self,
-        entries: &[(OpId, VlogEntryType, &IrPayloadInline)],
+        entries: &[(OpId, VlogEntryType, &IrPayloadInline<K, V>)],
     ) -> Result<Vec<UnifiedVlogPtr>, StorageError> {
         if entries.is_empty() {
             return Ok(Vec::new());
@@ -340,10 +425,10 @@ impl<IO: DiskIo> UnifiedVlogSegment<IO> {
 
     /// Read and verify an entry at the given pointer.
     /// Returns the OpId, entry type, and deserialized payload.
-    pub fn read_entry(
+    pub fn read_entry<K: DeserializeOwned, V: DeserializeOwned>(
         &self,
         ptr: &UnifiedVlogPtr,
-    ) -> Result<(OpId, VlogEntryType, IrPayloadInline), StorageError> {
+    ) -> Result<(OpId, VlogEntryType, IrPayloadInline<K, V>), StorageError> {
         let total = ptr.length as usize;
         if total < MIN_ENTRY_SIZE {
             return Err(StorageError::Corruption {
@@ -414,11 +499,11 @@ impl<IO: DiskIo> UnifiedVlogSegment<IO> {
     }
 
     /// Read a CO::Prepare entry and return it as a CachedPrepare.
-    pub fn read_prepare(
+    pub fn read_prepare<K: DeserializeOwned, V: DeserializeOwned>(
         &self,
         ptr: &UnifiedVlogPtr,
-    ) -> Result<CachedPrepare, StorageError> {
-        let (_, entry_type, payload) = self.read_entry(ptr)?;
+    ) -> Result<CachedPrepare<K, V>, StorageError> {
+        let (_, entry_type, payload) = self.read_entry::<K, V>(ptr)?;
         if entry_type != VlogEntryType::Prepare {
             return Err(StorageError::Codec(format!(
                 "expected Prepare entry, got {entry_type:?}"
@@ -444,9 +529,9 @@ impl<IO: DiskIo> UnifiedVlogSegment<IO> {
 
     /// Iterate all entries in the segment from offset 0 up to write_offset.
     /// Returns (offset, OpId, entry_type, payload) for each entry.
-    pub fn iter_entries(
+    pub fn iter_entries<K: DeserializeOwned, V: DeserializeOwned>(
         &self,
-    ) -> Result<Vec<(u64, OpId, VlogEntryType, IrPayloadInline)>, StorageError> {
+    ) -> Result<Vec<(u64, OpId, VlogEntryType, IrPayloadInline<K, V>)>, StorageError> {
         let mut results = Vec::new();
         let mut offset = 0u64;
         let end = self.write_offset;
@@ -513,7 +598,7 @@ impl<IO: DiskIo> UnifiedVlogSegment<IO> {
 // -- Serialization helper structs (bitcode-compatible, no skip_serializing_if) --
 
 use super::types::PrepareRef;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 #[derive(Serialize, Deserialize)]
 struct PreparePayloadSer {

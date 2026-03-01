@@ -81,7 +81,7 @@ fn restore_from_ir_record_rebuilds_mvcc() {
     // In a real system, this would be the merged record from view change,
     // or a snapshot from backup. Here we extract all IR overlay entries.
 
-    let ir_record: Vec<(crate::ir::OpId, IrMemEntry)> = extract_ir_record(&source_store);
+    let ir_record: Vec<(crate::ir::OpId, IrMemEntry<String, String>)> = extract_ir_record(&source_store);
 
     // The IR record should contain:
     // - 2 CO::Prepare (finalized) for txn 1 and 2
@@ -107,7 +107,7 @@ fn restore_from_ir_record_rebuilds_mvcc() {
     assert_store_file_size(&restored_store, "vlog_seg_0000.dat", 0);
 
     // Step 1: Index all Prepare entries by transaction_id
-    let mut prepare_index: BTreeMap<crate::occ::TransactionId, &IrPayloadInline> =
+    let mut prepare_index: BTreeMap<crate::occ::TransactionId, &IrPayloadInline<String, String>> =
         BTreeMap::new();
     for (_, entry) in &ir_record {
         if entry.entry_type == VlogEntryType::Prepare
@@ -154,22 +154,9 @@ fn restore_from_ir_record_rebuilds_mvcc() {
                     .inner_mut()
                     .register_prepare_raw(*transaction_id, cached);
 
-                // Deserialize write set and commit to MVCC
-                let writes: Vec<(String, Option<String>)> = write_set
-                    .iter()
-                    .map(|(kb, vb)| {
-                        let key: String = bitcode::deserialize(kb).unwrap();
-                        let value: String = bitcode::deserialize(vb).unwrap();
-                        (key, Some(value))
-                    })
-                    .collect();
-                let reads: Vec<(String, crate::tapir::Timestamp)> = read_set
-                    .iter()
-                    .map(|(kb, ts)| {
-                        let key: String = bitcode::deserialize(kb).unwrap();
-                        (key, *ts)
-                    })
-                    .collect();
+                // Write set and read set are already typed — no deserialization needed
+                let writes: Vec<(String, Option<String>)> = write_set.clone();
+                let reads: Vec<(String, crate::tapir::Timestamp)> = read_set.clone();
 
                 restored_store
                     .commit_batch_for_transaction(
@@ -341,7 +328,7 @@ fn restore_from_sealed_vlog_rebuilds_mvcc() {
     assert_store_file_names(&restored, &["vlog_seg_0000.dat"]);
 
     // Index prepares
-    let mut prepare_index: BTreeMap<crate::occ::TransactionId, &IrPayloadInline> =
+    let mut prepare_index: BTreeMap<crate::occ::TransactionId, &IrPayloadInline<String, String>> =
         BTreeMap::new();
     for (_, entry) in &ir_record {
         if entry.entry_type == VlogEntryType::Prepare
@@ -381,21 +368,9 @@ fn restore_from_sealed_vlog_rebuilds_mvcc() {
                     .inner_mut()
                     .register_prepare_raw(*transaction_id, cached);
 
-                let writes: Vec<(String, Option<String>)> = write_set
-                    .iter()
-                    .map(|(kb, vb)| {
-                        let key: String = bitcode::deserialize(kb).unwrap();
-                        let value: String = bitcode::deserialize(vb).unwrap();
-                        (key, Some(value))
-                    })
-                    .collect();
-                let reads: Vec<(String, crate::tapir::Timestamp)> = read_set
-                    .iter()
-                    .map(|(kb, ts)| {
-                        let key: String = bitcode::deserialize(kb).unwrap();
-                        (key, *ts)
-                    })
-                    .collect();
+                // Write set and read set are already typed — no deserialization needed
+                let writes: Vec<(String, Option<String>)> = write_set.clone();
+                let reads: Vec<(String, crate::tapir::Timestamp)> = read_set.clone();
 
                 restored
                     .commit_batch_for_transaction(*transaction_id, writes, reads, *commit_ts)
@@ -476,7 +451,7 @@ fn restore_from_sealed_vlog_rebuilds_mvcc() {
 /// tentative ones for completeness — the replay logic only processes Commits).
 fn extract_ir_record(
     store: &UnifiedMvccBackend<String, String, MemoryIo>,
-) -> Vec<(crate::ir::OpId, IrMemEntry)> {
+) -> Vec<(crate::ir::OpId, IrMemEntry<String, String>)> {
     // In a real system, this would be extract_finalized_entries() from the
     // merged record after view change. Here we extract everything from the
     // overlay for testing.

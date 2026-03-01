@@ -32,7 +32,7 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
     // Snapshot data from sealed views (the "SST backup")
     let mvcc_sst_snapshot: Vec<(String, Timestamp, UnifiedLsmEntry)>;
     // IR entries from unsealed view (need IR replay for these)
-    let unsealedview_ir: Vec<(crate::ir::OpId, IrMemEntry)>;
+    let unsealedview_ir: Vec<(crate::ir::OpId, IrMemEntry<String, String>)>;
 
     // === Phase 1: Build state across multiple views ===
     {
@@ -147,7 +147,7 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
 
     // Step 2: Replay IR entries from the unsealed view
     // Only process Commit entries (with their matching Prepares)
-    let mut prepare_index: BTreeMap<crate::occ::TransactionId, &IrPayloadInline> =
+    let mut prepare_index: BTreeMap<crate::occ::TransactionId, &IrPayloadInline<String, String>> =
         BTreeMap::new();
     for (_, entry) in &unsealedview_ir {
         if entry.entry_type == VlogEntryType::Prepare
@@ -186,21 +186,9 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
                     .inner_mut()
                     .register_prepare_raw(*transaction_id, cached);
 
-                let writes: Vec<(String, Option<String>)> = write_set
-                    .iter()
-                    .map(|(kb, vb)| {
-                        let key: String = bitcode::deserialize(kb).unwrap();
-                        let value: String = bitcode::deserialize(vb).unwrap();
-                        (key, Some(value))
-                    })
-                    .collect();
-                let reads: Vec<(String, Timestamp)> = read_set
-                    .iter()
-                    .map(|(kb, ts)| {
-                        let key: String = bitcode::deserialize(kb).unwrap();
-                        (key, *ts)
-                    })
-                    .collect();
+                // Write set and read set are already typed — no deserialization needed
+                let writes: Vec<(String, Option<String>)> = write_set.clone();
+                let reads: Vec<(String, Timestamp)> = read_set.clone();
 
                 restored
                     .commit_batch_for_transaction(

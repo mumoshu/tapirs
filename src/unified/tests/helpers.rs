@@ -131,18 +131,11 @@ pub fn prepare_txn(
                 commit_ts,
                 read_set: txn
                     .shard_read_set(ShardNumber(0))
-                    .map(|(k, ts)| (bitcode::serialize(k).unwrap_or_default(), ts))
+                    .map(|(k, ts)| (k.clone(), ts))
                     .collect(),
                 write_set: txn
                     .shard_write_set(ShardNumber(0))
-                    .map(|(k, v)| {
-                        (
-                            bitcode::serialize(k).unwrap_or_default(),
-                            v.as_ref()
-                                .map(|s| bitcode::serialize(s).unwrap_or_default())
-                                .unwrap_or_default(),
-                        )
-                    })
+                    .map(|(k, v)| (k.clone(), v.clone()))
                     .collect(),
                 scan_set: vec![],
             },
@@ -229,9 +222,9 @@ pub fn seal_view(store: &mut TestStore) {
 
 /// Build a minimal merged record containing given finalized entries.
 pub fn build_merged_record(
-    entries: Vec<(OpId, IrMemEntry)>,
+    entries: Vec<(OpId, IrMemEntry<String, String>)>,
     target_view: u64,
-) -> Vec<(OpId, IrMemEntry)> {
+) -> Vec<(OpId, IrMemEntry<String, String>)> {
     entries
         .into_iter()
         .map(|(op_id, mut entry)| {
