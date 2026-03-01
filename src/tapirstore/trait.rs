@@ -316,7 +316,109 @@ pub trait TapirStore<K: Key, V: Value>: Send + Serialize + DeserializeOwned + 's
 
     // === Uncommitted Validated Reads ===
 
+    /// Read `key` at snapshot `ts` using a previously established read
+    /// protection — the "fast path" for read-only transactions.
+    ///
+    /// **Non-mutating** — takes `&self`. Used by the replica for
+    /// `UO::ReadValidated` (unlogged single-replica reads that skip IR
+    /// consensus when a prior quorum read has already set read protection).
+    ///
+    /// # Side effects
+    ///
+    /// **None.** This is a pure read. It does not update `last_read_ts`,
+    /// does not modify `max_read_commit_time`, and does not check for
+    /// prepared-but-uncommitted writes (that conflict detection already
+    /// happened during the prior `do_committed_get` call that established
+    /// the read protection).
+    ///
+    /// # How it works
+    ///
+    /// Looks up `last_read_ts` for the version of `key` at `ts`. If
+    /// `last_read_ts >= ts`, the version is considered "validated" and the
+    /// value is returned. Otherwise returns `None`, signalling the caller
+    /// to fall back to a full quorum read.
+    ///
+    /// # Valid inputs
+    ///
+    /// `key`: any key (borrowed). `ts`: any `Timestamp` — acts as both
+    /// the snapshot time and the minimum required read-protection level.
+    ///
+    /// # Return value transitions
+    ///
+    /// ```text
+    /// // After seed_value("x", "v1", ts(1,1)):
+    /// do_uncommitted_get_validated("x", ts(5,1)) => None
+    ///   // Value exists but no read protection has been set.
+    ///
+    /// // After do_committed_get("x", ts(5,1)):
+    /// do_uncommitted_get_validated("x", ts(5,1)) => Some((Some("v1"), ts(1,1)))
+    ///   // read_ts is now ts(5,1) >= ts(5,1), so validated.
+    /// do_uncommitted_get_validated("x", ts(10,1)) => None
+    ///   // read_ts is ts(5,1) < ts(10,1), protection insufficient.
+    ///
+    /// // After do_committed_get("x", ts(10,1)):
+    /// do_uncommitted_get_validated("x", ts(10,1)) => Some((Some("v1"), ts(1,1)))
+    ///   // read_ts is now ts(10,1) >= ts(10,1).
+    ///
+    /// // After commit_prepared_txn(_, write("x","v2"), ts(7,1)):
+    /// do_uncommitted_get_validated("x", ts(10,1)) => Some((Some("v2"), ts(7,1)))
+    ///   // New committed version is visible at snapshot ts(10,1).
+    /// ```
     fn do_uncommitted_get_validated(&self, key: &K, ts: Timestamp) -> Option<(Option<V>, Timestamp)>;
+
+    /// Scan `[start, end]` (inclusive) at snapshot `ts` using a previously
+    /// established range-read protection — the "fast path" for read-only
+    /// transaction scans.
+    ///
+    /// **Non-mutating** — takes `&self`. Used by the replica for
+    /// `UO::ScanValidated` (unlogged single-replica scans that skip IR
+    /// consensus when a prior quorum scan has already set range protection).
+    ///
+    /// # Side effects
+    ///
+    /// **None.** This is a pure read. It does not append to `range_reads`,
+    /// does not modify `max_read_commit_time`, and does not check for
+    /// prepared-but-uncommitted writes (that conflict detection already
+    /// happened during the prior `do_committed_scan` call that established
+    /// the range protection).
+    ///
+    /// # How it works
+    ///
+    /// Searches recorded range-read entries for any `(rs, re, rts)` where
+    /// `rs <= start`, `re >= end`, and `rts >= ts`. If such a covering
+    /// entry exists, performs the MVCC scan and returns the results.
+    /// Otherwise returns `None`, signalling the caller to fall back to
+    /// a full quorum scan.
+    ///
+    /// # Valid inputs
+    ///
+    /// `start <= end` in key ordering (inclusive range). `ts`: any
+    /// `Timestamp` — acts as both the snapshot time and the minimum
+    /// required range-protection level. Keys are borrowed (`&K`).
+    ///
+    /// # Return value transitions
+    ///
+    /// ```text
+    /// // After seed_value("a", "v1", ts(1,1))
+    /// //   and seed_value("b", "v2", ts(1,1)):
+    /// do_uncommitted_scan_validated("a", "b", ts(5,1)) => None
+    ///   // Values exist but no range protection has been set.
+    ///
+    /// // After do_committed_scan("a", "b", ts(5,1)):
+    /// do_uncommitted_scan_validated("a", "b", ts(5,1))
+    ///   => Some([("a", Some("v1"), ts(1,1)), ("b", Some("v2"), ts(1,1))])
+    ///   // range_reads has (a, b, ts(5,1)); ts(5,1) >= ts(5,1), covered.
+    /// do_uncommitted_scan_validated("a", "b", ts(10,1)) => None
+    ///   // ts(10,1) > ts(5,1), protection insufficient.
+    ///
+    /// // After do_committed_scan("a", "c", ts(10,1)):
+    /// do_uncommitted_scan_validated("a", "b", ts(10,1))
+    ///   => Some([("a", Some("v1"), ts(1,1)), ("b", Some("v2"), ts(1,1))])
+    ///   // range_reads has (a, c, ts(10,1)); a<=a, c>=b, ts(10,1)>=ts(10,1).
+    /// do_uncommitted_scan_validated("b", "c", ts(10,1))
+    ///   => Some([("b", Some("v2"), ts(1,1))])
+    ///   // Also covered by (a, c, ts(10,1)); a<=b, c>=c.
+    /// ```
     fn do_uncommitted_scan_validated(
         &self,
         start: &K,
