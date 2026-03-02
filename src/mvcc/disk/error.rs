@@ -124,7 +124,7 @@ pub enum StorageError {
 
     /// No prepared transaction found for the given transaction ID.
     ///
-    /// Returned by `commit_batch_for_transaction` when neither the
+    /// Returned by `commit_prepared` when neither the
     /// in-memory `prepare_registry` nor the on-disk `prepare_vlog_index`
     /// contains the transaction. This indicates either a caller bug
     /// (forgot to call `register_prepare` before commit) or data loss

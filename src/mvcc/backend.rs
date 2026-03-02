@@ -1,7 +1,5 @@
 use std::fmt::Debug;
 
-use crate::occ::TransactionId;
-
 /// Abstract MVCC storage backend.
 ///
 /// `DiskStore` implements this with `Error = StorageError`.
@@ -44,25 +42,4 @@ pub trait MvccBackend<K, V, TS>: Send {
         Ok(())
     }
 
-    /// Commit with transaction identity for PrepareRef lookup.
-    ///
-    /// Called by `OccStore::commit()` instead of `commit_batch()`. The default
-    /// implementation delegates to `commit_batch()` so existing backends work
-    /// unchanged.
-    ///
-    /// `UnifiedStore` overrides this to create MVCC entries with
-    /// `ValueLocation::InMemory` pointing to the prepare_registry, avoiding
-    /// value duplication in the VLog.
-    fn commit_batch_for_transaction(
-        &mut self,
-        _txn_id: TransactionId,
-        writes: Vec<(K, Option<V>)>,
-        reads: Vec<(K, TS)>,
-        commit: TS,
-    ) -> Result<(), Self::Error>
-    where
-        TS: Copy,
-    {
-        self.commit_batch(writes, reads, commit)
-    }
 }

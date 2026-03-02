@@ -402,7 +402,7 @@ impl<K: Key, V: Value, TS: Timestamp + Send, M: MvccBackend<K, V, TS>> Store<K, 
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
 
-        MvccBackend::commit_batch_for_transaction(&mut self.inner, id, writes, reads, commit).unwrap();
+        MvccBackend::commit_batch(&mut self.inner, writes, reads, commit).unwrap();
 
         // Note: Transaction may not be in the prepared list of this particular replica, and that's okay.
         self.prepared_txns.remove(id);

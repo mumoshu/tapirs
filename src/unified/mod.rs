@@ -108,7 +108,7 @@ pub struct UnifiedStore<K: Ord, V, IO: DiskIo> {
 
     /// Maps transaction_id → VLog pointer for sealed CO::Prepare entries.
     ///
-    /// Populated at seal time.  Used by `commit_batch_for_transaction` when
+    /// Populated at seal time.  Used by `commit_prepared` when
     /// the commit arrives after the prepare's view has been sealed (cross-view
     /// commit).  Without this index, the commit path would have to scan the
     /// VLog to find the prepare.
@@ -296,7 +296,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
 
     /// Register a typed Prepare payload in the in-memory registry.
     ///
-    /// Must be called before `commit_batch_for_transaction` so that
+    /// Must be called before `commit_prepared` so that
     /// the commit path can create `ValueLocation::InMemory` entries
     /// pointing into this registry.  If the view is sealed before
     /// the commit arrives, the prepare is still accessible via
@@ -313,7 +313,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
     ///
     /// Extracts typed K, V from the `Transaction` and stores them in
     /// the prepare_registry.  Must be called before the corresponding
-    /// `commit_batch_for_transaction` so that committed MVCC entries
+    /// `commit_prepared` so that committed MVCC entries
     /// can point into the registry via `ValueLocation::InMemory`.
     ///
     /// No serialization happens here — that is deferred to seal time.
