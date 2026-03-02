@@ -1,4 +1,5 @@
 pub mod cli;
+mod ir_record;
 mod manifest;
 mod prepare_cache;
 pub mod types;
@@ -23,6 +24,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use ir_record::IrRecord;
 use manifest::UnifiedManifest;
 use prepare_cache::PrepareCache;
 use types::*;
@@ -93,26 +95,9 @@ pub struct UnifiedStore<K: Ord, V, IO: DiskIo> {
     /// Persisted manifest.
     manifest: UnifiedManifest,
 
-    /// Current view's IR entries (in-memory only).
-    ///
-    /// At seal time, finalized entries are serialized to the VLog and
-    /// replaced by `IrSstEntry` records in `ir_base`.  The overlay is
-    /// then cleared.  Typed K, V so that `Prepare` entries can be
-    /// inspected without deserializing from the VLog.
-    ir_overlay: BTreeMap<OpId, IrMemEntry<K, V>>,
-
-    /// IR base: maps OpId → IrSstEntry for the sealed IR base record.
-    /// In a full implementation this would be an on-disk IR SST.
-    /// For now, we use an in-memory BTreeMap as a stepping stone.
-    ir_base: BTreeMap<OpId, IrSstEntry>,
-
-    /// Maps transaction_id → VLog pointer for sealed CO::Prepare entries.
-    ///
-    /// Populated at seal time.  Used by `commit_prepared` when
-    /// the commit arrives after the prepare's view has been sealed (cross-view
-    /// commit).  Without this index, the commit path would have to scan the
-    /// VLog to find the prepare.
-    pub(crate) prepare_vlog_index: BTreeMap<OccTransactionId, UnifiedVlogPtr>,
+    /// IR record: overlay (current view), base (sealed views), and
+    /// prepare VLog index for cross-view commits.
+    ir_record: IrRecord<K, V>,
 
     /// Base directory for all on-disk files.
     base_dir: PathBuf,
@@ -201,12 +186,10 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
             active_vlog,
             sealed_vlog_segments,
             prepare_registry: BTreeMap::new(),
-            prepare_vlog_index: BTreeMap::new(),
             prepare_cache: RefCell::new(PrepareCache::new(DEFAULT_PREPARE_CACHE_CAPACITY)),
             current_view,
             manifest,
-            ir_overlay: BTreeMap::new(),
-            ir_base: BTreeMap::new(),
+            ir_record: IrRecord::new(),
             base_dir,
             io_flags,
             min_view_vlog_size,
@@ -272,26 +255,26 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
 
     /// Iterate over all IR overlay entries.
     pub fn ir_overlay_entries(&self) -> impl Iterator<Item = (&OpId, &IrMemEntry<K, V>)> {
-        self.ir_overlay.iter()
+        self.ir_record.ir_overlay.iter()
     }
 
     /// Insert an IR entry into the overlay.
     pub fn insert_ir_entry(&mut self, op_id: OpId, entry: IrMemEntry<K, V>) {
-        self.ir_overlay.insert(op_id, entry);
+        self.ir_record.ir_overlay.insert(op_id, entry);
     }
 
     /// Look up an IR entry by OpId (overlay first, then base).
     pub fn ir_entry(&self, op_id: &OpId) -> Option<IrEntryRef<'_, K, V>> {
-        if let Some(mem_entry) = self.ir_overlay.get(op_id) {
+        if let Some(mem_entry) = self.ir_record.ir_overlay.get(op_id) {
             Some(IrEntryRef::Overlay(mem_entry))
         } else {
-            self.ir_base.get(op_id).map(IrEntryRef::Base)
+            self.ir_record.ir_base.get(op_id).map(IrEntryRef::Base)
         }
     }
 
     /// Look up an IR base SST entry by OpId.
     pub fn lookup_ir_base_entry(&self, op_id: OpId) -> Option<&IrSstEntry> {
-        self.ir_base.get(&op_id)
+        self.ir_record.ir_base.get(&op_id)
     }
 
     /// Register a typed Prepare payload in the in-memory registry.
@@ -392,7 +375,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
         // Clone the Arc to release the immutable borrow, allowing
         // subsequent unified_memtable_mut() calls.
         let prepare = self.prepare_registry.get(&txn_id).cloned();
-        let cross_view_ptr = self.prepare_vlog_index.get(&txn_id).copied();
+        let cross_view_ptr = self.ir_record.prepare_vlog_index.get(&txn_id).copied();
 
         if let Some(prepare) = prepare {
             // InMemory path: prepare is in current view's prepare_registry
@@ -589,6 +572,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
     {
         // 1. Write all finalized overlay entries to VLog
         let finalized_entries: Vec<(OpId, VlogEntryType, IrPayloadInline<K, V>)> = self
+            .ir_record
             .ir_overlay
             .iter()
             .filter(|(_, entry)| matches!(entry.state, IrState::Finalized(_)))
@@ -606,7 +590,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
 
         // 2. Build IR base entries and prepare_vlog_index from VLog pointers
         for (i, (op_id, entry_type, payload)) in finalized_entries.iter().enumerate() {
-            self.ir_base.insert(
+            self.ir_record.ir_base.insert(
                 *op_id,
                 IrSstEntry {
                     entry_type: *entry_type,
@@ -617,7 +601,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
             if *entry_type == VlogEntryType::Prepare
                 && let IrPayloadInline::Prepare { transaction_id, .. } = payload
             {
-                self.prepare_vlog_index.insert(*transaction_id, vlog_ptrs[i]);
+                self.ir_record.prepare_vlog_index.insert(*transaction_id, vlog_ptrs[i]);
             }
         }
 
@@ -687,8 +671,8 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
 
         // 8. Convert unified memtable InMemory → OnDisk, then clear overlay + registry
         self.unified_memtable
-            .convert_in_memory_to_on_disk(&self.prepare_vlog_index);
-        self.ir_overlay.clear();
+            .convert_in_memory_to_on_disk(&self.ir_record.prepare_vlog_index);
+        self.ir_record.ir_overlay.clear();
         self.prepare_registry.clear();
         self.current_view_entry_count = 0;
 
@@ -704,7 +688,8 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
         K: Clone,
         V: Clone,
     {
-        self.ir_overlay
+        self.ir_record
+            .ir_overlay
             .iter()
             .filter(|(_, entry)| matches!(entry.state, IrState::Finalized(_)))
             .map(|(op_id, entry)| (*op_id, entry.clone()))
@@ -723,7 +708,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
         V: serde::Serialize,
     {
         // Clear old base and install new one
-        self.ir_base.clear();
+        self.ir_record.ir_base.clear();
 
         // Write entries to VLog
         let entry_refs: Vec<(OpId, VlogEntryType, &IrPayloadInline<K, V>)> = entries
@@ -734,7 +719,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
         if !entry_refs.is_empty() {
             let ptrs = self.active_vlog.append_batch(&entry_refs)?;
             for (i, (op_id, entry)) in entries.iter().enumerate() {
-                self.ir_base.insert(
+                self.ir_record.ir_base.insert(
                     *op_id,
                     IrSstEntry {
                         entry_type: entry.entry_type,
@@ -746,7 +731,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
 
         self.current_view = target_view;
         self.manifest.current_view = target_view;
-        self.ir_overlay.clear();
+        self.ir_record.ir_overlay.clear();
         self.prepare_registry.clear();
         // Note: unified_memtable is NOT cleared — committed entries from
         // previous views remain valid with OnDisk pointers.
