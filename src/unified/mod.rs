@@ -704,13 +704,3 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
     }
 }
 
-/// Reference to an IR entry — either a typed in-memory overlay entry
-/// or a byte-level base SST entry.
-///
-/// Callers must handle both variants: `Overlay` gives direct access to
-/// typed payload fields, while `Base` only provides a VLog pointer
-/// (requires a VLog read to access the payload).
-pub enum IrEntryRef<'a, K, V> {
-    Overlay(&'a IrMemEntry<K, V>),
-    Base(&'a IrSstEntry),
-}

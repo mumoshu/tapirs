@@ -2,9 +2,8 @@ use crate::ir::OpId;
 use crate::occ::TransactionId as OccTransactionId;
 use std::collections::BTreeMap;
 
-use super::IrEntryRef;
 use super::types::{
-    IrMemEntry, IrPayloadInline, IrSstEntry, IrState, UnifiedVlogPtr, VlogEntryType,
+    IrEntryRef, IrMemEntry, IrPayloadInline, IrSstEntry, IrState, UnifiedVlogPtr, VlogEntryType,
 };
 
 /// In-memory IR record state: overlay (current view), base (sealed views),
