@@ -255,26 +255,22 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
 
     /// Iterate over all IR overlay entries.
     pub fn ir_overlay_entries(&self) -> impl Iterator<Item = (&OpId, &IrMemEntry<K, V>)> {
-        self.ir_record.ir_overlay.iter()
+        self.ir_record.ir_overlay_entries()
     }
 
     /// Insert an IR entry into the overlay.
     pub fn insert_ir_entry(&mut self, op_id: OpId, entry: IrMemEntry<K, V>) {
-        self.ir_record.ir_overlay.insert(op_id, entry);
+        self.ir_record.insert_ir_entry(op_id, entry);
     }
 
     /// Look up an IR entry by OpId (overlay first, then base).
     pub fn ir_entry(&self, op_id: &OpId) -> Option<IrEntryRef<'_, K, V>> {
-        if let Some(mem_entry) = self.ir_record.ir_overlay.get(op_id) {
-            Some(IrEntryRef::Overlay(mem_entry))
-        } else {
-            self.ir_record.ir_base.get(op_id).map(IrEntryRef::Base)
-        }
+        self.ir_record.ir_entry(op_id)
     }
 
     /// Look up an IR base SST entry by OpId.
     pub fn lookup_ir_base_entry(&self, op_id: OpId) -> Option<&IrSstEntry> {
-        self.ir_record.ir_base.get(&op_id)
+        self.ir_record.lookup_ir_base_entry(op_id)
     }
 
     /// Register a typed Prepare payload in the in-memory registry.
@@ -375,7 +371,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
         // Clone the Arc to release the immutable borrow, allowing
         // subsequent unified_memtable_mut() calls.
         let prepare = self.prepare_registry.get(&txn_id).cloned();
-        let cross_view_ptr = self.ir_record.prepare_vlog_index.get(&txn_id).copied();
+        let cross_view_ptr = self.ir_record.prepare_vlog_index().get(&txn_id).copied();
 
         if let Some(prepare) = prepare {
             // InMemory path: prepare is in current view's prepare_registry
@@ -671,7 +667,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
 
         // 8. Convert unified memtable InMemory → OnDisk, then clear overlay + registry
         self.unified_memtable
-            .convert_in_memory_to_on_disk(&self.ir_record.prepare_vlog_index);
+            .convert_in_memory_to_on_disk(self.ir_record.prepare_vlog_index());
         self.ir_record.ir_overlay.clear();
         self.prepare_registry.clear();
         self.current_view_entry_count = 0;
@@ -688,12 +684,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
         K: Clone,
         V: Clone,
     {
-        self.ir_record
-            .ir_overlay
-            .iter()
-            .filter(|(_, entry)| matches!(entry.state, IrState::Finalized(_)))
-            .map(|(op_id, entry)| (*op_id, entry.clone()))
-            .collect()
+        self.ir_record.extract_finalized_entries()
     }
 
     /// Install a merged record as the new IR base.
