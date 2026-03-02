@@ -152,17 +152,17 @@ impl<K: Ord + Clone> UnifiedMemtable<K> {
     }
 
     /// Convert all InMemory value locations to OnDisk using the given
-    /// txn_id → VLog pointer mapping (populated at seal time).
+    /// txn_id -> VLog pointer mapping (populated at seal time).
     pub fn convert_in_memory_to_on_disk(
         &mut self,
-        prepare_vlog_index: &BTreeMap<OccTransactionId, UnifiedVlogPtr>,
+        txn_vlog_index: &BTreeMap<OccTransactionId, UnifiedVlogPtr>,
     ) {
         for entry in self.map.values_mut() {
             if let Some(ValueLocation::InMemory { txn_id, write_index }) = &entry.value_ref
-                && let Some(vlog_ptr) = prepare_vlog_index.get(txn_id)
+                && let Some(vlog_ptr) = txn_vlog_index.get(txn_id)
             {
                 entry.value_ref = Some(ValueLocation::OnDisk(UnifiedVlogPrepareValuePtr {
-                    prepare_ptr: *vlog_ptr,
+                    txn_ptr: *vlog_ptr,
                     write_index: *write_index,
                 }));
             }

@@ -43,8 +43,8 @@ where
 
     let mut ctx = Context {
         store: None,
-        // Track prepared transactions for commit lookup
-        prepared_txns: BTreeMap::new(),
+        tapir_prepared_txns: BTreeMap::new(),
+        ir_prepared_txns: BTreeMap::new(),
         op_counter: 0,
         had_error: false,
     };
@@ -70,12 +70,20 @@ where
 
 struct Context {
     store: Option<Store>,
-    /// Metadata for prepared transactions, keyed by txn_id.
-    /// Stores (prepare_op_id, prepare_view).
-    prepared_txns: BTreeMap<OccTransactionId, (OpId, u64)>,
+    /// TAPIR prepared transaction payloads (independent from IR entries).
+    tapir_prepared_txns: BTreeMap<OccTransactionId, PreparedTxnData>,
+    /// IR prepare op tracking for optional `ir-commit` metadata linkage.
+    ir_prepared_txns: BTreeMap<OccTransactionId, (OpId, u64)>,
     /// Auto-incrementing OpId counter.
     op_counter: u64,
     had_error: bool,
+}
+
+#[derive(Clone)]
+struct PreparedTxnData {
+    read_set: Vec<(String, Timestamp)>,
+    write_set: Vec<(String, Option<String>)>,
+    scan_set: Vec<(String, String, Timestamp)>,
 }
 
 impl Context {
@@ -129,6 +137,36 @@ fn parse_kv_pair(s: &str) -> Result<(String, Option<String>), String> {
     }
 }
 
+fn parse_read_item(s: &str) -> Result<(String, Timestamp), String> {
+    let (k, ts_str) = s
+        .split_once('@')
+        .ok_or_else(|| format!("invalid read item (expected key@ts): {s}"))?;
+    Ok((k.to_string(), parse_ts(ts_str)?))
+}
+
+fn parse_prepare_payload(parts: &[&str]) -> Result<PreparedTxnData, String> {
+    let mut read_set = Vec::new();
+    let mut write_set = Vec::new();
+    let scan_set = Vec::new();
+
+    for item in parts {
+        if let Some(rest) = item.strip_prefix("r:") {
+            read_set.push(parse_read_item(rest)?);
+        } else if let Some(rest) = item.strip_prefix("w:") {
+            write_set.push(parse_kv_pair(rest)?);
+        } else {
+            // Backward-compatible shorthand: bare token is a write item.
+            write_set.push(parse_kv_pair(item)?);
+        }
+    }
+
+    Ok(PreparedTxnData {
+        read_set,
+        write_set,
+        scan_set,
+    })
+}
+
 fn execute_command<W: Write>(
     ctx: &mut Context,
     parts: &[&str],
@@ -137,8 +175,10 @@ fn execute_command<W: Write>(
     match parts[0] {
         "open" => cmd_open(ctx, parts),
         "open-with" => cmd_open_with(ctx, parts),
-        "prepare" => cmd_prepare(ctx, parts),
-        "commit" => cmd_commit(ctx, parts),
+        "prepare" | "tapir-prepare" => cmd_tapir_prepare(ctx, parts),
+        "commit" | "tapir-commit" => cmd_tapir_commit(ctx, parts),
+        "ir-prepare" => cmd_ir_prepare(ctx, parts),
+        "ir-commit" => cmd_ir_commit(ctx, parts),
         "get" => cmd_get(ctx, parts, stdout),
         "get-at" => cmd_get_at(ctx, parts, stdout),
         "get-range" => cmd_get_range(ctx, parts, stdout),
@@ -147,7 +187,8 @@ fn execute_command<W: Write>(
         "seal" => cmd_seal(ctx, parts),
         "status" => cmd_status(ctx, parts, stdout),
         "list-vlogs" => cmd_list_vlogs(ctx, parts, stdout),
-        "dump-vlog" => cmd_dump_vlog(ctx, parts, stdout),
+        "dump-vlog" | "dump-ir-vlog" => cmd_dump_vlog(ctx, parts, stdout),
+        "dump-tapir-vlog" => cmd_dump_tapir_vlog(ctx, parts, stdout),
         _ => Err(format!("unknown command: {}", parts[0])),
     }
 }
@@ -177,30 +218,69 @@ fn cmd_open_with(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_prepare(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
+fn cmd_tapir_prepare(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
     if parts.len() < 3 {
-        return Err("usage: prepare <client:num> <ts> [key=value ...]".to_string());
+        return Err("usage: tapir-prepare <client:num> <ts> [r:key@ts ...] [w:key=value ...]".to_string());
+    }
+    let txn_id = parse_txn_id(parts[1])?;
+    let payload = parse_prepare_payload(&parts[3..])?;
+
+    // Keep legacy prepare registry path populated for now (used by some
+    // TapirStore methods), but TAPIR durability is commit-owned.
+    let mut txn = crate::occ::Transaction::default();
+    for (k, ts) in &payload.read_set {
+        txn.add_read(crate::tapir::Sharded::from(k.clone()), *ts);
+    }
+    for (k, v) in &payload.write_set {
+        txn.add_write(crate::tapir::Sharded::from(k.clone()), v.clone());
+    }
+    let txn = Arc::new(txn);
+    let commit_ts = parse_ts(parts[2])?;
+    let store = ctx.store_mut()?;
+    store.register_prepare(txn_id, &txn, commit_ts);
+
+    ctx.tapir_prepared_txns.insert(txn_id, payload);
+    Ok(())
+}
+
+fn cmd_tapir_commit(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
+    if parts.len() != 3 {
+        return Err("usage: tapir-commit <client:num> <ts>".to_string());
     }
     let txn_id = parse_txn_id(parts[1])?;
     let commit_ts = parse_ts(parts[2])?;
 
+    let payload = if let Some(p) = ctx.tapir_prepared_txns.remove(&txn_id) {
+        p
+    } else {
+        return Err(format!("no prepared transaction: {}", parts[1]));
+    };
+
+    let store = ctx.store_mut()?;
+    store
+        .commit_transaction_data(
+            txn_id,
+            &payload.read_set,
+            &payload.write_set,
+            &payload.scan_set,
+            commit_ts,
+        )
+        .map_err(|e| format!("commit failed: {e}"))
+}
+
+fn cmd_ir_prepare(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
+    if parts.len() < 3 {
+        return Err("usage: ir-prepare <client:num> <ts> [key=value ...]".to_string());
+    }
+    let txn_id = parse_txn_id(parts[1])?;
+    let commit_ts = parse_ts(parts[2])?;
     let mut writes = Vec::new();
     for kv in &parts[3..] {
         writes.push(parse_kv_pair(kv)?);
     }
 
-    // Register prepare in the store via Transaction
-    let mut txn = crate::occ::Transaction::default();
-    for (k, v) in &writes {
-        txn.add_write(crate::tapir::Sharded::from(k.clone()), v.clone());
-    }
-    let txn = Arc::new(txn);
-
     let op_id = ctx.next_op_id();
     let store = ctx.store_mut()?;
-    store.register_prepare(txn_id, &txn, commit_ts);
-
-    // Insert IR overlay entry with typed payload
     let current_view = store.current_view();
     store.insert_ir_entry(
         op_id,
@@ -211,48 +291,32 @@ fn cmd_prepare(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
                 transaction_id: txn_id,
                 commit_ts,
                 read_set: vec![],
-                write_set: writes
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect(),
+                write_set: writes,
                 scan_set: vec![],
             },
         },
     );
-
-    // Cache op_id and view for commit lookup
-    ctx.prepared_txns
+    ctx.ir_prepared_txns
         .insert(txn_id, (op_id, current_view));
     Ok(())
 }
 
-fn cmd_commit(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
+fn cmd_ir_commit(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
     if parts.len() != 3 {
-        return Err("usage: commit <client:num> <ts>".to_string());
+        return Err("usage: ir-commit <client:num> <ts>".to_string());
     }
     let txn_id = parse_txn_id(parts[1])?;
     let commit_ts = parse_ts(parts[2])?;
-
-    let (prepare_op_id, prepare_view) = ctx
-        .prepared_txns
-        .remove(&txn_id)
-        .ok_or_else(|| format!("no prepared transaction: {}", parts[1]))?;
-
     let op_id = ctx.next_op_id();
-    let store = ctx.store_mut()?;
-
-    // Determine PrepareRef: if prepare was sealed, use CrossView with VLog ptr;
-    // otherwise use SameView with the prepare's op_id.
-    let prepare_ref = if let Some(ir_sst) = store.lookup_ir_base_entry(prepare_op_id) {
-        PrepareRef::CrossView {
-            view: prepare_view,
-            vlog_ptr: ir_sst.vlog_ptr,
-        }
-    } else {
+    let prepare_ref = if let Some((prepare_op_id, _prepare_view)) = ctx.ir_prepared_txns.remove(&txn_id) {
         PrepareRef::SameView(prepare_op_id)
+    } else {
+        PrepareRef::SameView(op_id)
     };
 
+    let store = ctx.store_mut()?;
     let current_view = store.current_view();
+
     store.insert_ir_entry(
         op_id,
         IrMemEntry {
@@ -265,11 +329,40 @@ fn cmd_commit(ctx: &mut Context, parts: &[&str]) -> Result<(), String> {
             },
         },
     );
+    Ok(())
+}
 
-    // Commit through inherent method (reads write_set from prepare_registry)
-    store
-        .commit_prepared(txn_id, commit_ts)
-        .map_err(|e| format!("commit failed: {e}"))
+fn cmd_dump_tapir_vlog<W: Write>(
+    ctx: &mut Context,
+    parts: &[&str],
+    stdout: &mut W,
+) -> Result<(), String> {
+    if parts.len() != 2 {
+        return Err("usage: dump-tapir-vlog <segment-id>".to_string());
+    }
+    let seg_id: u64 = parts[1]
+        .parse()
+        .map_err(|_| format!("invalid segment id: {}", parts[1]))?;
+    let store = ctx.store()?;
+    let entries = store
+        .dump_tapir_vlog_segment(seg_id)
+        .map_err(|e| format!("dump-tapir-vlog failed: {e}"))?;
+    for (offset, prepared) in &entries {
+        write!(
+            stdout,
+            "@{offset} TAPIR_COMMIT txn={}:{} ts={}",
+            prepared.transaction_id.client_id.0,
+            prepared.transaction_id.number,
+            prepared.commit_ts.time
+        )
+        .map_err(|e| format!("write failed: {e}"))?;
+        for (k, v) in &prepared.write_set {
+            let v_str = v.as_deref().unwrap_or("<tombstone>");
+            write!(stdout, " {k}={v_str}").map_err(|e| format!("write failed: {e}"))?;
+        }
+        writeln!(stdout).map_err(|e| format!("write failed: {e}"))?;
+    }
+    Ok(())
 }
 
 fn cmd_get<W: Write>(ctx: &mut Context, parts: &[&str], stdout: &mut W) -> Result<(), String> {

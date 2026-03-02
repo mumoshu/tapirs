@@ -1,10 +1,253 @@
 use crate::ir::OpId;
 use crate::occ::TransactionId as OccTransactionId;
+use crate::tapir::Timestamp;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::fmt::Debug;
 
-use super::types::{
-    IrEntryRef, IrMemEntry, IrPayloadInline, IrSstEntry, IrState, UnifiedVlogPtr, VlogEntryType,
-};
+use super::types::UnifiedVlogPtr;
+
+/// Entry type discriminator for IR VLog entries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum VlogEntryType {
+    /// CO::Prepare — consensus operation carrying the full transaction.
+    Prepare = 0x01,
+    /// IO::Commit — inconsistent operation that commits a prepared transaction.
+    Commit = 0x02,
+    /// IO::Abort — inconsistent operation that aborts a prepared transaction.
+    Abort = 0x03,
+    /// IO::QuorumRead — inconsistent operation for RO transaction slow path.
+    QuorumRead = 0x04,
+    /// IO::QuorumScan — inconsistent operation for RO scan slow path.
+    QuorumScan = 0x05,
+    /// CO::RaiseMinPrepareTime — consensus operation that raises the
+    /// shard's minimum prepare timestamp.
+    RaiseMinPrepareTime = 0x06,
+}
+
+/// IR memtable entry — lives only in the current view's in-memory overlay.
+///
+/// Generic over `K, V` because it wraps `IrPayloadInline<K, V>`.  There is
+/// no `vlog_ptr` field: VLog writes are deferred to view seal time.  There
+/// is no `modified_view` field: overlay entries always belong to the current
+/// view, so the field would be redundant.
+///
+/// At seal time, each finalized `IrMemEntry` is serialized into the VLog
+/// and replaced by an `IrSstEntry` (which *does* carry a `vlog_ptr`).
+pub struct IrMemEntry<K, V> {
+    /// Which IR operation type this entry represents.
+    pub entry_type: VlogEntryType,
+    /// Whether this entry is Tentative or Finalized.
+    pub state: IrState,
+    /// The full operation payload held inline in memory.
+    pub payload: IrPayloadInline<K, V>,
+}
+
+impl<K: Debug, V: Debug> Debug for IrMemEntry<K, V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IrMemEntry")
+            .field("entry_type", &self.entry_type)
+            .field("state", &self.state)
+            .field("payload", &self.payload)
+            .finish()
+    }
+}
+
+impl<K: Clone, V: Clone> Clone for IrMemEntry<K, V> {
+    fn clone(&self) -> Self {
+        Self {
+            entry_type: self.entry_type,
+            state: self.state,
+            payload: self.payload.clone(),
+        }
+    }
+}
+
+/// IR operation state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IrState {
+    /// Entry proposed but not yet decided by consensus.
+    Tentative,
+    /// Entry decided by consensus. The `u64` is the view number.
+    Finalized(u64),
+}
+
+/// Inline payload for IR entries — the source of truth for transaction data.
+///
+/// Generic over `K` and `V` so that prepared transactions can be inspected,
+/// indexed, and committed without a serialization round-trip while they live
+/// in memory.  Serialization to bytes happens exactly once, at view seal
+/// time (`seal_current_view`), via `UnifiedVlogSegment::serialize_payload`.
+/// Deserialization from the VLog happens only for cross-view reads (rare).
+///
+/// Because `Commit` and `Abort` variants carry no K/V data, they are
+/// unaffected by the type parameters.  Only `Prepare`, `QuorumRead`, and
+/// `QuorumScan` hold typed fields.
+pub enum IrPayloadInline<K, V> {
+    /// CO::Prepare payload — the full transaction data for OCC validation.
+    /// This is the SOLE carrier of write_set values; IO::Commit only has
+    /// a PrepareRef back to this entry.
+    Prepare {
+        transaction_id: OccTransactionId,
+        commit_ts: Timestamp,
+        /// Read set: `(key, read_timestamp)` per read.
+        read_set: Vec<(K, Timestamp)>,
+        /// Write set: `(key, value)` per write. `None` = delete tombstone.
+        /// MVCC UnifiedVlogPrepareValuePtr entries reference `write_set[index]`.
+        write_set: Vec<(K, Option<V>)>,
+        /// Scan set: `(start_key, end_key, timestamp)` per scan.
+        scan_set: Vec<(K, K, Timestamp)>,
+    },
+    /// IO::Commit payload — commits a previously prepared transaction.
+    Commit {
+        transaction_id: OccTransactionId,
+        commit_ts: Timestamp,
+        prepare_ref: PrepareRef,
+    },
+    /// IO::Abort payload — aborts a prepared transaction.
+    Abort {
+        transaction_id: OccTransactionId,
+        commit_ts: Option<Timestamp>,
+    },
+    /// IO::QuorumRead payload — RO transaction slow path quorum read.
+    QuorumRead {
+        key: K,
+        timestamp: Timestamp,
+    },
+    /// IO::QuorumScan payload — RO transaction slow path quorum scan.
+    QuorumScan {
+        start_key: K,
+        end_key: K,
+        snapshot_ts: Timestamp,
+    },
+    /// CO::RaiseMinPrepareTime payload.
+    RaiseMinPrepareTime {
+        time: u64,
+    },
+}
+
+impl<K: Debug, V: Debug> Debug for IrPayloadInline<K, V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Prepare { transaction_id, commit_ts, read_set, write_set, scan_set } => {
+                f.debug_struct("Prepare")
+                    .field("transaction_id", transaction_id)
+                    .field("commit_ts", commit_ts)
+                    .field("read_set", read_set)
+                    .field("write_set", write_set)
+                    .field("scan_set", scan_set)
+                    .finish()
+            }
+            Self::Commit { transaction_id, commit_ts, prepare_ref } => {
+                f.debug_struct("Commit")
+                    .field("transaction_id", transaction_id)
+                    .field("commit_ts", commit_ts)
+                    .field("prepare_ref", prepare_ref)
+                    .finish()
+            }
+            Self::Abort { transaction_id, commit_ts } => {
+                f.debug_struct("Abort")
+                    .field("transaction_id", transaction_id)
+                    .field("commit_ts", commit_ts)
+                    .finish()
+            }
+            Self::QuorumRead { key, timestamp } => {
+                f.debug_struct("QuorumRead")
+                    .field("key", key)
+                    .field("timestamp", timestamp)
+                    .finish()
+            }
+            Self::QuorumScan { start_key, end_key, snapshot_ts } => {
+                f.debug_struct("QuorumScan")
+                    .field("start_key", start_key)
+                    .field("end_key", end_key)
+                    .field("snapshot_ts", snapshot_ts)
+                    .finish()
+            }
+            Self::RaiseMinPrepareTime { time } => {
+                f.debug_struct("RaiseMinPrepareTime")
+                    .field("time", time)
+                    .finish()
+            }
+        }
+    }
+}
+
+impl<K: Clone, V: Clone> Clone for IrPayloadInline<K, V> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Prepare { transaction_id, commit_ts, read_set, write_set, scan_set } => {
+                Self::Prepare {
+                    transaction_id: *transaction_id,
+                    commit_ts: *commit_ts,
+                    read_set: read_set.clone(),
+                    write_set: write_set.clone(),
+                    scan_set: scan_set.clone(),
+                }
+            }
+            Self::Commit { transaction_id, commit_ts, prepare_ref } => {
+                Self::Commit {
+                    transaction_id: *transaction_id,
+                    commit_ts: *commit_ts,
+                    prepare_ref: prepare_ref.clone(),
+                }
+            }
+            Self::Abort { transaction_id, commit_ts } => {
+                Self::Abort {
+                    transaction_id: *transaction_id,
+                    commit_ts: *commit_ts,
+                }
+            }
+            Self::QuorumRead { key, timestamp } => {
+                Self::QuorumRead {
+                    key: key.clone(),
+                    timestamp: *timestamp,
+                }
+            }
+            Self::QuorumScan { start_key, end_key, snapshot_ts } => {
+                Self::QuorumScan {
+                    start_key: start_key.clone(),
+                    end_key: end_key.clone(),
+                    snapshot_ts: *snapshot_ts,
+                }
+            }
+            Self::RaiseMinPrepareTime { time } => {
+                Self::RaiseMinPrepareTime { time: *time }
+            }
+        }
+    }
+}
+
+/// Reference from an IO::Commit entry to its corresponding CO::Prepare entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum PrepareRef {
+    /// CO::Prepare is in the same view's overlay (common case).
+    SameView(OpId),
+    /// CO::Prepare is in a sealed view's VLog (rare cross-view case).
+    CrossView {
+        view: u64,
+        vlog_ptr: UnifiedVlogPtr,
+    },
+}
+
+/// IR SST entry: maps OpId → VLog location for the sealed IR base record.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IrSstEntry {
+    pub entry_type: VlogEntryType,
+    pub vlog_ptr: UnifiedVlogPtr,
+}
+
+/// Reference to an IR entry — either a typed in-memory overlay entry
+/// or a byte-level base SST entry.
+///
+/// Callers must handle both variants: `Overlay` gives direct access to
+/// typed payload fields, while `Base` only provides a VLog pointer
+/// (requires a VLog read to access the payload).
+pub enum IrEntryRef<'a, K, V> {
+    Overlay(&'a IrMemEntry<K, V>),
+    Base(&'a IrSstEntry),
+}
 
 /// In-memory IR record state: overlay (current view), base (sealed views),
 /// and the prepare VLog index for cross-view commits.
@@ -22,13 +265,6 @@ pub(crate) struct IrRecord<K: Ord, V> {
     /// For now, we use an in-memory BTreeMap as a stepping stone.
     pub(super) ir_base: BTreeMap<OpId, IrSstEntry>,
 
-    /// Maps transaction_id → VLog pointer for sealed CO::Prepare entries.
-    ///
-    /// Populated at seal time.  Used by `commit_prepared` when
-    /// the commit arrives after the prepare's view has been sealed (cross-view
-    /// commit).  Without this index, the commit path would have to scan the
-    /// VLog to find the prepare.
-    pub(super) prepare_vlog_index: BTreeMap<OccTransactionId, UnifiedVlogPtr>,
 }
 
 impl<K: Ord, V> IrRecord<K, V> {
@@ -36,7 +272,6 @@ impl<K: Ord, V> IrRecord<K, V> {
         Self {
             ir_overlay: BTreeMap::new(),
             ir_base: BTreeMap::new(),
-            prepare_vlog_index: BTreeMap::new(),
         }
     }
 
@@ -64,11 +299,6 @@ impl<K: Ord, V> IrRecord<K, V> {
         self.ir_base.get(&op_id)
     }
 
-    /// Get a reference to the prepare VLog index.
-    pub(crate) fn prepare_vlog_index(&self) -> &BTreeMap<OccTransactionId, UnifiedVlogPtr> {
-        &self.prepare_vlog_index
-    }
-
     /// Install a merged record as the new IR base from VLog pointers.
     ///
     /// Clears `ir_base` and `ir_overlay`, then populates `ir_base` from the
@@ -92,16 +322,12 @@ impl<K: Ord, V> IrRecord<K, V> {
     }
 
     /// Apply VLog pointers to the IR base after a seal write.
-    ///
-    /// For each finalized entry, inserts an `IrSstEntry` into `ir_base`
-    /// and indexes CO::Prepare entries by transaction_id in
-    /// `prepare_vlog_index` for cross-view commit lookups.
     pub(crate) fn apply_sealed_ptrs(
         &mut self,
         finalized: &[(OpId, VlogEntryType, IrPayloadInline<K, V>)],
         vlog_ptrs: &[UnifiedVlogPtr],
     ) {
-        for (i, (op_id, entry_type, payload)) in finalized.iter().enumerate() {
+        for (i, (op_id, entry_type, _payload)) in finalized.iter().enumerate() {
             self.ir_base.insert(
                 *op_id,
                 IrSstEntry {
@@ -109,11 +335,6 @@ impl<K: Ord, V> IrRecord<K, V> {
                     vlog_ptr: vlog_ptrs[i],
                 },
             );
-            if *entry_type == VlogEntryType::Prepare
-                && let IrPayloadInline::Prepare { transaction_id, .. } = payload
-            {
-                self.prepare_vlog_index.insert(*transaction_id, vlog_ptrs[i]);
-            }
         }
     }
 

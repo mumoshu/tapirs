@@ -101,7 +101,7 @@ fn ro_txn_quorum_read_scan() {
         "Scan before commit_ts should return empty"
     );
 
-    // No seal performed, files unchanged: only active VLog (still empty on disk)
+    // No seal performed, but commits append transaction entries to active VLog.
     assert_store_file_names(&store, &["vlog_seg_0000.dat"]);
-    assert_store_file_size(&store, "vlog_seg_0000.dat", 0);
+    assert_store_file_size_positive(&store, "vlog_seg_0000.dat");
 }

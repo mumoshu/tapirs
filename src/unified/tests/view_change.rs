@@ -23,8 +23,8 @@ fn view_change_seal_merge_sync() {
         test_ts(5),
     );
 
-    // Verify InMemory location before seal
-    assert_value_location_in_memory(&store, "a", test_ts(5), true);
+    // Committed value points to committed-transaction VLog entry
+    assert_value_location_in_memory(&store, "a", test_ts(5), false);
 
     // Tentative prepare (won't survive merge)
     let txn2 = make_txn(vec![], vec![("b", Some("v2"))]);
@@ -114,7 +114,7 @@ fn cross_view_prepare_commit() {
     // VLog read count should be 0 (no reads yet)
     assert_eq!(store.vlog_read_count(), 0);
 
-    // View 1: Commit with CrossView PrepareRef
+    // View 1: Commit using reconstructed transaction data from merge output.
     let ir_base_entry = store
         .lookup_ir_base_entry(test_op_id(1, 1))
         .expect("Prepare should be in IR base SST");
@@ -125,21 +125,35 @@ fn cross_view_prepare_commit() {
     );
     let vlog_ptr = ir_base_entry.vlog_ptr;
 
-    commit_txn(
-        &mut store,
+    store.insert_ir_entry(
         test_op_id(1, 2),
-        test_txn_id(1, 1),
-        test_ts(5),
-        PrepareRef::CrossView {
-            view: 0,
-            vlog_ptr,
+        IrMemEntry {
+            entry_type: VlogEntryType::Commit,
+            state: IrState::Finalized(store.current_view()),
+            payload: IrPayloadInline::Commit {
+                transaction_id: test_txn_id(1, 1),
+                commit_ts: test_ts(5),
+                prepare_ref: PrepareRef::CrossView {
+                    view: 0,
+                    vlog_ptr,
+                },
+            },
         },
     );
+    store
+        .commit_transaction_data(
+            test_txn_id(1, 1),
+            &[],
+            &[("x".to_string(), Some("v1".to_string()))],
+            &[],
+            test_ts(5),
+        )
+        .unwrap();
 
     // Read resolves through sealed VLog (OnDisk path)
     assert_get_at(&store, "x", test_ts(5), Some("v1"), test_ts(5));
 
-    // Value should be OnDisk (cross-view commit uses prepare_vlog_index)
+    // Value should be OnDisk (cross-view commit uses committed transaction vlog)
     assert_value_location_in_memory(&store, "x", test_ts(5), false);
 
     // First read should have triggered exactly 1 VLog read

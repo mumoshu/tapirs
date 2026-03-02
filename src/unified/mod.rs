@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use ir_record::IrRecord;
+use ir_record::{IrPayloadInline, IrRecord, VlogEntryType};
 use manifest::UnifiedManifest;
 use prepare_cache::PrepareCache;
 use types::*;
@@ -58,9 +58,10 @@ const DEFAULT_MIN_VIEW_VLOG_SIZE: u64 = 256 * 1024;
 ///
 /// Committed values are NOT duplicated in the MVCC index.  Instead,
 /// each MVCC entry (`UnifiedLsmEntry`) holds a `ValueLocation` that
-/// points either to the `prepare_registry` (current view) or to a
-/// CO::Prepare entry in the VLog (sealed views).  Reading a committed
-/// value always goes through `resolve_in_memory` or `resolve_on_disk`.
+/// points either to the `prepare_registry` (legacy/current-view path)
+/// or to a TAPIR committed-transaction entry in the VLog. Reading a
+/// committed value always goes through `resolve_in_memory` or
+/// `resolve_on_disk`.
 pub struct UnifiedStore<K: Ord, V, IO: DiskIo> {
     /// MVCC memtable: current view's committed values + read timestamps.
     mvcc_memtable: Memtable<K, Timestamp>,
@@ -88,6 +89,10 @@ pub struct UnifiedStore<K: Ord, V, IO: DiskIo> {
     /// or reads after seal).  Uses `RefCell` for interior mutability because
     /// `get()` takes `&self`.
     prepare_cache: RefCell<PrepareCache<K, V>>,
+
+    /// Store-owned index: transaction_id -> VLog pointer for
+    /// committed-transaction value resolution across views.
+    committed_txn_vlog_index: BTreeMap<OccTransactionId, UnifiedVlogPtr>,
 
     /// Current view number.
     current_view: u64,
@@ -187,6 +192,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
             sealed_vlog_segments,
             prepare_registry: BTreeMap::new(),
             prepare_cache: RefCell::new(PrepareCache::new(DEFAULT_PREPARE_CACHE_CAPACITY)),
+            committed_txn_vlog_index: BTreeMap::new(),
             current_view,
             manifest,
             ir_record: IrRecord::new(),
@@ -246,6 +252,26 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
             self.active_vlog.iter_entries()
         } else if let Some(seg) = self.sealed_vlog_segments.get(&segment_id) {
             seg.iter_entries()
+        } else {
+            Err(StorageError::Codec(format!(
+                "VLog segment {segment_id} not found"
+            )))
+        }
+    }
+
+    /// Dump committed TAPIR transaction entries from a VLog segment.
+    pub fn dump_tapir_vlog_segment(
+        &self,
+        segment_id: u64,
+    ) -> Result<Vec<(u64, CachedPrepare<K, V>)>, StorageError>
+    where
+        K: serde::de::DeserializeOwned,
+        V: serde::de::DeserializeOwned,
+    {
+        if self.active_vlog.id == segment_id {
+            self.active_vlog.iter_committed_txn_entries()
+        } else if let Some(seg) = self.sealed_vlog_segments.get(&segment_id) {
+            seg.iter_committed_txn_entries()
         } else {
             Err(StorageError::Codec(format!(
                 "VLog segment {segment_id} not found"
@@ -349,68 +375,48 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
     ///
     /// Two paths, tried in order:
     ///
-    /// 1. **InMemory** — prepare is in the current view's `prepare_registry`.
-    ///    MVCC entries get `ValueLocation::InMemory { txn_id, write_index }`.
-    ///    This is the common case and avoids any VLog I/O.
+    /// 1. **Registry-backed commit** — prepare is in current-view
+    ///    `prepare_registry`; commit appends a TAPIR committed-transaction
+    ///    entry to VLog and MVCC entries point to it.
     ///
-    /// 2. **OnDisk** — prepare was sealed into the VLog (cross-view commit).
-    ///    MVCC entries get `ValueLocation::OnDisk(ptr)` using the
-    ///    `prepare_vlog_index`.  Value reads later go through the LRU cache.
+    /// 2. **OnDisk** — transaction already exists in the committed
+    ///    transaction VLog index (idempotent replay / cross-view finalize).
     ///
     /// Returns `Err(StorageError::PrepareNotFound)` if neither the
-    /// `prepare_registry` nor `prepare_vlog_index` has the transaction.
+    /// `prepare_registry` nor the committed transaction index has the transaction.
     pub fn commit_prepared(
         &mut self,
         txn_id: OccTransactionId,
         commit: Timestamp,
     ) -> Result<(), StorageError>
     where
-        K: serde::de::DeserializeOwned,
-        V: serde::de::DeserializeOwned,
+        K: serde::Serialize + Clone + serde::de::DeserializeOwned,
+        V: serde::Serialize + Clone + serde::de::DeserializeOwned,
     {
         // Clone the Arc to release the immutable borrow, allowing
         // subsequent unified_memtable_mut() calls.
         let prepare = self.prepare_registry.get(&txn_id).cloned();
-        let cross_view_ptr = self.ir_record.prepare_vlog_index().get(&txn_id).copied();
+        let cross_view_ptr = self.committed_txn_vlog_index.get(&txn_id).copied();
 
         if let Some(prepare) = prepare {
-            // InMemory path: prepare is in current view's prepare_registry
-            for (i, (key, value)) in prepare.write_set.iter().enumerate() {
-                let value_ref = if value.is_some() {
-                    Some(ValueLocation::InMemory {
-                        txn_id,
-                        write_index: i as u16,
-                    })
-                } else {
-                    None
-                };
-
-                self.unified_memtable_mut().insert(
-                    key.clone(),
-                    commit,
-                    UnifiedLsmEntry {
-                        value_ref,
-                        last_read_ts: None,
-                    },
-                );
-            }
-
-            // Update read timestamps
-            for (key, read) in &prepare.read_set {
-                self.unified_memtable_mut()
-                    .update_last_read(key, *read, commit.time);
-            }
+            self.commit_transaction_data(
+                txn_id,
+                &prepare.read_set,
+                &prepare.write_set,
+                &prepare.scan_set,
+                commit,
+            )?;
         } else if let Some(vlog_ptr) = cross_view_ptr {
-            // OnDisk path: prepare is in a sealed VLog (cross-view commit)
+            // OnDisk path: transaction already committed and indexed in VLog
             let cached = self.resolve_on_disk(&UnifiedVlogPrepareValuePtr {
-                prepare_ptr: vlog_ptr,
+                txn_ptr: vlog_ptr,
                 write_index: 0,
             })?;
 
             for (i, (key, value)) in cached.write_set.iter().enumerate() {
                 let value_ref = if value.is_some() {
                     Some(ValueLocation::OnDisk(UnifiedVlogPrepareValuePtr {
-                        prepare_ptr: vlog_ptr,
+                        txn_ptr: vlog_ptr,
                         write_index: i as u16,
                     }))
                 } else {
@@ -437,6 +443,51 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
                 client_id: txn_id.client_id.0,
                 txn_number: txn_id.number,
             });
+        }
+
+        Ok(())
+    }
+
+    pub fn commit_transaction_data(
+        &mut self,
+        txn_id: OccTransactionId,
+        read_set: &[(K, Timestamp)],
+        write_set: &[(K, Option<V>)],
+        scan_set: &[(K, K, Timestamp)],
+        commit: Timestamp,
+    ) -> Result<(), StorageError>
+    where
+        K: serde::Serialize + Clone + serde::de::DeserializeOwned,
+        V: serde::Serialize + Clone + serde::de::DeserializeOwned,
+    {
+        let txn_ptr = self
+            .active_vlog
+            .append_committed_txn(txn_id, commit, read_set, write_set, scan_set)?;
+        self.committed_txn_vlog_index.insert(txn_id, txn_ptr);
+
+        for (i, (key, value)) in write_set.iter().enumerate() {
+            let value_ref = if value.is_some() {
+                Some(ValueLocation::OnDisk(UnifiedVlogPrepareValuePtr {
+                    txn_ptr,
+                    write_index: i as u16,
+                }))
+            } else {
+                None
+            };
+
+            self.unified_memtable_mut().insert(
+                key.clone(),
+                commit,
+                UnifiedLsmEntry {
+                    value_ref,
+                    last_read_ts: None,
+                },
+            );
+        }
+
+        for (key, read) in read_set {
+            self.unified_memtable_mut()
+                .update_last_read(key, *read, commit.time);
         }
 
         Ok(())
@@ -478,8 +529,8 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
         K: serde::de::DeserializeOwned,
         V: serde::de::DeserializeOwned,
     {
-        let key_seg = ptr.prepare_ptr.segment_id;
-        let key_off = ptr.prepare_ptr.offset;
+        let key_seg = ptr.txn_ptr.segment_id;
+        let key_off = ptr.txn_ptr.offset;
 
         // Check cache first
         if let Some(cached) = self.prepare_cache.borrow_mut().get(key_seg, key_off) {
@@ -504,7 +555,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
                 "VLog segment {key_seg} not found for prepare resolution"
             )))?;
 
-        let prepare = segment.read_prepare(&ptr.prepare_ptr)?;
+        let prepare = segment.read_committed_txn(&ptr.txn_ptr)?;
         let cached = Arc::new(prepare);
         self.prepare_cache.borrow_mut().insert(key_seg, key_off, cached.clone());
         Ok(cached)
@@ -579,7 +630,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
             vlog_ptrs = self.active_vlog.append_batch(&entry_refs)?;
         }
 
-        // 3. Build IR base entries and prepare_vlog_index from VLog pointers
+        // 3. Build IR base entries from VLog pointers
         self.ir_record.apply_sealed_ptrs(&finalized_entries, &vlog_ptrs);
 
         // 3. Sync VLog
@@ -648,7 +699,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
 
         // 8. Convert unified memtable InMemory → OnDisk, then clear overlay + registry
         self.unified_memtable
-            .convert_in_memory_to_on_disk(self.ir_record.prepare_vlog_index());
+            .convert_in_memory_to_on_disk(&self.committed_txn_vlog_index);
         self.ir_record.clear_overlay();
         self.prepare_registry.clear();
         self.current_view_entry_count = 0;

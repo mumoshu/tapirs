@@ -236,9 +236,9 @@ fn restore_from_ir_record_rebuilds_mvcc() {
     assert_eq!(scan_results[1].2, test_ts(10));
 
     // All values should be InMemory (restored in current view, not sealed)
-    assert_value_location_in_memory(&restored_store, "x", test_ts(5), true);
-    assert_value_location_in_memory(&restored_store, "x", test_ts(10), true);
-    assert_value_location_in_memory(&restored_store, "y", test_ts(10), true);
+    assert_value_location_in_memory(&restored_store, "x", test_ts(5), false);
+    assert_value_location_in_memory(&restored_store, "x", test_ts(10), false);
+    assert_value_location_in_memory(&restored_store, "y", test_ts(10), false);
 
     // Note: last_read_ts is NOT preserved by IR record backup — it's
     // ephemeral OCC state that only matters for the current transaction
@@ -246,9 +246,9 @@ fn restore_from_ir_record_rebuilds_mvcc() {
     assert_last_read_ts(&restored_store, "x", None);
     assert_last_read_ts(&restored_store, "y", None);
 
-    // After restore (no seal): only active VLog segment (empty on disk, data is in-memory)
+    // After restore (no seal): active VLog still contains committed transaction entries.
     assert_store_file_names(&restored_store, &["vlog_seg_0000.dat"]);
-    assert_store_file_size(&restored_store, "vlog_seg_0000.dat", 0);
+    assert_store_file_size_positive(&restored_store, "vlog_seg_0000.dat");
 }
 
 /// Test that restore works after seal (IR entries are in VLog, not in memory).
@@ -359,9 +359,9 @@ fn restore_from_sealed_vlog_rebuilds_mvcc() {
     assert_get_none(&restored, "c", test_ts(5));
 
     // InMemory (freshly restored, not sealed)
-    assert_value_location_in_memory(&restored, "a", test_ts(5), true);
-    assert_value_location_in_memory(&restored, "b", test_ts(5), true);
-    assert_value_location_in_memory(&restored, "c", test_ts(10), true);
+    assert_value_location_in_memory(&restored, "a", test_ts(5), false);
+    assert_value_location_in_memory(&restored, "b", test_ts(5), false);
+    assert_value_location_in_memory(&restored, "c", test_ts(10), false);
 
     // Scan
     let scan = restored.do_uncommitted_scan(
@@ -405,9 +405,9 @@ fn restore_from_sealed_vlog_rebuilds_mvcc() {
     assert_last_read_ts(&restored, "b", None);
     assert_last_read_ts(&restored, "c", None);
 
-    // Restored store has only active VLog (data is in-memory, no seal)
+    // Restored store has active VLog containing committed transaction entries.
     assert_store_file_names(&restored, &["vlog_seg_0000.dat"]);
-    assert_store_file_size(&restored, "vlog_seg_0000.dat", 0);
+    assert_store_file_size_positive(&restored, "vlog_seg_0000.dat");
 }
 
 // === Helper ===

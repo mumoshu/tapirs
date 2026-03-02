@@ -97,8 +97,8 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
         );
 
         // These are InMemory (current view, not sealed)
-        assert_value_location_in_memory(&store, "d", test_ts(20), true);
-        assert_value_location_in_memory(&store, "a", test_ts(20), true);
+        assert_value_location_in_memory(&store, "d", test_ts(20), false);
+        assert_value_location_in_memory(&store, "a", test_ts(20), false);
 
         // === Take "IR record" for unsealed view ===
         unsealedview_ir = store
@@ -192,8 +192,8 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
     // Unsealed view data (from IR replay) — values are InMemory
     assert_get_at(&restored, "d", test_ts(20), Some("val_d"), test_ts(20));
     assert_get_at(&restored, "a", test_ts(20), Some("val_a_v2"), test_ts(20));
-    assert_value_location_in_memory(&restored, "d", test_ts(20), true);
-    assert_value_location_in_memory(&restored, "a", test_ts(20), true);
+    assert_value_location_in_memory(&restored, "d", test_ts(20), false);
+    assert_value_location_in_memory(&restored, "a", test_ts(20), false);
 
     // Multi-version reads across sealed and unsealed views
     // "a" at ts=5 → "val_a" (from SST/OnDisk)

@@ -23,8 +23,8 @@ fn rw_txn_prepare_commit_read() {
     );
     assert_get_at(&store, "x", test_ts(1), Some("v1"), test_ts(1));
 
-    // ValueLocation should be InMemory (not yet sealed)
-    assert_value_location_in_memory(&store, "x", test_ts(1), true);
+    // ValueLocation should be OnDisk via committed transaction VLog entry
+    assert_value_location_in_memory(&store, "x", test_ts(1), false);
 
     // do_uncommitted_get() returns latest version
     let (val, ts) = store.do_uncommitted_get(&"x".to_string()).unwrap();
@@ -58,10 +58,9 @@ fn rw_txn_prepare_commit_read() {
         PrepareRef::SameView(test_op_id(1, 1)),
     );
 
-    // Verify InMemory value location for new version
-    assert_value_location_in_memory(&store, "x", test_ts(5), true);
-    // Original version also still InMemory
-    assert_value_location_in_memory(&store, "x", test_ts(1), true);
+    // Both versions are stored via committed transaction VLog entries
+    assert_value_location_in_memory(&store, "x", test_ts(5), false);
+    assert_value_location_in_memory(&store, "x", test_ts(1), false);
 
     // Read back at different timestamps — both value AND timestamp
     assert_get_at(&store, "x", test_ts(5), Some("v2"), test_ts(5));
@@ -91,10 +90,9 @@ fn rw_txn_prepare_commit_read() {
     // Nonexistent key returns None with default timestamp
     assert_get_none(&store, "nonexistent", test_ts(100));
 
-    // No seal happened, so files unchanged: just active segment (still 0 bytes,
-    // writes go to in-memory overlay/memtable, not VLog)
+    // No seal happened, but commit writes still append to active VLog segment.
     assert_store_file_names(&store, &["vlog_seg_0000.dat"]);
-    assert_store_file_size(&store, "vlog_seg_0000.dat", 0);
+    assert_store_file_size_positive(&store, "vlog_seg_0000.dat");
 }
 
 // === Test 5: Sync replays prepare before commit ===
@@ -131,8 +129,8 @@ fn sync_replays_prepare_before_commit() {
         PrepareRef::SameView(test_op_id(1, 1)),
     );
 
-    // Verify InMemory location + correct read (both value and timestamp)
-    assert_value_location_in_memory(&store, "x", test_ts(5), true);
+    // Verify OnDisk location + correct read (both value and timestamp)
+    assert_value_location_in_memory(&store, "x", test_ts(5), false);
     assert_get_at(&store, "x", test_ts(5), Some("v1"), test_ts(5));
 
     // No last_read_ts (no commit_get called)
@@ -148,9 +146,9 @@ fn sync_replays_prepare_before_commit() {
         "IO::Commit should be in IR overlay"
     );
 
-    // No seal, so only active VLog segment (empty)
+    // No seal, active VLog still contains committed transaction entry
     assert_store_file_names(&store, &["vlog_seg_0000.dat"]);
-    assert_store_file_size(&store, "vlog_seg_0000.dat", 0);
+    assert_store_file_size_positive(&store, "vlog_seg_0000.dat");
 }
 
 // === Existing internal tests (test UnifiedStore directly) ===
@@ -337,45 +335,36 @@ fn unified_store_seal_view() {
 fn unified_store_cross_view_read() {
     let mut store = new_test_store();
 
-    // View 0: Write a prepare entry
-    let payload = IrPayloadInline::Prepare {
-        transaction_id: test_txn_id(1, 1),
-        commit_ts: test_ts(5),
-        read_set: vec![],
-        write_set: vec![
-            ("key_a".to_string(), Some("value_a".to_string())),
-            ("key_b".to_string(), Some("value_b".to_string())),
-        ],
-        scan_set: vec![],
-    };
-
-    store.insert_ir_entry(
-        test_op_id(1, 1),
-        IrMemEntry {
-            entry_type: VlogEntryType::Prepare,
-            state: IrState::Finalized(0),
-            payload,
-        },
-    );
+    // View 0: commit a transaction so values point to committed-txn VLog entries.
+    let write_set = vec![
+        ("key_a".to_string(), Some("value_a".to_string())),
+        ("key_b".to_string(), Some("value_b".to_string())),
+    ];
+    store
+        .commit_transaction_data(test_txn_id(1, 1), &[], &write_set, &[], test_ts(5))
+        .unwrap();
 
     // VLog read count should be 0 before any disk reads
     assert_eq!(store.vlog_read_count(), 0);
 
-    // Seal view 0 → view 1
+    // Seal view 0 -> view 1
     store.seal_current_view().unwrap();
     assert_eq!(store.current_view(), 1);
 
-    // The prepare should be in the IR base (sealed VLog)
-    let ir_sst = store
-        .lookup_ir_base_entry(test_op_id(1, 1))
+    // Read pointer from committed MVCC index entry.
+    let (_, entry) = store
+        .unified_memtable()
+        .get_at(&"key_a".to_string(), test_ts(5))
         .unwrap();
-    assert_eq!(ir_sst.entry_type, VlogEntryType::Prepare);
-    let vlog_ptr = ir_sst.vlog_ptr; // Copy before mutable borrow
+    let ValueLocation::OnDisk(ptr) = entry.value_ref.clone().unwrap() else {
+        panic!("expected OnDisk value location");
+    };
+    let vlog_ptr = ptr.txn_ptr;
 
     // Read the prepare from the sealed VLog
     let cached = store
         .resolve_on_disk(&UnifiedVlogPrepareValuePtr {
-            prepare_ptr: vlog_ptr,
+            txn_ptr: vlog_ptr,
             write_index: 0,
         })
         .unwrap();
@@ -418,7 +407,7 @@ fn unified_store_cross_view_read() {
     let reads_before = store.vlog_read_count();
     let cached2 = store
         .resolve_on_disk(&UnifiedVlogPrepareValuePtr {
-            prepare_ptr: vlog_ptr,
+            txn_ptr: vlog_ptr,
             write_index: 1,
         })
         .unwrap();

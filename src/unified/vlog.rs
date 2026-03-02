@@ -1,6 +1,5 @@
-use super::types::{
-    CachedPrepare, IrPayloadInline, UnifiedVlogPtr, ViewRange, VlogEntryType,
-};
+use super::ir_record::{IrPayloadInline, VlogEntryType};
+use super::types::{CachedPrepare, UnifiedVlogPtr, ViewRange};
 use crate::ir::OpId;
 use crate::mvcc::disk::aligned_buf::{AlignedBuf, round_up};
 use crate::mvcc::disk::disk_io::{DiskIo, OpenFlags};
@@ -21,6 +20,9 @@ const CRC_SIZE: usize = 4;
 /// Minimum entry size: header + crc (no payload).
 const MIN_ENTRY_SIZE: usize = HEADER_SIZE + CRC_SIZE;
 
+/// VLog entry type byte for TAPIR committed transactions.
+const TAPIR_COMMITTED_TXN_ENTRY_TYPE: u8 = 0x80;
+
 /// A physical VLog segment file (either active or sealed).
 ///
 /// The struct itself has no `K, V` type parameters because it stores raw
@@ -40,6 +42,155 @@ pub struct UnifiedVlogSegment<IO: DiskIo> {
 }
 
 impl<IO: DiskIo> UnifiedVlogSegment<IO> {
+    fn serialize_committed_txn_payload<K: Serialize, V: Serialize>(
+        transaction_id: OccTransactionId,
+        commit_ts: Timestamp,
+        read_set: &[(K, Timestamp)],
+        write_set: &[(K, Option<V>)],
+        scan_set: &[(K, K, Timestamp)],
+    ) -> Result<Vec<u8>, StorageError> {
+        let ser_read_set: Vec<(Vec<u8>, Timestamp)> = read_set
+            .iter()
+            .map(|(k, ts)| {
+                let kb = bitcode::serialize(k)
+                    .map_err(|e| StorageError::Codec(e.to_string()))?;
+                Ok((kb, *ts))
+            })
+            .collect::<Result<_, StorageError>>()?;
+        let ser_write_set: Vec<(Vec<u8>, Vec<u8>)> = write_set
+            .iter()
+            .map(|(k, v)| {
+                let kb = bitcode::serialize(k)
+                    .map_err(|e| StorageError::Codec(e.to_string()))?;
+                let vb = v
+                    .as_ref()
+                    .map(|val| bitcode::serialize(val))
+                    .transpose()
+                    .map_err(|e| StorageError::Codec(e.to_string()))?
+                    .unwrap_or_default();
+                Ok((kb, vb))
+            })
+            .collect::<Result<_, StorageError>>()?;
+        let ser_scan_set: Vec<(Vec<u8>, Vec<u8>, Timestamp)> = scan_set
+            .iter()
+            .map(|(sk, ek, ts)| {
+                let skb = bitcode::serialize(sk)
+                    .map_err(|e| StorageError::Codec(e.to_string()))?;
+                let ekb = bitcode::serialize(ek)
+                    .map_err(|e| StorageError::Codec(e.to_string()))?;
+                Ok((skb, ekb, *ts))
+            })
+            .collect::<Result<_, StorageError>>()?;
+        let encodable = PreparePayloadSer {
+            txn_client_id: transaction_id.client_id.0,
+            txn_number: transaction_id.number,
+            commit_time: commit_ts.time,
+            commit_client_id: commit_ts.client_id.0,
+            read_set: ser_read_set,
+            write_set: ser_write_set,
+            scan_set: ser_scan_set,
+        };
+        bitcode::serialize(&encodable)
+            .map_err(|e| StorageError::Codec(e.to_string()))
+    }
+
+    fn deserialize_committed_txn_payload<K: DeserializeOwned, V: DeserializeOwned>(
+        bytes: &[u8],
+    ) -> Result<CachedPrepare<K, V>, StorageError> {
+        let p: PreparePayloadSer =
+            bitcode::deserialize(bytes).map_err(|e| StorageError::Codec(e.to_string()))?;
+        let read_set: Vec<(K, Timestamp)> = p
+            .read_set
+            .iter()
+            .map(|(kb, ts)| {
+                let k: K = bitcode::deserialize(kb).map_err(|e| StorageError::Codec(e.to_string()))?;
+                Ok((k, *ts))
+            })
+            .collect::<Result<_, StorageError>>()?;
+        let write_set: Vec<(K, Option<V>)> = p
+            .write_set
+            .iter()
+            .map(|(kb, vb)| {
+                let k: K = bitcode::deserialize(kb).map_err(|e| StorageError::Codec(e.to_string()))?;
+                let v = if vb.is_empty() {
+                    None
+                } else {
+                    Some(
+                        bitcode::deserialize::<V>(vb)
+                            .map_err(|e| StorageError::Codec(e.to_string()))?,
+                    )
+                };
+                Ok((k, v))
+            })
+            .collect::<Result<_, StorageError>>()?;
+        let scan_set: Vec<(K, K, Timestamp)> = p
+            .scan_set
+            .iter()
+            .map(|(skb, ekb, ts)| {
+                let sk: K =
+                    bitcode::deserialize(skb).map_err(|e| StorageError::Codec(e.to_string()))?;
+                let ek: K =
+                    bitcode::deserialize(ekb).map_err(|e| StorageError::Codec(e.to_string()))?;
+                Ok((sk, ek, *ts))
+            })
+            .collect::<Result<_, StorageError>>()?;
+        Ok(CachedPrepare {
+            transaction_id: OccTransactionId {
+                client_id: IrClientId(p.txn_client_id),
+                number: p.txn_number,
+            },
+            commit_ts: Timestamp {
+                time: p.commit_time,
+                client_id: IrClientId(p.commit_client_id),
+            },
+            read_set,
+            write_set,
+            scan_set,
+        })
+    }
+
+    /// Append a TAPIR committed transaction entry to the segment.
+    pub fn append_committed_txn<K: Serialize, V: Serialize>(
+        &mut self,
+        transaction_id: OccTransactionId,
+        commit_ts: Timestamp,
+        read_set: &[(K, Timestamp)],
+        write_set: &[(K, Option<V>)],
+        scan_set: &[(K, K, Timestamp)],
+    ) -> Result<UnifiedVlogPtr, StorageError> {
+        let payload_bytes = Self::serialize_committed_txn_payload(
+            transaction_id,
+            commit_ts,
+            read_set,
+            write_set,
+            scan_set,
+        )?;
+        let total_len = HEADER_SIZE + payload_bytes.len() + CRC_SIZE;
+
+        let mut raw = Vec::with_capacity(total_len);
+        raw.push(TAPIR_COMMITTED_TXN_ENTRY_TYPE);
+        raw.extend_from_slice(&(total_len as u32).to_le_bytes());
+        raw.extend_from_slice(&transaction_id.client_id.0.to_le_bytes());
+        raw.extend_from_slice(&transaction_id.number.to_le_bytes());
+        raw.extend_from_slice(&payload_bytes);
+
+        let crc = crc32fast::hash(&raw);
+        raw.extend_from_slice(&crc.to_le_bytes());
+
+        let mut buf = AlignedBuf::new(total_len);
+        buf.as_full_slice_mut()[..total_len].copy_from_slice(&raw);
+        buf.set_len(total_len);
+
+        let offset = self.write_offset;
+        IO::block_on(self.io.as_ref().unwrap().pwrite(&buf, offset))?;
+        self.write_offset += total_len as u64;
+
+        Ok(UnifiedVlogPtr {
+            segment_id: self.id,
+            offset,
+            length: total_len as u32,
+        })
+    }
     /// Open or create a segment file.
     pub fn open(id: u64, path: PathBuf, flags: OpenFlags) -> Result<Self, StorageError> {
         let io = IO::open(&path, flags)?;
@@ -542,6 +693,53 @@ impl<IO: DiskIo> UnifiedVlogSegment<IO> {
         }
     }
 
+    /// Read a TAPIR committed transaction entry from VLog.
+    pub fn read_committed_txn<K: DeserializeOwned, V: DeserializeOwned>(
+        &self,
+        ptr: &UnifiedVlogPtr,
+    ) -> Result<CachedPrepare<K, V>, StorageError> {
+        let total = ptr.length as usize;
+        if total < MIN_ENTRY_SIZE {
+            return Err(StorageError::Corruption {
+                file: self.path.display().to_string(),
+                offset: ptr.offset,
+                expected_crc: 0,
+                actual_crc: 0,
+            });
+        }
+
+        let read_size = round_up(total);
+        let mut buf = AlignedBuf::new(read_size);
+        IO::block_on(self.io.as_ref().unwrap().pread(&mut buf, ptr.offset))?;
+        let raw = &buf.as_full_slice()[..total];
+
+        let stored_crc = u32::from_le_bytes([
+            raw[total - 4],
+            raw[total - 3],
+            raw[total - 2],
+            raw[total - 1],
+        ]);
+        let computed_crc = crc32fast::hash(&raw[..total - 4]);
+        if stored_crc != computed_crc {
+            return Err(StorageError::Corruption {
+                file: self.path.display().to_string(),
+                offset: ptr.offset,
+                expected_crc: stored_crc,
+                actual_crc: computed_crc,
+            });
+        }
+
+        if raw[0] != TAPIR_COMMITTED_TXN_ENTRY_TYPE {
+            return Err(StorageError::Codec(format!(
+                "expected committed transaction entry, got type byte {:#04x}",
+                raw[0]
+            )));
+        }
+
+        let payload_bytes = &raw[HEADER_SIZE..total - CRC_SIZE];
+        Self::deserialize_committed_txn_payload(payload_bytes)
+    }
+
     /// Iterate all entries in the segment from offset 0 up to write_offset.
     /// Returns (offset, OpId, entry_type, payload) for each entry.
     pub fn iter_entries<K: DeserializeOwned, V: DeserializeOwned>(
@@ -563,6 +761,12 @@ impl<IO: DiskIo> UnifiedVlogSegment<IO> {
                 break;
             }
 
+            let entry_type_byte = raw[0];
+            if entry_type_byte == TAPIR_COMMITTED_TXN_ENTRY_TYPE {
+                offset += entry_len;
+                continue;
+            }
+
             let ptr = UnifiedVlogPtr {
                 segment_id: self.id,
                 offset,
@@ -570,6 +774,42 @@ impl<IO: DiskIo> UnifiedVlogSegment<IO> {
             };
             let (op_id, entry_type, payload) = self.read_entry(&ptr)?;
             results.push((offset, op_id, entry_type, payload));
+
+            offset += entry_len;
+        }
+
+        Ok(results)
+    }
+
+    /// Iterate TAPIR committed transaction entries in the segment.
+    /// Returns `(offset, prepared)` tuples.
+    pub fn iter_committed_txn_entries<K: DeserializeOwned, V: DeserializeOwned>(
+        &self,
+    ) -> Result<Vec<(u64, CachedPrepare<K, V>)>, StorageError> {
+        let mut results = Vec::new();
+        let mut offset = 0u64;
+        let end = self.write_offset;
+
+        while offset + HEADER_SIZE as u64 <= end {
+            let header_read_size = round_up(HEADER_SIZE);
+            let mut header_buf = AlignedBuf::new(header_read_size);
+            IO::block_on(self.io.as_ref().unwrap().pread(&mut header_buf, offset))?;
+
+            let raw = header_buf.as_full_slice();
+            let entry_len = u32::from_le_bytes([raw[1], raw[2], raw[3], raw[4]]) as u64;
+            if entry_len < MIN_ENTRY_SIZE as u64 || offset + entry_len > end {
+                break;
+            }
+
+            if raw[0] == TAPIR_COMMITTED_TXN_ENTRY_TYPE {
+                let ptr = UnifiedVlogPtr {
+                    segment_id: self.id,
+                    offset,
+                    length: entry_len as u32,
+                };
+                let prepared = self.read_committed_txn(&ptr)?;
+                results.push((offset, prepared));
+            }
 
             offset += entry_len;
         }
