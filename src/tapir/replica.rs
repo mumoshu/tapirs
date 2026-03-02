@@ -99,19 +99,6 @@ impl<K: Key, V: Value, M> Replica<K, V, InMemTapirStore<K, V, M>>
 where
     M: MvccBackend<K, V, Timestamp> + Serialize + DeserializeOwned + 'static,
 {
-    pub fn new(shard: ShardNumber, linearizable: bool) -> Self
-    where
-        M: Default,
-    {
-        Self {
-            store: InMemTapirStore::new(shard, linearizable),
-            _phantom: PhantomData,
-            key_range: None,
-            phase: ShardPhase::default(),
-            counters: ReplicaCounters::default(),
-        }
-    }
-
     pub fn new_with_backend(shard: ShardNumber, linearizable: bool, backend: M) -> Self {
         Self {
             store: InMemTapirStore::new_with_backend(shard, linearizable, backend),

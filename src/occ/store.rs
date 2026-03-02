@@ -126,18 +126,6 @@ impl<K: Key, V: Value, TS: Timestamp + Send, M> Store<K, V, TS, M> {
         });
     }
 
-    pub fn new(shard: ShardNumber, linearizable: bool) -> Self
-    where
-        M: Default,
-    {
-        Self {
-            linearizable,
-            inner: Default::default(),
-            prepared_txns: PreparedTransactions::new(shard),
-            max_read_time: None,
-        }
-    }
-
     pub fn new_with_backend(shard: ShardNumber, linearizable: bool, backend: M) -> Self {
         Self {
             linearizable,

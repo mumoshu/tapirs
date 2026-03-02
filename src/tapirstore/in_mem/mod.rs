@@ -33,18 +33,6 @@ pub struct InMemTapirStore<K, V, M> {
 }
 
 impl<K: Key, V: Value, M> InMemTapirStore<K, V, M> {
-    pub fn new(shard: ShardNumber, linearizable: bool) -> Self
-    where
-        M: Default,
-    {
-        Self {
-            occ: OccStore::new(shard, linearizable),
-            transaction_log: TransactionLog::new(),
-            min_prepare_times: MinPrepareTimes::new(),
-            record_delta_during_view: RecordDeltaDuringView::new(),
-        }
-    }
-
     pub fn new_with_backend(shard: ShardNumber, linearizable: bool, backend: M) -> Self {
         Self {
             occ: OccStore::new_with_backend(shard, linearizable, backend),
