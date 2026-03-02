@@ -127,7 +127,7 @@ where
         self.occ.try_prepare_txn(id, txn, commit)
     }
 
-    fn commit_prepared_txn(
+    fn commit_txn(
         &mut self,
         id: TransactionId,
         txn: &Transaction<K, V, Timestamp>,

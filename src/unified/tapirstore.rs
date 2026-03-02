@@ -60,7 +60,7 @@ impl<K: Key, V: Value, IO: DiskIo> TapirStore<K, V> for UnifiedStore<K, V, IO> {
         todo!()
     }
 
-    fn commit_prepared_txn(
+    fn commit_txn(
         &mut self,
         _id: TransactionId,
         _txn: &Transaction<K, V, Timestamp>,

@@ -59,10 +59,10 @@ pub trait TapirStore<K: Key, V: Value>: Send + 'static {
     /// # Return value transitions
     ///
     /// ```text
-    /// // After commit_prepared_txn(_, write("x","v1"), ts(1,1)):
+    /// // After commit_txn(_, write("x","v1"), ts(1,1)):
     /// do_uncommitted_get("x") => (Some("v1"), ts(1,1))
     ///
-    /// // After commit_prepared_txn(_, write("x","v2"), ts(5,1)):
+    /// // After commit_txn(_, write("x","v2"), ts(5,1)):
     /// do_uncommitted_get("x") => (Some("v2"), ts(5,1))
     ///
     /// // Key never written:
@@ -90,12 +90,12 @@ pub trait TapirStore<K: Key, V: Value>: Send + 'static {
     /// # Return value transitions
     ///
     /// ```text
-    /// // After commit_prepared_txn(_, write("x","v1"), ts(1,1))
-    /// //   and commit_prepared_txn(_, write("x","v2"), ts(5,1)):
+    /// // After commit_txn(_, write("x","v1"), ts(1,1))
+    /// //   and commit_txn(_, write("x","v2"), ts(5,1)):
     /// do_uncommitted_get_at("x", ts(3,1))  => (Some("v1"), ts(1,1))
     /// do_uncommitted_get_at("x", ts(10,1)) => (Some("v2"), ts(5,1))
     ///
-    /// // After commit_prepared_txn(_, write("x","v3"), ts(7,1)):
+    /// // After commit_txn(_, write("x","v3"), ts(7,1)):
     /// do_uncommitted_get_at("x", ts(10,1)) => (Some("v3"), ts(7,1))
     /// do_uncommitted_get_at("x", ts(3,1))  => (Some("v1"), ts(1,1))  // unchanged
     /// ```
@@ -121,12 +121,12 @@ pub trait TapirStore<K: Key, V: Value>: Send + 'static {
     /// # Return value transitions
     ///
     /// ```text
-    /// // After commit_prepared_txn(_, write("a","v1"), ts(1,1))
-    /// //   and commit_prepared_txn(_, write("b","v2"), ts(1,1)):
+    /// // After commit_txn(_, write("a","v1"), ts(1,1))
+    /// //   and commit_txn(_, write("b","v2"), ts(1,1)):
     /// do_uncommitted_scan("a", "c", ts(10,1))
     ///   => [("a", Some("v1"), ts(1,1)), ("b", Some("v2"), ts(1,1))]
     ///
-    /// // After commit_prepared_txn(_, write("b","v3"), ts(5,1)):
+    /// // After commit_txn(_, write("b","v3"), ts(5,1)):
     /// do_uncommitted_scan("a", "c", ts(10,1))
     ///   => [("a", Some("v1"), ts(1,1)), ("b", Some("v3"), ts(5,1))]
     /// do_uncommitted_scan("a", "c", ts(3,1))
@@ -144,9 +144,17 @@ pub trait TapirStore<K: Key, V: Value>: Send + 'static {
     ) -> PrepareResult<Timestamp>;
 
     /// Record a commit in the transaction log and apply the write set.
+    ///
+    /// This is called for *every* `IO::Commit`, whether or not the transaction
+    /// was locally prepared. A replica may receive a commit for a transaction
+    /// it never prepared — for example when a backup coordinator recovered the
+    /// transaction via `CheckPrepare`, or during view-change sync. This is safe
+    /// because OCC validation is quorum-based (f+1 replicas agreed to prepare),
+    /// and the full write set is carried in the `IO::Commit` message.
+    ///
     /// Panics (debug only) if the transaction was previously logged as aborted
     /// or committed at a different timestamp.
-    fn commit_prepared_txn(
+    fn commit_txn(
         &mut self,
         id: TransactionId,
         txn: &Transaction<K, V, Timestamp>,
@@ -195,7 +203,7 @@ pub trait TapirStore<K: Key, V: Value>: Send + 'static {
 
     /// Finalize a tentatively prepared transaction after IR quorum confirmation.
     ///
-    /// The normal commit path (exec_inconsistent → commit_prepared_txn) never
+    /// The normal commit path (exec_inconsistent → commit_txn) never
     /// checks the finalized flag. This method is used in TAPIR merge (view
     /// change), where it finalizes tentative prepared transactions that the
     /// quorum agreed on. Unfinalized entries are discarded by
@@ -253,7 +261,7 @@ pub trait TapirStore<K: Key, V: Value>: Send + 'static {
     /// # Return value transitions
     ///
     /// ```text
-    /// // After commit_prepared_txn(_, write("x","v1"), ts(1,1)):
+    /// // After commit_txn(_, write("x","v1"), ts(1,1)):
     /// do_committed_get("x", ts(5,1)) => Ok((Some("v1"), ts(1,1)))
     ///
     /// // After try_prepare_txn(_, write("x","v2"), ts(5,1)):
@@ -262,7 +270,7 @@ pub trait TapirStore<K: Key, V: Value>: Send + 'static {
     /// // After remove_prepared_txn(_):
     /// do_committed_get("x", ts(10,1)) => Ok((Some("v1"), ts(1,1)))
     ///
-    /// // After commit_prepared_txn(_, write("x","v2"), ts(5,1)):
+    /// // After commit_txn(_, write("x","v2"), ts(5,1)):
     /// do_committed_get("x", ts(10,1)) => Ok((Some("v2"), ts(5,1)))
     /// ```
     fn do_committed_get(
@@ -307,8 +315,8 @@ pub trait TapirStore<K: Key, V: Value>: Send + 'static {
     /// # Return value transitions
     ///
     /// ```text
-    /// // After commit_prepared_txn(_, write("a","v1"), ts(1,1))
-    /// //   and commit_prepared_txn(_, write("b","v2"), ts(1,1)):
+    /// // After commit_txn(_, write("a","v1"), ts(1,1))
+    /// //   and commit_txn(_, write("b","v2"), ts(1,1)):
     /// do_committed_scan("a", "b", ts(5,1))
     ///   => Ok([("a", Some("v1"), ts(1,1)), ("b", Some("v2"), ts(1,1))])
     ///
@@ -372,7 +380,7 @@ pub trait TapirStore<K: Key, V: Value>: Send + 'static {
     /// do_uncommitted_get_validated("x", ts(10,1)) => Some((Some("v1"), ts(1,1)))
     ///   // read_ts is now ts(10,1) >= ts(10,1).
     ///
-    /// // After commit_prepared_txn(_, write("x","v2"), ts(7,1)):
+    /// // After commit_txn(_, write("x","v2"), ts(7,1)):
     /// do_uncommitted_get_validated("x", ts(10,1)) => Some((Some("v2"), ts(7,1)))
     ///   // New committed version is visible at snapshot ts(10,1).
     /// ```
