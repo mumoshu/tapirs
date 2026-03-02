@@ -129,15 +129,6 @@ where
         }
     }
 
-    fn surreal_put(&self, key: &K, ts: &TS, value: &Option<V>) -> Result<(), SurrealKvError> {
-        let encoded_key = encode_surreal_key(key, ts);
-        let encoded_value = encode_surreal_value(value);
-        let mut txn = self.tree.begin()?;
-        txn.set(&encoded_key, &encoded_value)?;
-        self.runtime.block_on(txn.commit())?;
-        Ok(())
-    }
-
     fn find_next_version(&self, key: &K, after_ts: TS) -> Option<TS> {
         let mut next: Option<TS> = None;
         for (ck, _) in self.index.iter() {
@@ -194,18 +185,6 @@ where
         let (_, at_ts) = self.get_at(key, timestamp)?;
         let next_ts = self.find_next_version(key, at_ts);
         Ok((at_ts, next_ts))
-    }
-
-    fn put(&mut self, key: K, value: Option<V>, timestamp: TS) -> Result<(), SurrealKvError> {
-        self.surreal_put(&key, &timestamp, &value)?;
-        self.index.insert(
-            CompositeKey::new(key, timestamp),
-            LsmEntry {
-                value_ptr: None,
-                last_read_ts: None,
-            },
-        );
-        Ok(())
     }
 
     fn commit_get(&mut self, key: K, read: TS, commit: TS) -> Result<(), SurrealKvError> {

@@ -754,10 +754,6 @@ where
         self.get_range_impl(key, timestamp)
     }
 
-    fn put(&mut self, key: K, value: Option<V>, timestamp: TS) -> Result<(), StorageError> {
-        self.put_impl(key, value, timestamp)
-    }
-
     fn commit_get(&mut self, key: K, read: TS, commit: TS) -> Result<(), StorageError> {
         self.commit_get_impl(key, read, commit)
     }

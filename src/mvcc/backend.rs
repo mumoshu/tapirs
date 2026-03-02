@@ -9,7 +9,6 @@ pub trait MvccBackend<K, V, TS>: Send {
     fn get(&self, key: &K) -> Result<(Option<V>, TS), Self::Error>;
     fn get_at(&self, key: &K, timestamp: TS) -> Result<(Option<V>, TS), Self::Error>;
     fn get_range(&self, key: &K, timestamp: TS) -> Result<(TS, Option<TS>), Self::Error>;
-    fn put(&mut self, key: K, value: Option<V>, timestamp: TS) -> Result<(), Self::Error>;
     fn commit_get(&mut self, key: K, read: TS, commit: TS) -> Result<(), Self::Error>;
     fn get_last_read(&self, key: &K) -> Result<Option<TS>, Self::Error>;
     fn get_last_read_at(&self, key: &K, timestamp: TS) -> Result<Option<TS>, Self::Error>;
@@ -20,10 +19,34 @@ pub trait MvccBackend<K, V, TS>: Send {
 
     /// Apply a batch of writes and read-timestamp updates for a committed transaction.
     ///
-    /// Accepts the full write set and read set at once. The default implementation
-    /// delegates to individual `put()` and `commit_get()` calls. `DiskStore`
-    /// overrides this to batch all vlog appends into a single write, reducing
-    /// per-transaction I/O from O(keys) to O(1) syscalls.
+    /// This is the sole write path for committed data on the `MvccBackend` trait.
+    /// The OCC layer calls this once per committed transaction with the full
+    /// write set and read set.
+    ///
+    /// # Parameters
+    ///
+    /// - `writes`: The transaction's write set. Each `(key, Option<value>)` pair
+    ///   stores a new version at `commit`. `Some(value)` creates a live entry;
+    ///   `None` creates a tombstone (logical delete).
+    ///
+    /// - `reads`: The transaction's read set. Each `(key, read_timestamp)` pair
+    ///   records which version the transaction observed, enabling future OCC
+    ///   conflict detection.
+    ///
+    /// - `commit`: The commit timestamp. All writes are stored at this timestamp
+    ///   and all read-tracking entries reference it.
+    ///
+    /// # Implementation Requirements
+    ///
+    /// 1. For each `(key, value)` in `writes`, store the value at `commit` so that
+    ///    `get_at(key, commit)` returns it afterward.
+    ///
+    /// 2. For each `(key, read_ts)` in `reads`, call `commit_get(key, read_ts, commit)`
+    ///    (or equivalent) to update the last-read timestamp for OCC conflict detection.
+    ///
+    /// 3. Batch I/O where possible. A naive loop of individual writes incurs O(keys)
+    ///    syscalls per transaction. Implementations should batch writes into fewer I/O
+    ///    operations (e.g., a single vlog append or a native database transaction).
     fn commit_batch(
         &mut self,
         writes: Vec<(K, Option<V>)>,
@@ -31,15 +54,5 @@ pub trait MvccBackend<K, V, TS>: Send {
         commit: TS,
     ) -> Result<(), Self::Error>
     where
-        TS: Copy,
-    {
-        for (key, value) in writes {
-            self.put(key, value, commit)?;
-        }
-        for (key, read) in reads {
-            self.commit_get(key, read, commit)?;
-        }
-        Ok(())
-    }
-
+        TS: Copy;
 }
