@@ -19,6 +19,10 @@ mod tests {
         TestStore::open(MemoryIo::temp_path()).unwrap()
     }
 
+    fn put(store: &mut TestStore, key: String, value: Option<String>, ts: u64) -> Result<(), crate::mvcc::disk::StorageError> {
+        MvccBackend::commit_batch(store, vec![(key, value)], vec![], ts)
+    }
+
     #[test]
     fn get_nonexistent_key() {
         let store = open_store();
@@ -30,7 +34,7 @@ mod tests {
     #[test]
     fn put_and_get() {
         let mut store = open_store();
-        MvccBackend::put(&mut store, "k1".into(), Some("v1".into()), 10).unwrap();
+        put(&mut store,"k1".into(), Some("v1".into()), 10).unwrap();
 
         let (v, ts) = MvccBackend::get(&store, &"k1".into()).unwrap();
         assert_eq!(v, Some("v1".into()));
@@ -40,9 +44,9 @@ mod tests {
     #[test]
     fn multiple_keys() {
         let mut store = open_store();
-        MvccBackend::put(&mut store, "a".into(), Some("1".into()), 5).unwrap();
-        MvccBackend::put(&mut store, "b".into(), Some("2".into()), 6).unwrap();
-        MvccBackend::put(&mut store, "c".into(), Some("3".into()), 7).unwrap();
+        put(&mut store,"a".into(), Some("1".into()), 5).unwrap();
+        put(&mut store,"b".into(), Some("2".into()), 6).unwrap();
+        put(&mut store,"c".into(), Some("3".into()), 7).unwrap();
 
         assert_eq!(MvccBackend::get(&store, &"a".into()).unwrap().0, Some("1".into()));
         assert_eq!(MvccBackend::get(&store, &"b".into()).unwrap().0, Some("2".into()));
@@ -52,9 +56,9 @@ mod tests {
     #[test]
     fn get_at_returns_correct_version() {
         let mut store = open_store();
-        MvccBackend::put(&mut store, "k".into(), Some("v1".into()), 10).unwrap();
-        MvccBackend::put(&mut store, "k".into(), Some("v2".into()), 20).unwrap();
-        MvccBackend::put(&mut store, "k".into(), Some("v3".into()), 30).unwrap();
+        put(&mut store,"k".into(), Some("v1".into()), 10).unwrap();
+        put(&mut store,"k".into(), Some("v2".into()), 20).unwrap();
+        put(&mut store,"k".into(), Some("v3".into()), 30).unwrap();
 
         // Before any version.
         let (v, ts) = MvccBackend::get_at(&store, &"k".into(), 5).unwrap();
@@ -84,8 +88,8 @@ mod tests {
     #[test]
     fn tombstone_deletes_key() {
         let mut store = open_store();
-        MvccBackend::put(&mut store, "k".into(), Some("v1".into()), 10).unwrap();
-        MvccBackend::put(&mut store, "k".into(), None, 20).unwrap();
+        put(&mut store,"k".into(), Some("v1".into()), 10).unwrap();
+        put(&mut store,"k".into(), None, 20).unwrap();
 
         // Latest version is tombstone.
         let (v, ts) = MvccBackend::get(&store, &"k".into()).unwrap();
@@ -101,8 +105,8 @@ mod tests {
     #[test]
     fn get_range_basic() {
         let mut store = open_store();
-        MvccBackend::put(&mut store, "k".into(), Some("v1".into()), 10).unwrap();
-        MvccBackend::put(&mut store, "k".into(), Some("v2".into()), 20).unwrap();
+        put(&mut store,"k".into(), Some("v1".into()), 10).unwrap();
+        put(&mut store,"k".into(), Some("v2".into()), 20).unwrap();
 
         let (start, end) = MvccBackend::get_range(&store, &"k".into(), 15).unwrap();
         assert_eq!(start, 10);
@@ -112,7 +116,7 @@ mod tests {
     #[test]
     fn commit_get_and_last_read() {
         let mut store = open_store();
-        MvccBackend::put(&mut store, "k".into(), Some("v1".into()), 10).unwrap();
+        put(&mut store,"k".into(), Some("v1".into()), 10).unwrap();
 
         // Initially no last-read.
         let lr = MvccBackend::get_last_read(&store, &"k".into()).unwrap();
@@ -133,7 +137,7 @@ mod tests {
         for i in 0u64..2000 {
             let key = format!("key-{i:06}");
             let val = format!("value-{i:06}-padding-to-make-it-bigger-{}", "x".repeat(20));
-            MvccBackend::put(&mut store, key, Some(val), i + 1).unwrap();
+            put(&mut store,key, Some(val), i + 1).unwrap();
         }
 
         // Data should still be accessible (either from memtable or SSTable).
@@ -149,10 +153,10 @@ mod tests {
     #[test]
     fn scan_basic() {
         let mut store = open_store();
-        MvccBackend::put(&mut store, "a".into(), Some("1".into()), 5).unwrap();
-        MvccBackend::put(&mut store, "b".into(), Some("2".into()), 5).unwrap();
-        MvccBackend::put(&mut store, "c".into(), Some("3".into()), 5).unwrap();
-        MvccBackend::put(&mut store, "d".into(), Some("4".into()), 5).unwrap();
+        put(&mut store,"a".into(), Some("1".into()), 5).unwrap();
+        put(&mut store,"b".into(), Some("2".into()), 5).unwrap();
+        put(&mut store,"c".into(), Some("3".into()), 5).unwrap();
+        put(&mut store,"d".into(), Some("4".into()), 5).unwrap();
 
         let results = MvccBackend::scan(&store, &"b".into(), &"c".into(), 10).unwrap();
         assert_eq!(results.len(), 2);
@@ -163,8 +167,8 @@ mod tests {
     #[test]
     fn has_writes_in_range_check() {
         let mut store = open_store();
-        MvccBackend::put(&mut store, "a".into(), Some("1".into()), 10).unwrap();
-        MvccBackend::put(&mut store, "b".into(), Some("2".into()), 20).unwrap();
+        put(&mut store,"a".into(), Some("1".into()), 10).unwrap();
+        put(&mut store,"b".into(), Some("2".into()), 20).unwrap();
 
         // Should find write at ts=10 in range (5, 15).
         let has = MvccBackend::has_writes_in_range(
@@ -191,7 +195,7 @@ mod tests {
             for i in 0u64..2000 {
                 let key = format!("key-{i:06}");
                 let val = format!("value-{i:06}-{}", "x".repeat(20));
-                MvccBackend::put(&mut store, key, Some(val), i + 1).unwrap();
+                put(&mut store,key, Some(val), i + 1).unwrap();
             }
             store.save_manifest().unwrap();
         }
@@ -224,7 +228,7 @@ mod tests {
         let value = generate_large_value(3900, 4096);
         let key = "key-4kib".to_string();
 
-        MvccBackend::put(&mut store, key.clone(), Some(value.clone()), 100).unwrap();
+        put(&mut store,key.clone(), Some(value.clone()), 100).unwrap();
 
         let (v, ts) = MvccBackend::get(&store, &key).unwrap();
         assert_eq!(v, Some(value));
@@ -240,7 +244,7 @@ mod tests {
         let value = generate_large_value(4096, 4097);
         let key = "key-overflow".to_string();
 
-        MvccBackend::put(&mut store, key.clone(), Some(value.clone()), 200).unwrap();
+        put(&mut store,key.clone(), Some(value.clone()), 200).unwrap();
 
         let (v, ts) = MvccBackend::get(&store, &key).unwrap();
         assert_eq!(v, Some(value));
@@ -255,7 +259,7 @@ mod tests {
         let value = generate_large_value(1_000_000, 1_000_000);
         let key = "key-1mb".to_string();
 
-        MvccBackend::put(&mut store, key.clone(), Some(value.clone()), 300).unwrap();
+        put(&mut store,key.clone(), Some(value.clone()), 300).unwrap();
 
         // Verify exact byte-for-byte match.
         let (v, ts) = MvccBackend::get(&store, &key).unwrap();
@@ -274,7 +278,7 @@ mod tests {
             let key = format!("large-key-{i:06}");
             // Generate ~50 KB value (100 KB hex-encoded) with seed = timestamp.
             let value = generate_large_value(50_000, i);
-            MvccBackend::put(&mut store, key, Some(value), i).unwrap();
+            put(&mut store,key, Some(value), i).unwrap();
         }
 
         // Verify no OOM: test completed without panic.
@@ -305,7 +309,7 @@ mod tests {
             for i in 0u64..2000 {
                 let key = format!("key-{i:06}");
                 let val = format!("value-{i:06}-{}", "x".repeat(20));
-                MvccBackend::put(&mut store, key, Some(val), i + 1).unwrap();
+                put(&mut store,key, Some(val), i + 1).unwrap();
             }
 
             // Save manifest to persist state
@@ -340,7 +344,7 @@ mod tests {
             for i in 0u64..2000 {
                 let key = format!("key-{i:06}");
                 let val = format!("value-{i:06}-{}", "x".repeat(20));
-                MvccBackend::put(&mut store, key, Some(val), i + 1).unwrap();
+                put(&mut store,key, Some(val), i + 1).unwrap();
             }
 
             store.save_manifest().unwrap();
@@ -418,28 +422,28 @@ mod tests {
             for i in 0u64..10 {
                 let key = format!("small-{i:02}");
                 let val = format!("v{i}");
-                MvccBackend::put(&mut store, key, Some(val), i + 1).unwrap();
+                put(&mut store,key, Some(val), i + 1).unwrap();
             }
 
             // Medium values
             for i in 10u64..20 {
                 let key = format!("medium-{i:02}");
                 let val = format!("value-{}-{}", i, "x".repeat(100));
-                MvccBackend::put(&mut store, key, Some(val), i + 1).unwrap();
+                put(&mut store,key, Some(val), i + 1).unwrap();
             }
 
             // Large values
             for i in 20u64..30 {
                 let key = format!("large-{i:02}");
                 let val = format!("value-{}-{}", i, "x".repeat(5000));
-                MvccBackend::put(&mut store, key, Some(val), i + 1).unwrap();
+                put(&mut store,key, Some(val), i + 1).unwrap();
             }
 
             // Trigger flush to create mix of memtable + SSTable entries
             for i in 30u64..2000 {
                 let key = format!("flush-{i:04}");
                 let val = format!("value-{i:04}-{}", "x".repeat(20));
-                MvccBackend::put(&mut store, key, Some(val), i + 1).unwrap();
+                put(&mut store,key, Some(val), i + 1).unwrap();
             }
 
             store.save_manifest().unwrap();
@@ -498,7 +502,7 @@ mod tests {
             for i in 0u64..2000 {
                 let key = format!("key-{i:06}");
                 let val = format!("value-{i:06}-{}", "x".repeat(20));
-                MvccBackend::put(&mut store, key, Some(val), i + 1).unwrap();
+                put(&mut store,key, Some(val), i + 1).unwrap();
             }
 
             store.save_manifest().unwrap();
@@ -536,7 +540,7 @@ mod tests {
         let mut store = open_store();
 
         // Write with empty key
-        MvccBackend::put(&mut store, "".into(), Some("value".into()), 10).unwrap();
+        put(&mut store,"".into(), Some("value".into()), 10).unwrap();
 
         // Read back
         let (v, ts) = MvccBackend::get(&store, &"".into()).unwrap();
@@ -544,7 +548,7 @@ mod tests {
         assert_eq!(ts, 10);
 
         // Update with new version
-        MvccBackend::put(&mut store, "".into(), Some("value2".into()), 20).unwrap();
+        put(&mut store,"".into(), Some("value2".into()), 20).unwrap();
 
         // Verify MVCC works with empty key
         let (v, ts) = MvccBackend::get_at(&store, &"".into(), 15).unwrap();
@@ -564,7 +568,7 @@ mod tests {
         // Generate 1 MB key deterministically
         let long_key = "k".repeat(1_000_000);
 
-        MvccBackend::put(&mut store, long_key.clone(), Some("v1".into()), 10).unwrap();
+        put(&mut store,long_key.clone(), Some("v1".into()), 10).unwrap();
 
         // Verify round-trip
         let (v, ts) = MvccBackend::get(&store, &long_key).unwrap();
@@ -574,7 +578,7 @@ mod tests {
         // Trigger flush with other keys
         for i in 0u64..2000 {
             let key = format!("short-{i:06}");
-            MvccBackend::put(&mut store, key, Some("val".into()), i + 100).unwrap();
+            put(&mut store,key, Some("val".into()), i + 100).unwrap();
         }
 
         // Verify long key still accessible after flush
@@ -598,7 +602,7 @@ mod tests {
         // Write all keys
         for (i, key) in keys.iter().enumerate() {
             let ts = (i + 1) as u64 * 10;
-            MvccBackend::put(&mut store, key.to_string(), Some(format!("v{}", i)), ts).unwrap();
+            put(&mut store,key.to_string(), Some(format!("v{}", i)), ts).unwrap();
         }
 
         // Verify all keys readable
@@ -631,7 +635,7 @@ mod tests {
         // Write all keys
         for (name, key) in &keys {
             let ts = keys.iter().position(|k| k.0 == *name).unwrap() as u64 + 10;
-            MvccBackend::put(&mut store, key.to_string(), Some(format!("v_{}", name)), ts).unwrap();
+            put(&mut store,key.to_string(), Some(format!("v_{}", name)), ts).unwrap();
         }
 
         // Verify all keys readable
@@ -647,7 +651,7 @@ mod tests {
         // Trigger flush and verify persistence
         for i in 0u64..2000 {
             let key = format!("filler-{i:06}");
-            MvccBackend::put(&mut store, key, Some("val".into()), i + 100).unwrap();
+            put(&mut store,key, Some("val".into()), i + 100).unwrap();
         }
 
         // Verify Unicode keys still readable after flush
@@ -671,7 +675,7 @@ mod tests {
                 let key = format!("batch{}-key{:06}", batch, i);
                 let val = format!("value-{}", "x".repeat(20));
                 let ts = batch * 10000 + i + 1;
-                MvccBackend::put(&mut store, key, Some(val), ts).unwrap();
+                put(&mut store,key, Some(val), ts).unwrap();
             }
         }
 
@@ -706,7 +710,7 @@ mod tests {
                 let key = format!("b{}-k{:06}", batch, i);
                 let val = format!("v-{}", "x".repeat(20));
                 let ts = batch * 10000 + i + 1;
-                MvccBackend::put(&mut store, key, Some(val), ts).unwrap();
+                put(&mut store,key, Some(val), ts).unwrap();
             }
         }
 
@@ -776,7 +780,7 @@ mod tests {
                     let value = format!("v{:08x}", rng.r#gen::<u32>());
                     let ts = rng.r#gen_range(1..1000);
 
-                    if MvccBackend::put(&mut store, key.clone(), Some(value.clone()), ts).is_ok() {
+                    if MvccBackend::commit_batch(&mut store, vec![(key.clone(), Some(value.clone()))], vec![], ts).is_ok() {
                         pending_writes.push((key.clone(), value, ts));
                         all_keys.insert(key);
                     }

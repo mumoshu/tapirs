@@ -774,7 +774,7 @@ mod tests {
                     let value = format!("value{}", rng.gen_range(0..u32::MAX));
                     let ts = rng.gen_range(1..1000);
 
-                    match store.put(key.clone(), Some(value.clone()), ts) {
+                    match MvccBackend::commit_batch(&mut store, vec![(key.clone(), Some(value.clone()))], vec![], ts) {
                         Ok(_) => {
                             pending_writes.push((key.clone(), value.clone(), ts));
                             if i % 50 == 0 {

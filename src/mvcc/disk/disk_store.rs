@@ -908,8 +908,13 @@ mod tests {
                 .unwrap();
 
         // Use the trait methods.
-        MvccBackend::put(&mut store, "k".to_string(), Some("val".to_string()), 5)
-            .unwrap();
+        MvccBackend::commit_batch(
+            &mut store,
+            vec![("k".to_string(), Some("val".to_string()))],
+            vec![],
+            5,
+        )
+        .unwrap();
         let (v, ts) = MvccBackend::get(&store, &"k".to_string()).unwrap();
         assert_eq!(v, Some("val".to_string()));
         assert_eq!(ts, 5);
@@ -2191,9 +2196,9 @@ mod tests {
         // Path A: batch.
         MvccBackend::commit_batch(&mut store_b, keys.clone(), vec![], 10).unwrap();
 
-        // Path B: individual puts.
+        // Path B: individual puts via put_impl.
         for (k, v) in &keys {
-            MvccBackend::put(&mut store_i, k.clone(), v.clone(), 10).unwrap();
+            store_i.put_impl(k.clone(), v.clone(), 10).unwrap();
         }
 
         // Both should produce identical reads.
