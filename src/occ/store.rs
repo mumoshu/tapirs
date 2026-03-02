@@ -385,7 +385,23 @@ impl<K: Key, V: Value, TS: Timestamp + Send, M: MvccBackend<K, V, TS>> Store<K, 
 
         MvccBackend::commit_batch(&mut self.inner, writes, reads, commit).unwrap();
 
-        // Note: Transaction may not be in the prepared list of this particular replica, and that's okay.
+        // The transaction may not be in the prepared list of this particular
+        // replica. This happens when:
+        //
+        // 1. This replica voted non-Ok (Retry/Abstain/Fail/TooLate) during
+        //    prepare consensus while f+1 other replicas voted Ok. The
+        //    coordinator committed based on the quorum, and FinalizeConsensus
+        //    with result=Ok was a no-op here (finalize_prepared_txn returned
+        //    false because the entry was never added).
+        //
+        // 2. A backup coordinator recovered the transaction via CheckPrepare
+        //    and sent IO::Commit to all replicas, including ones that never
+        //    prepared it.
+        //
+        // This is safe because OCC validation is quorum-based (f+1), not
+        // per-replica. The write set is carried in IO::Commit, so no local
+        // prepared state is needed to apply the writes. The transaction log
+        // prevents double-commit.
         self.prepared_txns.remove(id);
     }
 
