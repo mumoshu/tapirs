@@ -566,15 +566,10 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
         K: serde::Serialize + Clone,
         V: serde::Serialize + Clone,
     {
-        // 1. Write all finalized overlay entries to VLog
-        let finalized_entries: Vec<(OpId, VlogEntryType, IrPayloadInline<K, V>)> = self
-            .ir_record
-            .ir_overlay
-            .iter()
-            .filter(|(_, entry)| matches!(entry.state, IrState::Finalized(_)))
-            .map(|(op_id, entry)| (*op_id, entry.entry_type, entry.payload.clone()))
-            .collect();
+        // 1. Collect finalized overlay entries for VLog serialization
+        let finalized_entries = self.ir_record.collect_finalized_for_seal();
 
+        // 2. Write finalized entries to VLog
         let mut vlog_ptrs = Vec::new();
         if !finalized_entries.is_empty() {
             let entry_refs: Vec<(OpId, VlogEntryType, &IrPayloadInline<K, V>)> = finalized_entries
@@ -584,22 +579,8 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
             vlog_ptrs = self.active_vlog.append_batch(&entry_refs)?;
         }
 
-        // 2. Build IR base entries and prepare_vlog_index from VLog pointers
-        for (i, (op_id, entry_type, payload)) in finalized_entries.iter().enumerate() {
-            self.ir_record.ir_base.insert(
-                *op_id,
-                IrSstEntry {
-                    entry_type: *entry_type,
-                    vlog_ptr: vlog_ptrs[i],
-                },
-            );
-            // Index CO::Prepare entries by transaction_id for cross-view commit
-            if *entry_type == VlogEntryType::Prepare
-                && let IrPayloadInline::Prepare { transaction_id, .. } = payload
-            {
-                self.ir_record.prepare_vlog_index.insert(*transaction_id, vlog_ptrs[i]);
-            }
-        }
+        // 3. Build IR base entries and prepare_vlog_index from VLog pointers
+        self.ir_record.apply_sealed_ptrs(&finalized_entries, &vlog_ptrs);
 
         // 3. Sync VLog
         self.active_vlog.sync()?;
@@ -668,7 +649,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
         // 8. Convert unified memtable InMemory → OnDisk, then clear overlay + registry
         self.unified_memtable
             .convert_in_memory_to_on_disk(self.ir_record.prepare_vlog_index());
-        self.ir_record.ir_overlay.clear();
+        self.ir_record.clear_overlay();
         self.prepare_registry.clear();
         self.current_view_entry_count = 0;
 
@@ -698,31 +679,23 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
         K: serde::Serialize,
         V: serde::Serialize,
     {
-        // Clear old base and install new one
-        self.ir_record.ir_base.clear();
-
         // Write entries to VLog
         let entry_refs: Vec<(OpId, VlogEntryType, &IrPayloadInline<K, V>)> = entries
             .iter()
             .map(|(op, entry)| (*op, entry.entry_type, &entry.payload))
             .collect();
 
-        if !entry_refs.is_empty() {
-            let ptrs = self.active_vlog.append_batch(&entry_refs)?;
-            for (i, (op_id, entry)) in entries.iter().enumerate() {
-                self.ir_record.ir_base.insert(
-                    *op_id,
-                    IrSstEntry {
-                        entry_type: entry.entry_type,
-                        vlog_ptr: ptrs[i],
-                    },
-                );
-            }
-        }
+        let ptrs = if !entry_refs.is_empty() {
+            self.active_vlog.append_batch(&entry_refs)?
+        } else {
+            Vec::new()
+        };
+
+        // Install new IR base from VLog pointers (clears base + overlay)
+        self.ir_record.install_base_from_ptrs(&entries, &ptrs);
 
         self.current_view = target_view;
         self.manifest.current_view = target_view;
-        self.ir_record.ir_overlay.clear();
         self.prepare_registry.clear();
         // Note: unified_memtable is NOT cleared — committed entries from
         // previous views remain valid with OnDisk pointers.

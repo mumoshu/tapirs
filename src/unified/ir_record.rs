@@ -3,7 +3,9 @@ use crate::occ::TransactionId as OccTransactionId;
 use std::collections::BTreeMap;
 
 use super::IrEntryRef;
-use super::types::{IrMemEntry, IrSstEntry, IrState, UnifiedVlogPtr};
+use super::types::{
+    IrMemEntry, IrPayloadInline, IrSstEntry, IrState, UnifiedVlogPtr, VlogEntryType,
+};
 
 /// In-memory IR record state: overlay (current view), base (sealed views),
 /// and the prepare VLog index for cross-view commits.
@@ -67,6 +69,59 @@ impl<K: Ord, V> IrRecord<K, V> {
     pub(crate) fn prepare_vlog_index(&self) -> &BTreeMap<OccTransactionId, UnifiedVlogPtr> {
         &self.prepare_vlog_index
     }
+
+    /// Install a merged record as the new IR base from VLog pointers.
+    ///
+    /// Clears `ir_base` and `ir_overlay`, then populates `ir_base` from the
+    /// given entries and their corresponding VLog pointers (written by the caller).
+    pub(crate) fn install_base_from_ptrs(
+        &mut self,
+        entries: &[(OpId, IrMemEntry<K, V>)],
+        ptrs: &[UnifiedVlogPtr],
+    ) {
+        self.ir_base.clear();
+        for (i, (op_id, entry)) in entries.iter().enumerate() {
+            self.ir_base.insert(
+                *op_id,
+                IrSstEntry {
+                    entry_type: entry.entry_type,
+                    vlog_ptr: ptrs[i],
+                },
+            );
+        }
+        self.ir_overlay.clear();
+    }
+
+    /// Apply VLog pointers to the IR base after a seal write.
+    ///
+    /// For each finalized entry, inserts an `IrSstEntry` into `ir_base`
+    /// and indexes CO::Prepare entries by transaction_id in
+    /// `prepare_vlog_index` for cross-view commit lookups.
+    pub(crate) fn apply_sealed_ptrs(
+        &mut self,
+        finalized: &[(OpId, VlogEntryType, IrPayloadInline<K, V>)],
+        vlog_ptrs: &[UnifiedVlogPtr],
+    ) {
+        for (i, (op_id, entry_type, payload)) in finalized.iter().enumerate() {
+            self.ir_base.insert(
+                *op_id,
+                IrSstEntry {
+                    entry_type: *entry_type,
+                    vlog_ptr: vlog_ptrs[i],
+                },
+            );
+            if *entry_type == VlogEntryType::Prepare
+                && let IrPayloadInline::Prepare { transaction_id, .. } = payload
+            {
+                self.prepare_vlog_index.insert(*transaction_id, vlog_ptrs[i]);
+            }
+        }
+    }
+
+    /// Clear the overlay (called after seal or install).
+    pub(crate) fn clear_overlay(&mut self) {
+        self.ir_overlay.clear();
+    }
 }
 
 impl<K: Ord + Clone, V: Clone> IrRecord<K, V> {
@@ -76,6 +131,21 @@ impl<K: Ord + Clone, V: Clone> IrRecord<K, V> {
             .iter()
             .filter(|(_, entry)| matches!(entry.state, IrState::Finalized(_)))
             .map(|(op_id, entry)| (*op_id, entry.clone()))
+            .collect()
+    }
+
+    /// Collect finalized overlay entries for VLog serialization at seal time.
+    ///
+    /// Returns `(OpId, VlogEntryType, IrPayloadInline)` tuples ready for
+    /// `UnifiedVlogSegment::append_batch`.  The caller writes them to the
+    /// VLog and passes the resulting pointers to `apply_sealed_ptrs`.
+    pub(crate) fn collect_finalized_for_seal(
+        &self,
+    ) -> Vec<(OpId, VlogEntryType, IrPayloadInline<K, V>)> {
+        self.ir_overlay
+            .iter()
+            .filter(|(_, entry)| matches!(entry.state, IrState::Finalized(_)))
+            .map(|(op_id, entry)| (*op_id, entry.entry_type, entry.payload.clone()))
             .collect()
     }
 }
