@@ -23,6 +23,21 @@ pub struct Store<K, V, TS, M> {
         deserialize = "K: Key, V: Value, TS: Timestamp"
     ))]
     pub prepared_txns: PreparedTransactions<K, V, TS>,
+    /// Highest timestamp seen across all read operations (quorum_read,
+    /// quorum_scan, and RW commit with reads).
+    ///
+    /// Used by resharding to compute `min_prepare_time` on the target shard.
+    /// `min_prepare_time > max_read_time` subsumes all per-key `last_read_ts`
+    /// protections from the source, because every `commit_get(key, read_ts,
+    /// commit)` sets `last_read_ts = max(prev, commit)`, and
+    /// `commit <= max_read_time` by construction.
+    ///
+    /// This only protects against write-after-read conflicts on the target
+    /// shard. Read-after-write conflicts don't need a watermark because the
+    /// written versions themselves are transferred via CDC — OCC detects
+    /// those from the data.
+    #[serde(skip, bound(deserialize = ""))]
+    max_read_time: Option<TS>,
 }
 
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Copy, Serialize, Deserialize)]
@@ -103,6 +118,14 @@ impl<K: Key, V: Value, TS: Timestamp + Send, M> Store<K, V, TS, M> {
         self.prepared_txns.shard()
     }
 
+    /// Update the max_read_time watermark.
+    fn update_max_read_time(&mut self, ts: TS) {
+        self.max_read_time = Some(match self.max_read_time {
+            Some(prev) => prev.max(ts),
+            None => ts,
+        });
+    }
+
     pub fn new(shard: ShardNumber, linearizable: bool) -> Self
     where
         M: Default,
@@ -111,6 +134,7 @@ impl<K: Key, V: Value, TS: Timestamp + Send, M> Store<K, V, TS, M> {
             linearizable,
             inner: Default::default(),
             prepared_txns: PreparedTransactions::new(shard),
+            max_read_time: None,
         }
     }
 
@@ -119,6 +143,7 @@ impl<K: Key, V: Value, TS: Timestamp + Send, M> Store<K, V, TS, M> {
             linearizable,
             inner: backend,
             prepared_txns: PreparedTransactions::new(shard),
+            max_read_time: None,
         }
     }
 }
@@ -166,7 +191,7 @@ impl<K: Key, V: Value, TS: Timestamp + Send, M: MvccBackend<K, V, TS>> Store<K, 
         }
         let (value, write_ts) = MvccBackend::get_at(&self.inner, &key, snapshot_ts).unwrap();
         MvccBackend::commit_get(&mut self.inner, key, snapshot_ts, snapshot_ts).unwrap();
-        self.prepared_txns.update_max_read_commit_time(snapshot_ts);
+        self.update_max_read_time(snapshot_ts);
         Ok((value, write_ts))
     }
 
@@ -204,18 +229,16 @@ impl<K: Key, V: Value, TS: Timestamp + Send, M: MvccBackend<K, V, TS>> Store<K, 
         }
         let results = MvccBackend::scan(&self.inner, &start, &end, snapshot_ts).unwrap();
         self.prepared_txns.commit_scan(start, end, snapshot_ts);
+        self.update_max_read_time(snapshot_ts);
         Ok(results)
     }
 
-    /// Return the max timestamps from the two read-protection mechanisms.
+    /// Return the read-protection watermark for resharding.
     ///
-    /// - `max_range_read_time`: highest `scan_ts.time()` across all `range_reads`.
-    /// - `max_read_commit_time`: highest `commit.time()` passed to `commit_get()`.
-    ///
-    /// Used by resharding to set `raise_min_prepare_time(max(both) + 1)` on
+    /// Used by resharding to set `raise_min_prepare_time(max_read_time + 1)` on
     /// the new shard, subsuming all historical read protections from the source.
-    pub(crate) fn min_prepare_baseline(&self) -> (Option<TS>, Option<TS>) {
-        self.prepared_txns.min_prepare_baseline()
+    pub(crate) fn min_prepare_baseline(&self) -> Option<TS> {
+        self.max_read_time
     }
 
     pub fn try_prepare_txn(
@@ -375,7 +398,7 @@ impl<K: Key, V: Value, TS: Timestamp + Send, M: MvccBackend<K, V, TS>> Store<K, 
             .collect();
 
         if !reads.is_empty() {
-            self.prepared_txns.update_max_read_commit_time(commit);
+            self.update_max_read_time(commit);
         }
 
         let writes: Vec<(K, Option<V>)> = transaction

@@ -49,8 +49,7 @@ impl<TS> DerefMut for TimestampSet<TS> {
 /// MVCC-independent prepared transaction state management.
 ///
 /// Tracks the registry of prepared transactions, read/write caches for
-/// OCC conflict detection, range-level read protections, and the
-/// max_read_commit_time watermark for resharding.
+/// OCC conflict detection, and range-level read protections.
 ///
 /// This struct is designed to be reusable by any TapirStore implementation
 /// regardless of the underlying MVCC backend.
@@ -96,11 +95,6 @@ pub struct PreparedTransactions<K, V, TS> {
         deserialize = "K: Deserialize<'de> + Ord, TS: Deserialize<'de>"
     ))]
     range_reads: Vec<(K, K, TS)>,
-    /// Highest `commit` timestamp passed to `commit_get()` (from `quorum_read()`
-    /// and committed read-write transactions). Used by resharding to compute
-    /// the min_prepare_time baseline for new shards.
-    #[serde(skip, bound(deserialize = ""))]
-    max_read_commit_time: Option<TS>,
 }
 
 impl<K: Key, V: Value, TS: Timestamp + Send> PreparedTransactions<K, V, TS> {
@@ -111,7 +105,6 @@ impl<K: Key, V: Value, TS: Timestamp + Send> PreparedTransactions<K, V, TS> {
             prepared_reads: Default::default(),
             prepared_writes: Default::default(),
             range_reads: Vec::new(),
-            max_read_commit_time: None,
         }
     }
 
@@ -319,17 +312,6 @@ impl<K: Key, V: Value, TS: Timestamp + Send> PreparedTransactions<K, V, TS> {
         self.range_reads.push((start, end, snapshot_ts));
     }
 
-    // === Resharding Watermarks ===
-
-    /// Return the max timestamps from the two read-protection mechanisms.
-    ///
-    /// - `max_range_read_time`: highest `scan_ts` across all `range_reads`.
-    /// - `max_read_commit_time`: highest `commit` passed to `update_max_read_commit_time`.
-    pub(crate) fn min_prepare_baseline(&self) -> (Option<TS>, Option<TS>) {
-        let max_rr = self.range_reads.iter().map(|(_, _, ts)| *ts).max();
-        (max_rr, self.max_read_commit_time)
-    }
-
     /// Cascading lookup to determine the prepare status of a transaction.
     ///
     /// Takes external state as parameters to keep `PreparedTransactions`
@@ -372,11 +354,4 @@ impl<K: Key, V: Value, TS: Timestamp + Send> PreparedTransactions<K, V, TS> {
         }
     }
 
-    /// Update the max_read_commit_time watermark.
-    pub fn update_max_read_commit_time(&mut self, ts: TS) {
-        self.max_read_commit_time = Some(match self.max_read_commit_time {
-            Some(prev) => prev.max(ts),
-            None => ts,
-        });
-    }
 }
