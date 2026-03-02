@@ -112,6 +112,21 @@ where
 
 impl<K: Key, V: Value, S: TapirStore<K, V>> Replica<K, V, S> {
 
+    /// Backup coordinator: recovers a stale prepared transaction when the
+    /// original client coordinator has likely failed.
+    ///
+    /// The full cross-shard transaction (read/write/scan sets for ALL participant
+    /// shards) is available here because the client's Prepare distributed it to
+    /// every replica. Participant shards are discovered via
+    /// `transaction.participants()`.
+    ///
+    /// Recovery steps:
+    /// 1. Raise `min_prepare_time` on all participant shards (consensus) to
+    ///    prevent new conflicting prepares at or before the commit timestamp.
+    /// 2. Query `CheckPrepare` (unlogged) on all participant shards to determine
+    ///    each shard's prepare status via f+1 quorum.
+    /// 3. Commit if all shards report Ok; abort otherwise. The final decision is
+    ///    sent as `IO::Commit` or `IO::Abort` (inconsistent) to all participants.
     fn recover_coordination<T: TapirTransport<K, V>>(
         transaction_id: OccTransactionId,
         transaction: OccSharedTransaction<K, V, Timestamp>,

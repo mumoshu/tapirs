@@ -182,7 +182,10 @@ pub enum IO<K, V> {
     /// Commit a successfully prepared transaction.
     Commit {
         transaction_id: OccTransactionId,
-        /// Same as successfully prepared transaction.
+        /// The full cross-shard transaction, containing read/write/scan sets for
+        /// ALL participant shards (not just the receiving shard). Each receiving
+        /// replica filters to shard-local keys in `OccStore::commit` via
+        /// `shard_read_set()`/`shard_write_set()`.
         #[serde(bound(deserialize = "K: Ord + Deserialize<'de>, V: Deserialize<'de>"))]
         transaction: OccSharedTransaction<K, V, Timestamp>,
         /// Same as successfully prepared commit timestamp.

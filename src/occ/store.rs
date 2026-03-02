@@ -378,6 +378,9 @@ impl<K: Key, V: Value, TS: Timestamp + Send, M: MvccBackend<K, V, TS>> Store<K, 
         PrepareResult::Ok
     }
 
+    /// Commit a transaction. `transaction` contains the full cross-shard
+    /// read/write/scan sets; this method filters to shard-local keys before
+    /// applying to MVCC.
     pub fn commit(&mut self, id: TransactionId, transaction: &Transaction<K, V, TS>, commit: TS) {
         let shard = self.prepared_txns.shard();
         let reads: Vec<(K, TS)> = transaction
