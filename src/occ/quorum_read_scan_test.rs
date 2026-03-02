@@ -52,13 +52,22 @@ fn make_txn(
     Arc::new(txn)
 }
 
+fn commit_value(store: &mut TestStore, key: &str, value: &str, id: TransactionId, ts: TS) {
+    let txn = make_txn(vec![], vec![(key, Some(value))], vec![]);
+    assert_eq!(
+        store.try_prepare_txn(id, txn.clone(), ts, false),
+        PrepareResult::Ok
+    );
+    store.commit(id, &txn, ts);
+}
+
 // RO after RW: the RW's IO::Commit IR Finalize has not yet been
 // received by the replica. The prepared write at ts(5,1) conflicts
 // with quorum_read at snapshot_ts ts(10,1).
 #[test]
 fn quorum_read_conflicts_with_prepared_write() {
     let (_dir, mut store) = new_store(true);
-    store.put("x".into(), Some("v1".into()), ts(1, 1));
+    commit_value(&mut store, "x", "v1", txn_id(99, 1), ts(1, 1));
     let txn = make_txn(vec![], vec![("x", Some("v2"))], vec![]);
     assert_eq!(
         store.try_prepare_txn(txn_id(1, 1), txn, ts(5, 1), false),
@@ -72,7 +81,7 @@ fn quorum_read_conflicts_with_prepared_write() {
 #[test]
 fn quorum_read_no_conflict_when_prepared_write_is_future() {
     let (_dir, mut store) = new_store(true);
-    store.put("x".into(), Some("v1".into()), ts(1, 1));
+    commit_value(&mut store, "x", "v1", txn_id(99, 1), ts(1, 1));
     let txn = make_txn(vec![], vec![("x", Some("v2"))], vec![]);
     assert_eq!(
         store.try_prepare_txn(txn_id(1, 1), txn, ts(15, 1), false),
@@ -88,7 +97,7 @@ fn quorum_read_no_conflict_when_prepared_write_is_future() {
 #[test]
 fn quorum_read_no_conflict_after_commit() {
     let (_dir, mut store) = new_store(true);
-    store.put("x".into(), Some("v1".into()), ts(1, 1));
+    commit_value(&mut store, "x", "v1", txn_id(99, 1), ts(1, 1));
     let txn = make_txn(vec![], vec![("x", Some("v2"))], vec![]);
     assert_eq!(
         store.try_prepare_txn(txn_id(1, 1), txn.clone(), ts(5, 1), false),
@@ -105,7 +114,7 @@ fn quorum_read_no_conflict_after_commit() {
 #[test]
 fn quorum_read_no_conflict_after_abort() {
     let (_dir, mut store) = new_store(true);
-    store.put("x".into(), Some("v1".into()), ts(1, 1));
+    commit_value(&mut store, "x", "v1", txn_id(99, 1), ts(1, 1));
     let txn = make_txn(vec![], vec![("x", Some("v2"))], vec![]);
     assert_eq!(
         store.try_prepare_txn(txn_id(1, 1), txn, ts(5, 1), false),
@@ -151,7 +160,7 @@ fn quorum_scan_no_conflict_when_prepared_write_outside_range() {
 #[test]
 fn quorum_read_conflicts_at_exact_timestamp() {
     let (_dir, mut store) = new_store(true);
-    store.put("x".into(), Some("v1".into()), ts(1, 1));
+    commit_value(&mut store, "x", "v1", txn_id(99, 1), ts(1, 1));
     let txn = make_txn(vec![], vec![("x", Some("v2"))], vec![]);
     assert_eq!(
         store.try_prepare_txn(txn_id(1, 1), txn, ts(5, 1), false),

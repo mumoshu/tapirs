@@ -87,7 +87,13 @@ fn commit_records_in_txn_log() {
 
     let (_dir, mut store) = new_store();
 
-    store.occ_mut().put("x".into(), Some("v1".into()), ts(1, 1));
+    // Setup: commit "x" = "v1" at ts(1,1) via OCC flow.
+    let setup_txn = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
+    assert_eq!(
+        store.occ_mut().try_prepare_txn(txn_id(99, 1), setup_txn.clone(), ts(1, 1), false),
+        crate::occ::PrepareResult::Ok
+    );
+    store.commit(txn_id(99, 1), &setup_txn, ts(1, 1));
 
     let txn = make_txn(
         vec![("x", ts(1, 1))],

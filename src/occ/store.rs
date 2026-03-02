@@ -408,10 +408,6 @@ impl<K: Key, V: Value, TS: Timestamp + Send, M: MvccBackend<K, V, TS>> Store<K, 
         self.prepared_txns.remove(id);
     }
 
-    pub fn put(&mut self, key: K, value: Option<V>, timestamp: TS) {
-        MvccBackend::put(&mut self.inner, key, value, timestamp).unwrap();
-    }
-
     /// Delegate to `PreparedTransactions::add_or_replace_or_finalize`.
     pub fn add_or_replace_or_finalize_prepared_txn(
         &mut self,
