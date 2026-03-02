@@ -129,10 +129,10 @@ impl SoloClusterManager {
         T::sleep(Duration::from_secs(3)).await;
 
         // Query min_prepare_baseline from source (f+1 replicas).
-        let (max_range_read_time, max_read_commit_time) = source.min_prepare_baseline().await;
+        let max_read_time = source.min_prepare_baseline().await;
 
         // Raise min_prepare_time on destination shard.
-        let barrier = max_range_read_time.max(max_read_commit_time) + 1;
+        let barrier = max_read_time + 1;
         if barrier > 1 {
             dest.raise_min_prepare_time(barrier).await;
         }

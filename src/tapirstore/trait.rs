@@ -236,9 +236,9 @@ pub trait TapirStore<K: Key, V: Value>: Send + 'static {
     ///    `ts`. Future `try_prepare_txn` calls writing to this key will
     ///    fail OCC checks if their `commit_ts <= ts`.
     ///
-    /// 3. **Read-commit tracking**: Updates `max_read_commit_time =
-    ///    max(prev, ts)`, observable via `min_prepare_baseline()` and
-    ///    used by resharding to carry forward read protections.
+    /// 3. **Read tracking**: Updates `max_read_time = max(prev, ts)`,
+    ///    observable via `min_prepare_baseline()` and used by resharding
+    ///    to carry forward read protections.
     ///
     /// 4. **Enables fast-path validation**: After this call,
     ///    `do_uncommitted_get_validated(key, ts)` returns `Some` instead
@@ -291,8 +291,8 @@ pub trait TapirStore<K: Key, V: Value>: Send + 'static {
     ///    Future `try_prepare_txn` calls writing to any key in
     ///    `[start, end]` will fail OCC checks if their `commit_ts <= ts`.
     ///
-    /// 3. **Read-commit tracking**: Updates `max_read_commit_time =
-    ///    max(prev, ts)`, observable via `min_prepare_baseline()`.
+    /// 3. **Read tracking**: Updates `max_read_time = max(prev, ts)`,
+    ///    observable via `min_prepare_baseline()`.
     ///
     /// 4. **Enables fast-path validation**: After this call,
     ///    `do_uncommitted_scan_validated(start, end, ts)` returns `Some`
@@ -338,7 +338,7 @@ pub trait TapirStore<K: Key, V: Value>: Send + 'static {
     /// # Side effects
     ///
     /// **None.** This is a pure read. It does not update `last_read_ts`,
-    /// does not modify `max_read_commit_time`, and does not check for
+    /// does not modify `max_read_time`, and does not check for
     /// prepared-but-uncommitted writes (that conflict detection already
     /// happened during the prior `do_committed_get` call that established
     /// the read protection).
@@ -389,7 +389,7 @@ pub trait TapirStore<K: Key, V: Value>: Send + 'static {
     /// # Side effects
     ///
     /// **None.** This is a pure read. It does not append to `range_reads`,
-    /// does not modify `max_read_commit_time`, and does not check for
+    /// does not modify `max_read_time`, and does not check for
     /// prepared-but-uncommitted writes (that conflict detection already
     /// happened during the prior `do_committed_scan` call that established
     /// the range protection).
@@ -870,23 +870,14 @@ pub trait TapirStore<K: Key, V: Value>: Send + 'static {
 
     // === Resharding ===
 
-    /// Return the OCC read-protection high-water marks for resharding.
+    /// Return the read-protection watermark for resharding.
     ///
-    /// Returns `(max_range_read_time, max_read_commit_time)`:
+    /// Returns `max_read_time`: the highest timestamp seen across all read
+    /// operations (`do_committed_get`, `do_committed_scan`, and RW commit
+    /// with reads). `None` if no reads have been performed.
     ///
-    /// - `max_range_read_time`: the highest `scan_ts` passed to
-    ///   `do_committed_scan`. Protects against phantom writes. `None` if
-    ///   no committed scans have been performed.
-    ///
-    /// - `max_read_commit_time`: the highest commit timestamp passed to
-    ///   `do_committed_get`. Protects against write-after-read conflicts.
-    ///   `None` if no committed gets have been performed.
-    ///
-    /// The two values are tracked independently — a `do_committed_get`
-    /// does not affect `max_range_read_time` and vice versa. Each value
-    /// is either `None` (no reads/scans yet) or `Some(ts)` where `ts`
-    /// is monotonically non-decreasing: once set, it can only increase
-    /// as higher-timestamped reads or scans arrive.
+    /// Monotonically non-decreasing: once set, it can only increase as
+    /// higher-timestamped reads arrive.
     ///
     /// # Side effects
     ///
@@ -896,7 +887,7 @@ pub trait TapirStore<K: Key, V: Value>: Send + 'static {
     ///
     /// Only meaningful when the shard is in `Decommissioning` phase (new
     /// reads are blocked). The caller computes
-    /// `barrier = max(both_values) + 1` and calls
+    /// `barrier = max_read_time + 1` and calls
     /// `raise_min_prepare_time(barrier)` on the target shard to subsume
     /// all historical read protections from the source.
     ///
@@ -904,19 +895,19 @@ pub trait TapirStore<K: Key, V: Value>: Send + 'static {
     ///
     /// ```text
     /// Fresh store:
-    ///   min_prepare_baseline() → (None, None)
+    ///   min_prepare_baseline() → None
     ///
     /// After do_committed_get("x", ts(5,1)):
-    ///   min_prepare_baseline() → (None, Some(ts(5,1)))
+    ///   min_prepare_baseline() → Some(ts(5,1))
     ///
     /// After do_committed_scan("a", "b", ts(7,1)):
-    ///   min_prepare_baseline() → (Some(ts(7,1)), Some(ts(5,1)))
+    ///   min_prepare_baseline() → Some(ts(7,1))
     ///
-    /// After do_committed_get("y", ts(3,1)):  // 3 < 5, max unchanged
-    ///   min_prepare_baseline() → (Some(ts(7,1)), Some(ts(5,1)))
+    /// After do_committed_get("y", ts(3,1)):  // 3 < 7, max unchanged
+    ///   min_prepare_baseline() → Some(ts(7,1))
     ///
-    /// After do_committed_get("z", ts(9,1)):  // 9 > 5, max updated
-    ///   min_prepare_baseline() → (Some(ts(7,1)), Some(ts(9,1)))
+    /// After do_committed_get("z", ts(9,1)):  // 9 > 7, max updated
+    ///   min_prepare_baseline() → Some(ts(9,1))
     /// ```
-    fn min_prepare_baseline(&self) -> (Option<Timestamp>, Option<Timestamp>);
+    fn min_prepare_baseline(&self) -> Option<Timestamp>;
 }

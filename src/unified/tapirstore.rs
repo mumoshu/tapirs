@@ -218,7 +218,7 @@ impl<K: Key, V: Value, IO: DiskIo> TapirStore<K, V> for UnifiedStore<K, V, IO> {
 
     // === Resharding ===
 
-    fn min_prepare_baseline(&self) -> (Option<Timestamp>, Option<Timestamp>) {
+    fn min_prepare_baseline(&self) -> Option<Timestamp> {
         todo!()
     }
 }

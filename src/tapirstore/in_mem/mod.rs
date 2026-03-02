@@ -296,7 +296,7 @@ where
 
     // === Resharding ===
 
-    fn min_prepare_baseline(&self) -> (Option<Timestamp>, Option<Timestamp>) {
+    fn min_prepare_baseline(&self) -> Option<Timestamp> {
         self.occ.min_prepare_baseline()
     }
 }

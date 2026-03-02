@@ -64,24 +64,21 @@ impl CdcCursor {
 }
 
 impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteShardDirectory<T::Address, K>> ShardManager<K, V, T, RD> {
-    /// Freeze the source shard, query its read-protection watermarks, and
+    /// Freeze the source shard, query its read-protection watermark, and
     /// raise min_prepare_time on the target to subsume all historical
-    /// range_reads and last_read_commit_ts entries from the source.
+    /// read protections from the source.
     ///
     /// Must be called after drain completes (no in-flight Prepares) and
     /// before decommissioning the source.
     ///
-    /// min_prepare_time subsumes both read-protection mechanisms:
+    /// `min_prepare_time > max_read_time` subsumes both read-protection
+    /// mechanisms:
     ///
     /// 1. range_reads: entries (start, end, scan_ts) reject writes where
     ///    key in [start, end] AND commit_ts < scan_ts -> Retry.
-    ///    Since every entry has scan_ts.time <= max_range_read_time,
-    ///    min_prepare_time > max_range_read_time subsumes all of them.
     ///
-    /// 2. Per-key last_read_commit_ts: rejects writes where last_read >
-    ///    commit_ts -> Retry. commit_get() sets last_read = max(prev,
-    ///    commit) where commit <= max_read_commit_time.
-    ///    min_prepare_time > max_read_commit_time subsumes all per-key checks.
+    /// 2. Per-key last_read_ts: rejects writes where last_read >
+    ///    commit_ts -> Retry.
     ///
     /// It is strictly stronger — it also rejects old-timestamp writes to
     /// keys that were never read, but that is a harmless over-rejection.
@@ -92,7 +89,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         target_client: &ShardClient<K, V, T>,
     ) {
         // Freeze ALL operations on source — blocks IO::QuorumScan and
-        // IO::QuorumRead to freeze range_reads and last_read_commit_ts.
+        // IO::QuorumRead to freeze max_read_time.
         eprintln!("[transfer_rp] reconfigure source to Decommissioning");
         let decommission = serde_json::to_vec(&ShardConfig::<K> {
             key_range: None,
@@ -107,12 +104,11 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
         eprintln!("[transfer_rp] sleep done, querying min_prepare_baseline");
 
         // Query min_prepare_baseline from source (f+1 replicas).
-        let (max_range_read_time, max_read_commit_time) =
-            source_client.min_prepare_baseline().await;
-        eprintln!("[transfer_rp] baseline: rr={max_range_read_time}, rc={max_read_commit_time}");
+        let max_read_time = source_client.min_prepare_baseline().await;
+        eprintln!("[transfer_rp] baseline: max_read_time={max_read_time}");
 
         // Raise min_prepare_time on target shard.
-        let barrier = max_range_read_time.max(max_read_commit_time) + 1;
+        let barrier = max_read_time + 1;
         if barrier > 1 {
             eprintln!("[transfer_rp] raising barrier={barrier} on target");
             target_client

@@ -394,10 +394,9 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                 if self.phase != ShardPhase::Decommissioning {
                     return UR::MinPrepareBaseline(MinPrepareBaselineResult::NotDecommissioning);
                 }
-                let (max_rr, max_rc) = self.store.min_prepare_baseline();
+                let max_read_time = self.store.min_prepare_baseline();
                 UR::MinPrepareBaseline(MinPrepareBaselineResult::Ok {
-                    max_range_read_time: max_rr.map(|ts| ts.time).unwrap_or(0),
-                    max_read_commit_time: max_rc.map(|ts| ts.time).unwrap_or(0),
+                    max_read_time: max_read_time.map(|ts| ts.time).unwrap_or(0),
                 })
             }
             UO::ScanChanges { from_view } => {

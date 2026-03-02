@@ -546,9 +546,7 @@ pub(crate) fn test_scan_validated_returns_some_after_quorum_scan(
 pub(crate) fn test_min_prepare_baseline_fresh_store(
     store: &mut impl TapirStore<String, String>,
 ) {
-    let (max_rr, max_rc) = store.min_prepare_baseline();
-    assert!(max_rr.is_none());
-    assert!(max_rc.is_none());
+    assert!(store.min_prepare_baseline().is_none());
 }
 
 pub(crate) fn test_min_prepare_baseline_after_quorum_read(
@@ -556,14 +554,10 @@ pub(crate) fn test_min_prepare_baseline_after_quorum_read(
 ) {
     seed_value(store, "x", "v1", ts(1, 1));
 
-    // Quorum read updates max_read_commit_time.
+    // Quorum read updates max_read_time.
     store.do_committed_get("x".into(), ts(5, 1)).unwrap();
 
-    let (max_rr, max_rc) = store.min_prepare_baseline();
-    // No range reads yet.
-    assert!(max_rr.is_none());
-    // max_read_commit_time should be ts(5,1).
-    assert_eq!(max_rc, Some(ts(5, 1)));
+    assert_eq!(store.min_prepare_baseline(), Some(ts(5, 1)));
 }
 
 pub(crate) fn test_min_prepare_baseline_after_quorum_scan(
@@ -572,13 +566,12 @@ pub(crate) fn test_min_prepare_baseline_after_quorum_scan(
     seed_value(store, "a", "v1", ts(1, 1));
     seed_value(store, "b", "v2", ts(1, 1));
 
-    // Quorum scan records range read.
+    // Quorum scan updates max_read_time.
     store
         .do_committed_scan("a".into(), "b".into(), ts(7, 1))
         .unwrap();
 
-    let (max_rr, _max_rc) = store.min_prepare_baseline();
-    assert_eq!(max_rr, Some(ts(7, 1)));
+    assert_eq!(store.min_prepare_baseline(), Some(ts(7, 1)));
 }
 
 // ---------------------------------------------------------------------------

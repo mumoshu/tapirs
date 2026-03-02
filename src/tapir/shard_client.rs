@@ -517,29 +517,26 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
         self.inner.remove_member(address);
     }
 
-    /// Query the min_prepare_time baseline from f+1 replicas.
-    /// Returns the element-wise max of `(max_range_read_time, max_read_commit_time)`.
+    /// Query the read-protection watermark from f+1 replicas.
+    /// Returns the max `max_read_time` across the quorum.
     /// Only counts `Ok` responses toward the f+1 quorum (replicas that haven't
     /// applied the Decommissioning config yet return `NotDecommissioning`).
-    pub async fn min_prepare_baseline(&self) -> (u64, u64) {
+    pub async fn min_prepare_baseline(&self) -> u64 {
         let responses = self
             .inner
             .invoke_unlogged_quorum(UO::MinPrepareBaseline)
             .await;
 
-        let mut max_rr = 0u64;
-        let mut max_rc = 0u64;
+        let mut result = 0u64;
         for r in responses {
             if let UR::MinPrepareBaseline(MinPrepareBaselineResult::Ok {
-                max_range_read_time,
-                max_read_commit_time,
+                max_read_time,
             }) = r
             {
-                max_rr = max_rr.max(max_range_read_time);
-                max_rc = max_rc.max(max_read_commit_time);
+                result = result.max(max_read_time);
             }
         }
-        (max_rr, max_rc)
+        result
     }
 
     pub fn raise_min_prepare_time(&self, time: u64) -> impl Future<Output = u64> + Send {

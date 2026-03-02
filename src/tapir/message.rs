@@ -51,20 +51,15 @@ pub enum UO<K> {
         end_key: K,
         snapshot_ts: Timestamp,
     },
-    /// Query the min_prepare_time baseline for a replacement shard during
+    /// Query the read-protection watermark for a replacement shard during
     /// resharding (split, merge, compact).
     ///
-    /// Returns `MinPrepareBaselineResult::Ok` with the max timestamps from
-    /// two read-protection mechanisms that are NOT shipped by `ship_changes()`:
+    /// Returns `MinPrepareBaselineResult::Ok` with `max_read_time`: the
+    /// highest timestamp seen across all read operations (QuorumRead,
+    /// QuorumScan, and RW commit with reads).
     ///
-    /// 1. `max_range_read_time`: highest `scan_ts.time` across all `range_reads`
-    ///    entries (from `IO::QuorumScan`). Protects against phantom writes.
-    /// 2. `max_read_commit_time`: highest `commit` arg passed to `commit_get()`
-    ///    (from `IO::QuorumRead` and committed read-write transactions).
-    ///    Protects against write-after-read conflicts.
-    ///
-    /// The caller should set `raise_min_prepare_time(max(both) + 1)` on the
-    /// new shard to subsume all historical read protections from the source.
+    /// The caller should set `raise_min_prepare_time(max_read_time + 1)` on
+    /// the new shard to subsume all historical read protections from the source.
     ///
     /// **Safety**: Only returns `Ok` when the shard is in `Decommissioning`
     /// phase (all IO::QuorumRead/QuorumScan blocked). Returns
@@ -152,8 +147,7 @@ pub enum UR<K, V> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MinPrepareBaselineResult {
     Ok {
-        max_range_read_time: u64,
-        max_read_commit_time: u64,
+        max_read_time: u64,
     },
     NotDecommissioning,
 }
