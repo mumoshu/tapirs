@@ -10,6 +10,10 @@ fn open_store() -> (TempDir, TestStore) {
     (dir, store)
 }
 
+fn put(store: &mut TestStore, key: String, value: Option<String>, ts: u64) -> Result<(), SurrealKvError> {
+    MvccBackend::commit_batch(store, vec![(key, value)], vec![], ts)
+}
+
 #[test]
 fn get_nonexistent_key() {
     let (_dir, store) = open_store();
@@ -21,9 +25,7 @@ fn get_nonexistent_key() {
 #[test]
 fn put_and_get() {
     let (_dir, mut store) = open_store();
-    store
-        .put("key1".into(), Some("value1".into()), 10)
-        .unwrap();
+    put(&mut store, "key1".into(), Some("value1".into()), 10).unwrap();
     let (val, ts) = store.get(&"key1".into()).unwrap();
     assert_eq!(val, Some("value1".into()));
     assert_eq!(ts, 10);
@@ -32,9 +34,9 @@ fn put_and_get() {
 #[test]
 fn multiple_keys() {
     let (_dir, mut store) = open_store();
-    store.put("a".into(), Some("va".into()), 1).unwrap();
-    store.put("b".into(), Some("vb".into()), 2).unwrap();
-    store.put("c".into(), Some("vc".into()), 3).unwrap();
+    put(&mut store,"a".into(), Some("va".into()), 1).unwrap();
+    put(&mut store,"b".into(), Some("vb".into()), 2).unwrap();
+    put(&mut store,"c".into(), Some("vc".into()), 3).unwrap();
 
     let (val, ts) = store.get(&"a".into()).unwrap();
     assert_eq!(val, Some("va".into()));
@@ -52,8 +54,8 @@ fn multiple_keys() {
 #[test]
 fn get_at_returns_correct_version() {
     let (_dir, mut store) = open_store();
-    store.put("k".into(), Some("v10".into()), 10).unwrap();
-    store.put("k".into(), Some("v20".into()), 20).unwrap();
+    put(&mut store,"k".into(), Some("v10".into()), 10).unwrap();
+    put(&mut store,"k".into(), Some("v20".into()), 20).unwrap();
 
     // Exact timestamps
     let (val, ts) = store.get_at(&"k".into(), 10).unwrap();
@@ -83,8 +85,8 @@ fn get_at_returns_correct_version() {
 #[test]
 fn tombstone_deletes_key() {
     let (_dir, mut store) = open_store();
-    store.put("k".into(), Some("alive".into()), 10).unwrap();
-    store.put("k".into(), None, 20).unwrap();
+    put(&mut store,"k".into(), Some("alive".into()), 10).unwrap();
+    put(&mut store,"k".into(), None, 20).unwrap();
 
     // Latest version is tombstone
     let (val, ts) = store.get(&"k".into()).unwrap();
@@ -100,7 +102,7 @@ fn tombstone_deletes_key() {
 #[test]
 fn get_range_single_version() {
     let (_dir, mut store) = open_store();
-    store.put("k".into(), Some("v".into()), 10).unwrap();
+    put(&mut store,"k".into(), Some("v".into()), 10).unwrap();
 
     let (at_ts, next_ts) = store.get_range(&"k".into(), 10).unwrap();
     assert_eq!(at_ts, 10);
@@ -110,8 +112,8 @@ fn get_range_single_version() {
 #[test]
 fn get_range_multiple_versions() {
     let (_dir, mut store) = open_store();
-    store.put("k".into(), Some("v10".into()), 10).unwrap();
-    store.put("k".into(), Some("v20".into()), 20).unwrap();
+    put(&mut store,"k".into(), Some("v10".into()), 10).unwrap();
+    put(&mut store,"k".into(), Some("v20".into()), 20).unwrap();
 
     // At ts=15, version is at 10, next is at 20
     let (at_ts, next_ts) = store.get_range(&"k".into(), 15).unwrap();
@@ -122,10 +124,10 @@ fn get_range_multiple_versions() {
 #[test]
 fn scan_basic() {
     let (_dir, mut store) = open_store();
-    store.put("a".into(), Some("va".into()), 10).unwrap();
-    store.put("b".into(), Some("vb".into()), 10).unwrap();
-    store.put("c".into(), Some("vc".into()), 10).unwrap();
-    store.put("d".into(), Some("vd".into()), 10).unwrap();
+    put(&mut store,"a".into(), Some("va".into()), 10).unwrap();
+    put(&mut store,"b".into(), Some("vb".into()), 10).unwrap();
+    put(&mut store,"c".into(), Some("vc".into()), 10).unwrap();
+    put(&mut store,"d".into(), Some("vd".into()), 10).unwrap();
 
     let results = store.scan(&"b".into(), &"c".into(), 10).unwrap();
     assert_eq!(results.len(), 2);
@@ -138,9 +140,9 @@ fn scan_basic() {
 #[test]
 fn scan_with_tombstone() {
     let (_dir, mut store) = open_store();
-    store.put("a".into(), Some("va".into()), 10).unwrap();
-    store.put("b".into(), None, 10).unwrap();
-    store.put("c".into(), Some("vc".into()), 10).unwrap();
+    put(&mut store,"a".into(), Some("va".into()), 10).unwrap();
+    put(&mut store,"b".into(), None, 10).unwrap();
+    put(&mut store,"c".into(), Some("vc".into()), 10).unwrap();
 
     let results = store.scan(&"a".into(), &"c".into(), 10).unwrap();
     assert_eq!(results.len(), 3);
@@ -151,7 +153,7 @@ fn scan_with_tombstone() {
 #[test]
 fn has_writes_in_range_true() {
     let (_dir, mut store) = open_store();
-    store.put("k".into(), Some("v".into()), 10).unwrap();
+    put(&mut store,"k".into(), Some("v".into()), 10).unwrap();
 
     assert!(store
         .has_writes_in_range(&"k".into(), &"k".into(), 5, 15)
@@ -161,7 +163,7 @@ fn has_writes_in_range_true() {
 #[test]
 fn has_writes_in_range_false() {
     let (_dir, mut store) = open_store();
-    store.put("k".into(), Some("v".into()), 10).unwrap();
+    put(&mut store,"k".into(), Some("v".into()), 10).unwrap();
 
     // Timestamp range doesn't include 10 (exclusive bounds)
     assert!(!store
@@ -175,7 +177,7 @@ fn has_writes_in_range_false() {
 #[test]
 fn commit_get_and_last_read() {
     let (_dir, mut store) = open_store();
-    store.put("k".into(), Some("v".into()), 10).unwrap();
+    put(&mut store,"k".into(), Some("v".into()), 10).unwrap();
 
     store.commit_get("k".into(), 10, 50).unwrap();
 
@@ -186,8 +188,8 @@ fn commit_get_and_last_read() {
 #[test]
 fn get_last_read_at() {
     let (_dir, mut store) = open_store();
-    store.put("k".into(), Some("v10".into()), 10).unwrap();
-    store.put("k".into(), Some("v20".into()), 20).unwrap();
+    put(&mut store,"k".into(), Some("v10".into()), 10).unwrap();
+    put(&mut store,"k".into(), Some("v20".into()), 20).unwrap();
 
     store.commit_get("k".into(), 10, 50).unwrap();
 
@@ -204,8 +206,8 @@ fn get_last_read_at() {
 fn commit_batch_multi_key() {
     let (_dir, mut store) = open_store();
     // Pre-populate keys for read tracking
-    store.put("r1".into(), Some("vr1".into()), 5).unwrap();
-    store.put("r2".into(), Some("vr2".into()), 5).unwrap();
+    put(&mut store,"r1".into(), Some("vr1".into()), 5).unwrap();
+    put(&mut store,"r2".into(), Some("vr2".into()), 5).unwrap();
 
     let writes = vec![
         ("w1".into(), Some("vw1".into())),
@@ -237,7 +239,7 @@ fn serialize_deserialize_roundtrip() {
     // Write data and serialize, then drop the store to release the lock.
     let serialized = {
         let mut store = TestStore::open(path.clone()).unwrap();
-        store.put("k".into(), Some("v".into()), 10).unwrap();
+        put(&mut store,"k".into(), Some("v".into()), 10).unwrap();
         store.commit_get("k".into(), 10, 50).unwrap();
 
         // Verify data is readable before serialization.
