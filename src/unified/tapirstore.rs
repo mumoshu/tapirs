@@ -56,7 +56,6 @@ impl<K: Key, V: Value, IO: DiskIo> TapirStore<K, V> for UnifiedStore<K, V, IO> {
         _id: TransactionId,
         _txn: SharedTransaction<K, V, Timestamp>,
         _commit: Timestamp,
-        _dry_run: bool,
     ) -> PrepareResult<Timestamp> {
         todo!()
     }

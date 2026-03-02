@@ -141,7 +141,6 @@ pub trait TapirStore<K: Key, V: Value>: Send + 'static {
         id: TransactionId,
         txn: SharedTransaction<K, V, Timestamp>,
         commit: Timestamp,
-        dry_run: bool,
     ) -> PrepareResult<Timestamp>;
 
     /// Record a commit in the transaction log and apply the write set.

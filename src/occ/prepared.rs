@@ -181,18 +181,6 @@ impl<K: Key, V: Value, TS: Timestamp + Send> PreparedTransactions<K, V, TS> {
             .is_some_and(|(ts, _, _)| ts == commit)
     }
 
-    /// Get the existing prepared transaction details for dry-run cache
-    /// management. Returns `(commit_ts, transaction)` with cloned values
-    /// suitable for temporary cache suspension.
-    pub fn get_for_suspend(
-        &self,
-        id: &TransactionId,
-    ) -> Option<(TS, SharedTransaction<K, V, TS>)> {
-        self.prepared
-            .get(id)
-            .map(|(ts, txn, _)| (*ts, txn.clone()))
-    }
-
     // === Prepared Transaction Mutations ===
 
     /// Upsert a prepared transaction with three distinct behaviors:
@@ -307,18 +295,6 @@ impl<K: Key, V: Value, TS: Timestamp + Send> PreparedTransactions<K, V, TS> {
                 }
             }
         }
-    }
-
-    /// Temporarily remove cache entries for a prepared transaction.
-    /// Used by dry-run prepare to avoid false positive OCC conflicts.
-    /// Call [`restore_caches`](Self::restore_caches) afterward.
-    pub fn suspend_caches(&mut self, transaction: &Transaction<K, V, TS>, commit: TS) {
-        self.remove_caches(transaction, commit);
-    }
-
-    /// Re-add cache entries for a prepared transaction after dry-run.
-    pub fn restore_caches(&mut self, transaction: &Transaction<K, V, TS>, commit: TS) {
-        self.add_caches(transaction, commit);
     }
 
     // === Read-Only Accessors for OCC Conflict Detection ===

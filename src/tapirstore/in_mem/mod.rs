@@ -135,9 +135,8 @@ where
         id: TransactionId,
         txn: SharedTransaction<K, V, Timestamp>,
         commit: Timestamp,
-        dry_run: bool,
     ) -> PrepareResult<Timestamp> {
-        self.occ.try_prepare_txn(id, txn, commit, dry_run)
+        self.occ.try_prepare_txn(id, txn, commit)
     }
 
     fn commit_prepared_txn(

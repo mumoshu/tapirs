@@ -572,7 +572,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                         OccPrepareResult::TooLate
                     }
                     CheckPrepareStatus::Unknown => {
-                        self.store.try_prepare_txn(*transaction_id, transaction.clone(), *commit, false)
+                        self.store.try_prepare_txn(*transaction_id, transaction.clone(), *commit)
                     }
                 };
                 match &result {

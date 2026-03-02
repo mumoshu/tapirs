@@ -223,40 +223,21 @@ impl<K: Key, V: Value, TS: Timestamp + Send, M: MvccBackend<K, V, TS>> Store<K, 
         id: TransactionId,
         transaction: SharedTransaction<K, V, TS>,
         commit: TS,
-        dry_run: bool,
     ) -> PrepareResult<TS> {
         if self.prepared_txns.is_prepared_at(&id, &commit) {
             // Already prepared at this timestamp.
             return PrepareResult::Ok;
         }
 
-        if let Some((old_commit, old_txn)) = self.prepared_txns.get_for_suspend(&id) {
-            if dry_run {
-                // Don't remove from prepared set — just suspend caches.
-                self.prepared_txns.suspend_caches(&old_txn, old_commit);
-            } else {
-                // Run the checks again for a new timestamp.
-                self.prepared_txns.remove(id);
-            }
+        if self.prepared_txns.contains(&id) {
+            // Run the checks again for a new timestamp.
+            self.prepared_txns.remove(id);
         }
 
         let result = self.occ_check(&transaction, commit);
 
-        // Restore caches after dry run.
-        if dry_run
-            && let Some((old_commit, old_txn)) = self.prepared_txns.get_for_suspend(&id)
-        {
-            self.prepared_txns.restore_caches(&old_txn, old_commit);
-        }
-
         if result.is_ok() {
-            if dry_run {
-                return PrepareResult::Retry {
-                    proposed: commit.time(),
-                };
-            } else {
-                self.prepared_txns.add_or_replace_or_finalize(id, transaction, commit, false);
-            }
+            self.prepared_txns.add_or_replace_or_finalize(id, transaction, commit, false);
         }
 
         result
@@ -490,8 +471,8 @@ mod tests {
         let t1 = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
         let t2 = make_txn(vec![], vec![("y", Some("v2"))], vec![]);
 
-        assert_eq!(store.try_prepare_txn(txn_id(1, 1), t1, ts(10, 1), false), PrepareResult::Ok);
-        assert_eq!(store.try_prepare_txn(txn_id(2, 1), t2, ts(11, 2), false), PrepareResult::Ok);
+        assert_eq!(store.try_prepare_txn(txn_id(1, 1), t1, ts(10, 1)), PrepareResult::Ok);
+        assert_eq!(store.try_prepare_txn(txn_id(2, 1), t2, ts(11, 2)), PrepareResult::Ok);
     }
 
     #[test]
@@ -499,9 +480,9 @@ mod tests {
         let (_dir, mut store) = new_store(true);
         let t1 = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
 
-        assert_eq!(store.try_prepare_txn(txn_id(1, 1), t1.clone(), ts(10, 1), false), PrepareResult::Ok);
+        assert_eq!(store.try_prepare_txn(txn_id(1, 1), t1.clone(), ts(10, 1)), PrepareResult::Ok);
         // Re-prepare at exact same timestamp → Ok (idempotent).
-        assert_eq!(store.try_prepare_txn(txn_id(1, 1), t1, ts(10, 1), false), PrepareResult::Ok);
+        assert_eq!(store.try_prepare_txn(txn_id(1, 1), t1, ts(10, 1)), PrepareResult::Ok);
     }
 
     #[test]
@@ -522,7 +503,7 @@ mod tests {
         // at ts(10,1). Since commit ts(15,1) > end ts(10,1), this is a Fail.
         let t3 = make_txn(vec![("x", ts(5, 1))], vec![], vec![]);
         assert_eq!(
-            store.try_prepare_txn(txn_id(3, 1), t3, ts(15, 1), false),
+            store.try_prepare_txn(txn_id(3, 1), t3, ts(15, 1)),
             PrepareResult::Fail
         );
     }
@@ -537,13 +518,13 @@ mod tests {
 
         // T1 prepares a write to "x" at ts(8,1).
         let t1 = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
-        assert_eq!(store.try_prepare_txn(txn_id(1, 1), t1, ts(8, 1), false), PrepareResult::Ok);
+        assert_eq!(store.try_prepare_txn(txn_id(1, 1), t1, ts(8, 1)), PrepareResult::Ok);
 
         // T2 read "x" at ts(5,1), prepares at ts(12,2).
         // There's a prepared write at ts(8,1) in range (read=5, commit=12) → Abstain.
         let t2 = make_txn(vec![("x", ts(5, 1))], vec![], vec![]);
         assert_eq!(
-            store.try_prepare_txn(txn_id(2, 1), t2, ts(12, 2), false),
+            store.try_prepare_txn(txn_id(2, 1), t2, ts(12, 2)),
             PrepareResult::Abstain
         );
     }
@@ -560,7 +541,7 @@ mod tests {
         // last committed write ts(10) > commit ts(5) → Retry.
         let t2 = make_txn(vec![], vec![("x", Some("v2"))], vec![]);
         assert_eq!(
-            store.try_prepare_txn(txn_id(2, 1), t2, ts(5, 2), false),
+            store.try_prepare_txn(txn_id(2, 1), t2, ts(5, 2)),
             PrepareResult::Retry { proposed: 10 }
         );
     }
@@ -583,7 +564,7 @@ mod tests {
         // last_read ts(10,1) > commit ts(5,2) → Retry.
         let t2 = make_txn(vec![], vec![("x", Some("v2"))], vec![]);
         assert_eq!(
-            store.try_prepare_txn(txn_id(2, 1), t2, ts(5, 2), false),
+            store.try_prepare_txn(txn_id(2, 1), t2, ts(5, 2)),
             PrepareResult::Retry { proposed: 10 }
         );
     }
@@ -598,13 +579,13 @@ mod tests {
 
         // T1 prepares a read of "x" at ts(3,1) with commit ts(10,1).
         let t1 = make_txn(vec![("x", ts(3, 1))], vec![], vec![]);
-        assert_eq!(store.try_prepare_txn(txn_id(1, 1), t1, ts(10, 1), false), PrepareResult::Ok);
+        assert_eq!(store.try_prepare_txn(txn_id(1, 1), t1, ts(10, 1)), PrepareResult::Ok);
 
         // T2 writes "x" at ts(5,2). prepared_reads has ts(10,1) for "x".
         // prepared read ts(10,1) > commit ts(5,2) → Abstain.
         let t2 = make_txn(vec![], vec![("x", Some("v2"))], vec![]);
         assert_eq!(
-            store.try_prepare_txn(txn_id(2, 1), t2, ts(5, 2), false),
+            store.try_prepare_txn(txn_id(2, 1), t2, ts(5, 2)),
             PrepareResult::Abstain
         );
     }
@@ -615,13 +596,13 @@ mod tests {
 
         // T1 prepares a write of "x" at ts(10,1).
         let t1 = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
-        assert_eq!(store.try_prepare_txn(txn_id(1, 1), t1, ts(10, 1), false), PrepareResult::Ok);
+        assert_eq!(store.try_prepare_txn(txn_id(1, 1), t1, ts(10, 1)), PrepareResult::Ok);
 
         // T2 writes "x" at ts(5,2). In linearizable mode, prepared_writes has ts(10,1)
         // for "x" which is > commit ts(5,2) → Retry.
         let t2 = make_txn(vec![], vec![("x", Some("v2"))], vec![]);
         assert_eq!(
-            store.try_prepare_txn(txn_id(2, 1), t2, ts(5, 2), false),
+            store.try_prepare_txn(txn_id(2, 1), t2, ts(5, 2)),
             PrepareResult::Retry { proposed: 10 }
         );
     }
@@ -649,7 +630,7 @@ mod tests {
             }],
         );
         assert_eq!(
-            store.try_prepare_txn(txn_id(2, 1), t2, ts(12, 2), false),
+            store.try_prepare_txn(txn_id(2, 1), t2, ts(12, 2)),
             PrepareResult::Fail
         );
     }
@@ -660,7 +641,7 @@ mod tests {
 
         // T1 prepares a write of "b" at ts(8,1).
         let t1 = make_txn(vec![], vec![("b", Some("v1"))], vec![]);
-        assert_eq!(store.try_prepare_txn(txn_id(1, 1), t1, ts(8, 1), false), PrepareResult::Ok);
+        assert_eq!(store.try_prepare_txn(txn_id(1, 1), t1, ts(8, 1)), PrepareResult::Ok);
 
         // T2 scanned range ["a","c"] at ts(5,1), prepares at ts(12,2).
         // Prepared write "b"@ts(8,1) in range (5,12) → Abstain.
@@ -675,7 +656,7 @@ mod tests {
             }],
         );
         assert_eq!(
-            store.try_prepare_txn(txn_id(2, 1), t2, ts(12, 2), false),
+            store.try_prepare_txn(txn_id(2, 1), t2, ts(12, 2)),
             PrepareResult::Abstain
         );
     }
@@ -701,7 +682,7 @@ mod tests {
             }],
         );
         assert_eq!(
-            store.try_prepare_txn(txn_id(2, 1), t2, ts(12, 2), false),
+            store.try_prepare_txn(txn_id(2, 1), t2, ts(12, 2)),
             PrepareResult::Ok
         );
     }
@@ -727,7 +708,7 @@ mod tests {
 
         let txn = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
         let id = txn_id(1, 1);
-        assert_eq!(store.try_prepare_txn(id, txn, ts(10, 1), false), PrepareResult::Ok);
+        assert_eq!(store.try_prepare_txn(id, txn, ts(10, 1)), PrepareResult::Ok);
         assert!(store.prepared_txns.contains(&id));
 
         // Abort by removing prepared.
@@ -764,7 +745,7 @@ mod tests {
         // as long as no committed read conflicts.
         let t2 = make_txn(vec![], vec![("x", Some("v2"))], vec![]);
         assert_eq!(
-            store.try_prepare_txn(txn_id(2, 1), t2, ts(5, 2), false),
+            store.try_prepare_txn(txn_id(2, 1), t2, ts(5, 2)),
             PrepareResult::Ok
         );
     }
@@ -780,25 +761,9 @@ mod tests {
         // T2 writes "x" at ts(5,2). In linearizable mode → Retry.
         let t2 = make_txn(vec![], vec![("x", Some("v2"))], vec![]);
         assert_eq!(
-            store.try_prepare_txn(txn_id(2, 1), t2, ts(5, 2), false),
+            store.try_prepare_txn(txn_id(2, 1), t2, ts(5, 2)),
             PrepareResult::Retry { proposed: 10 }
         );
-    }
-
-    // ── Dry-run prepare ──
-
-    #[test]
-    fn prepare_dry_run_no_side_effects() {
-        let (_dir, mut store) = new_store(true);
-
-        let txn = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
-        let id = txn_id(1, 1);
-
-        // Dry run returns Retry (even if occ_check passes) and does not add to prepared.
-        let result = store.try_prepare_txn(id, txn, ts(10, 1), true);
-        assert_eq!(result, PrepareResult::Retry { proposed: 10 });
-        assert!(!store.prepared_txns.contains(&id));
-        assert!(store.prepared_txns.prepared_writes().is_empty());
     }
 
     // ── A.3.1 Linearizable read-write conflict ──
@@ -817,7 +782,7 @@ mod tests {
         // Serializable: commit(8) < end(10) → Ok. Linearizable: any end → Fail.
         let t3 = make_txn(vec![("x", ts(5, 1))], vec![], vec![]);
         assert_eq!(
-            store.try_prepare_txn(txn_id(3, 1), t3, ts(8, 1), false),
+            store.try_prepare_txn(txn_id(3, 1), t3, ts(8, 1)),
             PrepareResult::Fail
         );
     }
@@ -833,7 +798,7 @@ mod tests {
         // T1 prepares write to "x" at ts(3,1). Passes linearizable write-set check
         // because latest committed ts(2,1) < ts(3,1).
         let t1 = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
-        assert_eq!(store.try_prepare_txn(txn_id(1, 1), t1, ts(3, 1), false), PrepareResult::Ok);
+        assert_eq!(store.try_prepare_txn(txn_id(1, 1), t1, ts(3, 1)), PrepareResult::Ok);
 
         // T3 commits a newer version at ts(5,1). Now T1's prepared write at ts(3,1)
         // is BEFORE this version.
@@ -846,7 +811,7 @@ mod tests {
         // Linearizable: Unbounded includes ts(3,1) → conflict → Abstain.
         let t2 = make_txn(vec![("x", ts(5, 1))], vec![], vec![]);
         assert_eq!(
-            store.try_prepare_txn(txn_id(2, 1), t2, ts(12, 2), false),
+            store.try_prepare_txn(txn_id(2, 1), t2, ts(12, 2)),
             PrepareResult::Abstain
         );
     }
@@ -877,7 +842,7 @@ mod tests {
         // latest committed ts(10,1) > ts(7,2) → Retry.)
         let t2 = make_txn(vec![], vec![("x", Some("v2"))], vec![]);
         assert_eq!(
-            store.try_prepare_txn(txn_id(3, 1), t2, ts(7, 2), false),
+            store.try_prepare_txn(txn_id(3, 1), t2, ts(7, 2)),
             PrepareResult::Ok
         );
     }
@@ -906,7 +871,7 @@ mod tests {
         // get_last_read_at is both permissive and restrictive — the core SSI property.)
         let t2 = make_txn(vec![], vec![("x", Some("v2"))], vec![]);
         assert_eq!(
-            store.try_prepare_txn(txn_id(3, 1), t2, ts(7, 2), false),
+            store.try_prepare_txn(txn_id(3, 1), t2, ts(7, 2)),
             PrepareResult::Retry { proposed: 20 }
         );
     }
@@ -917,13 +882,13 @@ mod tests {
 
         // T1 prepares a write of "x" at ts(10,1).
         let t1 = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
-        assert_eq!(store.try_prepare_txn(txn_id(1, 1), t1, ts(10, 1), false), PrepareResult::Ok);
+        assert_eq!(store.try_prepare_txn(txn_id(1, 1), t1, ts(10, 1)), PrepareResult::Ok);
 
         // T2 writes "x" at ts(5,2). In serializable mode, prepared write-write
         // conflicts are NOT checked → Ok.
         let t2 = make_txn(vec![], vec![("x", Some("v2"))], vec![]);
         assert_eq!(
-            store.try_prepare_txn(txn_id(2, 1), t2, ts(5, 2), false),
+            store.try_prepare_txn(txn_id(2, 1), t2, ts(5, 2)),
             PrepareResult::Ok
         );
     }
@@ -959,7 +924,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            store.try_prepare_txn(txn_id(2, 1), t2, ts(12, 2), false),
+            store.try_prepare_txn(txn_id(2, 1), t2, ts(12, 2)),
             PrepareResult::Fail
         );
     }
@@ -985,26 +950,6 @@ mod tests {
         assert!(!writes.contains_key(&ts(10, 1)));
         assert!(writes.contains_key(&ts(20, 1)));
         assert_eq!(store.prepared_txns.get(&id).unwrap().0, &ts(20, 1));
-    }
-
-    #[test]
-    fn dry_run_preserves_existing_prepare() {
-        let (_dir, mut store) = new_store(true);
-
-        let txn = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
-        let id = txn_id(1, 1);
-
-        // Actually prepare at ts(10,1).
-        assert_eq!(store.try_prepare_txn(id, txn.clone(), ts(10, 1), false), PrepareResult::Ok);
-        assert!(store.prepared_txns.prepared_writes().get("x").unwrap().contains_key(&ts(10, 1)));
-
-        // Dry-run re-prepare at ts(20,1). Should not disturb existing prepare.
-        let result = store.try_prepare_txn(id, txn, ts(20, 1), true);
-        assert_eq!(result, PrepareResult::Retry { proposed: 20 });
-
-        // Original prepare still intact.
-        assert!(store.prepared_txns.prepared_writes().get("x").unwrap().contains_key(&ts(10, 1)));
-        assert_eq!(store.prepared_txns.get(&id).unwrap().0, &ts(10, 1));
     }
 
     // ── get_validated / quorum_read (read-only transactions) ──
@@ -1105,7 +1050,7 @@ mod tests {
         // Prepare a write to existing key "b" at commit_ts(7,2) — read_ts(10) > commit(7) → Retry.
         let t2 = make_txn(vec![], vec![("b", Some("v2"))], vec![]);
         assert_eq!(
-            store.try_prepare_txn(txn_id(2, 1), t2, ts(7, 2), false),
+            store.try_prepare_txn(txn_id(2, 1), t2, ts(7, 2)),
             PrepareResult::Retry { proposed: 10 }
         );
     }
@@ -1119,7 +1064,7 @@ mod tests {
         // Prepare a write of NEW key "m" at commit_ts(7,2) — range_read(10) > commit(7) → Retry.
         let t2 = make_txn(vec![], vec![("m", Some("v1"))], vec![]);
         assert_eq!(
-            store.try_prepare_txn(txn_id(2, 1), t2, ts(7, 2), false),
+            store.try_prepare_txn(txn_id(2, 1), t2, ts(7, 2)),
             PrepareResult::Retry { proposed: 10 }
         );
     }
@@ -1133,7 +1078,7 @@ mod tests {
         // Prepare a write of "m" at commit_ts(15,2) — range_read(10) < commit(15) → Ok.
         let t2 = make_txn(vec![], vec![("m", Some("v1"))], vec![]);
         assert_eq!(
-            store.try_prepare_txn(txn_id(2, 1), t2, ts(15, 2), false),
+            store.try_prepare_txn(txn_id(2, 1), t2, ts(15, 2)),
             PrepareResult::Ok
         );
     }
@@ -1147,7 +1092,7 @@ mod tests {
         // Prepare a write of "z" at commit_ts(7,2) — "z" outside range [a,c] → Ok.
         let t2 = make_txn(vec![], vec![("z", Some("v1"))], vec![]);
         assert_eq!(
-            store.try_prepare_txn(txn_id(2, 1), t2, ts(7, 2), false),
+            store.try_prepare_txn(txn_id(2, 1), t2, ts(7, 2)),
             PrepareResult::Ok
         );
     }
@@ -1173,7 +1118,7 @@ mod tests {
         // read_ts(ts(10,1)) > commit_ts(ts(7,2)).
         let t2 = make_txn(vec![], vec![("x", Some("v2"))], vec![]);
         assert_eq!(
-            store.try_prepare_txn(txn_id(3, 1), t2, ts(7, 2), false),
+            store.try_prepare_txn(txn_id(3, 1), t2, ts(7, 2)),
             PrepareResult::Retry { proposed: 10 }
         );
     }

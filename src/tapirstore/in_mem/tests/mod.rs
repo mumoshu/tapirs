@@ -90,7 +90,7 @@ fn commit_records_in_txn_log() {
     // Setup: commit "x" = "v1" at ts(1,1) via OCC flow.
     let setup_txn = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
     assert_eq!(
-        store.occ_mut().try_prepare_txn(txn_id(99, 1), setup_txn.clone(), ts(1, 1), false),
+        store.occ_mut().try_prepare_txn(txn_id(99, 1), setup_txn.clone(), ts(1, 1)),
         crate::occ::PrepareResult::Ok
     );
     store.commit(txn_id(99, 1), &setup_txn, ts(1, 1));
@@ -100,7 +100,7 @@ fn commit_records_in_txn_log() {
         vec![("x", Some("v2"))],
         vec![],
     );
-    store.try_prepare_txn(txn_id(1, 1), txn.clone(), ts(5, 1), false);
+    store.try_prepare_txn(txn_id(1, 1), txn.clone(), ts(5, 1));
 
     // Before commit, txn_log should be empty.
     assert!(store.txn_log_get(&txn_id(1, 1)).is_none());
