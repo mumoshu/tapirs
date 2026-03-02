@@ -23,3 +23,7 @@ flamegraph.svg
 temp/
 .tapiadm/
 .maelstrom/
+
+.claude/
+.vscode/
+kubernetes/operator/dist/
