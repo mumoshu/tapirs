@@ -254,7 +254,13 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
     }
 
     pub(crate) fn active_or_sealed_segment_ref(&self, segment_id: u64) -> Option<&VlogSegment<IO>> {
-        self.active_or_sealed_segment(segment_id)
+        self.sealed_vlog_segments
+            .get(&segment_id)
+            .or(if self.active_vlog.id == segment_id {
+                Some(&self.active_vlog)
+            } else {
+                None
+            })
     }
 
     pub(crate) fn get_range(
@@ -407,7 +413,38 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         K: Key,
         V: Value,
     {
-        register_prepare(self, txn_id, transaction, commit_ts)
+        let shard = crate::tapir::ShardNumber(0);
+
+        let read_set: Vec<(K, Timestamp)> = transaction
+            .shard_read_set(shard)
+            .map(|(k, ts)| (k.clone(), ts))
+            .collect();
+
+        let write_set: Vec<(K, Option<V>)> = transaction
+            .shard_write_set(shard)
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
+        let scan_set: Vec<(K, K, Timestamp)> = transaction
+            .shard_scan_set(shard)
+            .map(|entry| {
+                (
+                    entry.start_key.clone(),
+                    entry.end_key.clone(),
+                    entry.timestamp,
+                )
+            })
+            .collect();
+
+        let prepare = Arc::new(CachedPrepare {
+            transaction_id: txn_id,
+            commit_ts,
+            read_set,
+            write_set,
+            scan_set,
+        });
+
+        self.register_prepare_raw(txn_id, prepare);
     }
 
     #[cfg(test)]
@@ -419,16 +456,6 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         let committed_index = self.committed_txn_vlog_index.clone();
         self.memtable
             .convert_in_memory_to_on_disk(&committed_index);
-    }
-
-    fn active_or_sealed_segment(&self, segment_id: u64) -> Option<&VlogSegment<IO>> {
-        self.sealed_vlog_segments
-            .get(&segment_id)
-            .or(if self.active_vlog.id == segment_id {
-                Some(&self.active_vlog)
-            } else {
-                None
-            })
     }
 
     fn append_committed_txn_to_active(
@@ -443,13 +470,18 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         K: serde::Serialize,
         V: serde::Serialize,
     {
-        let ptr = append_committed_txn_to_segment(
-            &mut self.active_vlog,
+        let payload = crate::unified::tapir::vlog_codec::serialize_committed_txn_payload(
             txn_id,
             commit,
             read_set,
             write_set,
             scan_set,
+        )?;
+        let ptr = self.active_vlog.append_raw_entry(
+            TAPIR_COMMITTED_TXN_ENTRY_TYPE,
+            txn_id.client_id.0,
+            txn_id.number,
+            &payload,
         )?;
         self.current_view_entry_count += 1;
         Ok(ptr)
@@ -518,29 +550,6 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
 const DEFAULT_PREPARE_CACHE_CAPACITY: usize = 1024;
 const RAW_ENTRY_OVERHEAD: u32 = 25;
 const TAPIR_COMMITTED_TXN_ENTRY_TYPE: u8 = 0x80;
-
-fn append_committed_txn_to_segment<K: serde::Serialize, V: serde::Serialize, IO: DiskIo>(
-    segment: &mut VlogSegment<IO>,
-    txn_id: OccTransactionId,
-    commit: Timestamp,
-    read_set: &[(K, Timestamp)],
-    write_set: &[(K, Option<V>)],
-    scan_set: &[(K, K, Timestamp)],
-) -> Result<VlogPtr, StorageError> {
-    let payload = crate::unified::tapir::vlog_codec::serialize_committed_txn_payload(
-        txn_id,
-        commit,
-        read_set,
-        write_set,
-        scan_set,
-    )?;
-    segment.append_raw_entry(
-        TAPIR_COMMITTED_TXN_ENTRY_TYPE,
-        txn_id.client_id.0,
-        txn_id.number,
-        &payload,
-    )
-}
 
 fn read_committed_txn_from_segment<
     K: serde::de::DeserializeOwned,
@@ -746,55 +755,13 @@ impl<
     ) -> Result<CachedPrepare<K, V>, StorageError> {
         let segment_id = txn_ptr.segment_id;
         let segment = self
-            .active_or_sealed_segment(segment_id)
+            .active_or_sealed_segment_ref(segment_id)
             .ok_or_else(|| StorageError::Codec(format!(
                 "VLog segment {segment_id} not found for prepare resolution"
             )))?;
 
         read_committed_txn_from_segment(segment, txn_ptr)
     }
-}
-
-#[cfg(test)]
-#[allow(dead_code)]
-pub(crate) fn register_prepare<K: Key, V: Value, IO: DiskIo>(
-    store: &mut TapirState<K, V, IO>,
-    txn_id: OccTransactionId,
-    transaction: &crate::occ::Transaction<K, V, Timestamp>,
-    commit_ts: Timestamp,
-) {
-    let shard = crate::tapir::ShardNumber(0);
-
-    let read_set: Vec<(K, Timestamp)> = transaction
-        .shard_read_set(shard)
-        .map(|(k, ts)| (k.clone(), ts))
-        .collect();
-
-    let write_set: Vec<(K, Option<V>)> = transaction
-        .shard_write_set(shard)
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-
-    let scan_set: Vec<(K, K, Timestamp)> = transaction
-        .shard_scan_set(shard)
-        .map(|entry| {
-            (
-                entry.start_key.clone(),
-                entry.end_key.clone(),
-                entry.timestamp,
-            )
-        })
-        .collect();
-
-    let prepare = Arc::new(CachedPrepare {
-        transaction_id: txn_id,
-        commit_ts,
-        read_set,
-        write_set,
-        scan_set,
-    });
-
-    store.register_prepare_raw(txn_id, prepare);
 }
 
 pub(crate) fn resolve_in_memory<K: Key, V: Value, IO: DiskIo>(
@@ -893,7 +860,7 @@ impl TapirStateRunner {
         transaction: &crate::occ::Transaction<String, String, Timestamp>,
         commit_ts: Timestamp,
     ) {
-        register_prepare(&mut self.tapir, txn_id, transaction, commit_ts);
+        self.tapir.register_prepare(txn_id, transaction, commit_ts);
     }
 
     pub(crate) fn commit_transaction_data(

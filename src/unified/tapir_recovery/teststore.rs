@@ -83,7 +83,7 @@ impl TestStore {
         txn: &Transaction<String, String, Timestamp>,
         commit_ts: Timestamp,
     ) {
-        tapir_store::register_prepare(&mut self.tapir_state, txn_id, txn, commit_ts);
+        self.tapir_state.register_prepare(txn_id, txn, commit_ts);
     }
 
     pub(crate) fn unregister_prepare(&mut self, txn_id: &TransactionId) {
