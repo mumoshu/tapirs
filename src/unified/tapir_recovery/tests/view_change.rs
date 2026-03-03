@@ -1,6 +1,5 @@
 use super::helpers::*;
-use crate::tapirstore::TapirStore;
-use crate::unified::types::*;
+use crate::unified::ir::record::{IrMemEntry, IrPayloadInline, IrState, PrepareRef, VlogEntryType};
 
 // === Test 3: View Change (seal + merge + MVCC reads across views) ===
 
@@ -23,8 +22,8 @@ fn view_change_seal_merge_sync() {
         test_ts(5),
     );
 
-    // Committed value points to committed-transaction VLog entry
-    assert_value_location_in_memory(&store, "a", test_ts(5), false);
+    // Unsealed committed value remains InMemory until seal
+    assert_value_location_in_memory(&store, "a", test_ts(5), true);
 
     // Tentative prepare (won't survive merge)
     let txn2 = make_txn(vec![], vec![("b", Some("v2"))]);
@@ -150,15 +149,15 @@ fn cross_view_prepare_commit() {
         )
         .unwrap();
 
-    // Read resolves through sealed VLog (OnDisk path)
+    // Before seal, committed value resolves from in-memory prepare data
     assert_get_at(&store, "x", test_ts(5), Some("v1"), test_ts(5));
 
-    // Value should be OnDisk (cross-view commit uses committed transaction vlog)
-    assert_value_location_in_memory(&store, "x", test_ts(5), false);
+    // Value should be InMemory until this view is sealed
+    assert_value_location_in_memory(&store, "x", test_ts(5), true);
 
-    // First read should have triggered exactly 1 VLog read
+    // First read should not require VLog I/O for unsealed in-memory entry
     let io_after_first = store.vlog_read_count();
-    assert_eq!(io_after_first, 1, "Expected exactly 1 VLog read");
+    assert_eq!(io_after_first, 0, "Expected zero VLog reads before seal");
 
     // Second read: LRU cache hit (zero additional VLog I/O)
     assert_get_at(&store, "x", test_ts(5), Some("v1"), test_ts(5));

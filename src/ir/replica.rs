@@ -23,7 +23,7 @@ pub enum Status {
     ViewChanging,
     /// Not yet used. Will be needed when we implement Recovering mode
     /// where the replica replays its local IR record to recover state,
-    /// once UnifiedStore is complete.
+    /// once recovery replay plumbing is complete.
     #[allow(dead_code)]
     Recovering,
 }

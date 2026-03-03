@@ -1,4 +1,4 @@
-// Experimental direct store interpreter for UnifiedStore internals.
+// Experimental direct store interpreter for unified TAPIR/IR internals.
 //
 // Usage:
 //   tapirstore "open /tmp/store; tapir-prepare 1:1 5 w:x=v1; tapir-commit 1:1 5; get x"

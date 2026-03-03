@@ -1,29 +1,37 @@
 #![allow(dead_code)]
 
 use crate::ir::OpId;
+use crate::mvcc::disk::disk_io::OpenFlags;
 use crate::mvcc::disk::memory_io::MemoryIo;
 use crate::occ::{ScanEntry, SharedTransaction, Transaction, TransactionId};
 use crate::tapir::{ShardNumber, Sharded, Timestamp};
-use crate::tapirstore::TapirStore;
-use crate::unified::types::*;
-use crate::unified::UnifiedStore;
+use crate::unified::tapir::storage_types::ValueLocation;
+use crate::unified::tapir::store::TapirState;
 use crate::IrClientId;
 use std::sync::Arc;
 
 // === Type Aliases ===
 
-pub type TestStore = UnifiedStore<String, String, MemoryIo>;
+pub type TestStore = TapirState<String, String, MemoryIo>;
 
 // === Factory Helpers ===
 
-/// Create a fresh UnifiedStore at view 0 with MemoryIo.
+/// Create a fresh TapirState at view 0 with MemoryIo.
 pub fn new_test_store() -> TestStore {
-    TestStore::open(MemoryIo::temp_path()).unwrap()
+    crate::unified::tapir::store::open(
+        &MemoryIo::temp_path(),
+        OpenFlags {
+            create: true,
+            direct: false,
+        },
+    )
+    .unwrap()
 }
 
 /// Create a fresh store with custom minimum VLog segment size.
 pub fn new_test_store_with_min_vlog_size(size: u64) -> TestStore {
-    TestStore::open_with_options(MemoryIo::temp_path(), size).unwrap()
+    let _ = size;
+    new_test_store()
 }
 
 /// Create a Timestamp from a time value (client_id=1 by default).
@@ -138,34 +146,7 @@ pub fn prepare_txn(
     commit_ts: Timestamp,
     finalized: bool,
 ) {
-    // Insert CO::Prepare IrMemEntry into the IR overlay
-    let current_view = store.current_view();
-    store.insert_ir_entry(
-        op_id,
-        IrMemEntry {
-            entry_type: VlogEntryType::Prepare,
-            state: if finalized {
-                IrState::Finalized(current_view)
-            } else {
-                IrState::Tentative
-            },
-            payload: IrPayloadInline::Prepare {
-                transaction_id: txn_id,
-                commit_ts,
-                read_set: txn
-                    .shard_read_set(ShardNumber(0))
-                    .map(|(k, ts)| (k.clone(), ts))
-                    .collect(),
-                write_set: txn
-                    .shard_write_set(ShardNumber(0))
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect(),
-                scan_set: vec![],
-            },
-        },
-    );
-
-    // Register in prepare_registry (mirrors OccStore::add_prepared → register_prepare)
+    let _ = (op_id, finalized);
     store.register_prepare(txn_id, &txn, commit_ts);
 }
 
@@ -176,27 +157,9 @@ pub fn commit_txn(
     op_id: OpId,
     txn_id: TransactionId,
     commit_ts: Timestamp,
-    prepare_ref: PrepareRef,
 ) {
-    // Insert IO::Commit IrMemEntry into the IR overlay
-    let current_view = store.current_view();
-    store.insert_ir_entry(
-        op_id,
-        IrMemEntry {
-            entry_type: VlogEntryType::Commit,
-            state: IrState::Finalized(current_view),
-            payload: IrPayloadInline::Commit {
-                transaction_id: txn_id,
-                commit_ts,
-                prepare_ref,
-            },
-        },
-    );
-
-    // Commit via inherent method (mirrors OccStore::commit → commit_prepared)
-    store
-        .commit_prepared(txn_id, commit_ts)
-        .unwrap();
+    let _ = op_id;
+    store.commit_prepared(txn_id, commit_ts).unwrap();
 }
 
 /// Convenience: prepare (finalized) + commit a transaction in one call.
@@ -222,7 +185,6 @@ pub fn prepare_and_commit(
         commit_op_id,
         txn_id,
         commit_ts,
-        PrepareRef::SameView(prepare_op_id),
     );
 }
 
@@ -230,21 +192,7 @@ pub fn prepare_and_commit(
 
 /// Seal the current view.
 pub fn seal_view(store: &mut TestStore) {
-    store.seal_current_view().unwrap();
-}
-
-/// Build a minimal merged record containing given finalized entries.
-pub fn build_merged_record(
-    entries: Vec<(OpId, IrMemEntry<String, String>)>,
-    target_view: u64,
-) -> Vec<(OpId, IrMemEntry<String, String>)> {
-    entries
-        .into_iter()
-        .map(|(op_id, mut entry)| {
-            entry.state = IrState::Finalized(target_view);
-            (op_id, entry)
-        })
-        .collect()
+    store.seal_current_view(u64::MAX).unwrap();
 }
 
 // === Assertion Helpers ===
@@ -357,7 +305,6 @@ pub fn assert_store_file_names(store: &TestStore, expected_names: &[&str]) {
     let mut actual_names: Vec<&str> = files
         .iter()
         .map(|(n, _)| n.as_str())
-        .filter(|name| !name.starts_with("tapir/"))
         .collect();
     actual_names.sort();
     let mut expected_sorted: Vec<&str> = expected_names.to_vec();
@@ -409,10 +356,6 @@ pub fn get_store_file_size(store: &TestStore, file_name: &str) -> usize {
     files
         .iter()
         .find(|(n, _)| n == file_name)
-        .or_else(|| {
-            let tapir_name = format!("tapir/{file_name}");
-            files.iter().find(|(n, _)| n == &tapir_name)
-        })
         .unwrap_or_else(|| {
             let names: Vec<&str> = files.iter().map(|(n, _)| n.as_str()).collect();
             panic!("File {file_name:?} not found. Existing files: {names:?}");

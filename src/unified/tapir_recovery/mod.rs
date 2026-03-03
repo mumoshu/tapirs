@@ -1,36 +1,30 @@
 #[cfg(test)]
 use crate::ir::OpId;
 #[cfg(test)]
-use crate::mvcc::disk::disk_io::DiskIo;
-#[cfg(test)]
 use crate::mvcc::disk::error::StorageError;
 #[cfg(test)]
 use crate::occ::TransactionId as OccTransactionId;
 #[cfg(test)]
-use super::types::IrMemEntry;
+use crate::unified::ir::record::IrMemEntry;
 #[cfg(test)]
-use super::types::{IrPayloadInline, IrState};
+use crate::unified::ir::record::{IrPayloadInline, IrState};
 #[cfg(test)]
 use std::collections::BTreeMap;
 
 #[cfg(test)]
-pub(crate) fn replay_committed_from_ir_record<K, V, IO>(
-    store: &mut super::UnifiedStore<K, V, IO>,
-    ir_record: &[(OpId, IrMemEntry<K, V>)],
-) -> Result<(), StorageError>
-where
-    K: crate::tapir::Key,
-    V: crate::tapir::Value,
-    IO: DiskIo,
-    K: serde::Serialize + Clone + serde::de::DeserializeOwned,
-    V: serde::Serialize + Clone + serde::de::DeserializeOwned,
-{
+pub(crate) mod teststore;
+
+#[cfg(test)]
+pub(crate) fn replay_committed_from_ir_record(
+    store: &mut crate::unified::tapir_recovery::teststore::TestStore,
+    ir_record: &[(OpId, IrMemEntry<String, String>)],
+) -> Result<(), StorageError> {
     let mut prepares: BTreeMap<
         OccTransactionId,
         (
-            &[(K, crate::tapir::Timestamp)],
-            &[(K, Option<V>)],
-            &[(K, K, crate::tapir::Timestamp)],
+            &[(String, crate::tapir::Timestamp)],
+            &[(String, Option<String>)],
+            &[(String, String, crate::tapir::Timestamp)],
         ),
     > = BTreeMap::new();
 

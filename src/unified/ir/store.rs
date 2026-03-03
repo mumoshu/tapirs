@@ -1,16 +1,86 @@
 use crate::ir::OpId;
 use crate::mvcc::disk::disk_io::{DiskIo, OpenFlags};
 use crate::mvcc::disk::error::StorageError;
+use crate::IrClientId;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use super::record::{IrEntryRef, IrMemEntry, IrPayloadInline, IrRecord, IrSstEntry, VlogEntryType};
-use crate::unified::types::UnifiedVlogPtr;
+#[cfg(test)]
+use super::record::IrEntryRef;
+use super::record::{IrMemEntry, IrPayloadInline, IrRecord, IrSstEntry, VlogEntryType};
 use crate::unified::wisckeylsm::manifest::UnifiedManifest;
+use crate::unified::wisckeylsm::types::VlogPtr;
 use crate::unified::wisckeylsm::vlog::UnifiedVlogSegment;
 
 const RAW_ENTRY_OVERHEAD: u32 = 25;
 const TAPIR_COMMITTED_TXN_ENTRY_TYPE: u8 = 0x80;
+
+#[cfg(test)]
+pub(crate) fn append_entry<K: serde::Serialize, V: serde::Serialize, IO: DiskIo>(
+    seg: &mut UnifiedVlogSegment<IO>,
+    op_id: OpId,
+    entry_type: VlogEntryType,
+    payload: &IrPayloadInline<K, V>,
+) -> Result<VlogPtr, StorageError> {
+    let payload_bytes = crate::unified::ir::vlog_codec::serialize_payload(payload)?;
+    seg.append_raw_entry(entry_type as u8, op_id.client_id.0, op_id.number, &payload_bytes)
+}
+
+pub(crate) fn append_batch<K: serde::Serialize, V: serde::Serialize, IO: DiskIo>(
+    seg: &mut UnifiedVlogSegment<IO>,
+    entries: &[(OpId, VlogEntryType, &IrPayloadInline<K, V>)],
+) -> Result<Vec<VlogPtr>, StorageError> {
+    if entries.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut serialized = Vec::with_capacity(entries.len());
+    for (op_id, entry_type, payload) in entries {
+        let payload_bytes = crate::unified::ir::vlog_codec::serialize_payload(payload)?;
+        serialized.push((*entry_type as u8, op_id.client_id.0, op_id.number, payload_bytes));
+    }
+    let raw_entries: Vec<(u8, u64, u64, &[u8])> = serialized
+        .iter()
+        .map(|(entry_type, client_id, number, bytes)| {
+            (*entry_type, *client_id, *number, bytes.as_slice())
+        })
+        .collect();
+    seg.append_raw_batch(&raw_entries)
+}
+
+pub(crate) fn read_entry<K: serde::de::DeserializeOwned, V: serde::de::DeserializeOwned, IO: DiskIo>(
+    seg: &UnifiedVlogSegment<IO>,
+    ptr: &VlogPtr,
+) -> Result<(OpId, VlogEntryType, IrPayloadInline<K, V>), StorageError> {
+    let raw = seg.read_raw_entry(ptr)?;
+    let entry_type = crate::unified::ir::vlog_codec::entry_type_from_byte(raw.entry_type)?;
+    let op_id = OpId {
+        client_id: IrClientId(raw.id_client),
+        number: raw.id_number,
+    };
+    let payload = crate::unified::ir::vlog_codec::deserialize_payload(entry_type, &raw.payload)?;
+    Ok((op_id, entry_type, payload))
+}
+
+pub(crate) fn iter_entries<K: serde::de::DeserializeOwned, V: serde::de::DeserializeOwned, IO: DiskIo>(
+    seg: &UnifiedVlogSegment<IO>,
+) -> Result<Vec<(u64, OpId, VlogEntryType, IrPayloadInline<K, V>)>, StorageError> {
+    let mut out = Vec::new();
+    for (offset, raw) in seg.iter_raw_entries()? {
+        if raw.entry_type == TAPIR_COMMITTED_TXN_ENTRY_TYPE {
+            continue;
+        }
+
+        let ptr = VlogPtr {
+            segment_id: seg.id,
+            offset,
+            length: RAW_ENTRY_OVERHEAD + raw.payload.len() as u32,
+        };
+        let (op_id, entry_type, payload) = read_entry(seg, &ptr)?;
+        out.push((offset, op_id, entry_type, payload));
+    }
+    Ok(out)
+}
 
 fn rebuild_ir_base_from_vlog<K: Ord, V, IO: DiskIo>(record: &mut IrRecord<K, V, IO>) -> Result<(), StorageError> {
     record.clear_ir_base();
@@ -36,7 +106,7 @@ fn rebuild_ir_base_from_vlog<K: Ord, V, IO: DiskIo>(record: &mut IrRecord<K, V, 
                 op_id,
                 IrSstEntry {
                     entry_type,
-                    vlog_ptr: UnifiedVlogPtr {
+                    vlog_ptr: VlogPtr {
                         segment_id: seg.id,
                         offset,
                         length: RAW_ENTRY_OVERHEAD + raw.payload.len() as u32,
@@ -123,6 +193,7 @@ pub(crate) fn seal_current_view<K: Ord + Clone + serde::Serialize, V: Clone + se
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn ir_overlay_entries<'a, K: Ord, V, IO: DiskIo>(
     record: &'a IrRecord<K, V, IO>,
 ) -> impl Iterator<Item = (&'a OpId, &'a IrMemEntry<K, V>)> + 'a {
@@ -137,6 +208,7 @@ pub(crate) fn insert_ir_entry<K: Ord, V, IO: DiskIo>(
     record.insert_ir_entry(op_id, entry);
 }
 
+#[cfg(test)]
 pub(crate) fn ir_entry<'a, K: Ord, V, IO: DiskIo>(
     record: &'a IrRecord<K, V, IO>,
     op_id: &OpId,
@@ -144,6 +216,7 @@ pub(crate) fn ir_entry<'a, K: Ord, V, IO: DiskIo>(
     record.ir_entry(op_id)
 }
 
+#[cfg(test)]
 pub(crate) fn lookup_ir_base_entry<K: Ord, V, IO: DiskIo>(
     record: &IrRecord<K, V, IO>,
     op_id: OpId,
@@ -160,7 +233,7 @@ pub(crate) fn collect_finalized_for_seal<K: Ord + Clone, V: Clone, IO: DiskIo>(
 pub(crate) fn apply_sealed_ptrs<K: Ord, V, IO: DiskIo>(
     record: &mut IrRecord<K, V, IO>,
     finalized: &[(OpId, VlogEntryType, IrPayloadInline<K, V>)],
-    vlog_ptrs: &[UnifiedVlogPtr],
+    vlog_ptrs: &[VlogPtr],
 ) {
     record.apply_sealed_ptrs(finalized, vlog_ptrs);
 }
@@ -169,16 +242,18 @@ pub(crate) fn clear_overlay<K: Ord, V, IO: DiskIo>(record: &mut IrRecord<K, V, I
     record.clear_overlay();
 }
 
+#[cfg(test)]
 pub(crate) fn extract_finalized_entries<K: Ord + Clone, V: Clone, IO: DiskIo>(
     record: &IrRecord<K, V, IO>,
 ) -> Vec<(OpId, IrMemEntry<K, V>)> {
     record.extract_finalized_entries()
 }
 
+#[cfg(test)]
 pub(crate) fn install_base_from_ptrs<K: Ord, V, IO: DiskIo>(
     record: &mut IrRecord<K, V, IO>,
     entries: &[(OpId, IrMemEntry<K, V>)],
-    ptrs: &[UnifiedVlogPtr],
+    ptrs: &[VlogPtr],
 ) {
     record.install_base_from_ptrs(entries, ptrs);
 }

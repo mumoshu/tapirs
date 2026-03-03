@@ -1,8 +1,17 @@
 use super::helpers::*;
 use crate::mvcc::disk::disk_io::OpenFlags;
 use crate::mvcc::disk::memory_io::MemoryIo;
-use crate::unified::types::*;
+use crate::unified::ir::record::{IrPayloadInline, PrepareRef, VlogEntryType};
+use crate::unified::ir::store;
 use crate::unified::wisckeylsm::vlog::UnifiedVlogSegment;
+
+struct LocalCachedPrepare {
+    transaction_id: crate::occ::TransactionId,
+    commit_ts: crate::tapir::Timestamp,
+    read_set: Vec<(String, crate::tapir::Timestamp)>,
+    write_set: Vec<(String, Option<String>)>,
+    scan_set: Vec<(String, String, crate::tapir::Timestamp)>,
+}
 
 #[test]
 fn vlog_entry_roundtrip_prepare() {
@@ -28,17 +37,14 @@ fn vlog_entry_roundtrip_prepare() {
         scan_set: vec![],
     };
 
-    let ptr = seg
-        .append_entry(op_id, VlogEntryType::Prepare, &payload)
-        .unwrap();
+    let ptr = store::append_entry(&mut seg, op_id, VlogEntryType::Prepare, &payload).unwrap();
 
     assert_eq!(ptr.segment_id, 0);
     assert_eq!(ptr.offset, 0);
     assert!(ptr.length > 0);
 
     // Read it back
-    let (read_op_id, read_type, read_payload) =
-        seg.read_entry::<String, String>(&ptr).unwrap();
+    let (read_op_id, read_type, read_payload) = store::read_entry::<String, String, _>(&seg, &ptr).unwrap();
     assert_eq!(read_op_id, op_id);
     assert_eq!(read_type, VlogEntryType::Prepare);
 
@@ -86,12 +92,9 @@ fn vlog_entry_roundtrip_commit() {
         prepare_ref: PrepareRef::SameView(prepare_op_id),
     };
 
-    let ptr = seg
-        .append_entry(commit_op_id, VlogEntryType::Commit, &payload)
-        .unwrap();
+    let ptr = store::append_entry(&mut seg, commit_op_id, VlogEntryType::Commit, &payload).unwrap();
 
-    let (read_op_id, read_type, read_payload) =
-        seg.read_entry::<String, String>(&ptr).unwrap();
+    let (read_op_id, read_type, read_payload) = store::read_entry::<String, String, _>(&seg, &ptr).unwrap();
     assert_eq!(read_op_id, commit_op_id);
     assert_eq!(read_type, VlogEntryType::Commit);
 
@@ -145,16 +148,16 @@ fn vlog_batch_append() {
         (test_op_id(1, 2), VlogEntryType::Commit, &payload2),
     ];
 
-    let ptrs = seg.append_batch(&entries).unwrap();
+    let ptrs = store::append_batch(&mut seg, &entries).unwrap();
     assert_eq!(ptrs.len(), 2);
     assert_eq!(ptrs[0].offset, 0);
     assert!(ptrs[1].offset > 0);
 
     // Read both back
-    let (_, t1, _) = seg.read_entry::<String, String>(&ptrs[0]).unwrap();
+    let (_, t1, _) = store::read_entry::<String, String, _>(&seg, &ptrs[0]).unwrap();
     assert_eq!(t1, VlogEntryType::Prepare);
 
-    let (_, t2, _) = seg.read_entry::<String, String>(&ptrs[1]).unwrap();
+    let (_, t2, _) = store::read_entry::<String, String, _>(&seg, &ptrs[1]).unwrap();
     assert_eq!(t2, VlogEntryType::Commit);
 }
 
@@ -183,11 +186,25 @@ fn vlog_read_prepare_helper() {
         scan_set: vec![("s1".to_string(), "s2".to_string(), test_ts(5))],
     };
 
-    let ptr = seg
-        .append_entry(test_op_id(2, 1), VlogEntryType::Prepare, &payload)
-        .unwrap();
+    let ptr = store::append_entry(&mut seg, test_op_id(2, 1), VlogEntryType::Prepare, &payload).unwrap();
 
-    let cached = seg.read_prepare::<String, String>(&ptr).unwrap();
+    let (_, _, read_payload) = store::read_entry::<String, String, _>(&seg, &ptr).unwrap();
+    let cached = match read_payload {
+        IrPayloadInline::Prepare {
+            transaction_id,
+            commit_ts,
+            read_set,
+            write_set,
+            scan_set,
+        } => LocalCachedPrepare {
+            transaction_id,
+            commit_ts,
+            read_set,
+            write_set,
+            scan_set,
+        },
+        _ => panic!("expected Prepare payload"),
+    };
     assert_eq!(cached.transaction_id, test_txn_id(2, 3));
     assert_eq!(cached.commit_ts, test_ts(10));
     assert_eq!(cached.read_set.len(), 1);
@@ -218,10 +235,8 @@ fn vlog_all_entry_types_roundtrip() {
         transaction_id: test_txn_id(1, 1),
         commit_ts: Some(test_ts(5)),
     };
-    let ptr = seg
-        .append_entry(test_op_id(1, 1), VlogEntryType::Abort, &abort_payload)
-        .unwrap();
-    let (_, t, p) = seg.read_entry::<String, String>(&ptr).unwrap();
+    let ptr = store::append_entry(&mut seg, test_op_id(1, 1), VlogEntryType::Abort, &abort_payload).unwrap();
+    let (_, t, p) = store::read_entry::<String, String, _>(&seg, &ptr).unwrap();
     assert_eq!(t, VlogEntryType::Abort);
     match p {
         IrPayloadInline::Abort { transaction_id, commit_ts } => {
@@ -236,10 +251,8 @@ fn vlog_all_entry_types_roundtrip() {
         key: "mykey".to_string(),
         timestamp: test_ts(7),
     };
-    let ptr = seg
-        .append_entry(test_op_id(1, 2), VlogEntryType::QuorumRead, &qr_payload)
-        .unwrap();
-    let (_, t, p) = seg.read_entry::<String, String>(&ptr).unwrap();
+    let ptr = store::append_entry(&mut seg, test_op_id(1, 2), VlogEntryType::QuorumRead, &qr_payload).unwrap();
+    let (_, t, p) = store::read_entry::<String, String, _>(&seg, &ptr).unwrap();
     assert_eq!(t, VlogEntryType::QuorumRead);
     match p {
         IrPayloadInline::QuorumRead { key, timestamp } => {
@@ -255,10 +268,8 @@ fn vlog_all_entry_types_roundtrip() {
         end_key: "z".to_string(),
         snapshot_ts: test_ts(15),
     };
-    let ptr = seg
-        .append_entry(test_op_id(1, 3), VlogEntryType::QuorumScan, &qs_payload)
-        .unwrap();
-    let (_, t, p) = seg.read_entry::<String, String>(&ptr).unwrap();
+    let ptr = store::append_entry(&mut seg, test_op_id(1, 3), VlogEntryType::QuorumScan, &qs_payload).unwrap();
+    let (_, t, p) = store::read_entry::<String, String, _>(&seg, &ptr).unwrap();
     assert_eq!(t, VlogEntryType::QuorumScan);
     match p {
         IrPayloadInline::QuorumScan { start_key, end_key, snapshot_ts } => {
@@ -271,14 +282,14 @@ fn vlog_all_entry_types_roundtrip() {
 
     // RaiseMinPrepareTime
     let rmpt_payload = IrPayloadInline::<String, String>::RaiseMinPrepareTime { time: 42 };
-    let ptr = seg
-        .append_entry(
-            test_op_id(1, 4),
-            VlogEntryType::RaiseMinPrepareTime,
-            &rmpt_payload,
-        )
-        .unwrap();
-    let (_, t, p) = seg.read_entry::<String, String>(&ptr).unwrap();
+    let ptr = store::append_entry(
+        &mut seg,
+        test_op_id(1, 4),
+        VlogEntryType::RaiseMinPrepareTime,
+        &rmpt_payload,
+    )
+    .unwrap();
+    let (_, t, p) = store::read_entry::<String, String, _>(&seg, &ptr).unwrap();
     assert_eq!(t, VlogEntryType::RaiseMinPrepareTime);
     match p {
         IrPayloadInline::RaiseMinPrepareTime { time } => {

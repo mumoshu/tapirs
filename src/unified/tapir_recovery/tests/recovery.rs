@@ -1,5 +1,4 @@
 use crate::mvcc::disk::memory_io::MemoryIo;
-use crate::unified::UnifiedStore;
 
 use super::helpers::*;
 
@@ -14,7 +13,7 @@ fn recovery_vlog_and_manifest_survive_reopen() {
     let vlog_size_before_drop;
     let manifest_size_before_drop;
     {
-        let mut store = UnifiedStore::<String, String, MemoryIo>::open(path.clone()).unwrap();
+        let mut store = TestStore::open(path.clone()).unwrap();
 
         assert_current_view(&store, 0);
         assert_sealed_segment_count(&store, 0);
@@ -69,7 +68,7 @@ fn recovery_vlog_and_manifest_survive_reopen() {
     // Store dropped here — simulates crash/shutdown
 
     // Phase 2: Reopen from the same path
-    let store = UnifiedStore::<String, String, MemoryIo>::open(path).unwrap();
+    let store = TestStore::open(path).unwrap();
 
     // Files should be unchanged after reopen (MemoryIo persists across drop/reopen)
     assert_store_file_names(&store, &["UNIFIED_MANIFEST", "vlog_seg_0000.dat"]);
@@ -94,8 +93,7 @@ fn recovery_sealed_segments_persist() {
 
     // Phase 1: Create store with small segment threshold to force segment rotation
     {
-        let mut store =
-            UnifiedStore::<String, String, MemoryIo>::open_with_options(path.clone(), 1024).unwrap();
+        let mut store = TestStore::open_with_options(path.clone(), 1024).unwrap();
 
         assert_current_view(&store, 0);
         assert_sealed_segment_count(&store, 0);
@@ -137,8 +135,7 @@ fn recovery_sealed_segments_persist() {
     }
 
     // Phase 2: Reopen and verify ALL sealed segment metadata
-    let store =
-        UnifiedStore::<String, String, MemoryIo>::open_with_options(path, 1024).unwrap();
+    let store = TestStore::open_with_options(path, 1024).unwrap();
 
     // Files should be unchanged after reopen
     assert_store_file_names(

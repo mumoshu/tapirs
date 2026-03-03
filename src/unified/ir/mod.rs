@@ -1,5 +1,3 @@
-pub(crate) use super::types;
-
 pub(crate) mod record;
 pub(crate) mod store;
 pub(crate) mod vlog_codec;

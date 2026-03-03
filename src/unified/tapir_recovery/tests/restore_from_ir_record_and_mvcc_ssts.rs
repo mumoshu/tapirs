@@ -1,8 +1,7 @@
 use crate::mvcc::disk::memory_io::MemoryIo;
 use crate::tapir::Timestamp;
-use crate::tapirstore::TapirStore;
-use crate::unified::types::*;
-use crate::unified::UnifiedStore;
+use crate::unified::ir::record::IrMemEntry;
+use crate::unified::tapir::storage_types::LsmEntry;
 
 use super::helpers::*;
 use super::super::replay_committed_from_ir_record;
@@ -27,14 +26,13 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
     let path = MemoryIo::temp_path();
 
     // Snapshot data from sealed views (the "SST backup")
-    let mvcc_sst_snapshot: Vec<(String, Timestamp, UnifiedLsmEntry)>;
+    let mvcc_sst_snapshot: Vec<(String, Timestamp, LsmEntry)>;
     // IR entries from unsealed view (need IR replay for these)
     let unsealedview_ir: Vec<(crate::ir::OpId, IrMemEntry<String, String>)>;
 
     // === Phase 1: Build state across multiple views ===
     {
-        let mut store =
-            UnifiedStore::<String, String, MemoryIo>::open_with_options(path.clone(), 64).unwrap();
+        let mut store = TestStore::open_with_options(path.clone(), 64).unwrap();
 
         // Fresh store: only active VLog segment
         assert_store_file_names(&store, &["vlog_seg_0000.dat"]);
@@ -95,9 +93,9 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
             test_ts(20),
         );
 
-        // These are InMemory (current view, not sealed)
-        assert_value_location_in_memory(&store, "d", test_ts(20), false);
-        assert_value_location_in_memory(&store, "a", test_ts(20), false);
+        // Unsealed commits remain InMemory until seal
+        assert_value_location_in_memory(&store, "d", test_ts(20), true);
+        assert_value_location_in_memory(&store, "a", test_ts(20), true);
 
         // === Take "IR record" for unsealed view ===
         unsealedview_ir = store
@@ -118,15 +116,12 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
     // We use the same path so the VLog files are available (MemoryIo persists).
     // In a real backup scenario, you'd copy the VLog files to the restore target.
 
-    let mut restored =
-        UnifiedStore::<String, String, MemoryIo>::open_with_options(path, 64).unwrap();
+    let mut restored = TestStore::open_with_options(path, 64).unwrap();
 
     // Step 1: Load MVCC SST entries into the unified_memtable
     // These entries have OnDisk(ptr) ValueLocations pointing to the sealed VLog.
     for (key, ts, entry) in &mvcc_sst_snapshot {
-        restored
-            .unified_memtable_mut()
-            .insert(key.clone(), *ts, entry.clone());
+        restored.insert_unified_memtable_entry(key.clone(), *ts, entry.clone());
     }
 
     // Verify SST entries loaded — sealed view data is readable via OnDisk resolution
@@ -150,11 +145,11 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
     assert_value_location_in_memory(&restored, "b", test_ts(5), false);
     assert_value_location_in_memory(&restored, "c", test_ts(10), false);
 
-    // Unsealed view data (from IR replay) — values are InMemory
+    // Unsealed view data (from IR replay) — values are InMemory until seal
     assert_get_at(&restored, "d", test_ts(20), Some("val_d"), test_ts(20));
     assert_get_at(&restored, "a", test_ts(20), Some("val_a_v2"), test_ts(20));
-    assert_value_location_in_memory(&restored, "d", test_ts(20), false);
-    assert_value_location_in_memory(&restored, "a", test_ts(20), false);
+    assert_value_location_in_memory(&restored, "d", test_ts(20), true);
+    assert_value_location_in_memory(&restored, "a", test_ts(20), true);
 
     // Multi-version reads across sealed and unsealed views
     // "a" at ts=5 → "val_a" (from SST/OnDisk)

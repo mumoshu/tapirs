@@ -1,5 +1,4 @@
 use super::helpers::*;
-use crate::tapirstore::TapirStore;
 
 // === Test 8: Multi-view data integrity (MVCC SST compaction precursor) ===
 //
@@ -29,8 +28,8 @@ fn multi_view_data_integrity() {
         vec![("a", Some("v1"))],
         test_ts(1),
     );
-    assert_value_location_in_memory(&store, "a", test_ts(1), false);
-    seal_view(&mut store);
+    assert_value_location_in_memory(&store, "a", test_ts(1), true);
+    store.seal_current_view(64).unwrap();
     assert_current_view(&store, 1);
     assert_value_location_in_memory(&store, "a", test_ts(1), false);
 
@@ -52,9 +51,9 @@ fn multi_view_data_integrity() {
         vec![("b", Some("v2")), ("a", Some("v1-updated"))],
         test_ts(2),
     );
-    assert_value_location_in_memory(&store, "b", test_ts(2), false);
-    assert_value_location_in_memory(&store, "a", test_ts(2), false);
-    seal_view(&mut store);
+    assert_value_location_in_memory(&store, "b", test_ts(2), true);
+    assert_value_location_in_memory(&store, "a", test_ts(2), true);
+    store.seal_current_view(64).unwrap();
     assert_current_view(&store, 2);
     assert_value_location_in_memory(&store, "b", test_ts(2), false);
     assert_value_location_in_memory(&store, "a", test_ts(2), false);
@@ -68,7 +67,7 @@ fn multi_view_data_integrity() {
         vec![("c", Some("v3"))],
         test_ts(3),
     );
-    seal_view(&mut store);
+    store.seal_current_view(64).unwrap();
     assert_current_view(&store, 3);
 
     // All sealed segments should exist (64-byte threshold is tiny)

@@ -3,12 +3,11 @@ use crate::mvcc::disk::disk_io::DiskIo;
 use crate::occ::TransactionId as OccTransactionId;
 use crate::tapir::Timestamp;
 use crate::unified::wisckeylsm::manifest::UnifiedManifest;
+use crate::unified::wisckeylsm::types::{ViewRange, VlogPtr, VlogSegmentMeta};
 use crate::unified::wisckeylsm::vlog::UnifiedVlogSegment;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt::Debug;
-
-use super::types::UnifiedVlogPtr;
 
 /// Entry type discriminator for IR VLog entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,7 +96,7 @@ pub enum IrPayloadInline<K, V> {
         /// Read set: `(key, read_timestamp)` per read.
         read_set: Vec<(K, Timestamp)>,
         /// Write set: `(key, value)` per write. `None` = delete tombstone.
-        /// MVCC UnifiedVlogPrepareValuePtr entries reference `write_set[index]`.
+        /// MVCC VlogTransactionPtr entries reference `write_set[index]`.
         write_set: Vec<(K, Option<V>)>,
         /// Scan set: `(start_key, end_key, timestamp)` per scan.
         scan_set: Vec<(K, K, Timestamp)>,
@@ -230,7 +229,7 @@ pub enum PrepareRef {
     /// CO::Prepare is in a sealed view's VLog (rare cross-view case).
     CrossView {
         view: u64,
-        vlog_ptr: UnifiedVlogPtr,
+        vlog_ptr: VlogPtr,
     },
 }
 
@@ -238,7 +237,7 @@ pub enum PrepareRef {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IrSstEntry {
     pub entry_type: VlogEntryType,
-    pub vlog_ptr: UnifiedVlogPtr,
+    pub vlog_ptr: VlogPtr,
 }
 
 /// Reference to an IR entry — either a typed in-memory overlay entry
@@ -293,6 +292,7 @@ impl<K: Ord, V, IO: DiskIo> IrRecord<K, V, IO> {
     }
 
     /// Iterate over all IR overlay entries.
+    #[cfg(test)]
     pub(crate) fn ir_overlay_entries(&self) -> impl Iterator<Item = (&OpId, &IrMemEntry<K, V>)> {
         self.ir_overlay.iter()
     }
@@ -313,21 +313,23 @@ impl<K: Ord, V, IO: DiskIo> IrRecord<K, V, IO> {
         self.active_vlog.write_offset()
     }
 
-    pub(crate) fn active_vlog_views(&self) -> &[crate::unified::types::ViewRange] {
+    pub(crate) fn active_vlog_views(&self) -> &[ViewRange] {
         &self.active_vlog.views
     }
 
+    #[cfg(test)]
     pub(crate) fn append_batch_to_active(
         &mut self,
         entries: &[(OpId, VlogEntryType, &IrPayloadInline<K, V>)],
-    ) -> Result<Vec<UnifiedVlogPtr>, crate::mvcc::disk::error::StorageError>
+    ) -> Result<Vec<VlogPtr>, crate::mvcc::disk::error::StorageError>
     where
         K: serde::Serialize,
         V: serde::Serialize,
     {
-        self.active_vlog.append_batch(entries)
+        crate::unified::ir::store::append_batch(&mut self.active_vlog, entries)
     }
 
+    #[cfg(test)]
     pub(crate) fn set_current_view_for_install(&mut self, view: u64) {
         self.current_view = view;
         self.manifest.current_view = view;
@@ -349,7 +351,7 @@ impl<K: Ord, V, IO: DiskIo> IrRecord<K, V, IO> {
     #[cfg(test)]
     pub(crate) fn read_payload(
         &self,
-        ptr: &UnifiedVlogPtr,
+        ptr: &VlogPtr,
     ) -> Result<(VlogEntryType, IrPayloadInline<K, V>), crate::mvcc::disk::error::StorageError>
     where
         K: serde::de::DeserializeOwned,
@@ -364,7 +366,7 @@ impl<K: Ord, V, IO: DiskIo> IrRecord<K, V, IO> {
                 ))
             })?;
 
-        let (_, ty, payload) = segment.read_entry::<K, V>(ptr)?;
+        let (_, ty, payload) = crate::unified::ir::store::read_entry(segment, ptr)?;
         Ok((ty, payload))
     }
 
@@ -389,7 +391,7 @@ impl<K: Ord, V, IO: DiskIo> IrRecord<K, V, IO> {
     pub(crate) fn append_ir_entries_for_seal(
         &mut self,
         finalized_entries: &[(OpId, VlogEntryType, IrPayloadInline<K, V>)],
-    ) -> Result<Vec<UnifiedVlogPtr>, crate::mvcc::disk::error::StorageError>
+    ) -> Result<Vec<VlogPtr>, crate::mvcc::disk::error::StorageError>
     where
         K: Clone + serde::Serialize,
         V: Clone + serde::Serialize,
@@ -401,7 +403,7 @@ impl<K: Ord, V, IO: DiskIo> IrRecord<K, V, IO> {
             .iter()
             .map(|(op, et, p)| (*op, *et, p))
             .collect();
-        self.active_vlog.append_batch(&entry_refs)
+        crate::unified::ir::store::append_batch(&mut self.active_vlog, &entry_refs)
     }
 
     pub(crate) fn seal_active_view_and_rotate_if_needed(
@@ -421,7 +423,7 @@ impl<K: Ord, V, IO: DiskIo> IrRecord<K, V, IO> {
             let sealed_views = self.active_vlog.views.clone();
             let sealed_size = self.active_vlog.write_offset();
 
-            self.manifest.sealed_vlog_segments.push(crate::unified::types::VlogSegmentMeta {
+            self.manifest.sealed_vlog_segments.push(VlogSegmentMeta {
                 segment_id: sealed_id,
                 path: sealed_path.clone(),
                 views: sealed_views.clone(),
@@ -464,6 +466,7 @@ impl<K: Ord, V, IO: DiskIo> IrRecord<K, V, IO> {
     }
 
     /// Look up an IR entry by OpId (overlay first, then base).
+    #[cfg(test)]
     pub(crate) fn ir_entry(&self, op_id: &OpId) -> Option<IrEntryRef<'_, K, V>> {
         if let Some(mem_entry) = self.ir_overlay.get(op_id) {
             Some(IrEntryRef::Overlay(mem_entry))
@@ -473,6 +476,7 @@ impl<K: Ord, V, IO: DiskIo> IrRecord<K, V, IO> {
     }
 
     /// Look up an IR base SST entry by OpId.
+    #[cfg(test)]
     pub(crate) fn lookup_ir_base_entry(&self, op_id: OpId) -> Option<&IrSstEntry> {
         self.ir_base.get(&op_id)
     }
@@ -481,10 +485,11 @@ impl<K: Ord, V, IO: DiskIo> IrRecord<K, V, IO> {
     ///
     /// Clears `ir_base` and `ir_overlay`, then populates `ir_base` from the
     /// given entries and their corresponding VLog pointers (written by the caller).
+    #[cfg(test)]
     pub(crate) fn install_base_from_ptrs(
         &mut self,
         entries: &[(OpId, IrMemEntry<K, V>)],
-        ptrs: &[UnifiedVlogPtr],
+        ptrs: &[VlogPtr],
     ) {
         self.ir_base.clear();
         for (i, (op_id, entry)) in entries.iter().enumerate() {
@@ -503,7 +508,7 @@ impl<K: Ord, V, IO: DiskIo> IrRecord<K, V, IO> {
     pub(crate) fn apply_sealed_ptrs(
         &mut self,
         finalized: &[(OpId, VlogEntryType, IrPayloadInline<K, V>)],
-        vlog_ptrs: &[UnifiedVlogPtr],
+        vlog_ptrs: &[VlogPtr],
     ) {
         for (i, (op_id, entry_type, _payload)) in finalized.iter().enumerate() {
             self.ir_base.insert(
@@ -524,6 +529,7 @@ impl<K: Ord, V, IO: DiskIo> IrRecord<K, V, IO> {
 
 impl<K: Ord + Clone, V: Clone, IO: DiskIo> IrRecord<K, V, IO> {
     /// Extract only finalized entries from the overlay (for leader merge simulation).
+    #[cfg(test)]
     pub(crate) fn extract_finalized_entries(&self) -> Vec<(OpId, IrMemEntry<K, V>)> {
         self.ir_overlay
             .iter()

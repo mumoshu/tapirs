@@ -128,7 +128,7 @@ pub enum StorageError {
     /// in-memory `prepare_registry` nor the on-disk `prepare_vlog_index`
     /// contains the transaction. This indicates either a caller bug
     /// (forgot to call `register_prepare` before commit) or data loss
-    /// (UnifiedStore lost a previously prepared transaction).
+    /// (the local store lost a previously prepared transaction).
     PrepareNotFound {
         client_id: u64,
         txn_number: u64,

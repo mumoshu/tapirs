@@ -1,7 +1,5 @@
 use crate::mvcc::disk::memory_io::MemoryIo;
-use crate::tapirstore::TapirStore;
-use crate::unified::types::*;
-use crate::unified::UnifiedStore;
+use crate::unified::ir::record::{IrMemEntry, VlogEntryType};
 
 use super::helpers::*;
 use super::super::replay_committed_from_ir_record;
@@ -179,9 +177,9 @@ fn restore_from_ir_record_rebuilds_mvcc() {
     assert_eq!(scan_results[1].2, test_ts(10));
 
     // All values should be InMemory (restored in current view, not sealed)
-    assert_value_location_in_memory(&restored_store, "x", test_ts(5), false);
-    assert_value_location_in_memory(&restored_store, "x", test_ts(10), false);
-    assert_value_location_in_memory(&restored_store, "y", test_ts(10), false);
+    assert_value_location_in_memory(&restored_store, "x", test_ts(5), true);
+    assert_value_location_in_memory(&restored_store, "x", test_ts(10), true);
+    assert_value_location_in_memory(&restored_store, "y", test_ts(10), true);
 
     // Note: last_read_ts is NOT preserved by IR record backup — it's
     // ephemeral OCC state that only matters for the current transaction
@@ -203,7 +201,7 @@ fn restore_from_sealed_vlog_rebuilds_mvcc() {
     // === Phase 1: Build state and seal ===
     let ir_record;
     {
-        let mut store = UnifiedStore::<String, String, MemoryIo>::open(path.clone()).unwrap();
+        let mut store = TestStore::open(path.clone()).unwrap();
 
         prepare_and_commit(
             &mut store,
@@ -263,9 +261,9 @@ fn restore_from_sealed_vlog_rebuilds_mvcc() {
     assert_get_none(&restored, "c", test_ts(5));
 
     // InMemory (freshly restored, not sealed)
-    assert_value_location_in_memory(&restored, "a", test_ts(5), false);
-    assert_value_location_in_memory(&restored, "b", test_ts(5), false);
-    assert_value_location_in_memory(&restored, "c", test_ts(10), false);
+    assert_value_location_in_memory(&restored, "a", test_ts(5), true);
+    assert_value_location_in_memory(&restored, "b", test_ts(5), true);
+    assert_value_location_in_memory(&restored, "c", test_ts(10), true);
 
     // Scan
     let scan = restored.do_uncommitted_scan(

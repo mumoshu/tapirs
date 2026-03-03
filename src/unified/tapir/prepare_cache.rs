@@ -11,7 +11,7 @@ use std::sync::Arc;
 ///
 /// Keyed by `(segment_id, offset)` which uniquely identifies a VLog entry.
 /// Uses `BTreeMap` (not `HashMap`) for deterministic eviction order.
-pub struct PrepareCache<T> {
+pub struct PreparedTransactions<T> {
     /// Cache entries, keyed by (segment_id, offset).
     entries: BTreeMap<(u64, u64), CacheEntry<T>>,
     /// Access order: maps access_counter → (segment_id, offset).
@@ -29,7 +29,7 @@ struct CacheEntry<T> {
     value: Arc<T>,
 }
 
-impl<T> PrepareCache<T> {
+impl<T> PreparedTransactions<T> {
     pub fn new(capacity: usize) -> Self {
         Self {
             entries: BTreeMap::new(),

@@ -17,5 +17,6 @@ pub struct CachedPrepare<K, V> {
     pub commit_ts: Timestamp,
     pub read_set: Vec<(K, Timestamp)>,
     pub write_set: Vec<(K, Option<V>)>,
+    #[allow(dead_code)]
     pub scan_set: Vec<(K, K, Timestamp)>,
 }

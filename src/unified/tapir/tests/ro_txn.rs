@@ -1,5 +1,4 @@
 use super::helpers::*;
-use crate::tapirstore::TapirStore;
 
 // === Test 2: RO Transaction (QuorumRead + QuorumScan) ===
 
