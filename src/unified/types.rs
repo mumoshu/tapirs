@@ -1,5 +1,4 @@
 use crate::occ::TransactionId as OccTransactionId;
-use crate::tapir::Timestamp;
 use serde::{Deserialize, Serialize};
 
 pub use super::ir::record::{
@@ -61,36 +60,6 @@ pub struct UnifiedLsmEntry {
     pub value_ref: Option<ValueLocation>,
     /// OCC last-read timestamp for write-after-read conflict detection.
     pub last_read_ts: Option<u64>,
-}
-
-/// Deserialized committed-transaction payload with typed keys and values.
-///
-/// Shared via `Arc` between two lookup paths:
-///
-/// - **`prepare_registry`** — current view's in-memory prepares. Populated
-///   by `register_prepare()`, read by `resolve_in_memory()`.  Cleared at
-///   seal time because the data moves to the VLog.
-///
-/// - **`prepare_cache`** — LRU cache for committed transactions deserialized from sealed
-///   VLog segments.  Populated on first `resolve_on_disk()` miss.  Avoids
-///   repeated VLog reads for hot cross-view transactions.
-///
-/// The `write_set` uses `Option<V>` where `None` represents a delete
-/// tombstone (matching OCC convention).  MVCC index entries reference
-/// individual write_set items via `write_index`.
-pub struct CachedPrepare<K, V> {
-    pub transaction_id: OccTransactionId,
-    /// Prepare-time (proposed) commit timestamp.
-    ///
-    /// This is the timestamp the client proposed at prepare time, NOT
-    /// necessarily the final commit timestamp.  In TAPIR, replicas may
-    /// return `Retry { proposed }` with a higher timestamp, and the
-    /// coordinator picks the maximum as the final commit timestamp.
-    /// The final timestamp is passed separately to `commit_prepared()`.
-    pub commit_ts: Timestamp,
-    pub read_set: Vec<(K, Timestamp)>,
-    pub write_set: Vec<(K, Option<V>)>,
-    pub scan_set: Vec<(K, K, Timestamp)>,
 }
 
 /// Byte range and entry count for one view's entries within a VLog segment.

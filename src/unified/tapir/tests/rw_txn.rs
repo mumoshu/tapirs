@@ -1,5 +1,6 @@
 use super::helpers::*;
 use crate::tapirstore::TapirStore;
+use crate::unified::tapir::CachedPrepare;
 use crate::unified::types::*;
 
 // === Test 1: RW Transaction (prepare→commit→read through inherent methods) ===
@@ -430,7 +431,7 @@ fn unified_store_cross_view_read() {
 fn prepare_cache_lru_eviction() {
     use crate::unified::wisckeylsm::prepare_cache::PrepareCache;
 
-    let mut cache = PrepareCache::<String, String>::new(2);
+    let mut cache = PrepareCache::<CachedPrepare<String, String>>::new(2);
     assert_eq!(cache.len(), 0);
 
     let p1 = std::sync::Arc::new(CachedPrepare {

@@ -1,4 +1,3 @@
-use super::types::CachedPrepare;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -7,14 +6,14 @@ use std::sync::Arc;
 /// Only used by the `OnDisk` value resolution path (`resolve_on_disk`).
 /// A single CO::Prepare entry may be referenced by multiple MVCC index
 /// entries (one per `write_set` item), so caching the deserialized
-/// `CachedPrepare` avoids repeated VLog reads when reading multiple keys
+/// cached payloads avoid repeated VLog reads when reading multiple keys
 /// committed by the same transaction.
 ///
 /// Keyed by `(segment_id, offset)` which uniquely identifies a VLog entry.
 /// Uses `BTreeMap` (not `HashMap`) for deterministic eviction order.
-pub struct PrepareCache<K, V> {
+pub struct PrepareCache<T> {
     /// Cache entries, keyed by (segment_id, offset).
-    entries: BTreeMap<(u64, u64), CacheEntry<K, V>>,
+    entries: BTreeMap<(u64, u64), CacheEntry<T>>,
     /// Access order: maps access_counter → (segment_id, offset).
     /// BTreeMap for deterministic eviction order.
     access_order: BTreeMap<u64, (u64, u64)>,
@@ -26,11 +25,11 @@ pub struct PrepareCache<K, V> {
     capacity: usize,
 }
 
-struct CacheEntry<K, V> {
-    value: Arc<CachedPrepare<K, V>>,
+struct CacheEntry<T> {
+    value: Arc<T>,
 }
 
-impl<K, V> PrepareCache<K, V> {
+impl<T> PrepareCache<T> {
     pub fn new(capacity: usize) -> Self {
         Self {
             entries: BTreeMap::new(),
@@ -42,7 +41,7 @@ impl<K, V> PrepareCache<K, V> {
     }
 
     /// Get a cached prepare entry. Returns None on cache miss.
-    pub fn get(&mut self, segment_id: u64, offset: u64) -> Option<Arc<CachedPrepare<K, V>>> {
+    pub fn get(&mut self, segment_id: u64, offset: u64) -> Option<Arc<T>> {
         let key = (segment_id, offset);
         if let Some(entry) = self.entries.get(&key) {
             let value = entry.value.clone();
@@ -60,7 +59,7 @@ impl<K, V> PrepareCache<K, V> {
     }
 
     /// Insert a prepare entry into the cache.
-    pub fn insert(&mut self, segment_id: u64, offset: u64, prepare: Arc<CachedPrepare<K, V>>) {
+    pub fn insert(&mut self, segment_id: u64, offset: u64, prepare: Arc<T>) {
         let key = (segment_id, offset);
 
         // Remove existing entry if present

@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use ir::record::{IrPayloadInline, IrRecord, VlogEntryType};
+use tapir::CachedPrepare;
 use types::*;
 use wisckeylsm::manifest::UnifiedManifest;
 use wisckeylsm::prepare_cache::PrepareCache;
@@ -81,7 +82,7 @@ pub struct UnifiedStore<K: Ord, V, IO: DiskIo> {
     /// Only consulted for `ValueLocation::OnDisk` reads (cross-view commits
     /// or reads after seal).  Uses `RefCell` for interior mutability because
     /// `get()` takes `&self`.
-    prepare_cache: RefCell<PrepareCache<K, V>>,
+    prepare_cache: RefCell<PrepareCache<CachedPrepare<K, V>>>,
 
     /// Store-owned index: transaction_id -> VLog pointer for
     /// committed-transaction value resolution across views.
