@@ -5,7 +5,7 @@ use crate::tapir::{Key, Timestamp, Value};
 #[cfg(test)]
 use crate::tapir::LeaderRecordDelta;
 #[cfg(test)]
-use crate::tapirstore::{MinPrepareTimes, RecordDeltaDuringView, TransactionLog};
+use crate::tapirstore::{RecordDeltaDuringView, TransactionLog};
 use crate::unified::tapir::CachedPrepare;
 use crate::unified::tapir::{LsmEntry, ValueLocation, VlogSegment, VlogTransactionPtr};
 #[cfg(test)]
@@ -28,8 +28,6 @@ pub(crate) struct TapirState<K: Ord, V, IO: DiskIo> {
     vlog_read_count: Cell<u64>,
     #[cfg(test)]
     txlog: TransactionLog,
-    #[cfg(test)]
-    min_prepare: MinPrepareTimes,
     #[cfg(test)]
     cdc: RecordDeltaDuringView<K, V>,
     active_vlog: VlogSegment<IO>,
@@ -56,8 +54,6 @@ fn new_store_state<K: Ord + Clone, V, IO: DiskIo>(
         vlog_read_count: Cell::new(0),
         #[cfg(test)]
         txlog: TransactionLog::new(),
-        #[cfg(test)]
-        min_prepare: MinPrepareTimes::new(),
         #[cfg(test)]
         cdc: RecordDeltaDuringView::new(),
         active_vlog,
@@ -169,14 +165,6 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         self.prepare_registry.clear();
     }
 
-    #[cfg(test)]
-    pub(crate) fn min_prepared_commit_time(&self) -> Option<u64> {
-        self.prepare_registry
-            .values()
-            .map(|p| p.commit_ts.time)
-            .min()
-    }
-
     pub(crate) fn index_committed_txn_ptr(&mut self, txn_id: OccTransactionId, ptr: VlogPtr) {
         self.committed_txn_vlog_index.insert(txn_id, ptr);
     }
@@ -228,26 +216,6 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
     #[cfg(test)]
     pub(crate) fn txn_log_len(&self) -> usize {
         self.txlog.txn_log_len()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn raise_min_prepare_time(&mut self, time: u64) -> u64 {
-        self.min_prepare.raise(time, self.min_prepared_commit_time())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn finalize_min_prepare_time(&mut self, time: u64) {
-        self.min_prepare.finalize(time)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn sync_min_prepare_time(&mut self, time: u64) {
-        self.min_prepare.sync(time)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn reset_min_prepare_time_to_finalized(&mut self) {
-        self.min_prepare.reset_to_finalized()
     }
 
     #[cfg(test)]

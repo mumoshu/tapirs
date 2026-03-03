@@ -3,9 +3,7 @@ use crate::mvcc::disk::disk_io::{DiskIo, OpenFlags};
 use crate::occ::TransactionId as OccTransactionId;
 use crate::tapir::{Key, Timestamp, Value};
 #[cfg(test)]
-use crate::tapir::LeaderRecordDelta;
-#[cfg(test)]
-use crate::tapirstore::{MinPrepareTimes, RecordDeltaDuringView, TransactionLog};
+use crate::tapirstore::{MinPrepareTimes, TransactionLog};
 use crate::unified::tapir::CachedPrepare;
 use crate::unified::tapir::{LsmEntry, ValueLocation, VlogSegment, VlogTransactionPtr};
 #[cfg(test)]
@@ -30,8 +28,6 @@ pub(crate) struct TapirState<K: Ord, V, IO: DiskIo> {
     txlog: TransactionLog,
     #[cfg(test)]
     min_prepare: MinPrepareTimes,
-    #[cfg(test)]
-    cdc: RecordDeltaDuringView<K, V>,
     active_vlog: VlogSegment<IO>,
     sealed_vlog_segments: BTreeMap<u64, VlogSegment<IO>>,
     manifest: UnifiedManifest,
@@ -58,8 +54,6 @@ fn new_store_state<K: Ord + Clone, V, IO: DiskIo>(
         txlog: TransactionLog::new(),
         #[cfg(test)]
         min_prepare: MinPrepareTimes::new(),
-        #[cfg(test)]
-        cdc: RecordDeltaDuringView::new(),
         active_vlog,
         sealed_vlog_segments,
         manifest,
@@ -248,24 +242,6 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
     #[cfg(test)]
     pub(crate) fn reset_min_prepare_time_to_finalized(&mut self) {
         self.min_prepare.reset_to_finalized()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn record_cdc_delta(&mut self, base_view: u64, delta: LeaderRecordDelta<K, V>) {
-        self.cdc.record_cdc_delta(base_view, delta);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn cdc_deltas_from(&self, from_view: u64) -> Vec<LeaderRecordDelta<K, V>>
-    where
-        V: Clone,
-    {
-        self.cdc.cdc_deltas_from(from_view)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn cdc_max_view(&self) -> Option<u64> {
-        self.cdc.cdc_max_view()
     }
 
     #[cfg(test)]
