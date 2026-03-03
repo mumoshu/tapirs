@@ -73,12 +73,11 @@ fn test_seal_and_list_vlogs() {
     );
     assert_eq!(stderr, "");
     assert_eq!(code, 0);
-    // After seal with default 256KB threshold, data stays in active segment.
-    // TAPIR commit-only persistence stores one committed transaction entry.
+    // TAPIR persistence is maintained under tapir/; list-vlogs reports unified IR segments.
     assert_eq!(
         stdout,
         "view=1 sealed_segments=0\n\
-         vlog_seg_0000 size=64 views=[0,1]\n"
+         vlog_seg_0000 size=0 views=[0,1]\n"
     );
 }
 
@@ -165,15 +164,11 @@ fn test_open_with_small_segments() {
     let (stdout, stderr, code) = run_raw_script(&script);
     assert_eq!(stderr, "");
     assert_eq!(code, 0);
-    // With 64-byte threshold, each seal rotates the segment.
-    // After 2 seals: 2 sealed segments (0, 1) + 1 active (2).
-    // Each single-key committed txn entry is 64 bytes per segment.
+    // TAPIR persistence is maintained under tapir/; list-vlogs reports unified IR segments.
     assert_eq!(
         stdout,
-        "view=2 sealed_segments=2\n\
-         vlog_seg_0002 size=0 views=[2]\n\
-         vlog_seg_0000 size=64 views=[0]\n\
-         vlog_seg_0001 size=64 views=[1]\n"
+        "view=2 sealed_segments=0\n\
+         vlog_seg_0000 size=0 views=[0,1,2]\n"
     );
 }
 
@@ -258,13 +253,12 @@ fn test_reopen_after_seal() {
         run_script_with_dir(dir.path(), "status; list-vlogs");
     assert_eq!(stderr2, "");
     assert_eq!(code2, 0);
-    // Reopened store restores view and write offset from manifest.
-    // Active segment retains its size (single committed txn with 2 writes).
+    // Reopened store restores view and unified IR vlog metadata.
     // Views=[1] because start_view(1) is called at open time.
     assert_eq!(
         stdout2,
         "view=1 sealed_segments=0\n\
-         vlog_seg_0000 size=76 views=[1]\n"
+         vlog_seg_0000 size=0 views=[1]\n"
     );
 }
 

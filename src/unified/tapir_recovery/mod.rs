@@ -1,57 +1,85 @@
 #[cfg(test)]
-use std::collections::BTreeMap;
-
-#[cfg(test)]
 use crate::ir::OpId;
 #[cfg(test)]
 use crate::mvcc::disk::disk_io::DiskIo;
 #[cfg(test)]
 use crate::mvcc::disk::error::StorageError;
 #[cfg(test)]
-use crate::occ::TransactionId;
-
+use crate::occ::TransactionId as OccTransactionId;
 #[cfg(test)]
-use super::types::{IrMemEntry, IrPayloadInline, VlogEntryType};
+use super::types::IrMemEntry;
 #[cfg(test)]
-use super::UnifiedStore;
+use super::types::{IrPayloadInline, IrState};
+#[cfg(test)]
+use std::collections::BTreeMap;
 
 #[cfg(test)]
 pub(crate) fn replay_committed_from_ir_record<K, V, IO>(
-    store: &mut UnifiedStore<K, V, IO>,
+    store: &mut super::UnifiedStore<K, V, IO>,
     ir_record: &[(OpId, IrMemEntry<K, V>)],
 ) -> Result<(), StorageError>
 where
-    K: Ord + Clone + serde::Serialize + serde::de::DeserializeOwned,
-    V: Clone + serde::Serialize + serde::de::DeserializeOwned,
+    K: crate::tapir::Key,
+    V: crate::tapir::Value,
     IO: DiskIo,
+    K: serde::Serialize + Clone + serde::de::DeserializeOwned,
+    V: serde::Serialize + Clone + serde::de::DeserializeOwned,
 {
-    let mut prepare_index: BTreeMap<TransactionId, &IrPayloadInline<K, V>> = BTreeMap::new();
-    for (_, entry) in ir_record {
-        if entry.entry_type == VlogEntryType::Prepare
-            && let IrPayloadInline::Prepare {
-                transaction_id, ..
-            } = &entry.payload
+    let mut prepares: BTreeMap<
+        OccTransactionId,
+        (
+            &[(K, crate::tapir::Timestamp)],
+            &[(K, Option<V>)],
+            &[(K, K, crate::tapir::Timestamp)],
+        ),
+    > = BTreeMap::new();
+
+    for (_op_id, entry) in ir_record {
+        if !matches!(entry.state, IrState::Finalized(_)) {
+            continue;
+        }
+
+        if let IrPayloadInline::Prepare {
+            transaction_id,
+            commit_ts,
+            read_set,
+            write_set,
+            scan_set,
+        } = &entry.payload
         {
-            prepare_index.insert(*transaction_id, &entry.payload);
+            let _ = commit_ts;
+            prepares.insert(*transaction_id, (read_set.as_slice(), write_set.as_slice(), scan_set.as_slice()));
         }
     }
 
-    for (_, entry) in ir_record {
-        if entry.entry_type == VlogEntryType::Commit
-            && let IrPayloadInline::Commit {
-                transaction_id,
-                commit_ts,
-                ..
-            } = &entry.payload
-            && let Some(IrPayloadInline::Prepare {
-                write_set,
-                read_set,
-                scan_set,
-                ..
-            }) = prepare_index.get(transaction_id)
-        {
-            store.commit_transaction_data(*transaction_id, read_set, write_set, scan_set, *commit_ts)?;
+    for (_op_id, entry) in ir_record {
+        if !matches!(entry.state, IrState::Finalized(_)) {
+            continue;
         }
+
+        let IrPayloadInline::Commit {
+            transaction_id,
+            commit_ts,
+            ..
+        } = &entry.payload
+        else {
+            continue;
+        };
+
+        let (read_set, write_set, scan_set) = prepares.get(transaction_id).copied().ok_or_else(|| {
+            StorageError::Codec(format!(
+                "missing finalized IR prepare for committed txn {:?}",
+                transaction_id
+            ))
+        })?;
+
+        store.commit_transaction_data(
+            *transaction_id,
+            read_set,
+            write_set,
+            scan_set,
+            *commit_ts,
+        )?;
     }
 
     Ok(())

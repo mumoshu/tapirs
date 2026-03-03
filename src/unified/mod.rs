@@ -8,25 +8,18 @@ pub mod types;
 use crate::ir::OpId;
 use crate::mvcc::disk::disk_io::{DiskIo, OpenFlags};
 use crate::mvcc::disk::error::StorageError;
-use crate::mvcc::disk::memtable::Memtable;
 use crate::occ::{Transaction, TransactionId as OccTransactionId};
 use crate::tapir::{ShardNumber, Timestamp};
-use crate::tapirstore::{MinPrepareTimes, RecordDeltaDuringView, TransactionLog};
-use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use crate::tapirstore::{CheckPrepareStatus, TapirStore};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+
+#[cfg(test)]
+use crate::occ::Timestamp as _;
 
 use ir::record::{IrPayloadInline, IrRecord, VlogEntryType};
 use tapir::CachedPrepare;
 use types::*;
-use wisckeylsm::manifest::UnifiedManifest;
-use wisckeylsm::prepare_cache::PrepareCache;
-use wisckeylsm::unified_memtable::UnifiedMemtable;
 use wisckeylsm::vlog::UnifiedVlogSegment;
-
-/// Default prepare cache capacity.
-const DEFAULT_PREPARE_CACHE_CAPACITY: usize = 1024;
 
 /// Default minimum VLog segment size before starting a new file (256 KB).
 const DEFAULT_MIN_VIEW_VLOG_SIZE: u64 = 256 * 1024;
@@ -57,46 +50,8 @@ const DEFAULT_MIN_VIEW_VLOG_SIZE: u64 = 256 * 1024;
 /// committed value always goes through `resolve_in_memory` or
 /// `resolve_on_disk`.
 pub struct UnifiedStore<K: Ord, V, IO: DiskIo> {
-    /// MVCC memtable: current view's committed values + read timestamps.
-    mvcc_memtable: Memtable<K, Timestamp>,
-
-    /// Unified MVCC memtable using UnifiedLsmEntry with ValueLocation.
-    unified_memtable: UnifiedMemtable<K>,
-
-    /// Active VLog segment for the current view.
-    active_vlog: UnifiedVlogSegment<IO>,
-
-    /// Sealed VLog segments (immutable, one per view group).
-    sealed_vlog_segments: BTreeMap<u64, UnifiedVlogSegment<IO>>,
-
-    /// Current view's typed Prepare payloads, keyed by transaction_id.
-    ///
-    /// This is the fast path for value resolution: MVCC entries with
-    /// `ValueLocation::InMemory` look up values here instead of reading
-    /// the VLog.  Cleared at `seal_current_view()` because the data moves
-    /// to the VLog and future reads go through `prepare_cache` instead.
-    prepare_registry: BTreeMap<OccTransactionId, Arc<CachedPrepare<K, V>>>,
-
-    /// LRU cache for Prepare payloads deserialized from sealed VLog segments.
-    ///
-    /// Only consulted for `ValueLocation::OnDisk` reads (cross-view commits
-    /// or reads after seal).  Uses `RefCell` for interior mutability because
-    /// `get()` takes `&self`.
-    prepare_cache: RefCell<PrepareCache<CachedPrepare<K, V>>>,
-
-    /// Store-owned index: transaction_id -> VLog pointer for
-    /// committed-transaction value resolution across views.
-    committed_txn_vlog_index: BTreeMap<OccTransactionId, UnifiedVlogPtr>,
-
-    /// Current view number.
-    current_view: u64,
-
-    /// Persisted manifest.
-    manifest: UnifiedManifest,
-
-    /// IR record: overlay (current view), base (sealed views), and
-    /// prepare VLog index for cross-view commits.
-    ir_record: IrRecord<K, V>,
+    ir_state: IrRecord<K, V, IO>,
+    tapir_state: tapir::store::TapirState<K, V, IO>,
 
     /// Base directory for all on-disk files.
     base_dir: PathBuf,
@@ -107,26 +62,17 @@ pub struct UnifiedStore<K: Ord, V, IO: DiskIo> {
     /// Minimum VLog segment size before starting a new file.
     min_view_vlog_size: u64,
 
-    /// Number of VLog reads performed (for testing LRU cache effectiveness).
-    /// Uses Cell for interior mutability (get() takes &self).
-    vlog_read_count: Cell<u64>,
-
     /// Number of entries written to the current view's VLog (for view seal).
     current_view_entry_count: u32,
-
-    /// Transaction log tracking committed/aborted outcomes.
-    transaction_log: TransactionLog,
-
-    /// Min-prepare-time state machine (tentative + finalized thresholds).
-    min_prepare_times: MinPrepareTimes,
-
-    /// CDC delta storage for resharding catch-up.
-    record_delta_during_view: RecordDeltaDuringView<K, V>,
 }
 
 impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
     /// Open or create a unified store at the given directory.
-    pub fn open(base_dir: PathBuf) -> Result<Self, StorageError> {
+    pub fn open(base_dir: PathBuf) -> Result<Self, StorageError>
+    where
+        K: crate::tapir::Key,
+        V: crate::tapir::Value,
+    {
         Self::open_with_options(base_dir, DEFAULT_MIN_VIEW_VLOG_SIZE)
     }
 
@@ -134,70 +80,27 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
     pub fn open_with_options(
         base_dir: PathBuf,
         min_view_vlog_size: u64,
-    ) -> Result<Self, StorageError> {
+    ) -> Result<Self, StorageError>
+    where
+        K: crate::tapir::Key,
+        V: crate::tapir::Value,
+    {
         let io_flags = OpenFlags {
             create: true,
             direct: false,
         };
 
         IO::create_dir_all(&base_dir)?;
-
-        let manifest = match UnifiedManifest::load::<IO>(&base_dir)? {
-            Some(m) => m,
-            None => UnifiedManifest::new(),
-        };
-
-        // Open sealed VLog segments
-        let mut sealed_vlog_segments = BTreeMap::new();
-        for seg_meta in &manifest.sealed_vlog_segments {
-            let seg = UnifiedVlogSegment::<IO>::open_at(
-                seg_meta.segment_id,
-                seg_meta.path.clone(),
-                seg_meta.total_size,
-                seg_meta.views.clone(),
-                io_flags,
-            )?;
-            sealed_vlog_segments.insert(seg_meta.segment_id, seg);
-        }
-
-        // Open or create active VLog segment
-        let active_path = base_dir.join(format!(
-            "vlog_seg_{:04}.dat",
-            manifest.active_segment_id
-        ));
-        let mut active_vlog = UnifiedVlogSegment::<IO>::open_at(
-            manifest.active_segment_id,
-            active_path,
-            manifest.active_write_offset,
-            Vec::new(),
-            io_flags,
-        )?;
-
-        let current_view = manifest.current_view;
-
-        // Start tracking the current view in the active VLog segment.
-        // This ensures finish_view() at seal time has a ViewRange to update.
-        active_vlog.start_view(current_view);
+        let ir_state = ir::store::open_store_state::<K, V, IO>(&base_dir, io_flags)?;
+        let tapir_state = tapir::store::open::<K, V, IO>(&base_dir.join("tapir"), io_flags)?;
 
         Ok(Self {
-            mvcc_memtable: Memtable::new(),
-            unified_memtable: UnifiedMemtable::new(),
-            active_vlog,
-            sealed_vlog_segments,
-            prepare_registry: BTreeMap::new(),
-            prepare_cache: RefCell::new(PrepareCache::new(DEFAULT_PREPARE_CACHE_CAPACITY)),
-            committed_txn_vlog_index: BTreeMap::new(),
-            current_view,
-            manifest,
-            ir_record: IrRecord::new(),
+            ir_state,
+            tapir_state,
             base_dir,
             io_flags,
             min_view_vlog_size,
-            vlog_read_count: Cell::new(0),
             current_view_entry_count: 0,
-            transaction_log: TransactionLog::new(),
-            min_prepare_times: MinPrepareTimes::new(),
-            record_delta_during_view: RecordDeltaDuringView::new(),
         })
     }
 
@@ -206,30 +109,30 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
     }
 
     pub fn current_view(&self) -> u64 {
-        self.current_view
+        self.ir_state.current_view()
     }
 
     pub fn vlog_read_count(&self) -> u64 {
-        self.vlog_read_count.get()
+        self.tapir_state.vlog_read_count()
     }
 
-    pub fn sealed_vlog_segments(&self) -> &BTreeMap<u64, UnifiedVlogSegment<IO>> {
-        &self.sealed_vlog_segments
+    pub fn sealed_vlog_segments(&self) -> &std::collections::BTreeMap<u64, UnifiedVlogSegment<IO>> {
+        self.ir_state.sealed_vlog_segments()
     }
 
     /// Get the active VLog segment's ID.
     pub fn active_vlog_id(&self) -> u64 {
-        self.active_vlog.id
+        self.ir_state.active_vlog_id()
     }
 
     /// Get the active VLog segment's write offset (bytes written).
     pub fn active_vlog_write_offset(&self) -> u64 {
-        self.active_vlog.write_offset()
+        self.ir_state.active_vlog_write_offset()
     }
 
     /// Get the active VLog segment's view ranges.
     pub fn active_vlog_views(&self) -> &[ViewRange] {
-        &self.active_vlog.views
+        self.ir_state.active_vlog_views()
     }
 
     /// Dump all entries from a VLog segment (by segment ID).
@@ -242,9 +145,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
         K: serde::de::DeserializeOwned,
         V: serde::de::DeserializeOwned,
     {
-        if self.active_vlog.id == segment_id {
-            self.active_vlog.iter_entries()
-        } else if let Some(seg) = self.sealed_vlog_segments.get(&segment_id) {
+        if let Some(seg) = self.ir_state.active_or_sealed_segment(segment_id) {
             seg.iter_entries()
         } else {
             Err(StorageError::Codec(format!(
@@ -262,9 +163,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
         K: serde::de::DeserializeOwned,
         V: serde::de::DeserializeOwned,
     {
-        if self.active_vlog.id == segment_id {
-            self.active_vlog.iter_committed_txn_entries()
-        } else if let Some(seg) = self.sealed_vlog_segments.get(&segment_id) {
+        if let Some(seg) = self.ir_state.active_or_sealed_segment(segment_id) {
             seg.iter_committed_txn_entries()
         } else {
             Err(StorageError::Codec(format!(
@@ -275,37 +174,22 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
 
     /// Iterate over all IR overlay entries.
     pub fn ir_overlay_entries(&self) -> impl Iterator<Item = (&OpId, &IrMemEntry<K, V>)> {
-        self.ir_record.ir_overlay_entries()
+        ir::store::ir_overlay_entries(&self.ir_state)
     }
 
     /// Insert an IR entry into the overlay.
     pub fn insert_ir_entry(&mut self, op_id: OpId, entry: IrMemEntry<K, V>) {
-        self.ir_record.insert_ir_entry(op_id, entry);
+        ir::store::insert_ir_entry(&mut self.ir_state, op_id, entry);
     }
 
     /// Look up an IR entry by OpId (overlay first, then base).
     pub fn ir_entry(&self, op_id: &OpId) -> Option<IrEntryRef<'_, K, V>> {
-        self.ir_record.ir_entry(op_id)
+        ir::store::ir_entry(&self.ir_state, op_id)
     }
 
     /// Look up an IR base SST entry by OpId.
     pub fn lookup_ir_base_entry(&self, op_id: OpId) -> Option<&IrSstEntry> {
-        self.ir_record.lookup_ir_base_entry(op_id)
-    }
-
-    /// Register a typed Prepare payload in the in-memory registry.
-    ///
-    /// Must be called before `commit_prepared` so that
-    /// the commit path can create `ValueLocation::InMemory` entries
-    /// pointing into this registry.  If the view is sealed before
-    /// the commit arrives, the prepare is still accessible via
-    /// `prepare_vlog_index` + `resolve_on_disk`.
-    fn register_prepare_raw(
-        &mut self,
-        txn_id: OccTransactionId,
-        prepare: Arc<CachedPrepare<K, V>>,
-    ) {
-        self.prepare_registry.insert(txn_id, prepare);
+        ir::store::lookup_ir_base_entry(&self.ir_state, op_id)
     }
 
     /// Register a prepared transaction for future zero-copy commit.
@@ -321,41 +205,13 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
         txn_id: OccTransactionId,
         transaction: &Transaction<K, V, Timestamp>,
         commit_ts: Timestamp,
-    ) where
+    )
+    where
+        K: crate::tapir::Key,
+        V: crate::tapir::Value,
         V: Clone,
     {
-        let shard = ShardNumber(0); // Unified store serves one shard
-
-        let read_set: Vec<(K, Timestamp)> = transaction
-            .shard_read_set(shard)
-            .map(|(k, ts)| (k.clone(), ts))
-            .collect();
-
-        let write_set: Vec<(K, Option<V>)> = transaction
-            .shard_write_set(shard)
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-
-        let scan_set: Vec<(K, K, Timestamp)> = transaction
-            .shard_scan_set(shard)
-            .map(|entry| {
-                (
-                    entry.start_key.clone(),
-                    entry.end_key.clone(),
-                    entry.timestamp,
-                )
-            })
-            .collect();
-
-        let prepare = Arc::new(CachedPrepare {
-            transaction_id: txn_id,
-            commit_ts,
-            read_set,
-            write_set,
-            scan_set,
-        });
-
-        self.register_prepare_raw(txn_id, prepare);
+        tapir::store::register_prepare(&mut self.tapir_state, txn_id, transaction, commit_ts);
     }
 
     /// Commit a prepared transaction by creating MVCC index entries.
@@ -384,62 +240,12 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
         commit: Timestamp,
     ) -> Result<(), StorageError>
     where
+        K: crate::tapir::Key,
+        V: crate::tapir::Value,
         K: serde::Serialize + Clone + serde::de::DeserializeOwned,
         V: serde::Serialize + Clone + serde::de::DeserializeOwned,
     {
-        // Clone the Arc to release the immutable borrow, allowing
-        // subsequent unified_memtable_mut() calls.
-        let prepare = self.prepare_registry.get(&txn_id).cloned();
-        let cross_view_ptr = self.committed_txn_vlog_index.get(&txn_id).copied();
-
-        if let Some(prepare) = prepare {
-            self.commit_transaction_data(
-                txn_id,
-                &prepare.read_set,
-                &prepare.write_set,
-                &prepare.scan_set,
-                commit,
-            )?;
-        } else if let Some(vlog_ptr) = cross_view_ptr {
-            // OnDisk path: transaction already committed and indexed in VLog
-            let cached = self.resolve_on_disk(&UnifiedVlogPrepareValuePtr {
-                txn_ptr: vlog_ptr,
-                write_index: 0,
-            })?;
-
-            for (i, (key, value)) in cached.write_set.iter().enumerate() {
-                let value_ref = if value.is_some() {
-                    Some(ValueLocation::OnDisk(UnifiedVlogPrepareValuePtr {
-                        txn_ptr: vlog_ptr,
-                        write_index: i as u16,
-                    }))
-                } else {
-                    None
-                };
-
-                self.unified_memtable_mut().insert(
-                    key.clone(),
-                    commit,
-                    UnifiedLsmEntry {
-                        value_ref,
-                        last_read_ts: None,
-                    },
-                );
-            }
-
-            // Update read timestamps
-            for (key, read) in &cached.read_set {
-                self.unified_memtable_mut()
-                    .update_last_read(key, *read, commit.time);
-            }
-        } else {
-            return Err(StorageError::PrepareNotFound {
-                client_id: txn_id.client_id.0,
-                txn_number: txn_id.number,
-            });
-        }
-
-        Ok(())
+        tapir::store::commit_prepared(&mut self.tapir_state, txn_id, commit)
     }
 
     pub fn commit_transaction_data(
@@ -451,45 +257,28 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
         commit: Timestamp,
     ) -> Result<(), StorageError>
     where
+        K: crate::tapir::Key,
+        V: crate::tapir::Value,
         K: serde::Serialize + Clone + serde::de::DeserializeOwned,
         V: serde::Serialize + Clone + serde::de::DeserializeOwned,
     {
-        let txn_ptr = self
-            .active_vlog
-            .append_committed_txn(txn_id, commit, read_set, write_set, scan_set)?;
-        self.committed_txn_vlog_index.insert(txn_id, txn_ptr);
-
-        for (i, (key, value)) in write_set.iter().enumerate() {
-            let value_ref = if value.is_some() {
-                Some(ValueLocation::OnDisk(UnifiedVlogPrepareValuePtr {
-                    txn_ptr,
-                    write_index: i as u16,
-                }))
-            } else {
-                None
-            };
-
-            self.unified_memtable_mut().insert(
-                key.clone(),
-                commit,
-                UnifiedLsmEntry {
-                    value_ref,
-                    last_read_ts: None,
-                },
-            );
-        }
-
-        for (key, read) in read_set {
-            self.unified_memtable_mut()
-                .update_last_read(key, *read, commit.time);
-        }
-
-        Ok(())
+        tapir::store::commit_transaction_data(
+            &mut self.tapir_state,
+            txn_id,
+            read_set,
+            write_set,
+            scan_set,
+            commit,
+        )
     }
 
     /// Remove a prepare from the in-memory registry.
-    pub fn unregister_prepare(&mut self, txn_id: &OccTransactionId) {
-        self.prepare_registry.remove(txn_id);
+    pub fn unregister_prepare(&mut self, txn_id: &OccTransactionId)
+    where
+        K: crate::tapir::Key,
+        V: crate::tapir::Value,
+    {
+        tapir::store::unregister_prepare(&mut self.tapir_state, txn_id);
     }
 
     /// Resolve a value from the prepare registry (InMemory path).
@@ -502,57 +291,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
         txn_id: &OccTransactionId,
         write_index: u16,
     ) -> Option<&(K, Option<V>)> {
-        self.prepare_registry
-            .get(txn_id)
-            .and_then(|p| p.write_set.get(write_index as usize))
-    }
-
-    /// Resolve a value from a sealed VLog (OnDisk path).
-    ///
-    /// Reads and deserializes the full CO::Prepare entry from the VLog,
-    /// then caches it in `prepare_cache` so subsequent reads for the same
-    /// transaction (or different write_set indices within it) avoid VLog I/O.
-    ///
-    /// Takes `&self` via interior mutability (`RefCell`/`Cell`) so it can
-    /// be called from `get(&self)`.
-    fn resolve_on_disk(
-        &self,
-        ptr: &UnifiedVlogPrepareValuePtr,
-    ) -> Result<Arc<CachedPrepare<K, V>>, StorageError>
-    where
-        K: serde::de::DeserializeOwned,
-        V: serde::de::DeserializeOwned,
-    {
-        let key_seg = ptr.txn_ptr.segment_id;
-        let key_off = ptr.txn_ptr.offset;
-
-        // Check cache first
-        if let Some(cached) = self.prepare_cache.borrow_mut().get(key_seg, key_off) {
-            return Ok(cached);
-        }
-
-        // Cache miss: read from VLog (sealed or active)
-        self.vlog_read_count.set(self.vlog_read_count.get() + 1);
-
-        // Check sealed segments first, then the active segment (which may
-        // contain sealed view entries when the segment is smaller than
-        // min_view_vlog_size and hasn't been rotated yet).
-        let segment = self
-            .sealed_vlog_segments
-            .get(&key_seg)
-            .or(if self.active_vlog.id == key_seg {
-                Some(&self.active_vlog)
-            } else {
-                None
-            })
-            .ok_or_else(|| StorageError::Codec(format!(
-                "VLog segment {key_seg} not found for prepare resolution"
-            )))?;
-
-        let prepare = segment.read_committed_txn(&ptr.txn_ptr)?;
-        let cached = Arc::new(prepare);
-        self.prepare_cache.borrow_mut().insert(key_seg, key_off, cached.clone());
-        Ok(cached)
+        self.tapir_state.resolve_in_memory_ref(txn_id, write_index)
     }
 
     /// Resolve a committed value from its `ValueLocation`.
@@ -565,38 +304,23 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
     /// - `None` → delete tombstone or metadata-only entry (e.g. `commit_get`)
     pub fn resolve_value(&self, entry: &UnifiedLsmEntry) -> Result<Option<V>, StorageError>
     where
+        K: crate::tapir::Key,
+        V: crate::tapir::Value,
         K: serde::de::DeserializeOwned,
         V: Clone + serde::de::DeserializeOwned,
     {
-        match &entry.value_ref {
-            None => Ok(None),
-            Some(ValueLocation::InMemory { txn_id, write_index }) => {
-                match self.resolve_in_memory(txn_id, *write_index) {
-                    Some((_key, value)) => Ok(value.clone()),
-                    None => Ok(None),
-                }
-            }
-            Some(ValueLocation::OnDisk(ptr)) => {
-                let cached = self.resolve_on_disk(ptr)?;
-                if let Some((_key, value)) =
-                    cached.write_set.get(ptr.write_index as usize)
-                {
-                    Ok(value.clone())
-                } else {
-                    Ok(None)
-                }
-            }
-        }
+        tapir::store::resolve_value(&self.tapir_state, entry)
     }
 
     /// Get a reference to the unified MVCC memtable.
-    pub(crate) fn unified_memtable(&self) -> &UnifiedMemtable<K> {
-        &self.unified_memtable
+    pub(crate) fn unified_memtable(&self) -> &crate::unified::wisckeylsm::unified_memtable::UnifiedMemtable<K> {
+        self.tapir_state.unified_memtable()
     }
 
     /// Get a mutable reference to the unified MVCC memtable.
-    pub(crate) fn unified_memtable_mut(&mut self) -> &mut UnifiedMemtable<K> {
-        &mut self.unified_memtable
+    #[cfg(test)]
+    pub(crate) fn unified_memtable_mut(&mut self) -> &mut crate::unified::wisckeylsm::unified_memtable::UnifiedMemtable<K> {
+        self.tapir_state.unified_memtable_mut()
     }
 
     /// Seal the current view: serialize typed overlay entries to the VLog,
@@ -611,95 +335,15 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
         K: serde::Serialize + Clone,
         V: serde::Serialize + Clone,
     {
-        // 1. Collect finalized overlay entries for VLog serialization
-        let finalized_entries = self.ir_record.collect_finalized_for_seal();
-
-        // 2. Write finalized entries to VLog
-        let mut vlog_ptrs = Vec::new();
-        if !finalized_entries.is_empty() {
-            let entry_refs: Vec<(OpId, VlogEntryType, &IrPayloadInline<K, V>)> = finalized_entries
-                .iter()
-                .map(|(op, et, p)| (*op, *et, p))
-                .collect();
-            vlog_ptrs = self.active_vlog.append_batch(&entry_refs)?;
-        }
-
-        // 3. Build IR base entries from VLog pointers
-        self.ir_record.apply_sealed_ptrs(&finalized_entries, &vlog_ptrs);
-
-        // 3. Sync VLog
-        self.active_vlog.sync()?;
-
-        // 4. Record view range in active VLog segment
-        self.active_vlog
-            .finish_view(finalized_entries.len() as u32);
-
-        // 5. Flush MVCC memtable → SST (using existing LsmTree)
-        if !self.mvcc_memtable.is_empty() {
-            // The existing LsmTree expects Memtable<K, TS> with LsmEntry values.
-            // For now, we flush an empty memtable to create the SST structure.
-            // The actual unified memtable integration will replace this.
-            // TODO: Implement unified memtable → SST flush
-        }
-
-        // 6. Decide whether to seal the VLog segment or continue
-        let segment_size = self.active_vlog.write_offset();
-        if segment_size >= self.min_view_vlog_size {
-            // Seal current segment, start new one
-            let sealed_id = self.active_vlog.id;
-            let sealed_path = self.active_vlog.path().clone();
-            let sealed_views = self.active_vlog.views.clone();
-            let sealed_size = self.active_vlog.write_offset();
-
-            // Record in manifest
-            self.manifest.sealed_vlog_segments.push(VlogSegmentMeta {
-                segment_id: sealed_id,
-                path: sealed_path.clone(),
-                views: sealed_views.clone(),
-                total_size: sealed_size,
-            });
-
-            // Move active to sealed
-            let old_active = std::mem::replace(
-                &mut self.active_vlog,
-                {
-                    let new_id = self.manifest.next_segment_id;
-                    self.manifest.next_segment_id += 1;
-                    let new_path = self
-                        .base_dir
-                        .join(format!("vlog_seg_{new_id:04}.dat"));
-                    UnifiedVlogSegment::<IO>::open(new_id, new_path, self.io_flags)?
-                },
-            );
-            self.sealed_vlog_segments.insert(
-                sealed_id,
-                UnifiedVlogSegment::<IO>::open_at(
-                    sealed_id,
-                    sealed_path,
-                    sealed_size,
-                    sealed_views,
-                    self.io_flags,
-                )?,
-            );
-            old_active.close();
-        }
-
-        // 7. Update manifest
-        self.current_view += 1;
-        self.manifest.current_view = self.current_view;
-        self.manifest.active_segment_id = self.active_vlog.id;
-        self.manifest.active_write_offset = self.active_vlog.write_offset();
-        self.manifest.save::<IO>(&self.base_dir)?;
-
-        // 8. Convert unified memtable InMemory → OnDisk, then clear overlay + registry
-        self.unified_memtable
-            .convert_in_memory_to_on_disk(&self.committed_txn_vlog_index);
-        self.ir_record.clear_overlay();
-        self.prepare_registry.clear();
+        ir::store::seal_current_view(
+            &mut self.ir_state,
+            &self.base_dir,
+            self.io_flags,
+            self.min_view_vlog_size,
+        )?;
+        self.tapir_state.seal_current_view(self.min_view_vlog_size)?;
+        ir::store::clear_overlay(&mut self.ir_state);
         self.current_view_entry_count = 0;
-
-        // 9. Start new view in active segment
-        self.active_vlog.start_view(self.current_view);
 
         Ok(())
     }
@@ -710,7 +354,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
         K: Clone,
         V: Clone,
     {
-        self.ir_record.extract_finalized_entries()
+        ir::store::extract_finalized_entries(&self.ir_state)
     }
 
     /// Install a merged record as the new IR base.
@@ -731,21 +375,258 @@ impl<K: Ord + Clone, V, IO: DiskIo> UnifiedStore<K, V, IO> {
             .collect();
 
         let ptrs = if !entry_refs.is_empty() {
-            self.active_vlog.append_batch(&entry_refs)?
+            self.ir_state.append_batch_to_active(&entry_refs)?
         } else {
             Vec::new()
         };
 
         // Install new IR base from VLog pointers (clears base + overlay)
-        self.ir_record.install_base_from_ptrs(&entries, &ptrs);
+        ir::store::install_base_from_ptrs(&mut self.ir_state, &entries, &ptrs);
 
-        self.current_view = target_view;
-        self.manifest.current_view = target_view;
-        self.prepare_registry.clear();
+        self.ir_state.set_current_view_for_install(target_view);
+        self.tapir_state.clear_prepare_registry();
         // Note: unified_memtable is NOT cleared — committed entries from
         // previous views remain valid with OnDisk pointers.
 
         Ok(())
+    }
+
+    pub(crate) fn get_range(
+        &self,
+        key: &K,
+        timestamp: Timestamp,
+    ) -> Result<(Timestamp, Option<Timestamp>), StorageError> {
+        if let Some((ck, _entry)) = self.unified_memtable().get_at(key, timestamp) {
+            let write_ts = ck.timestamp.0;
+            let next = self.unified_memtable().find_next_version(key, write_ts);
+            return Ok((write_ts, next));
+        }
+        Ok((Timestamp::default(), None))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn commit_get(
+        &mut self,
+        key: K,
+        read: Timestamp,
+        commit: Timestamp,
+    ) -> Result<(), StorageError> {
+        self.unified_memtable_mut()
+            .update_last_read(&key, read, commit.time);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn get_last_read(&self, key: &K) -> Result<Option<Timestamp>, StorageError> {
+        if let Some((_, entry)) = self.unified_memtable().get_latest(key)
+            && let Some(ts) = entry.last_read_ts
+        {
+            return Ok(Some(Timestamp::from_time(ts)));
+        }
+        Ok(None)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn get_last_read_at(
+        &self,
+        key: &K,
+        timestamp: Timestamp,
+    ) -> Result<Option<Timestamp>, StorageError> {
+        if let Some((_, entry)) = self.unified_memtable().get_at(key, timestamp)
+            && let Some(ts) = entry.last_read_ts
+        {
+            return Ok(Some(Timestamp::from_time(ts)));
+        }
+        Ok(None)
+    }
+
+    pub(crate) fn has_writes_in_range(
+        &self,
+        start: &K,
+        end: &K,
+        after_ts: Timestamp,
+        before_ts: Timestamp,
+    ) -> Result<bool, StorageError> {
+        Ok(self
+            .unified_memtable()
+            .has_writes_in_range(start, end, after_ts, before_ts))
+    }
+}
+
+impl<K: crate::tapir::Key, V: crate::tapir::Value, IO: DiskIo> TapirStore<K, V>
+    for UnifiedStore<K, V, IO>
+{
+    fn shard(&self) -> ShardNumber {
+        todo!()
+    }
+
+    fn do_uncommitted_get(&self, key: &K) -> Result<(Option<V>, Timestamp), StorageError> {
+        tapir::store::do_uncommitted_get(&self.tapir_state, key)
+    }
+
+    fn do_uncommitted_get_at(&self, key: &K, ts: Timestamp) -> Result<(Option<V>, Timestamp), StorageError> {
+        tapir::store::do_uncommitted_get_at(&self.tapir_state, key, ts)
+    }
+
+    fn do_uncommitted_scan(
+        &self,
+        start: &K,
+        end: &K,
+        ts: Timestamp,
+    ) -> Result<Vec<(K, Option<V>, Timestamp)>, StorageError> {
+        tapir::store::do_uncommitted_scan(&self.tapir_state, start, end, ts)
+    }
+
+    fn try_prepare_txn(
+        &mut self,
+        _id: OccTransactionId,
+        _txn: crate::occ::SharedTransaction<K, V, Timestamp>,
+        _commit: Timestamp,
+    ) -> crate::occ::PrepareResult<Timestamp> {
+        todo!()
+    }
+
+    fn commit_txn(
+        &mut self,
+        _id: OccTransactionId,
+        _txn: &Transaction<K, V, Timestamp>,
+        _commit: Timestamp,
+    ) {
+        todo!()
+    }
+
+    fn remove_prepared_txn(&mut self, _id: OccTransactionId) -> bool {
+        todo!()
+    }
+
+    fn add_or_replace_or_finalize_prepared_txn(
+        &mut self,
+        _id: OccTransactionId,
+        _txn: crate::occ::SharedTransaction<K, V, Timestamp>,
+        _commit: Timestamp,
+        _finalized: bool,
+    ) {
+        todo!()
+    }
+
+    fn get_prepared_txn(
+        &self,
+        _id: &OccTransactionId,
+    ) -> Option<(&Timestamp, &crate::occ::SharedTransaction<K, V, Timestamp>, bool)> {
+        todo!()
+    }
+
+    fn check_prepare_status(
+        &self,
+        _id: &OccTransactionId,
+        _commit: &Timestamp,
+    ) -> CheckPrepareStatus {
+        todo!()
+    }
+
+    fn finalize_prepared_txn(&mut self, _id: &OccTransactionId, _commit: &Timestamp) -> bool {
+        todo!()
+    }
+
+    fn prepared_count(&self) -> usize {
+        todo!()
+    }
+
+    fn get_oldest_prepared_txn(
+        &self,
+    ) -> Option<(OccTransactionId, Timestamp, crate::occ::SharedTransaction<K, V, Timestamp>)> {
+        todo!()
+    }
+
+    fn remove_all_unfinalized_prepared_txns(&mut self) {
+        todo!()
+    }
+
+    fn do_committed_get(
+        &mut self,
+        _key: K,
+        _ts: Timestamp,
+    ) -> Result<(Option<V>, Timestamp), crate::occ::PrepareConflict> {
+        todo!()
+    }
+
+    fn do_committed_scan(
+        &mut self,
+        _start: K,
+        _end: K,
+        _ts: Timestamp,
+    ) -> Result<Vec<(K, Option<V>, Timestamp)>, crate::occ::PrepareConflict> {
+        todo!()
+    }
+
+    fn do_uncommitted_get_validated(
+        &self,
+        _key: &K,
+        _ts: Timestamp,
+    ) -> Option<(Option<V>, Timestamp)> {
+        todo!()
+    }
+
+    fn do_uncommitted_scan_validated(
+        &self,
+        _start: &K,
+        _end: &K,
+        _ts: Timestamp,
+    ) -> Option<Vec<(K, Option<V>, Timestamp)>> {
+        todo!()
+    }
+
+    fn txn_log_get(&self, id: &OccTransactionId) -> Option<(Timestamp, bool)> {
+        tapir::store::txn_log_get(&self.tapir_state, id)
+    }
+
+    fn txn_log_insert(
+        &mut self,
+        id: OccTransactionId,
+        ts: Timestamp,
+        committed: bool,
+    ) -> Option<(Timestamp, bool)> {
+        tapir::store::txn_log_insert(&mut self.tapir_state, id, ts, committed)
+    }
+
+    fn txn_log_contains(&self, id: &OccTransactionId) -> bool {
+        tapir::store::txn_log_contains(&self.tapir_state, id)
+    }
+
+    fn txn_log_len(&self) -> usize {
+        tapir::store::txn_log_len(&self.tapir_state)
+    }
+
+    fn raise_min_prepare_time(&mut self, time: u64) -> u64 {
+        tapir::store::raise_min_prepare_time(&mut self.tapir_state, time)
+    }
+
+    fn finalize_min_prepare_time(&mut self, time: u64) {
+        tapir::store::finalize_min_prepare_time(&mut self.tapir_state, time)
+    }
+
+    fn sync_min_prepare_time(&mut self, time: u64) {
+        tapir::store::sync_min_prepare_time(&mut self.tapir_state, time)
+    }
+
+    fn reset_min_prepare_time_to_finalized(&mut self) {
+        tapir::store::reset_min_prepare_time_to_finalized(&mut self.tapir_state)
+    }
+
+    fn record_cdc_delta(&mut self, base_view: u64, delta: crate::tapir::LeaderRecordDelta<K, V>) {
+        tapir::store::record_cdc_delta(&mut self.tapir_state, base_view, delta)
+    }
+
+    fn cdc_deltas_from(&self, from_view: u64) -> Vec<crate::tapir::LeaderRecordDelta<K, V>> {
+        tapir::store::cdc_deltas_from(&self.tapir_state, from_view)
+    }
+
+    fn cdc_max_view(&self) -> Option<u64> {
+        tapir::store::cdc_max_view(&self.tapir_state)
+    }
+
+    fn min_prepare_baseline(&self) -> Option<Timestamp> {
+        todo!()
     }
 }
 

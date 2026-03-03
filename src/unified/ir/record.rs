@@ -1,6 +1,9 @@
 use crate::ir::OpId;
+use crate::mvcc::disk::disk_io::DiskIo;
 use crate::occ::TransactionId as OccTransactionId;
 use crate::tapir::Timestamp;
+use crate::unified::wisckeylsm::manifest::UnifiedManifest;
+use crate::unified::wisckeylsm::vlog::UnifiedVlogSegment;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt::Debug;
@@ -251,25 +254,39 @@ pub enum IrEntryRef<'a, K, V> {
 
 /// In-memory IR record state: overlay (current view), base (sealed views),
 /// and the prepare VLog index for cross-view commits.
-pub(crate) struct IrRecord<K: Ord, V> {
+pub(crate) struct IrRecord<K: Ord, V, IO: DiskIo> {
+    active_vlog: UnifiedVlogSegment<IO>,
+    sealed_vlog_segments: BTreeMap<u64, UnifiedVlogSegment<IO>>,
+    current_view: u64,
+    manifest: UnifiedManifest,
+
     /// Current view's IR entries (in-memory only).
     ///
     /// At seal time, finalized entries are serialized to the VLog and
     /// replaced by `IrSstEntry` records in `ir_base`.  The overlay is
     /// then cleared.  Typed K, V so that `Prepare` entries can be
     /// inspected without deserializing from the VLog.
-    pub(super) ir_overlay: BTreeMap<OpId, IrMemEntry<K, V>>,
+    ir_overlay: BTreeMap<OpId, IrMemEntry<K, V>>,
 
     /// IR base: maps OpId → IrSstEntry for the sealed IR base record.
     /// In a full implementation this would be an on-disk IR SST.
     /// For now, we use an in-memory BTreeMap as a stepping stone.
-    pub(super) ir_base: BTreeMap<OpId, IrSstEntry>,
+    ir_base: BTreeMap<OpId, IrSstEntry>,
 
 }
 
-impl<K: Ord, V> IrRecord<K, V> {
-    pub(crate) fn new() -> Self {
+impl<K: Ord, V, IO: DiskIo> IrRecord<K, V, IO> {
+    pub(crate) fn new(
+        active_vlog: UnifiedVlogSegment<IO>,
+        sealed_vlog_segments: BTreeMap<u64, UnifiedVlogSegment<IO>>,
+        current_view: u64,
+        manifest: UnifiedManifest,
+    ) -> Self {
         Self {
+            active_vlog,
+            sealed_vlog_segments,
+            current_view,
+            manifest,
             ir_overlay: BTreeMap::new(),
             ir_base: BTreeMap::new(),
         }
@@ -278,6 +295,167 @@ impl<K: Ord, V> IrRecord<K, V> {
     /// Iterate over all IR overlay entries.
     pub(crate) fn ir_overlay_entries(&self) -> impl Iterator<Item = (&OpId, &IrMemEntry<K, V>)> {
         self.ir_overlay.iter()
+    }
+
+    pub(crate) fn current_view(&self) -> u64 {
+        self.current_view
+    }
+
+    pub(crate) fn sealed_vlog_segments(&self) -> &BTreeMap<u64, UnifiedVlogSegment<IO>> {
+        &self.sealed_vlog_segments
+    }
+
+    pub(crate) fn active_vlog_id(&self) -> u64 {
+        self.active_vlog.id
+    }
+
+    pub(crate) fn active_vlog_write_offset(&self) -> u64 {
+        self.active_vlog.write_offset()
+    }
+
+    pub(crate) fn active_vlog_views(&self) -> &[crate::unified::types::ViewRange] {
+        &self.active_vlog.views
+    }
+
+    pub(crate) fn append_batch_to_active(
+        &mut self,
+        entries: &[(OpId, VlogEntryType, &IrPayloadInline<K, V>)],
+    ) -> Result<Vec<UnifiedVlogPtr>, crate::mvcc::disk::error::StorageError>
+    where
+        K: serde::Serialize,
+        V: serde::Serialize,
+    {
+        self.active_vlog.append_batch(entries)
+    }
+
+    pub(crate) fn set_current_view_for_install(&mut self, view: u64) {
+        self.current_view = view;
+        self.manifest.current_view = view;
+    }
+
+    pub(crate) fn active_or_sealed_segment(
+        &self,
+        segment_id: u64,
+    ) -> Option<&UnifiedVlogSegment<IO>> {
+        self.sealed_vlog_segments
+            .get(&segment_id)
+            .or(if self.active_vlog.id == segment_id {
+                Some(&self.active_vlog)
+            } else {
+                None
+            })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn read_payload(
+        &self,
+        ptr: &UnifiedVlogPtr,
+    ) -> Result<(VlogEntryType, IrPayloadInline<K, V>), crate::mvcc::disk::error::StorageError>
+    where
+        K: serde::de::DeserializeOwned,
+        V: serde::de::DeserializeOwned,
+    {
+        let segment = self
+            .active_or_sealed_segment(ptr.segment_id)
+            .ok_or_else(|| {
+                crate::mvcc::disk::error::StorageError::Codec(format!(
+                    "segment {} not found",
+                    ptr.segment_id
+                ))
+            })?;
+
+        let (_, ty, payload) = segment.read_entry::<K, V>(ptr)?;
+        Ok((ty, payload))
+    }
+
+    pub(crate) fn clear_ir_base(&mut self) {
+        self.ir_base.clear();
+    }
+
+    pub(crate) fn insert_ir_base_entry(&mut self, op_id: OpId, entry: IrSstEntry) {
+        self.ir_base.insert(op_id, entry);
+    }
+
+    pub(crate) fn sealed_vlog_segment_values(
+        &self,
+    ) -> impl Iterator<Item = &UnifiedVlogSegment<IO>> {
+        self.sealed_vlog_segments.values()
+    }
+
+    pub(crate) fn active_vlog_ref(&self) -> &UnifiedVlogSegment<IO> {
+        &self.active_vlog
+    }
+
+    pub(crate) fn append_ir_entries_for_seal(
+        &mut self,
+        finalized_entries: &[(OpId, VlogEntryType, IrPayloadInline<K, V>)],
+    ) -> Result<Vec<UnifiedVlogPtr>, crate::mvcc::disk::error::StorageError>
+    where
+        K: Clone + serde::Serialize,
+        V: Clone + serde::Serialize,
+    {
+        if finalized_entries.is_empty() {
+            return Ok(Vec::new());
+        }
+        let entry_refs: Vec<(OpId, VlogEntryType, &IrPayloadInline<K, V>)> = finalized_entries
+            .iter()
+            .map(|(op, et, p)| (*op, *et, p))
+            .collect();
+        self.active_vlog.append_batch(&entry_refs)
+    }
+
+    pub(crate) fn seal_active_view_and_rotate_if_needed(
+        &mut self,
+        base_dir: &std::path::Path,
+        io_flags: crate::mvcc::disk::disk_io::OpenFlags,
+        min_view_vlog_size: u64,
+        finalized_count: usize,
+    ) -> Result<(), crate::mvcc::disk::error::StorageError> {
+        self.active_vlog.sync()?;
+        self.active_vlog.finish_view(finalized_count as u32);
+
+        let segment_size = self.active_vlog.write_offset();
+        if segment_size >= min_view_vlog_size {
+            let sealed_id = self.active_vlog.id;
+            let sealed_path = self.active_vlog.path().clone();
+            let sealed_views = self.active_vlog.views.clone();
+            let sealed_size = self.active_vlog.write_offset();
+
+            self.manifest.sealed_vlog_segments.push(crate::unified::types::VlogSegmentMeta {
+                segment_id: sealed_id,
+                path: sealed_path.clone(),
+                views: sealed_views.clone(),
+                total_size: sealed_size,
+            });
+
+            let old_active = std::mem::replace(&mut self.active_vlog, {
+                let new_id = self.manifest.next_segment_id;
+                self.manifest.next_segment_id += 1;
+                let new_path = base_dir.join(format!("vlog_seg_{new_id:04}.dat"));
+                UnifiedVlogSegment::<IO>::open(new_id, new_path, io_flags)?
+            });
+
+            self.sealed_vlog_segments.insert(
+                sealed_id,
+                UnifiedVlogSegment::<IO>::open_at(
+                    sealed_id,
+                    sealed_path,
+                    sealed_size,
+                    sealed_views,
+                    io_flags,
+                )?,
+            );
+            old_active.close();
+        }
+
+        self.current_view += 1;
+        self.manifest.current_view = self.current_view;
+        self.manifest.active_segment_id = self.active_vlog.id;
+        self.manifest.active_write_offset = self.active_vlog.write_offset();
+        self.manifest.save::<IO>(base_dir)?;
+        self.active_vlog.start_view(self.current_view);
+
+        Ok(())
     }
 
     /// Insert an IR entry into the overlay.
@@ -344,7 +522,7 @@ impl<K: Ord, V> IrRecord<K, V> {
     }
 }
 
-impl<K: Ord + Clone, V: Clone> IrRecord<K, V> {
+impl<K: Ord + Clone, V: Clone, IO: DiskIo> IrRecord<K, V, IO> {
     /// Extract only finalized entries from the overlay (for leader merge simulation).
     pub(crate) fn extract_finalized_entries(&self) -> Vec<(OpId, IrMemEntry<K, V>)> {
         self.ir_overlay

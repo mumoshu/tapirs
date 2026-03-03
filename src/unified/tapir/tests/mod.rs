@@ -6,3 +6,5 @@ mod ro_txn;
 mod rw_txn;
 #[cfg(test)]
 mod compaction;
+#[cfg(test)]
+mod state_reopen;

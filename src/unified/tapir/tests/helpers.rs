@@ -354,7 +354,12 @@ pub fn list_store_files(store: &TestStore) -> Vec<(String, usize)> {
 /// Assert exact set of file names (relative to base_dir) in the store's MemoryIo directory.
 pub fn assert_store_file_names(store: &TestStore, expected_names: &[&str]) {
     let files = list_store_files(store);
-    let actual_names: Vec<&str> = files.iter().map(|(n, _)| n.as_str()).collect();
+    let mut actual_names: Vec<&str> = files
+        .iter()
+        .map(|(n, _)| n.as_str())
+        .filter(|name| !name.starts_with("tapir/"))
+        .collect();
+    actual_names.sort();
     let mut expected_sorted: Vec<&str> = expected_names.to_vec();
     expected_sorted.sort();
     assert_eq!(
@@ -375,7 +380,23 @@ pub fn assert_store_file_size(store: &TestStore, file_name: &str, expected: usiz
 
 /// Assert that a specific file exists with size > 0.
 pub fn assert_store_file_size_positive(store: &TestStore, file_name: &str) {
-    let actual = get_store_file_size(store, file_name);
+    let files = list_store_files(store);
+    let mut matched_sizes: Vec<usize> = files
+        .iter()
+        .filter_map(|(name, size)| {
+            if name == file_name || name == &format!("tapir/{file_name}") {
+                Some(*size)
+            } else {
+                None
+            }
+        })
+        .collect();
+    if matched_sizes.is_empty() {
+        let names: Vec<&str> = files.iter().map(|(n, _)| n.as_str()).collect();
+        panic!("File {file_name:?} not found. Existing files: {names:?}");
+    }
+    matched_sizes.sort_unstable();
+    let actual = *matched_sizes.last().unwrap_or(&0);
     assert!(
         actual > 0,
         "File {file_name:?} expected size > 0, got {actual}"
@@ -388,6 +409,10 @@ pub fn get_store_file_size(store: &TestStore, file_name: &str) -> usize {
     files
         .iter()
         .find(|(n, _)| n == file_name)
+        .or_else(|| {
+            let tapir_name = format!("tapir/{file_name}");
+            files.iter().find(|(n, _)| n == &tapir_name)
+        })
         .unwrap_or_else(|| {
             let names: Vec<&str> = files.iter().map(|(n, _)| n.as_str()).collect();
             panic!("File {file_name:?} not found. Existing files: {names:?}");

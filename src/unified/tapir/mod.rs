@@ -1,4 +1,3 @@
-pub(crate) use super::UnifiedStore;
 pub(crate) use types::CachedPrepare;
 
 pub(crate) mod mvcc_impl;

@@ -10,7 +10,7 @@ use crate::unified::tapir::CachedPrepare;
 use crate::IrClientId;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Fixed header size: entry_type(1) + entry_len(4) + op_id.client_id(8) + op_id.number(8) = 21.
 const HEADER_SIZE: usize = 21;
@@ -77,7 +77,7 @@ impl<IO: DiskIo> UnifiedVlogSegment<IO> {
     }
 
     fn decode_raw_entry(
-        path: &PathBuf,
+        path: &Path,
         offset: u64,
         raw: &[u8],
     ) -> Result<RawVlogEntry, StorageError> {

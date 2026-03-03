@@ -362,64 +362,34 @@ fn unified_store_cross_view_read() {
     };
     let vlog_ptr = ptr.txn_ptr;
 
-    // Read the prepare from the sealed VLog
-    let cached = store
-        .resolve_on_disk(&UnifiedVlogPrepareValuePtr {
+    // Read through resolve_value (first read hits disk and caches transaction entry)
+    let value_a_entry = UnifiedLsmEntry {
+        value_ref: Some(ValueLocation::OnDisk(UnifiedVlogPrepareValuePtr {
             txn_ptr: vlog_ptr,
             write_index: 0,
-        })
-        .unwrap();
+        })),
+        last_read_ts: None,
+    };
+    let resolved_a = store.resolve_value(&value_a_entry).unwrap();
+    assert_eq!(resolved_a.as_deref(), Some("value_a"));
+    assert_eq!(store.vlog_read_count(), 1, "Expected exactly 1 VLog read");
 
-    // Verify ALL fields of the CachedPrepare
-    assert_eq!(
-        cached.transaction_id,
-        test_txn_id(1, 1),
-        "CachedPrepare transaction_id mismatch"
-    );
-    assert_eq!(
-        cached.commit_ts,
-        test_ts(5),
-        "CachedPrepare commit_ts mismatch"
-    );
-    assert_eq!(
-        cached.read_set.len(),
-        0,
-        "CachedPrepare read_set should be empty"
-    );
-    assert_eq!(
-        cached.scan_set.len(),
-        0,
-        "CachedPrepare scan_set should be empty"
-    );
-    assert_eq!(
-        cached.write_set.len(),
-        2,
-        "CachedPrepare write_set should have 2 entries"
-    );
-    assert_eq!(cached.write_set[0].0, "key_a");
-    assert_eq!(cached.write_set[0].1, Some("value_a".to_string()));
-    assert_eq!(cached.write_set[1].0, "key_b");
-    assert_eq!(cached.write_set[1].1, Some("value_b".to_string()));
-
-    // First read should have incremented vlog_read_count
-    assert_eq!(store.vlog_read_count(), 1, "Expected 1 VLog read");
-
-    // Second read should hit cache (check vlog_read_count unchanged)
+    // Second read of same txn at different write index should hit TAPIR cache
     let reads_before = store.vlog_read_count();
-    let cached2 = store
-        .resolve_on_disk(&UnifiedVlogPrepareValuePtr {
+    let value_b_entry = UnifiedLsmEntry {
+        value_ref: Some(ValueLocation::OnDisk(UnifiedVlogPrepareValuePtr {
             txn_ptr: vlog_ptr,
             write_index: 1,
-        })
-        .unwrap();
+        })),
+        last_read_ts: None,
+    };
+    let resolved_b = store.resolve_value(&value_b_entry).unwrap();
+    assert_eq!(resolved_b.as_deref(), Some("value_b"));
     assert_eq!(
         store.vlog_read_count(),
         reads_before,
-        "Expected LRU cache hit"
+        "Expected LRU cache hit (no additional VLog reads)"
     );
-    // Verify the cached data is the same
-    assert_eq!(cached2.write_set.len(), 2);
-    assert_eq!(cached2.transaction_id, test_txn_id(1, 1));
 
     // After seal: manifest + active VLog with data
     assert_store_file_names(&store, &["UNIFIED_MANIFEST", "vlog_seg_0000.dat"]);
