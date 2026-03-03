@@ -1,16 +1,9 @@
 pub mod cli;
-mod ir_record;
-mod manifest;
-mod prepare_cache;
+mod ir;
+mod tapir;
+mod tapir_recovery;
+mod wisckeylsm;
 pub mod types;
-pub(crate) mod unified_memtable;
-mod vlog;
-
-mod mvcc_impl;
-mod tapirstore;
-
-#[cfg(test)]
-mod tests;
 
 use crate::ir::OpId;
 use crate::mvcc::disk::disk_io::{DiskIo, OpenFlags};
@@ -24,12 +17,12 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use ir_record::{IrPayloadInline, IrRecord, VlogEntryType};
-use manifest::UnifiedManifest;
-use prepare_cache::PrepareCache;
+use ir::record::{IrPayloadInline, IrRecord, VlogEntryType};
 use types::*;
-use unified_memtable::UnifiedMemtable;
-use vlog::UnifiedVlogSegment;
+use wisckeylsm::manifest::UnifiedManifest;
+use wisckeylsm::prepare_cache::PrepareCache;
+use wisckeylsm::unified_memtable::UnifiedMemtable;
+use wisckeylsm::vlog::UnifiedVlogSegment;
 
 /// Default prepare cache capacity.
 const DEFAULT_PREPARE_CACHE_CAPACITY: usize = 1024;

@@ -2,7 +2,7 @@ use super::helpers::*;
 use crate::mvcc::disk::disk_io::OpenFlags;
 use crate::mvcc::disk::memory_io::MemoryIo;
 use crate::unified::types::*;
-use crate::unified::vlog::UnifiedVlogSegment;
+use crate::unified::wisckeylsm::vlog::UnifiedVlogSegment;
 
 #[test]
 fn vlog_entry_roundtrip_prepare() {

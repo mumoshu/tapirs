@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use crate::mvcc::disk::memory_io::MemoryIo;
 use crate::tapir::Timestamp;
 use crate::tapirstore::TapirStore;
@@ -7,6 +5,7 @@ use crate::unified::types::*;
 use crate::unified::UnifiedStore;
 
 use super::helpers::*;
+use super::super::replay_committed_from_ir_record;
 
 /// Demonstrates how to take a backup of the IR record AND MVCC SST entries
 /// and rebuild everything from those two sources.
@@ -138,46 +137,8 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
     assert_value_location_in_memory(&restored, "b", test_ts(5), false);
     assert_value_location_in_memory(&restored, "c", test_ts(10), false);
 
-    // Step 2: Replay IR entries from the unsealed view
-    // Only process Commit entries (with their matching Prepares)
-    let mut prepare_index: BTreeMap<crate::occ::TransactionId, &IrPayloadInline<String, String>> =
-        BTreeMap::new();
-    for (_, entry) in &unsealedview_ir {
-        if entry.entry_type == VlogEntryType::Prepare
-            && let IrPayloadInline::Prepare {
-                transaction_id, ..
-            } = &entry.payload
-        {
-            prepare_index.insert(*transaction_id, &entry.payload);
-        }
-    }
-
-    for (_, entry) in &unsealedview_ir {
-        if entry.entry_type == VlogEntryType::Commit
-            && let IrPayloadInline::Commit {
-                transaction_id,
-                commit_ts,
-                ..
-            } = &entry.payload
-        {
-            let prepare = prepare_index.get(transaction_id).unwrap();
-            if let IrPayloadInline::Prepare {
-                write_set,
-                read_set,
-                scan_set,
-                ..
-            } = prepare
-            {
-                // Register the prepare via Transaction
-                let txn = build_txn_from_parts(read_set, write_set, scan_set);
-                restored.register_prepare(*transaction_id, &txn, *commit_ts);
-
-                restored
-                    .commit_prepared(*transaction_id, *commit_ts)
-                    .unwrap();
-            }
-        }
-    }
+    // Step 2: Replay IR entries from the unsealed view.
+    replay_committed_from_ir_record(&mut restored, &unsealedview_ir).unwrap();
 
     // === Phase 3: Verify ALL restored state ===
 

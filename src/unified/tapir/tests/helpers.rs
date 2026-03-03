@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::ir::OpId;
 use crate::mvcc::disk::memory_io::MemoryIo;
 use crate::occ::{ScanEntry, SharedTransaction, Transaction, TransactionId};

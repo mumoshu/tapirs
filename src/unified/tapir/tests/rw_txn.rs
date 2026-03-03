@@ -428,7 +428,7 @@ fn unified_store_cross_view_read() {
 
 #[test]
 fn prepare_cache_lru_eviction() {
-    use crate::unified::prepare_cache::PrepareCache;
+    use crate::unified::wisckeylsm::prepare_cache::PrepareCache;
 
     let mut cache = PrepareCache::<String, String>::new(2);
     assert_eq!(cache.len(), 0);

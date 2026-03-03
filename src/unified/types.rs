@@ -2,7 +2,7 @@ use crate::occ::TransactionId as OccTransactionId;
 use crate::tapir::Timestamp;
 use serde::{Deserialize, Serialize};
 
-pub use super::ir_record::{
+pub use super::ir::record::{
     IrEntryRef, IrMemEntry, IrPayloadInline, IrSstEntry, IrState, PrepareRef, VlogEntryType,
 };
 
