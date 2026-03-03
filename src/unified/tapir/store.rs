@@ -434,9 +434,9 @@ impl<
         K: Key + serde::Serialize + serde::de::DeserializeOwned,
         V: Value + serde::Serialize + serde::de::DeserializeOwned,
         IO: DiskIo,
-    > TapirStoreBackend<K, V> for TapirState<K, V, IO>
+    > TapirState<K, V, IO>
 {
-    fn tapir_uncommitted_get(&self, key: &K) -> Result<(Option<V>, Timestamp), StorageError> {
+    pub(crate) fn do_uncommitted_get(&self, key: &K) -> Result<(Option<V>, Timestamp), StorageError> {
         if let Some((ck, entry)) = self.unified_memtable().get_latest(key) {
             let ts = ck.timestamp.0;
             let value = resolve_value(self, entry)?;
@@ -445,7 +445,7 @@ impl<
         Ok((None, Timestamp::default()))
     }
 
-    fn tapir_uncommitted_get_at(&self, key: &K, ts: Timestamp) -> Result<(Option<V>, Timestamp), StorageError> {
+    pub(crate) fn do_uncommitted_get_at(&self, key: &K, ts: Timestamp) -> Result<(Option<V>, Timestamp), StorageError> {
         if let Some((ck, entry)) = self.unified_memtable().get_at(key, ts) {
             let write_ts = ck.timestamp.0;
             let value = resolve_value(self, entry)?;
@@ -454,7 +454,7 @@ impl<
         Ok((None, Timestamp::default()))
     }
 
-    fn tapir_uncommitted_scan(
+    pub(crate) fn do_uncommitted_scan(
         &self,
         start: &K,
         end: &K,
@@ -468,120 +468,7 @@ impl<
         Ok(out)
     }
 
-    fn tapir_txn_log_get(&self, id: &TransactionId) -> Option<(Timestamp, bool)> {
-        self.txn_log_get(id)
-    }
-
-    fn tapir_txn_log_insert(
-        &mut self,
-        id: TransactionId,
-        ts: Timestamp,
-        committed: bool,
-    ) -> Option<(Timestamp, bool)> {
-        self.txn_log_insert(id, ts, committed)
-    }
-
-    fn tapir_txn_log_contains(&self, id: &TransactionId) -> bool {
-        self.txn_log_contains(id)
-    }
-
-    fn tapir_txn_log_len(&self) -> usize {
-        self.txn_log_len()
-    }
-
-    fn tapir_raise_min_prepare_time(&mut self, time: u64) -> u64 {
-        self.raise_min_prepare_time(time)
-    }
-
-    fn tapir_finalize_min_prepare_time(&mut self, time: u64) {
-        self.finalize_min_prepare_time(time)
-    }
-
-    fn tapir_sync_min_prepare_time(&mut self, time: u64) {
-        self.sync_min_prepare_time(time)
-    }
-
-    fn tapir_reset_min_prepare_time_to_finalized(&mut self) {
-        self.reset_min_prepare_time_to_finalized()
-    }
-
-    fn tapir_record_cdc_delta(&mut self, base_view: u64, delta: LeaderRecordDelta<K, V>) {
-        self.record_cdc_delta(base_view, delta)
-    }
-
-    fn tapir_cdc_deltas_from(&self, from_view: u64) -> Vec<LeaderRecordDelta<K, V>> {
-        self.cdc_deltas_from(from_view)
-    }
-
-    fn tapir_cdc_max_view(&self) -> Option<u64> {
-        self.cdc_max_view()
-    }
-
-    fn tapir_append_committed_txn(
-        &mut self,
-        txn_id: OccTransactionId,
-        commit: Timestamp,
-        read_set: &[(K, Timestamp)],
-        write_set: &[(K, Option<V>)],
-        scan_set: &[(K, K, Timestamp)],
-    ) -> Result<UnifiedVlogPtr, StorageError> {
-        self.append_committed_txn_to_active(txn_id, commit, read_set, write_set, scan_set)
-    }
-
-    fn tapir_index_committed_txn_ptr(&mut self, txn_id: OccTransactionId, txn_ptr: UnifiedVlogPtr) {
-        self.index_committed_txn_ptr(txn_id, txn_ptr)
-    }
-
-    fn tapir_register_prepare_raw(
-        &mut self,
-        txn_id: OccTransactionId,
-        prepare: Arc<CachedPrepare<K, V>>,
-    ) {
-        self.register_prepare_raw(txn_id, prepare)
-    }
-
-    fn tapir_unregister_prepare(&mut self, txn_id: &OccTransactionId) {
-        self.unregister_prepare(txn_id)
-    }
-
-    fn tapir_lookup_prepare(&self, txn_id: &OccTransactionId) -> Option<Arc<CachedPrepare<K, V>>> {
-        self.lookup_prepare(txn_id)
-    }
-
-    fn tapir_lookup_prepare_value_ref(
-        &self,
-        txn_id: &OccTransactionId,
-        write_index: u16,
-    ) -> Option<(K, Option<V>)> {
-        self.lookup_prepare_value_ref(txn_id, write_index)
-    }
-
-    fn tapir_lookup_committed_txn_ptr(&self, txn_id: &OccTransactionId) -> Option<UnifiedVlogPtr> {
-        self.lookup_committed_txn_ptr(txn_id)
-    }
-
-    fn tapir_prepare_cache_get(
-        &self,
-        segment_id: u64,
-        offset: u64,
-    ) -> Option<Arc<CachedPrepare<K, V>>> {
-        self.prepare_cache_get(segment_id, offset)
-    }
-
-    fn tapir_prepare_cache_insert(
-        &self,
-        segment_id: u64,
-        offset: u64,
-        prepare: Arc<CachedPrepare<K, V>>,
-    ) {
-        self.prepare_cache_insert(segment_id, offset, prepare)
-    }
-
-    fn tapir_increment_vlog_read_count(&self) {
-        self.increment_vlog_read_count()
-    }
-
-    fn tapir_read_committed_txn(
+    pub(crate) fn read_committed_txn(
         &self,
         txn_ptr: &UnifiedVlogPtr,
     ) -> Result<CachedPrepare<K, V>, StorageError> {
@@ -594,124 +481,22 @@ impl<
 
         segment.read_committed_txn(txn_ptr)
     }
-
-    fn tapir_insert_committed_write(
-        &mut self,
-        key: K,
-        commit: Timestamp,
-        value_ref: Option<ValueLocation>,
-    ) {
-        self.unified_memtable_mut().insert(
-            key,
-            commit,
-            UnifiedLsmEntry {
-                value_ref,
-                last_read_ts: None,
-            },
-        );
-    }
-
-    fn tapir_update_last_read(&mut self, key: &K, read: Timestamp, commit_time: u64) {
-        self.unified_memtable_mut()
-            .update_last_read(key, read, commit_time);
-    }
-}
-
-pub(crate) trait TapirStoreBackend<K, V> {
-    fn tapir_uncommitted_get(&self, key: &K) -> Result<(Option<V>, Timestamp), StorageError>;
-    fn tapir_uncommitted_get_at(
-        &self,
-        key: &K,
-        ts: Timestamp,
-    ) -> Result<(Option<V>, Timestamp), StorageError>;
-    fn tapir_uncommitted_scan(
-        &self,
-        start: &K,
-        end: &K,
-        ts: Timestamp,
-    ) -> Result<Vec<(K, Option<V>, Timestamp)>, StorageError>;
-
-    fn tapir_txn_log_get(&self, id: &TransactionId) -> Option<(Timestamp, bool)>;
-    fn tapir_txn_log_insert(
-        &mut self,
-        id: TransactionId,
-        ts: Timestamp,
-        committed: bool,
-    ) -> Option<(Timestamp, bool)>;
-    fn tapir_txn_log_contains(&self, id: &TransactionId) -> bool;
-    fn tapir_txn_log_len(&self) -> usize;
-
-    fn tapir_raise_min_prepare_time(&mut self, time: u64) -> u64;
-    fn tapir_finalize_min_prepare_time(&mut self, time: u64);
-    fn tapir_sync_min_prepare_time(&mut self, time: u64);
-    fn tapir_reset_min_prepare_time_to_finalized(&mut self);
-
-    fn tapir_record_cdc_delta(&mut self, base_view: u64, delta: LeaderRecordDelta<K, V>);
-    fn tapir_cdc_deltas_from(&self, from_view: u64) -> Vec<LeaderRecordDelta<K, V>>;
-    fn tapir_cdc_max_view(&self) -> Option<u64>;
-
-    fn tapir_append_committed_txn(
-        &mut self,
-        txn_id: OccTransactionId,
-        commit: Timestamp,
-        read_set: &[(K, Timestamp)],
-        write_set: &[(K, Option<V>)],
-        scan_set: &[(K, K, Timestamp)],
-    ) -> Result<UnifiedVlogPtr, StorageError>;
-    fn tapir_index_committed_txn_ptr(&mut self, txn_id: OccTransactionId, txn_ptr: UnifiedVlogPtr);
-
-    fn tapir_register_prepare_raw(
-        &mut self,
-        txn_id: OccTransactionId,
-        prepare: Arc<CachedPrepare<K, V>>,
-    );
-    fn tapir_unregister_prepare(&mut self, txn_id: &OccTransactionId);
-    fn tapir_lookup_prepare(&self, txn_id: &OccTransactionId) -> Option<Arc<CachedPrepare<K, V>>>;
-    fn tapir_lookup_prepare_value_ref(
-        &self,
-        txn_id: &OccTransactionId,
-        write_index: u16,
-    ) -> Option<(K, Option<V>)>;
-    fn tapir_lookup_committed_txn_ptr(&self, txn_id: &OccTransactionId) -> Option<crate::unified::types::UnifiedVlogPtr>;
-    fn tapir_prepare_cache_get(
-        &self,
-        segment_id: u64,
-        offset: u64,
-    ) -> Option<Arc<CachedPrepare<K, V>>>;
-    fn tapir_prepare_cache_insert(
-        &self,
-        segment_id: u64,
-        offset: u64,
-        prepare: Arc<CachedPrepare<K, V>>,
-    );
-    fn tapir_increment_vlog_read_count(&self);
-    fn tapir_read_committed_txn(
-        &self,
-        txn_ptr: &UnifiedVlogPtr,
-    ) -> Result<CachedPrepare<K, V>, StorageError>;
-    fn tapir_insert_committed_write(
-        &mut self,
-        key: K,
-        commit: Timestamp,
-        value_ref: Option<ValueLocation>,
-    );
-    fn tapir_update_last_read(&mut self, key: &K, read: Timestamp, commit_time: u64);
 }
 
 pub(crate) fn commit_transaction_data<
-    K: serde::Serialize + Clone + serde::de::DeserializeOwned,
-    V: serde::Serialize + Clone + serde::de::DeserializeOwned,
-    T: TapirStoreBackend<K, V>,
+    K: Key,
+    V: Value,
+    IO: DiskIo,
 >(
-    store: &mut T,
+    store: &mut TapirState<K, V, IO>,
     txn_id: OccTransactionId,
     read_set: &[(K, Timestamp)],
     write_set: &[(K, Option<V>)],
     scan_set: &[(K, K, Timestamp)],
     commit: Timestamp,
 ) -> Result<(), StorageError> {
-    let txn_ptr = store.tapir_append_committed_txn(txn_id, commit, read_set, write_set, scan_set)?;
-    store.tapir_index_committed_txn_ptr(txn_id, txn_ptr);
+    let txn_ptr = store.append_committed_txn_to_active(txn_id, commit, read_set, write_set, scan_set)?;
+    store.index_committed_txn_ptr(txn_id, txn_ptr);
 
     for (i, (key, value)) in write_set.iter().enumerate() {
         let value_ref = if value.is_some() {
@@ -723,11 +508,20 @@ pub(crate) fn commit_transaction_data<
             None
         };
 
-        store.tapir_insert_committed_write(key.clone(), commit, value_ref);
+        store.unified_memtable_mut().insert(
+            key.clone(),
+            commit,
+            UnifiedLsmEntry {
+                value_ref,
+                last_read_ts: None,
+            },
+        );
     }
 
     for (key, read) in read_set {
-        store.tapir_update_last_read(key, *read, commit.time);
+        store
+            .unified_memtable_mut()
+            .update_last_read(key, *read, commit.time);
     }
 
     Ok(())
@@ -738,8 +532,8 @@ pub(crate) fn finalize_after_seal<K: Ord + Clone, V, IO: DiskIo>(state: &mut Tap
     state.clear_prepare_registry();
 }
 
-pub(crate) fn register_prepare<K: Key, V: Value + Clone, T: TapirStoreBackend<K, V>>(
-    store: &mut T,
+pub(crate) fn register_prepare<K: Key, V: Value, IO: DiskIo>(
+    store: &mut TapirState<K, V, IO>,
     txn_id: OccTransactionId,
     transaction: &crate::occ::Transaction<K, V, Timestamp>,
     commit_ts: Timestamp,
@@ -775,27 +569,27 @@ pub(crate) fn register_prepare<K: Key, V: Value + Clone, T: TapirStoreBackend<K,
         scan_set,
     });
 
-    store.tapir_register_prepare_raw(txn_id, prepare);
+    store.register_prepare_raw(txn_id, prepare);
 }
 
-pub(crate) fn unregister_prepare<K, V, T: TapirStoreBackend<K, V>>(
-    store: &mut T,
+pub(crate) fn unregister_prepare<K: Key, V: Value, IO: DiskIo>(
+    store: &mut TapirState<K, V, IO>,
     txn_id: &OccTransactionId,
 ) {
-    store.tapir_unregister_prepare(txn_id);
+    store.unregister_prepare(txn_id);
 }
 
 pub(crate) fn commit_prepared<
-    K: serde::Serialize + Clone + serde::de::DeserializeOwned,
-    V: serde::Serialize + Clone + serde::de::DeserializeOwned,
-    T: TapirStoreBackend<K, V>,
+    K: Key,
+    V: Value,
+    IO: DiskIo,
 >(
-    store: &mut T,
+    store: &mut TapirState<K, V, IO>,
     txn_id: OccTransactionId,
     commit: Timestamp,
 ) -> Result<(), StorageError> {
-    let prepare = store.tapir_lookup_prepare(&txn_id);
-    let cross_view_ptr = store.tapir_lookup_committed_txn_ptr(&txn_id);
+    let prepare = store.lookup_prepare(&txn_id);
+    let cross_view_ptr = store.lookup_committed_txn_ptr(&txn_id);
 
     if let Some(prepare) = prepare {
         return commit_transaction_data(
@@ -823,11 +617,20 @@ pub(crate) fn commit_prepared<
             } else {
                 None
             };
-            store.tapir_insert_committed_write(key.clone(), commit, value_ref);
+            store.unified_memtable_mut().insert(
+                key.clone(),
+                commit,
+                UnifiedLsmEntry {
+                    value_ref,
+                    last_read_ts: None,
+                },
+            );
         }
 
         for (key, read) in &cached.read_set {
-            store.tapir_update_last_read(key, *read, commit.time);
+            store
+                .unified_memtable_mut()
+                .update_last_read(key, *read, commit.time);
         }
         return Ok(());
     }
@@ -838,38 +641,42 @@ pub(crate) fn commit_prepared<
     })
 }
 
-pub(crate) fn resolve_in_memory<K, V, T: TapirStoreBackend<K, V>>(
-    store: &T,
+pub(crate) fn resolve_in_memory<K: Key, V: Value, IO: DiskIo>(
+    store: &TapirState<K, V, IO>,
     txn_id: &OccTransactionId,
     write_index: u16,
 ) -> Option<(K, Option<V>)> {
-    store.tapir_lookup_prepare_value_ref(txn_id, write_index)
+    store.lookup_prepare_value_ref(txn_id, write_index)
 }
 
-pub(crate) fn resolve_on_disk<K, V, T: TapirStoreBackend<K, V>>(
-    store: &T,
+pub(crate) fn resolve_on_disk<
+    K: Key + serde::Serialize + serde::de::DeserializeOwned,
+    V: Value + serde::Serialize + serde::de::DeserializeOwned,
+    IO: DiskIo,
+>(
+    store: &TapirState<K, V, IO>,
     ptr: &UnifiedVlogPrepareValuePtr,
 ) -> Result<Arc<CachedPrepare<K, V>>, StorageError> {
     let segment_id = ptr.txn_ptr.segment_id;
     let offset = ptr.txn_ptr.offset;
 
-    if let Some(cached) = store.tapir_prepare_cache_get(segment_id, offset) {
+    if let Some(cached) = store.prepare_cache_get(segment_id, offset) {
         return Ok(cached);
     }
 
-    store.tapir_increment_vlog_read_count();
-    let prepare = store.tapir_read_committed_txn(&ptr.txn_ptr)?;
+    store.increment_vlog_read_count();
+    let prepare = store.read_committed_txn(&ptr.txn_ptr)?;
     let cached = Arc::new(prepare);
-    store.tapir_prepare_cache_insert(segment_id, offset, cached.clone());
+    store.prepare_cache_insert(segment_id, offset, cached.clone());
     Ok(cached)
 }
 
 pub(crate) fn resolve_value<
-    K: serde::de::DeserializeOwned,
-    V: Clone + serde::de::DeserializeOwned,
-    T: TapirStoreBackend<K, V>,
+    K: Key,
+    V: Value,
+    IO: DiskIo,
 >(
-    store: &T,
+    store: &TapirState<K, V, IO>,
     entry: &UnifiedLsmEntry,
 ) -> Result<Option<V>, StorageError> {
     match &entry.value_ref {
@@ -891,120 +698,119 @@ pub(crate) fn resolve_value<
     }
 }
 
-pub(crate) fn do_uncommitted_get<K, V, T: TapirStoreBackend<K, V>>(
-    store: &T,
+pub(crate) fn do_uncommitted_get<
+    K: Key + serde::Serialize + serde::de::DeserializeOwned,
+    V: Value + serde::Serialize + serde::de::DeserializeOwned,
+    IO: DiskIo,
+>(
+    store: &TapirState<K, V, IO>,
     key: &K,
 ) -> Result<(Option<V>, Timestamp), StorageError> {
-    store.tapir_uncommitted_get(key)
+    store.do_uncommitted_get(key)
 }
 
-pub(crate) fn do_uncommitted_get_at<K, V, T: TapirStoreBackend<K, V>>(
-    store: &T,
+pub(crate) fn do_uncommitted_get_at<
+    K: Key + serde::Serialize + serde::de::DeserializeOwned,
+    V: Value + serde::Serialize + serde::de::DeserializeOwned,
+    IO: DiskIo,
+>(
+    store: &TapirState<K, V, IO>,
     key: &K,
     ts: Timestamp,
 ) -> Result<(Option<V>, Timestamp), StorageError> {
-    store.tapir_uncommitted_get_at(key, ts)
+    store.do_uncommitted_get_at(key, ts)
 }
 
-pub(crate) fn do_uncommitted_scan<K, V, T: TapirStoreBackend<K, V>>(
-    store: &T,
+pub(crate) fn do_uncommitted_scan<
+    K: Key + serde::Serialize + serde::de::DeserializeOwned,
+    V: Value + serde::Serialize + serde::de::DeserializeOwned,
+    IO: DiskIo,
+>(
+    store: &TapirState<K, V, IO>,
     start: &K,
     end: &K,
     ts: Timestamp,
 ) -> Result<Vec<(K, Option<V>, Timestamp)>, StorageError> {
-    store.tapir_uncommitted_scan(start, end, ts)
+    store.do_uncommitted_scan(start, end, ts)
 }
 
-pub(crate) fn txn_log_get<K, V, T: TapirStoreBackend<K, V>>(
-    store: &T,
+pub(crate) fn txn_log_get<K: Key, V: Value, IO: DiskIo>(
+    store: &TapirState<K, V, IO>,
     id: &TransactionId,
 ) -> Option<(Timestamp, bool)> {
-    store.tapir_txn_log_get(id)
+    store.txn_log_get(id)
 }
 
-pub(crate) fn txn_log_insert<K, V, T: TapirStoreBackend<K, V>>(
-    store: &mut T,
+pub(crate) fn txn_log_insert<K: Key, V: Value, IO: DiskIo>(
+    store: &mut TapirState<K, V, IO>,
     id: TransactionId,
     ts: Timestamp,
     committed: bool,
 ) -> Option<(Timestamp, bool)> {
-    store.tapir_txn_log_insert(id, ts, committed)
+    store.txn_log_insert(id, ts, committed)
 }
 
-pub(crate) fn txn_log_contains<K, V, T: TapirStoreBackend<K, V>>(
-    store: &T,
+pub(crate) fn txn_log_contains<K: Key, V: Value, IO: DiskIo>(
+    store: &TapirState<K, V, IO>,
     id: &TransactionId,
 ) -> bool {
-    store.tapir_txn_log_contains(id)
+    store.txn_log_contains(id)
 }
 
-pub(crate) fn txn_log_len<K, V, T: TapirStoreBackend<K, V>>(store: &T) -> usize {
-    store.tapir_txn_log_len()
+pub(crate) fn txn_log_len<K: Key, V: Value, IO: DiskIo>(store: &TapirState<K, V, IO>) -> usize {
+    store.txn_log_len()
 }
 
-pub(crate) fn raise_min_prepare_time<K, V, T: TapirStoreBackend<K, V>>(
-    store: &mut T,
+pub(crate) fn raise_min_prepare_time<K: Key, V: Value, IO: DiskIo>(
+    store: &mut TapirState<K, V, IO>,
     time: u64,
 ) -> u64 {
-    store.tapir_raise_min_prepare_time(time)
+    store.raise_min_prepare_time(time)
 }
 
-pub(crate) fn finalize_min_prepare_time<K, V, T: TapirStoreBackend<K, V>>(
-    store: &mut T,
+pub(crate) fn finalize_min_prepare_time<K: Key, V: Value, IO: DiskIo>(
+    store: &mut TapirState<K, V, IO>,
     time: u64,
 ) {
-    store.tapir_finalize_min_prepare_time(time);
+    store.finalize_min_prepare_time(time);
 }
 
-pub(crate) fn sync_min_prepare_time<K, V, T: TapirStoreBackend<K, V>>(
-    store: &mut T,
+pub(crate) fn sync_min_prepare_time<K: Key, V: Value, IO: DiskIo>(
+    store: &mut TapirState<K, V, IO>,
     time: u64,
 ) {
-    store.tapir_sync_min_prepare_time(time);
+    store.sync_min_prepare_time(time);
 }
 
-pub(crate) fn reset_min_prepare_time_to_finalized<K, V, T: TapirStoreBackend<K, V>>(
-    store: &mut T,
+pub(crate) fn reset_min_prepare_time_to_finalized<K: Key, V: Value, IO: DiskIo>(
+    store: &mut TapirState<K, V, IO>,
 ) {
-    store.tapir_reset_min_prepare_time_to_finalized();
+    store.reset_min_prepare_time_to_finalized();
 }
 
-pub(crate) fn record_cdc_delta<K, V, T: TapirStoreBackend<K, V>>(
-    store: &mut T,
+pub(crate) fn record_cdc_delta<K: Key, V: Value, IO: DiskIo>(
+    store: &mut TapirState<K, V, IO>,
     base_view: u64,
     delta: LeaderRecordDelta<K, V>,
 ) {
-    store.tapir_record_cdc_delta(base_view, delta);
+    store.record_cdc_delta(base_view, delta);
 }
 
-pub(crate) fn cdc_deltas_from<K, V, T: TapirStoreBackend<K, V>>(
-    store: &T,
+pub(crate) fn cdc_deltas_from<K: Key, V: Value, IO: DiskIo>(
+    store: &TapirState<K, V, IO>,
     from_view: u64,
 ) -> Vec<LeaderRecordDelta<K, V>> {
-    store.tapir_cdc_deltas_from(from_view)
+    store.cdc_deltas_from(from_view)
 }
 
-pub(crate) fn cdc_max_view<K, V, T: TapirStoreBackend<K, V>>(store: &T) -> Option<u64> {
-    store.tapir_cdc_max_view()
-}
-
-#[cfg(test)]
-#[derive(Clone)]
-struct PendingCommittedTxn {
-    txn_id: OccTransactionId,
-    commit: Timestamp,
-    read_set: Vec<(String, Timestamp)>,
-    write_set: Vec<(String, Option<String>)>,
-    scan_set: Vec<(String, String, Timestamp)>,
+pub(crate) fn cdc_max_view<K: Key, V: Value, IO: DiskIo>(store: &TapirState<K, V, IO>) -> Option<u64> {
+    store.cdc_max_view()
 }
 
 #[cfg(test)]
 pub(crate) struct TapirStateRunner {
     tapir: TapirState<String, String, crate::mvcc::disk::memory_io::MemoryIo>,
-    pending_commits: Vec<PendingCommittedTxn>,
     base_dir: PathBuf,
-    io_flags: OpenFlags,
-    manifest: UnifiedManifest,
 }
 
 #[cfg(test)]
@@ -1012,14 +818,9 @@ impl TapirStateRunner {
     pub(crate) fn open(base_dir: PathBuf, io_flags: OpenFlags) -> Result<Self, StorageError> {
         crate::mvcc::disk::memory_io::MemoryIo::create_dir_all(&base_dir)?;
         let tapir = open::<String, String, crate::mvcc::disk::memory_io::MemoryIo>(&base_dir, io_flags)?;
-        let manifest = UnifiedManifest::load::<crate::mvcc::disk::memory_io::MemoryIo>(&base_dir)?
-            .unwrap_or_else(UnifiedManifest::new);
         Ok(Self {
             tapir,
-            pending_commits: Vec::new(),
             base_dir,
-            io_flags,
-            manifest,
         })
     }
 
@@ -1045,7 +846,7 @@ impl TapirStateRunner {
         transaction: &crate::occ::Transaction<String, String, Timestamp>,
         commit_ts: Timestamp,
     ) {
-        register_prepare(self, txn_id, transaction, commit_ts);
+        register_prepare(&mut self.tapir, txn_id, transaction, commit_ts);
     }
 
     pub(crate) fn commit_prepared(
@@ -1053,102 +854,11 @@ impl TapirStateRunner {
         txn_id: OccTransactionId,
         commit: Timestamp,
     ) -> Result<(), StorageError> {
-        commit_prepared(self, txn_id, commit)
+        commit_prepared(&mut self.tapir, txn_id, commit)
     }
 
     pub(crate) fn seal(&mut self, min_view_vlog_size: u64) -> Result<(), StorageError> {
-        let active_path = self
-            .base_dir
-            .join(format!("vlog_seg_{:04}.dat", self.manifest.active_segment_id));
-        let mut active_vlog = UnifiedVlogSegment::<crate::mvcc::disk::memory_io::MemoryIo>::open_at(
-            self.manifest.active_segment_id,
-            active_path,
-            self.manifest.active_write_offset,
-            Vec::new(),
-            self.io_flags,
-        )?;
-        active_vlog.start_view(self.manifest.current_view);
-
-        let mut num_entries = 0_u32;
-        for pending in self.pending_commits.drain(..) {
-            let txn_ptr = active_vlog.append_committed_txn(
-                pending.txn_id,
-                pending.commit,
-                &pending.read_set,
-                &pending.write_set,
-                &pending.scan_set,
-            )?;
-            num_entries += 1;
-            self.tapir.index_committed_txn_ptr(pending.txn_id, txn_ptr);
-
-            for (i, (key, value)) in pending.write_set.iter().enumerate() {
-                let value_ref = if value.is_some() {
-                    Some(ValueLocation::OnDisk(UnifiedVlogPrepareValuePtr {
-                        txn_ptr,
-                        write_index: i as u16,
-                    }))
-                } else {
-                    None
-                };
-                self.tapir.unified_memtable_mut().insert(
-                    key.clone(),
-                    pending.commit,
-                    UnifiedLsmEntry {
-                        value_ref,
-                        last_read_ts: None,
-                    },
-                );
-            }
-
-            for (key, read) in &pending.read_set {
-                self.tapir
-                    .unified_memtable_mut()
-                    .update_last_read(key, *read, pending.commit.time);
-            }
-        }
-
-        active_vlog.sync()?;
-        active_vlog.finish_view(num_entries);
-
-        let segment_size = active_vlog.write_offset();
-        if segment_size >= min_view_vlog_size {
-            let sealed_id = active_vlog.id;
-            let sealed_path = active_vlog.path().clone();
-            let sealed_views = active_vlog.views.clone();
-            let sealed_size = active_vlog.write_offset();
-
-            self.manifest.sealed_vlog_segments.push(VlogSegmentMeta {
-                segment_id: sealed_id,
-                path: sealed_path,
-                views: sealed_views,
-                total_size: sealed_size,
-            });
-
-            self.manifest.active_segment_id = self.manifest.next_segment_id;
-            self.manifest.next_segment_id += 1;
-            self.manifest.active_write_offset = 0;
-
-            let new_path = self
-                .base_dir
-                .join(format!("vlog_seg_{:04}.dat", self.manifest.active_segment_id));
-            let new_active = UnifiedVlogSegment::<crate::mvcc::disk::memory_io::MemoryIo>::open(
-                self.manifest.active_segment_id,
-                new_path,
-                self.io_flags,
-            )?;
-            new_active.close();
-        } else {
-            self.manifest.active_segment_id = active_vlog.id;
-            self.manifest.active_write_offset = active_vlog.write_offset();
-        }
-
-        self.manifest.current_view += 1;
-        self.manifest
-            .save::<crate::mvcc::disk::memory_io::MemoryIo>(&self.base_dir)?;
-        active_vlog.close();
-
-        finalize_after_seal(&mut self.tapir);
-        Ok(())
+        self.tapir.seal_current_view(min_view_vlog_size)
     }
 
     pub(crate) fn get_at(
@@ -1156,7 +866,7 @@ impl TapirStateRunner {
         key: &str,
         ts: Timestamp,
     ) -> Result<(Option<String>, Timestamp), StorageError> {
-        do_uncommitted_get_at(self, &key.to_string(), ts)
+        self.tapir.do_uncommitted_get_at(&key.to_string(), ts)
     }
 
     pub(crate) fn scan(
@@ -1165,7 +875,8 @@ impl TapirStateRunner {
         end: &str,
         ts: Timestamp,
     ) -> Result<Vec<(String, Option<String>, Timestamp)>, StorageError> {
-        do_uncommitted_scan(self, &start.to_string(), &end.to_string(), ts)
+        self.tapir
+            .do_uncommitted_scan(&start.to_string(), &end.to_string(), ts)
     }
 
     pub(crate) fn has_prepare_write_conflict(&self, key: &str) -> bool {
@@ -1174,239 +885,6 @@ impl TapirStateRunner {
 
     pub(crate) fn contains_prepare(&self, txn_id: &OccTransactionId) -> bool {
         self.tapir.contains_prepare(txn_id)
-    }
-}
-
-#[cfg(test)]
-impl TapirStoreBackend<String, String> for TapirStateRunner {
-    fn tapir_uncommitted_get(&self, key: &String) -> Result<(Option<String>, Timestamp), StorageError> {
-        if let Some((ck, entry)) = self.tapir.unified_memtable().get_latest(key) {
-            let ts = ck.timestamp.0;
-            let value = resolve_value(self, entry)?;
-            return Ok((value, ts));
-        }
-        Ok((None, Timestamp::default()))
-    }
-
-    fn tapir_uncommitted_get_at(
-        &self,
-        key: &String,
-        ts: Timestamp,
-    ) -> Result<(Option<String>, Timestamp), StorageError> {
-        if let Some((ck, entry)) = self.tapir.unified_memtable().get_at(key, ts) {
-            let write_ts = ck.timestamp.0;
-            let value = resolve_value(self, entry)?;
-            return Ok((value, write_ts));
-        }
-        Ok((None, Timestamp::default()))
-    }
-
-    fn tapir_uncommitted_scan(
-        &self,
-        start: &String,
-        end: &String,
-        ts: Timestamp,
-    ) -> Result<Vec<(String, Option<String>, Timestamp)>, StorageError> {
-        let mut out = Vec::new();
-        for (ck, entry) in self.tapir.unified_memtable().scan(start, end, ts) {
-            let value = resolve_value(self, entry)?;
-            out.push((ck.key.clone(), value, ck.timestamp.0));
-        }
-        Ok(out)
-    }
-
-    fn tapir_txn_log_get(&self, id: &TransactionId) -> Option<(Timestamp, bool)> {
-        self.tapir.txn_log_get(id)
-    }
-
-    fn tapir_txn_log_insert(
-        &mut self,
-        id: TransactionId,
-        ts: Timestamp,
-        committed: bool,
-    ) -> Option<(Timestamp, bool)> {
-        self.tapir.txn_log_insert(id, ts, committed)
-    }
-
-    fn tapir_txn_log_contains(&self, id: &TransactionId) -> bool {
-        self.tapir.txn_log_contains(id)
-    }
-
-    fn tapir_txn_log_len(&self) -> usize {
-        self.tapir.txn_log_len()
-    }
-
-    fn tapir_raise_min_prepare_time(&mut self, time: u64) -> u64 {
-        self.tapir.raise_min_prepare_time(time)
-    }
-
-    fn tapir_finalize_min_prepare_time(&mut self, time: u64) {
-        self.tapir.finalize_min_prepare_time(time)
-    }
-
-    fn tapir_sync_min_prepare_time(&mut self, time: u64) {
-        self.tapir.sync_min_prepare_time(time)
-    }
-
-    fn tapir_reset_min_prepare_time_to_finalized(&mut self) {
-        self.tapir.reset_min_prepare_time_to_finalized()
-    }
-
-    fn tapir_record_cdc_delta(&mut self, base_view: u64, delta: LeaderRecordDelta<String, String>) {
-        self.tapir.record_cdc_delta(base_view, delta)
-    }
-
-    fn tapir_cdc_deltas_from(&self, from_view: u64) -> Vec<LeaderRecordDelta<String, String>> {
-        self.tapir.cdc_deltas_from(from_view)
-    }
-
-    fn tapir_cdc_max_view(&self) -> Option<u64> {
-        self.tapir.cdc_max_view()
-    }
-
-    fn tapir_append_committed_txn(
-        &mut self,
-        txn_id: OccTransactionId,
-        commit: Timestamp,
-        read_set: &[(String, Timestamp)],
-        write_set: &[(String, Option<String>)],
-        scan_set: &[(String, String, Timestamp)],
-    ) -> Result<UnifiedVlogPtr, StorageError> {
-        self.pending_commits.push(PendingCommittedTxn {
-            txn_id,
-            commit,
-            read_set: read_set.to_vec(),
-            write_set: write_set.to_vec(),
-            scan_set: scan_set.to_vec(),
-        });
-
-        Ok(UnifiedVlogPtr {
-            segment_id: u64::MAX,
-            offset: self.pending_commits.len() as u64,
-            length: 0,
-        })
-    }
-
-    fn tapir_index_committed_txn_ptr(&mut self, txn_id: OccTransactionId, txn_ptr: UnifiedVlogPtr) {
-        self.tapir.index_committed_txn_ptr(txn_id, txn_ptr);
-    }
-
-    fn tapir_register_prepare_raw(
-        &mut self,
-        txn_id: OccTransactionId,
-        prepare: Arc<CachedPrepare<String, String>>,
-    ) {
-        self.tapir.register_prepare_raw(txn_id, prepare);
-    }
-
-    fn tapir_unregister_prepare(&mut self, txn_id: &OccTransactionId) {
-        self.tapir.unregister_prepare(txn_id);
-    }
-
-    fn tapir_lookup_prepare(&self, txn_id: &OccTransactionId) -> Option<Arc<CachedPrepare<String, String>>> {
-        self.tapir.lookup_prepare(txn_id)
-    }
-
-    fn tapir_lookup_prepare_value_ref(
-        &self,
-        txn_id: &OccTransactionId,
-        write_index: u16,
-    ) -> Option<(String, Option<String>)> {
-        self.tapir.lookup_prepare_value_ref(txn_id, write_index)
-    }
-
-    fn tapir_lookup_committed_txn_ptr(&self, txn_id: &OccTransactionId) -> Option<UnifiedVlogPtr> {
-        self.tapir.lookup_committed_txn_ptr(txn_id)
-    }
-
-    fn tapir_prepare_cache_get(
-        &self,
-        segment_id: u64,
-        offset: u64,
-    ) -> Option<Arc<CachedPrepare<String, String>>> {
-        self.tapir.prepare_cache_get(segment_id, offset)
-    }
-
-    fn tapir_prepare_cache_insert(
-        &self,
-        segment_id: u64,
-        offset: u64,
-        prepare: Arc<CachedPrepare<String, String>>,
-    ) {
-        self.tapir.prepare_cache_insert(segment_id, offset, prepare);
-    }
-
-    fn tapir_increment_vlog_read_count(&self) {
-        self.tapir.increment_vlog_read_count();
-    }
-
-    fn tapir_read_committed_txn(
-        &self,
-        txn_ptr: &UnifiedVlogPtr,
-    ) -> Result<CachedPrepare<String, String>, StorageError> {
-        if txn_ptr.segment_id == u64::MAX {
-            return Err(StorageError::Codec("pending txn not sealed yet".to_string()));
-        }
-
-        let (segment_id, path, size, views) = if txn_ptr.segment_id == self.manifest.active_segment_id {
-            (
-                self.manifest.active_segment_id,
-                self.base_dir
-                    .join(format!("vlog_seg_{:04}.dat", self.manifest.active_segment_id)),
-                self.manifest.active_write_offset,
-                Vec::new(),
-            )
-        } else if let Some(meta) = self
-            .manifest
-            .sealed_vlog_segments
-            .iter()
-            .find(|m| m.segment_id == txn_ptr.segment_id)
-        {
-            (
-                meta.segment_id,
-                meta.path.clone(),
-                meta.total_size,
-                meta.views.clone(),
-            )
-        } else {
-            return Err(StorageError::Codec(format!(
-                "VLog segment {} not found",
-                txn_ptr.segment_id
-            )));
-        };
-
-        let segment = UnifiedVlogSegment::<crate::mvcc::disk::memory_io::MemoryIo>::open_at(
-            segment_id,
-            path,
-            size,
-            views,
-            self.io_flags,
-        )?;
-        let prepare = segment.read_committed_txn(txn_ptr)?;
-        segment.close();
-        Ok(prepare)
-    }
-
-    fn tapir_insert_committed_write(
-        &mut self,
-        key: String,
-        commit: Timestamp,
-        value_ref: Option<ValueLocation>,
-    ) {
-        self.tapir.unified_memtable_mut().insert(
-            key,
-            commit,
-            UnifiedLsmEntry {
-                value_ref,
-                last_read_ts: None,
-            },
-        );
-    }
-
-    fn tapir_update_last_read(&mut self, key: &String, read: Timestamp, commit_time: u64) {
-        self.tapir
-            .unified_memtable_mut()
-            .update_last_read(key, read, commit_time);
     }
 }
 
@@ -1437,15 +915,15 @@ mod tests {
         };
 
         commit_transaction_data(
-            &mut runner,
+            &mut runner.tapir,
             txn_id,
             &[("r".to_string(), ts)],
             &[("k".to_string(), Some("v".to_string()))],
             &[],
             ts,
         )
-        .expect("commit should enqueue pending txn");
-        runner.seal(0).expect("seal should flush pending txn to vlog");
+        .expect("commit should append committed txn");
+        runner.seal(0).expect("seal should finalize current view");
 
         let txn_ptr = runner
             .tapir
@@ -1456,11 +934,11 @@ mod tests {
             write_index: 0,
         };
 
-        let first = resolve_on_disk(&runner, &ptr).expect("first resolve should read from disk");
+        let first = resolve_on_disk(&runner.tapir, &ptr).expect("first resolve should read from disk");
         assert_eq!(runner.tapir.vlog_read_count(), 1);
         assert_eq!(first.write_set[0].1.as_deref(), Some("v"));
 
-        let second = resolve_on_disk(&runner, &ptr).expect("second resolve should hit cache");
+        let second = resolve_on_disk(&runner.tapir, &ptr).expect("second resolve should hit cache");
         assert_eq!(runner.tapir.vlog_read_count(), 1);
         assert!(Arc::ptr_eq(&first, &second));
     }
