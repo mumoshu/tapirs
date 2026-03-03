@@ -36,7 +36,7 @@ pub struct RawVlogEntry {
 /// This keeps the on-disk format (`PreparePayloadSer`) stable regardless
 /// of the Rust types used in memory, and avoids propagating K, V through
 /// the segment management code (open, seal, rotate, manifest).
-pub struct UnifiedVlogSegment<IO: DiskIo> {
+pub struct VlogSegment<IO: DiskIo> {
     pub id: u64,
     io: Option<IO>,
     write_offset: u64,
@@ -44,7 +44,7 @@ pub struct UnifiedVlogSegment<IO: DiskIo> {
     pub views: Vec<ViewRange>,
 }
 
-impl<IO: DiskIo> UnifiedVlogSegment<IO> {
+impl<IO: DiskIo> VlogSegment<IO> {
     fn encode_raw_entry(
         entry_type: u8,
         id_client: u64,

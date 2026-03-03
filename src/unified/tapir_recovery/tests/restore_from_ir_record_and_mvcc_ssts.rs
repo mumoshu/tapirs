@@ -77,11 +77,7 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
         // === Take "SST backup" ===
         // This captures all MVCC memtable entries (which are now OnDisk).
         // In a real system, this would be the persisted SST file content.
-        mvcc_sst_snapshot = store
-            .unified_memtable()
-            .iter()
-            .map(|(ck, entry)| (ck.key.clone(), ck.timestamp.0, entry.clone()))
-            .collect();
+        mvcc_sst_snapshot = store.memtable_snapshot();
 
         // View 1: Commit more data (not yet sealed)
         prepare_and_commit(
@@ -121,7 +117,7 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
     // Step 1: Load MVCC SST entries into the unified_memtable
     // These entries have OnDisk(ptr) ValueLocations pointing to the sealed VLog.
     for (key, ts, entry) in &mvcc_sst_snapshot {
-        restored.insert_unified_memtable_entry(key.clone(), *ts, entry.clone());
+        restored.insert_memtable_entry(key.clone(), *ts, entry.clone());
     }
 
     // Verify SST entries loaded — sealed view data is readable via OnDisk resolution

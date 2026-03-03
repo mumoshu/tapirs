@@ -149,6 +149,7 @@ pub fn commit_txn(
     store: &mut TestStore,
     op_id: OpId,
     txn_id: TransactionId,
+    txn: SharedTransaction<String, String, Timestamp>,
     commit_ts: Timestamp,
     prepare_ref: PrepareRef,
 ) {
@@ -166,7 +167,23 @@ pub fn commit_txn(
         },
     );
 
-    store.commit_prepared(txn_id, commit_ts).unwrap();
+    let shard = crate::tapir::ShardNumber(0);
+    let read_set: Vec<(String, Timestamp)> = txn
+        .shard_read_set(shard)
+        .map(|(k, ts)| (k.clone(), ts))
+        .collect();
+    let write_set: Vec<(String, Option<String>)> = txn
+        .shard_write_set(shard)
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let scan_set: Vec<(String, String, Timestamp)> = txn
+        .shard_scan_set(shard)
+        .map(|entry| (entry.start_key.clone(), entry.end_key.clone(), entry.timestamp))
+        .collect();
+
+    store
+        .commit_transaction_data(txn_id, &read_set, &write_set, &scan_set, commit_ts)
+        .unwrap();
 }
 
 pub fn prepare_and_commit(
@@ -183,6 +200,7 @@ pub fn prepare_and_commit(
         store,
         commit_op_id,
         txn_id,
+        txn,
         commit_ts,
         PrepareRef::SameView(prepare_op_id),
     );
@@ -238,9 +256,8 @@ pub fn assert_value_location_in_memory(
     ts: Timestamp,
     expect_in_memory: bool,
 ) {
-    let (_, entry) = store
-        .unified_memtable()
-        .get_at(&key.to_string(), ts)
+    let entry = store
+        .memtable_entry_at(&key.to_string(), ts)
         .expect("MVCC entry not found");
     match &entry.value_ref {
         Some(ValueLocation::InMemory { .. }) => {

@@ -3,7 +3,7 @@ use crate::mvcc::disk::disk_io::OpenFlags;
 use crate::mvcc::disk::memory_io::MemoryIo;
 use crate::unified::ir::record::{IrPayloadInline, PrepareRef, VlogEntryType};
 use crate::unified::ir::store;
-use crate::unified::wisckeylsm::vlog::UnifiedVlogSegment;
+use crate::unified::wisckeylsm::vlog::VlogSegment;
 
 struct LocalCachedPrepare {
     transaction_id: crate::occ::TransactionId,
@@ -26,7 +26,7 @@ fn vlog_entry_roundtrip_prepare() {
         direct: false,
     };
 
-    let mut seg = UnifiedVlogSegment::<MemoryIo>::open(0, path, flags).unwrap();
+    let mut seg = VlogSegment::<MemoryIo>::open(0, path, flags).unwrap();
 
     let op_id = test_op_id(1, 1);
     let payload = IrPayloadInline::<String, String>::Prepare {
@@ -81,7 +81,7 @@ fn vlog_entry_roundtrip_commit() {
         direct: false,
     };
 
-    let mut seg = UnifiedVlogSegment::<MemoryIo>::open(0, path, flags).unwrap();
+    let mut seg = VlogSegment::<MemoryIo>::open(0, path, flags).unwrap();
 
     let prepare_op_id = test_op_id(1, 1);
     let commit_op_id = test_op_id(1, 2);
@@ -127,7 +127,7 @@ fn vlog_batch_append() {
         direct: false,
     };
 
-    let mut seg = UnifiedVlogSegment::<MemoryIo>::open(0, path, flags).unwrap();
+    let mut seg = VlogSegment::<MemoryIo>::open(0, path, flags).unwrap();
 
     let payload1 = IrPayloadInline::<String, String>::Prepare {
         transaction_id: test_txn_id(1, 1),
@@ -173,7 +173,7 @@ fn vlog_read_prepare_helper() {
         direct: false,
     };
 
-    let mut seg = UnifiedVlogSegment::<MemoryIo>::open(0, path, flags).unwrap();
+    let mut seg = VlogSegment::<MemoryIo>::open(0, path, flags).unwrap();
 
     let payload = IrPayloadInline::<String, String>::Prepare {
         transaction_id: test_txn_id(2, 3),
@@ -228,7 +228,7 @@ fn vlog_all_entry_types_roundtrip() {
         direct: false,
     };
 
-    let mut seg = UnifiedVlogSegment::<MemoryIo>::open(0, path, flags).unwrap();
+    let mut seg = VlogSegment::<MemoryIo>::open(0, path, flags).unwrap();
 
     // Abort
     let abort_payload = IrPayloadInline::<String, String>::Abort {

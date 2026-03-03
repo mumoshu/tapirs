@@ -4,7 +4,7 @@ use crate::occ::TransactionId as OccTransactionId;
 use crate::tapir::Timestamp;
 use crate::unified::wisckeylsm::manifest::UnifiedManifest;
 use crate::unified::wisckeylsm::types::{ViewRange, VlogPtr, VlogSegmentMeta};
-use crate::unified::wisckeylsm::vlog::UnifiedVlogSegment;
+use crate::unified::wisckeylsm::vlog::VlogSegment;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt::Debug;
@@ -80,7 +80,7 @@ pub enum IrState {
 /// Generic over `K` and `V` so that prepared transactions can be inspected,
 /// indexed, and committed without a serialization round-trip while they live
 /// in memory.  Serialization to bytes happens exactly once, at view seal
-/// time (`seal_current_view`), via `UnifiedVlogSegment::serialize_payload`.
+/// time (`seal_current_view`), via `VlogSegment::serialize_payload`.
 /// Deserialization from the VLog happens only for cross-view reads (rare).
 ///
 /// Because `Commit` and `Abort` variants carry no K/V data, they are
@@ -254,8 +254,8 @@ pub enum IrEntryRef<'a, K, V> {
 /// In-memory IR record state: overlay (current view), base (sealed views),
 /// and the prepare VLog index for cross-view commits.
 pub(crate) struct IrRecord<K: Ord, V, IO: DiskIo> {
-    active_vlog: UnifiedVlogSegment<IO>,
-    sealed_vlog_segments: BTreeMap<u64, UnifiedVlogSegment<IO>>,
+    active_vlog: VlogSegment<IO>,
+    sealed_vlog_segments: BTreeMap<u64, VlogSegment<IO>>,
     current_view: u64,
     manifest: UnifiedManifest,
 
@@ -276,8 +276,8 @@ pub(crate) struct IrRecord<K: Ord, V, IO: DiskIo> {
 
 impl<K: Ord, V, IO: DiskIo> IrRecord<K, V, IO> {
     pub(crate) fn new(
-        active_vlog: UnifiedVlogSegment<IO>,
-        sealed_vlog_segments: BTreeMap<u64, UnifiedVlogSegment<IO>>,
+        active_vlog: VlogSegment<IO>,
+        sealed_vlog_segments: BTreeMap<u64, VlogSegment<IO>>,
         current_view: u64,
         manifest: UnifiedManifest,
     ) -> Self {
@@ -301,7 +301,7 @@ impl<K: Ord, V, IO: DiskIo> IrRecord<K, V, IO> {
         self.current_view
     }
 
-    pub(crate) fn sealed_vlog_segments(&self) -> &BTreeMap<u64, UnifiedVlogSegment<IO>> {
+    pub(crate) fn sealed_vlog_segments(&self) -> &BTreeMap<u64, VlogSegment<IO>> {
         &self.sealed_vlog_segments
     }
 
@@ -338,7 +338,7 @@ impl<K: Ord, V, IO: DiskIo> IrRecord<K, V, IO> {
     pub(crate) fn active_or_sealed_segment(
         &self,
         segment_id: u64,
-    ) -> Option<&UnifiedVlogSegment<IO>> {
+    ) -> Option<&VlogSegment<IO>> {
         self.sealed_vlog_segments
             .get(&segment_id)
             .or(if self.active_vlog.id == segment_id {
@@ -380,11 +380,11 @@ impl<K: Ord, V, IO: DiskIo> IrRecord<K, V, IO> {
 
     pub(crate) fn sealed_vlog_segment_values(
         &self,
-    ) -> impl Iterator<Item = &UnifiedVlogSegment<IO>> {
+    ) -> impl Iterator<Item = &VlogSegment<IO>> {
         self.sealed_vlog_segments.values()
     }
 
-    pub(crate) fn active_vlog_ref(&self) -> &UnifiedVlogSegment<IO> {
+    pub(crate) fn active_vlog_ref(&self) -> &VlogSegment<IO> {
         &self.active_vlog
     }
 
@@ -434,12 +434,12 @@ impl<K: Ord, V, IO: DiskIo> IrRecord<K, V, IO> {
                 let new_id = self.manifest.next_segment_id;
                 self.manifest.next_segment_id += 1;
                 let new_path = base_dir.join(format!("vlog_seg_{new_id:04}.dat"));
-                UnifiedVlogSegment::<IO>::open(new_id, new_path, io_flags)?
+                VlogSegment::<IO>::open(new_id, new_path, io_flags)?
             });
 
             self.sealed_vlog_segments.insert(
                 sealed_id,
-                UnifiedVlogSegment::<IO>::open_at(
+                VlogSegment::<IO>::open_at(
                     sealed_id,
                     sealed_path,
                     sealed_size,
@@ -541,7 +541,7 @@ impl<K: Ord + Clone, V: Clone, IO: DiskIo> IrRecord<K, V, IO> {
     /// Collect finalized overlay entries for VLog serialization at seal time.
     ///
     /// Returns `(OpId, VlogEntryType, IrPayloadInline)` tuples ready for
-    /// `UnifiedVlogSegment::append_batch`.  The caller writes them to the
+    /// `VlogSegment::append_batch`.  The caller writes them to the
     /// VLog and passes the resulting pointers to `apply_sealed_ptrs`.
     pub(crate) fn collect_finalized_for_seal(
         &self,

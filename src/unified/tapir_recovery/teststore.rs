@@ -87,15 +87,11 @@ impl TestStore {
     }
 
     pub(crate) fn unregister_prepare(&mut self, txn_id: &TransactionId) {
-        tapir_store::unregister_prepare(&mut self.tapir_state, txn_id);
+        self.tapir_state.unregister_prepare(txn_id);
     }
 
     pub(crate) fn resolve_in_memory(&self, txn_id: &TransactionId, write_index: u16) -> Option<&(String, Option<String>)> {
         self.tapir_state.resolve_in_memory(txn_id, write_index)
-    }
-
-    pub(crate) fn commit_prepared(&mut self, txn_id: TransactionId, commit: Timestamp) -> Result<(), StorageError> {
-        tapir_store::commit_prepared(&mut self.tapir_state, txn_id, commit)
     }
 
     pub(crate) fn commit_transaction_data(
@@ -106,14 +102,8 @@ impl TestStore {
         scan_set: &[(String, String, Timestamp)],
         commit: Timestamp,
     ) -> Result<(), StorageError> {
-        tapir_store::commit_transaction_data(
-            &mut self.tapir_state,
-            txn_id,
-            read_set,
-            write_set,
-            scan_set,
-            commit,
-        )
+        self.tapir_state
+            .commit_transaction_data(txn_id, read_set, write_set, scan_set, commit)
     }
 
     pub(crate) fn seal_current_view(&mut self) -> Result<(), StorageError> {
@@ -129,11 +119,11 @@ impl TestStore {
     }
 
     pub(crate) fn do_uncommitted_get(&self, key: &String) -> Result<(Option<String>, Timestamp), StorageError> {
-        tapir_store::do_uncommitted_get(&self.tapir_state, key)
+        self.tapir_state.do_uncommitted_get(key)
     }
 
     pub(crate) fn do_uncommitted_get_at(&self, key: &String, ts: Timestamp) -> Result<(Option<String>, Timestamp), StorageError> {
-        tapir_store::do_uncommitted_get_at(&self.tapir_state, key, ts)
+        self.tapir_state.do_uncommitted_get_at(key, ts)
     }
 
     pub(crate) fn do_uncommitted_scan(
@@ -142,21 +132,23 @@ impl TestStore {
         end: &String,
         ts: Timestamp,
     ) -> Result<Vec<(String, Option<String>, Timestamp)>, StorageError> {
-        tapir_store::do_uncommitted_scan(&self.tapir_state, start, end, ts)
+        self.tapir_state.do_uncommitted_scan(start, end, ts)
     }
 
     pub(crate) fn resolve_value(&self, entry: &LsmEntry) -> Result<Option<String>, StorageError> {
         tapir_store::resolve_value(&self.tapir_state, entry)
     }
 
-    pub(crate) fn unified_memtable(&self) -> &crate::unified::tapir::unified_memtable::Memtable<String> {
-        self.tapir_state.unified_memtable()
+    pub(crate) fn insert_memtable_entry(&mut self, key: String, ts: Timestamp, entry: LsmEntry) {
+        self.tapir_state.insert_memtable_entry(key, ts, entry);
     }
 
-    pub(crate) fn insert_unified_memtable_entry(&mut self, key: String, ts: Timestamp, entry: LsmEntry) {
-        self.tapir_state
-            .unified_memtable_mut()
-            .insert(key, ts, entry);
+    pub(crate) fn memtable_entry_at(&self, key: &String, ts: Timestamp) -> Option<&LsmEntry> {
+        self.tapir_state.memtable_entry_at(key, ts)
+    }
+
+    pub(crate) fn memtable_snapshot(&self) -> Vec<(String, Timestamp, LsmEntry)> {
+        self.tapir_state.memtable_snapshot()
     }
 
     pub(crate) fn get_last_read(&self, key: &String) -> Result<Option<Timestamp>, StorageError> {

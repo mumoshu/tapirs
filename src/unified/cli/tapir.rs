@@ -66,15 +66,15 @@ pub(super) fn execute_tapir_command<W: std::io::Write>(
                 .remove(&txn_id)
                 .ok_or_else(|| format!("no prepared transaction: {}", parts[1]))?;
             let store = ctx.store_mut()?;
-            tapir_store::commit_transaction_data(
-                store,
+            store
+                .commit_transaction_data(
                 txn_id,
                 &payload.read_set,
                 &payload.write_set,
                 &payload.scan_set,
                 commit_ts,
             )
-            .map_err(|e| format!("commit failed: {e}"))
+                .map_err(|e| format!("commit failed: {e}"))
         }
         "get" => {
             if parts.len() != 2 {
@@ -82,8 +82,9 @@ pub(super) fn execute_tapir_command<W: std::io::Write>(
             }
             let key = parts[1].to_string();
             let store = ctx.store()?;
-            let (value, ts) =
-                tapir_store::do_uncommitted_get(store, &key).map_err(|e| format!("get failed: {e}"))?;
+            let (value, ts) = store
+                .do_uncommitted_get(&key)
+                .map_err(|e| format!("get failed: {e}"))?;
             write_kv_result(stdout, &key, value.as_deref(), ts)
         }
         "get-at" => {
@@ -93,7 +94,8 @@ pub(super) fn execute_tapir_command<W: std::io::Write>(
             let key = parts[1].to_string();
             let ts = parse_ts(parts[2])?;
             let store = ctx.store()?;
-            let (value, actual_ts) = tapir_store::do_uncommitted_get_at(store, &key, ts)
+            let (value, actual_ts) = store
+                .do_uncommitted_get_at(&key, ts)
                 .map_err(|e| format!("get-at failed: {e}"))?;
             write_kv_result(stdout, &key, value.as_deref(), actual_ts)
         }
@@ -105,7 +107,8 @@ pub(super) fn execute_tapir_command<W: std::io::Write>(
             let end = parts[2].to_string();
             let ts = parse_ts(parts[3])?;
             let store = ctx.store()?;
-            let results = tapir_store::do_uncommitted_scan(store, &start, &end, ts)
+            let results = store
+                .do_uncommitted_scan(&start, &end, ts)
                 .map_err(|e| format!("scan failed: {e}"))?;
             for (key, value, entry_ts) in &results {
                 write_kv_result(stdout, key, value.as_deref(), *entry_ts)?;

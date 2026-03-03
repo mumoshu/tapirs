@@ -10,14 +10,14 @@ use super::record::IrEntryRef;
 use super::record::{IrMemEntry, IrPayloadInline, IrRecord, IrSstEntry, VlogEntryType};
 use crate::unified::wisckeylsm::manifest::UnifiedManifest;
 use crate::unified::wisckeylsm::types::VlogPtr;
-use crate::unified::wisckeylsm::vlog::UnifiedVlogSegment;
+use crate::unified::wisckeylsm::vlog::VlogSegment;
 
 const RAW_ENTRY_OVERHEAD: u32 = 25;
 const TAPIR_COMMITTED_TXN_ENTRY_TYPE: u8 = 0x80;
 
 #[cfg(test)]
 pub(crate) fn append_entry<K: serde::Serialize, V: serde::Serialize, IO: DiskIo>(
-    seg: &mut UnifiedVlogSegment<IO>,
+    seg: &mut VlogSegment<IO>,
     op_id: OpId,
     entry_type: VlogEntryType,
     payload: &IrPayloadInline<K, V>,
@@ -27,7 +27,7 @@ pub(crate) fn append_entry<K: serde::Serialize, V: serde::Serialize, IO: DiskIo>
 }
 
 pub(crate) fn append_batch<K: serde::Serialize, V: serde::Serialize, IO: DiskIo>(
-    seg: &mut UnifiedVlogSegment<IO>,
+    seg: &mut VlogSegment<IO>,
     entries: &[(OpId, VlogEntryType, &IrPayloadInline<K, V>)],
 ) -> Result<Vec<VlogPtr>, StorageError> {
     if entries.is_empty() {
@@ -49,7 +49,7 @@ pub(crate) fn append_batch<K: serde::Serialize, V: serde::Serialize, IO: DiskIo>
 }
 
 pub(crate) fn read_entry<K: serde::de::DeserializeOwned, V: serde::de::DeserializeOwned, IO: DiskIo>(
-    seg: &UnifiedVlogSegment<IO>,
+    seg: &VlogSegment<IO>,
     ptr: &VlogPtr,
 ) -> Result<(OpId, VlogEntryType, IrPayloadInline<K, V>), StorageError> {
     let raw = seg.read_raw_entry(ptr)?;
@@ -63,7 +63,7 @@ pub(crate) fn read_entry<K: serde::de::DeserializeOwned, V: serde::de::Deseriali
 }
 
 pub(crate) fn iter_entries<K: serde::de::DeserializeOwned, V: serde::de::DeserializeOwned, IO: DiskIo>(
-    seg: &UnifiedVlogSegment<IO>,
+    seg: &VlogSegment<IO>,
 ) -> Result<Vec<(u64, OpId, VlogEntryType, IrPayloadInline<K, V>)>, StorageError> {
     let mut out = Vec::new();
     for (offset, raw) in seg.iter_raw_entries()? {
@@ -89,7 +89,7 @@ fn rebuild_ir_base_from_vlog<K: Ord, V, IO: DiskIo>(record: &mut IrRecord<K, V, 
 
     fn absorb_segment<IO: DiskIo>(
         rebuilt_entries: &mut Vec<(OpId, IrSstEntry)>,
-        seg: &UnifiedVlogSegment<IO>,
+        seg: &VlogSegment<IO>,
     ) -> Result<(), StorageError> {
         for (offset, raw) in seg.iter_raw_entries()? {
             if raw.entry_type == TAPIR_COMMITTED_TXN_ENTRY_TYPE {
@@ -140,7 +140,7 @@ pub(crate) fn open_store_state<K: Ord, V, IO: DiskIo>(
 
     let mut sealed_vlog_segments = BTreeMap::new();
     for seg_meta in &manifest.sealed_vlog_segments {
-        let seg = UnifiedVlogSegment::<IO>::open_at(
+        let seg = VlogSegment::<IO>::open_at(
             seg_meta.segment_id,
             seg_meta.path.clone(),
             seg_meta.total_size,
@@ -151,7 +151,7 @@ pub(crate) fn open_store_state<K: Ord, V, IO: DiskIo>(
     }
 
     let active_path = base_dir.join(format!("vlog_seg_{:04}.dat", manifest.active_segment_id));
-    let mut active_vlog = UnifiedVlogSegment::<IO>::open_at(
+    let mut active_vlog = VlogSegment::<IO>::open_at(
         manifest.active_segment_id,
         active_path,
         manifest.active_write_offset,

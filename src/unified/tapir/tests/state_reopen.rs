@@ -35,7 +35,15 @@ fn tapir_state_prepare_conflict_commit_seal_reopen_get_scan() {
     );
 
     let _ = txn2;
-    store.commit_prepared(txn1_id, test_ts(5)).unwrap();
+    store
+        .commit_transaction_data(
+            txn1_id,
+            &[],
+            &[("x".to_string(), Some("v1".to_string()))],
+            &[],
+            test_ts(5),
+        )
+        .unwrap();
 
     let files_before_first_seal: Vec<String> = store
         .list_dir_files()
@@ -60,7 +68,15 @@ fn tapir_state_prepare_conflict_commit_seal_reopen_get_scan() {
     let txn3 = make_txn(vec![], vec![("y", Some("v3"))]);
     let txn3_id = test_txn_id(2, 1);
     store.register_prepare(txn3_id, &txn3, test_ts(7));
-    store.commit_prepared(txn3_id, test_ts(7)).unwrap();
+    store
+        .commit_transaction_data(
+            txn3_id,
+            &[],
+            &[("y".to_string(), Some("v3".to_string()))],
+            &[],
+            test_ts(7),
+        )
+        .unwrap();
     store.seal(1).unwrap();
 
     let files_after_second_seal = store.list_dir_files();

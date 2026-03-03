@@ -35,7 +35,7 @@ fn rw_txn_prepare_commit_read() {
         &mut store,
         test_op_id(1, 1),
         test_txn_id(1, 1),
-        txn,
+        txn.clone(),
         test_ts(5),
         true,
     );
@@ -43,6 +43,7 @@ fn rw_txn_prepare_commit_read() {
         &mut store,
         test_op_id(1, 2),
         test_txn_id(1, 1),
+        txn,
         test_ts(5),
     );
 
@@ -105,9 +106,8 @@ fn tapir_state_cross_view_read_and_cache() {
     store.seal_current_view(u64::MAX).unwrap();
     assert_eq!(store.current_view(), 1);
 
-    let (_, entry) = store
-        .unified_memtable()
-        .get_at(&"key_a".to_string(), test_ts(5))
+    let entry = store
+        .memtable_entry_at(&"key_a".to_string(), test_ts(5))
         .unwrap();
     let ValueLocation::OnDisk(ptr) = entry.value_ref.clone().unwrap() else {
         panic!("expected OnDisk value location");

@@ -376,7 +376,6 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         resolve_value(self, entry)
     }
 
-    #[cfg(test)]
     pub(crate) fn commit_transaction_data(
         &mut self,
         txn_id: OccTransactionId,
@@ -389,20 +388,44 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         K: Key,
         V: Value,
     {
-        commit_transaction_data(self, txn_id, read_set, write_set, scan_set, commit)
-    }
+        let cached_prepare = Arc::new(CachedPrepare {
+            transaction_id: txn_id,
+            commit_ts: commit,
+            read_set: read_set.to_vec(),
+            write_set: write_set.to_vec(),
+            scan_set: scan_set.to_vec(),
+        });
+        self.register_prepare_raw(txn_id, cached_prepare);
 
-    #[cfg(test)]
-    pub(crate) fn commit_prepared(
-        &mut self,
-        txn_id: OccTransactionId,
-        commit: Timestamp,
-    ) -> Result<(), StorageError>
-    where
-        K: Key,
-        V: Value,
-    {
-        commit_prepared(self, txn_id, commit)
+        let txn_ptr =
+            self.append_committed_txn_to_active(txn_id, commit, read_set, write_set, scan_set)?;
+        self.index_committed_txn_ptr(txn_id, txn_ptr);
+
+        for (i, (key, value)) in write_set.iter().enumerate() {
+            let value_ref = if value.is_some() {
+                Some(ValueLocation::InMemory {
+                    txn_id,
+                    write_index: i as u16,
+                })
+            } else {
+                None
+            };
+
+            self.insert_memtable_entry(
+                key.clone(),
+                commit,
+                LsmEntry {
+                    value_ref,
+                    last_read_ts: None,
+                },
+            );
+        }
+
+        for (key, read) in read_set {
+            self.update_memtable_last_read(key, *read, commit.time);
+        }
+
+        Ok(())
     }
 
     #[cfg(test)]
@@ -513,9 +536,14 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         self.manifest.save::<IO>(&self.base_dir)?;
         self.active_vlog.start_view(self.manifest.current_view);
 
-        finalize_after_seal(self);
+        self.finalize_after_seal();
         self.current_view_entry_count = 0;
         Ok(())
+    }
+
+    pub(crate) fn finalize_after_seal(&mut self) {
+        self.convert_in_memory_to_on_disk();
+        self.clear_prepare_registry();
     }
 }
 
@@ -759,62 +787,6 @@ impl<
     }
 }
 
-pub(crate) fn commit_transaction_data<
-    K: Key,
-    V: Value,
-    IO: DiskIo,
->(
-    store: &mut TapirState<K, V, IO>,
-    txn_id: OccTransactionId,
-    read_set: &[(K, Timestamp)],
-    write_set: &[(K, Option<V>)],
-    scan_set: &[(K, K, Timestamp)],
-    commit: Timestamp,
-) -> Result<(), StorageError> {
-    let cached_prepare = Arc::new(CachedPrepare {
-        transaction_id: txn_id,
-        commit_ts: commit,
-        read_set: read_set.to_vec(),
-        write_set: write_set.to_vec(),
-        scan_set: scan_set.to_vec(),
-    });
-    store.register_prepare_raw(txn_id, cached_prepare);
-
-    let txn_ptr = store.append_committed_txn_to_active(txn_id, commit, read_set, write_set, scan_set)?;
-    store.index_committed_txn_ptr(txn_id, txn_ptr);
-
-    for (i, (key, value)) in write_set.iter().enumerate() {
-        let value_ref = if value.is_some() {
-            Some(ValueLocation::InMemory {
-                txn_id,
-                write_index: i as u16,
-            })
-        } else {
-            None
-        };
-
-        store.insert_memtable_entry(
-            key.clone(),
-            commit,
-            LsmEntry {
-                value_ref,
-                last_read_ts: None,
-            },
-        );
-    }
-
-    for (key, read) in read_set {
-        store.update_memtable_last_read(key, *read, commit.time);
-    }
-
-    Ok(())
-}
-
-pub(crate) fn finalize_after_seal<K: Ord + Clone, V, IO: DiskIo>(state: &mut TapirState<K, V, IO>) {
-    state.convert_in_memory_to_on_disk();
-    state.clear_prepare_registry();
-}
-
 #[cfg(test)]
 #[allow(dead_code)]
 pub(crate) fn register_prepare<K: Key, V: Value, IO: DiskIo>(
@@ -855,79 +827,6 @@ pub(crate) fn register_prepare<K: Key, V: Value, IO: DiskIo>(
     });
 
     store.register_prepare_raw(txn_id, prepare);
-}
-
-#[cfg(test)]
-#[allow(dead_code)]
-pub(crate) fn unregister_prepare<K: Key, V: Value, IO: DiskIo>(
-    store: &mut TapirState<K, V, IO>,
-    txn_id: &OccTransactionId,
-) {
-    store.unregister_prepare(txn_id);
-}
-
-#[cfg(test)]
-#[allow(dead_code)]
-pub(crate) fn commit_prepared<
-    K: Key,
-    V: Value,
-    IO: DiskIo,
->(
-    store: &mut TapirState<K, V, IO>,
-    txn_id: OccTransactionId,
-    commit: Timestamp,
-) -> Result<(), StorageError> {
-    let prepare = store.lookup_prepare(&txn_id);
-    let cross_view_ptr = store.lookup_committed_txn_ptr(&txn_id);
-
-    if let Some(prepare) = prepare {
-        return commit_transaction_data(
-            store,
-            txn_id,
-            &prepare.read_set,
-            &prepare.write_set,
-            &prepare.scan_set,
-            commit,
-        );
-    }
-
-    if let Some(vlog_ptr) = cross_view_ptr {
-        let cached = resolve_on_disk(store, &VlogTransactionPtr {
-            txn_ptr: vlog_ptr,
-            write_index: 0,
-        })?;
-
-        store.register_prepare_raw(txn_id, cached.clone());
-
-        for (i, (key, value)) in cached.write_set.iter().enumerate() {
-            let value_ref = if value.is_some() {
-                Some(ValueLocation::InMemory {
-                    txn_id,
-                    write_index: i as u16,
-                })
-            } else {
-                None
-            };
-            store.insert_memtable_entry(
-                key.clone(),
-                commit,
-                LsmEntry {
-                    value_ref,
-                    last_read_ts: None,
-                },
-            );
-        }
-
-        for (key, read) in &cached.read_set {
-            store.update_memtable_last_read(key, *read, commit.time);
-        }
-        return Ok(());
-    }
-
-    Err(StorageError::PrepareNotFound {
-        client_id: txn_id.client_id.0,
-        txn_number: txn_id.number,
-    })
 }
 
 pub(crate) fn resolve_in_memory<K: Key, V: Value, IO: DiskIo>(
@@ -987,42 +886,6 @@ pub(crate) fn resolve_value<
     }
 }
 
-pub(crate) fn do_uncommitted_get<
-    K: Key + serde::Serialize + serde::de::DeserializeOwned,
-    V: Value + serde::Serialize + serde::de::DeserializeOwned,
-    IO: DiskIo,
->(
-    store: &TapirState<K, V, IO>,
-    key: &K,
-) -> Result<(Option<V>, Timestamp), StorageError> {
-    store.do_uncommitted_get(key)
-}
-
-pub(crate) fn do_uncommitted_get_at<
-    K: Key + serde::Serialize + serde::de::DeserializeOwned,
-    V: Value + serde::Serialize + serde::de::DeserializeOwned,
-    IO: DiskIo,
->(
-    store: &TapirState<K, V, IO>,
-    key: &K,
-    ts: Timestamp,
-) -> Result<(Option<V>, Timestamp), StorageError> {
-    store.do_uncommitted_get_at(key, ts)
-}
-
-pub(crate) fn do_uncommitted_scan<
-    K: Key + serde::Serialize + serde::de::DeserializeOwned,
-    V: Value + serde::Serialize + serde::de::DeserializeOwned,
-    IO: DiskIo,
->(
-    store: &TapirState<K, V, IO>,
-    start: &K,
-    end: &K,
-    ts: Timestamp,
-) -> Result<Vec<(K, Option<V>, Timestamp)>, StorageError> {
-    store.do_uncommitted_scan(start, end, ts)
-}
-
 #[cfg(test)]
 pub(crate) struct TapirStateRunner {
     tapir: TapirState<String, String, crate::mvcc::disk::memory_io::MemoryIo>,
@@ -1065,12 +928,16 @@ impl TapirStateRunner {
         register_prepare(&mut self.tapir, txn_id, transaction, commit_ts);
     }
 
-    pub(crate) fn commit_prepared(
+    pub(crate) fn commit_transaction_data(
         &mut self,
         txn_id: OccTransactionId,
-        commit: Timestamp,
+        read_set: &[(String, Timestamp)],
+        write_set: &[(String, Option<String>)],
+        scan_set: &[(String, String, Timestamp)],
+        commit_ts: Timestamp,
     ) -> Result<(), StorageError> {
-        commit_prepared(&mut self.tapir, txn_id, commit)
+        self.tapir
+            .commit_transaction_data(txn_id, read_set, write_set, scan_set, commit_ts)
     }
 
     pub(crate) fn seal(&mut self, min_view_vlog_size: u64) -> Result<(), StorageError> {
@@ -1130,14 +997,15 @@ mod tests {
             client_id: IrClientId(7),
         };
 
-        commit_transaction_data(
-            &mut runner.tapir,
-            txn_id,
-            &[("r".to_string(), ts)],
-            &[("k".to_string(), Some("v".to_string()))],
-            &[],
-            ts,
-        )
+        runner
+            .tapir
+            .commit_transaction_data(
+                txn_id,
+                &[("r".to_string(), ts)],
+                &[("k".to_string(), Some("v".to_string()))],
+                &[],
+                ts,
+            )
         .expect("commit should append committed txn");
         runner.seal(0).expect("seal should finalize current view");
 
