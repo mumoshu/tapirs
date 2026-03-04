@@ -1,4 +1,4 @@
-pub(crate) use types::CachedPrepare;
+pub(crate) use types::Transaction;
 pub(crate) use storage_types::{LsmEntry, ValueLocation, VlogTransactionPtr};
 pub(crate) use super::wisckeylsm::vlog::VlogSegment;
 

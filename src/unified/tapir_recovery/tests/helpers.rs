@@ -4,10 +4,10 @@ use crate::ir::OpId;
 use crate::mvcc::disk::memory_io::MemoryIo;
 use crate::occ::{ScanEntry, SharedTransaction, Transaction, TransactionId};
 use crate::tapir::{ShardNumber, Sharded, Timestamp};
-use crate::unified::ir::record::{IrMemEntry, IrPayloadInline, IrState, PrepareRef, VlogEntryType};
-use crate::unified::tapir::storage_types::ValueLocation;
+use crate::unified::ir::record::{IrMemEntry, IrState, PrepareRef};
 pub(crate) use crate::unified::tapir_recovery::teststore::TestStore;
 use crate::IrClientId;
+use std::path::Path;
 use std::sync::Arc;
 
 // === Factory Helpers ===
@@ -108,84 +108,6 @@ pub fn build_txn_from_parts(
     Arc::new(txn)
 }
 
-pub fn prepare_txn(
-    store: &mut TestStore,
-    op_id: OpId,
-    txn_id: TransactionId,
-    txn: SharedTransaction<String, String, Timestamp>,
-    commit_ts: Timestamp,
-    finalized: bool,
-) {
-    let current_view = store.current_view();
-    store.insert_ir_entry(
-        op_id,
-        IrMemEntry {
-            entry_type: VlogEntryType::Prepare,
-            state: if finalized {
-                IrState::Finalized(current_view)
-            } else {
-                IrState::Tentative
-            },
-            payload: IrPayloadInline::Prepare {
-                transaction_id: txn_id,
-                commit_ts,
-                read_set: txn
-                    .shard_read_set(ShardNumber(0))
-                    .map(|(k, ts)| (k.clone(), ts))
-                    .collect(),
-                write_set: txn
-                    .shard_write_set(ShardNumber(0))
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect(),
-                scan_set: vec![],
-            },
-        },
-    );
-
-    store.register_prepare(txn_id, &txn, commit_ts);
-}
-
-pub fn commit_txn(
-    store: &mut TestStore,
-    op_id: OpId,
-    txn_id: TransactionId,
-    txn: SharedTransaction<String, String, Timestamp>,
-    commit_ts: Timestamp,
-    prepare_ref: PrepareRef,
-) {
-    let current_view = store.current_view();
-    store.insert_ir_entry(
-        op_id,
-        IrMemEntry {
-            entry_type: VlogEntryType::Commit,
-            state: IrState::Finalized(current_view),
-            payload: IrPayloadInline::Commit {
-                transaction_id: txn_id,
-                commit_ts,
-                prepare_ref,
-            },
-        },
-    );
-
-    let shard = crate::tapir::ShardNumber(0);
-    let read_set: Vec<(String, Timestamp)> = txn
-        .shard_read_set(shard)
-        .map(|(k, ts)| (k.clone(), ts))
-        .collect();
-    let write_set: Vec<(String, Option<String>)> = txn
-        .shard_write_set(shard)
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-    let scan_set: Vec<(String, String, Timestamp)> = txn
-        .shard_scan_set(shard)
-        .map(|entry| (entry.start_key.clone(), entry.end_key.clone(), entry.timestamp))
-        .collect();
-
-    store
-        .commit_transaction_data(txn_id, &read_set, &write_set, &scan_set, commit_ts)
-        .unwrap();
-}
-
 pub fn prepare_and_commit(
     store: &mut TestStore,
     prepare_op_id: OpId,
@@ -195,9 +117,8 @@ pub fn prepare_and_commit(
     commit_ts: Timestamp,
 ) {
     let txn = make_txn(vec![], writes);
-    prepare_txn(store, prepare_op_id, txn_id, txn.clone(), commit_ts, true);
-    commit_txn(
-        store,
+    store.prepare(prepare_op_id, txn_id, txn.clone(), commit_ts, true);
+    store.commit(
         commit_op_id,
         txn_id,
         txn,
@@ -223,76 +144,7 @@ pub fn build_merged_record(
         .collect()
 }
 
-pub fn assert_get_at(
-    store: &TestStore,
-    key: &str,
-    ts: Timestamp,
-    expected_value: Option<&str>,
-    expected_ts: Timestamp,
-) {
-    let (actual_value, actual_ts) = store.do_uncommitted_get_at(&key.to_string(), ts).unwrap();
-    assert_eq!(
-        actual_value.as_deref(),
-        expected_value,
-        "get_at({key:?}, {ts:?}): value mismatch"
-    );
-    assert_eq!(
-        actual_ts, expected_ts,
-        "get_at({key:?}, {ts:?}): timestamp mismatch"
-    );
-}
-
-pub fn assert_get_none(store: &TestStore, key: &str, ts: Timestamp) {
-    let (actual_value, _) = store.do_uncommitted_get_at(&key.to_string(), ts).unwrap();
-    assert!(
-        actual_value.is_none(),
-        "get_at({key:?}, {ts:?}): expected None, got {actual_value:?}"
-    );
-}
-
-pub fn assert_value_location_in_memory(
-    store: &TestStore,
-    key: &str,
-    ts: Timestamp,
-    expect_in_memory: bool,
-) {
-    let entry = store
-        .memtable_entry_at(&key.to_string(), ts)
-        .expect("MVCC entry not found");
-    match &entry.value_ref {
-        Some(ValueLocation::InMemory { .. }) => {
-            assert!(expect_in_memory, "Expected OnDisk, got InMemory");
-        }
-        Some(ValueLocation::OnDisk(_)) => {
-            assert!(!expect_in_memory, "Expected InMemory, got OnDisk");
-        }
-        None => panic!("Expected value_ref, got None (tombstone)"),
-    }
-}
-
-pub fn assert_last_read_ts(store: &TestStore, key: &str, expected: Option<u64>) {
-    let actual = store.get_last_read(&key.to_string()).unwrap();
-    let actual_time = actual.map(|ts| ts.time);
-    assert_eq!(
-        actual_time, expected,
-        "last_read_ts({key:?}): expected {expected:?}, got {actual_time:?}"
-    );
-}
-
-pub fn assert_sealed_segment_count(store: &TestStore, expected: usize) {
-    let actual = store.sealed_vlog_segments().len();
-    assert_eq!(
-        actual, expected,
-        "Expected {expected} sealed segments, got {actual}"
-    );
-}
-
-pub fn assert_current_view(store: &TestStore, expected: u64) {
-    assert_eq!(store.current_view(), expected, "Unexpected current view");
-}
-
-pub fn list_store_files(store: &TestStore) -> Vec<(String, usize)> {
-    let base_dir = store.base_dir();
+pub fn list_store_files(base_dir: &Path) -> Vec<(String, usize)> {
     let files = MemoryIo::list_files(base_dir);
     let prefix = format!("{}/", base_dir.display());
     files
@@ -308,8 +160,8 @@ pub fn list_store_files(store: &TestStore) -> Vec<(String, usize)> {
         .collect()
 }
 
-pub fn assert_store_file_names(store: &TestStore, expected_names: &[&str]) {
-    let files = list_store_files(store);
+pub fn assert_store_file_names(base_dir: &Path, expected_names: &[&str]) {
+    let files = list_store_files(base_dir);
     let mut actual_names: Vec<&str> = files
         .iter()
         .map(|(n, _)| n.as_str())
@@ -324,16 +176,16 @@ pub fn assert_store_file_names(store: &TestStore, expected_names: &[&str]) {
     );
 }
 
-pub fn assert_store_file_size(store: &TestStore, file_name: &str, expected: usize) {
-    let actual = get_store_file_size(store, file_name);
+pub fn assert_store_file_size(base_dir: &Path, file_name: &str, expected: usize) {
+    let actual = get_store_file_size(base_dir, file_name);
     assert_eq!(
         actual, expected,
         "File {file_name:?} size mismatch: expected {expected}, got {actual}"
     );
 }
 
-pub fn assert_store_file_size_positive(store: &TestStore, file_name: &str) {
-    let files = list_store_files(store);
+pub fn assert_store_file_size_positive(base_dir: &Path, file_name: &str) {
+    let files = list_store_files(base_dir);
     let mut matched_sizes: Vec<usize> = files
         .iter()
         .filter_map(|(name, size)| {
@@ -356,8 +208,8 @@ pub fn assert_store_file_size_positive(store: &TestStore, file_name: &str) {
     );
 }
 
-pub fn get_store_file_size(store: &TestStore, file_name: &str) -> usize {
-    let files = list_store_files(store);
+pub fn get_store_file_size(base_dir: &Path, file_name: &str) -> usize {
+    let files = list_store_files(base_dir);
     files
         .iter()
         .find(|(n, _)| n == file_name)

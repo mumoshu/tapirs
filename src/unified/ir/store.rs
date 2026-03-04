@@ -5,8 +5,6 @@ use crate::IrClientId;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-#[cfg(test)]
-use super::record::IrEntryRef;
 use super::record::{IrMemEntry, IrPayloadInline, IrRecord, IrSstEntry, VlogEntryType};
 use crate::unified::wisckeylsm::manifest::UnifiedManifest;
 use crate::unified::wisckeylsm::types::VlogPtr;
@@ -14,17 +12,6 @@ use crate::unified::wisckeylsm::vlog::VlogSegment;
 
 const RAW_ENTRY_OVERHEAD: u32 = 25;
 const TAPIR_COMMITTED_TXN_ENTRY_TYPE: u8 = 0x80;
-
-#[cfg(test)]
-pub(crate) fn append_entry<K: serde::Serialize, V: serde::Serialize, IO: DiskIo>(
-    seg: &mut VlogSegment<IO>,
-    op_id: OpId,
-    entry_type: VlogEntryType,
-    payload: &IrPayloadInline<K, V>,
-) -> Result<VlogPtr, StorageError> {
-    let payload_bytes = crate::unified::ir::vlog_codec::serialize_payload(payload)?;
-    seg.append_raw_entry(entry_type as u8, op_id.client_id.0, op_id.number, &payload_bytes)
-}
 
 pub(crate) fn append_batch<K: serde::Serialize, V: serde::Serialize, IO: DiskIo>(
     seg: &mut VlogSegment<IO>,
@@ -193,35 +180,12 @@ pub(crate) fn seal_current_view<K: Ord + Clone + serde::Serialize, V: Clone + se
     Ok(())
 }
 
-#[cfg(test)]
-pub(crate) fn ir_overlay_entries<'a, K: Ord, V, IO: DiskIo>(
-    record: &'a IrRecord<K, V, IO>,
-) -> impl Iterator<Item = (&'a OpId, &'a IrMemEntry<K, V>)> + 'a {
-    record.ir_overlay_entries()
-}
-
 pub(crate) fn insert_ir_entry<K: Ord, V, IO: DiskIo>(
     record: &mut IrRecord<K, V, IO>,
     op_id: OpId,
     entry: IrMemEntry<K, V>,
 ) {
     record.insert_ir_entry(op_id, entry);
-}
-
-#[cfg(test)]
-pub(crate) fn ir_entry<'a, K: Ord, V, IO: DiskIo>(
-    record: &'a IrRecord<K, V, IO>,
-    op_id: &OpId,
-) -> Option<IrEntryRef<'a, K, V>> {
-    record.ir_entry(op_id)
-}
-
-#[cfg(test)]
-pub(crate) fn lookup_ir_base_entry<K: Ord, V, IO: DiskIo>(
-    record: &IrRecord<K, V, IO>,
-    op_id: OpId,
-) -> Option<&IrSstEntry> {
-    record.lookup_ir_base_entry(op_id)
 }
 
 pub(crate) fn collect_finalized_for_seal<K: Ord + Clone, V: Clone, IO: DiskIo>(
@@ -242,18 +206,3 @@ pub(crate) fn clear_overlay<K: Ord, V, IO: DiskIo>(record: &mut IrRecord<K, V, I
     record.clear_overlay();
 }
 
-#[cfg(test)]
-pub(crate) fn extract_finalized_entries<K: Ord + Clone, V: Clone, IO: DiskIo>(
-    record: &IrRecord<K, V, IO>,
-) -> Vec<(OpId, IrMemEntry<K, V>)> {
-    record.extract_finalized_entries()
-}
-
-#[cfg(test)]
-pub(crate) fn install_base_from_ptrs<K: Ord, V, IO: DiskIo>(
-    record: &mut IrRecord<K, V, IO>,
-    entries: &[(OpId, IrMemEntry<K, V>)],
-    ptrs: &[VlogPtr],
-) {
-    record.install_base_from_ptrs(entries, ptrs);
-}

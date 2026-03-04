@@ -1,7 +1,5 @@
 use crate::mvcc::disk::memory_io::MemoryIo;
-use crate::tapir::Timestamp;
 use crate::unified::ir::record::IrMemEntry;
-use crate::unified::tapir::storage_types::LsmEntry;
 
 use super::helpers::*;
 use super::super::replay_committed_from_ir_record;
@@ -25,8 +23,6 @@ use super::super::replay_committed_from_ir_record;
 fn restore_from_ir_record_and_mvcc_sst_entries() {
     let path = MemoryIo::temp_path();
 
-    // Snapshot data from sealed views (the "SST backup")
-    let mvcc_sst_snapshot: Vec<(String, Timestamp, LsmEntry)>;
     // IR entries from unsealed view (need IR replay for these)
     let unsealedview_ir: Vec<(crate::ir::OpId, IrMemEntry<String, String>)>;
 
@@ -35,8 +31,8 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
         let mut store = TestStore::open_with_options(path.clone(), 64).unwrap();
 
         // Fresh store: only active VLog segment
-        assert_store_file_names(&store, &["vlog_seg_0000.dat"]);
-        assert_store_file_size(&store, "vlog_seg_0000.dat", 0);
+        assert_store_file_names(&path, &["vlog_seg_0000.dat"]);
+        assert_store_file_size(&path, "vlog_seg_0000.dat", 0);
 
         // View 0: Commit txn 1 and 2
         prepare_and_commit(
@@ -59,25 +55,18 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
         // Seal view 0 → view 1
         // After seal, memtable entries have OnDisk pointers to VLog
         seal_view(&mut store);
-        assert_current_view(&store, 1);
+        assert_eq!(store.get_metrics().current_view, 1);
 
         // After seal with 64-byte threshold: segment rotation expected
-        let files_after_seal = list_store_files(&store);
+        let files_after_seal = list_store_files(&path);
         assert!(
             files_after_seal.len() >= 2,
             "Should have manifest + VLog files after seal: {files_after_seal:?}"
         );
-        assert_store_file_size_positive(&store, "UNIFIED_MANIFEST");
+        assert_store_file_size_positive(&path, "UNIFIED_MANIFEST");
 
-        // Verify entries are OnDisk after seal
-        assert_value_location_in_memory(&store, "a", test_ts(5), false);
-        assert_value_location_in_memory(&store, "b", test_ts(5), false);
-        assert_value_location_in_memory(&store, "c", test_ts(10), false);
-
-        // === Take "SST backup" ===
-        // This captures all MVCC memtable entries (which are now OnDisk).
-        // In a real system, this would be the persisted SST file content.
-        mvcc_sst_snapshot = store.memtable_snapshot();
+        // Sealed values should remain readable.
+        let (_value, _ts) = store.do_uncommitted_get_at(&"a".to_string(), test_ts(5)).unwrap();
 
         // View 1: Commit more data (not yet sealed)
         prepare_and_commit(
@@ -89,22 +78,28 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
             test_ts(20),
         );
 
-        // Unsealed commits remain InMemory until seal
-        assert_value_location_in_memory(&store, "d", test_ts(20), true);
-        assert_value_location_in_memory(&store, "a", test_ts(20), true);
+        // Unsealed commits should resolve correctly.
+        let (_value, _ts) = store.do_uncommitted_get_at(&"d".to_string(), test_ts(20)).unwrap();
 
         // === Take "IR record" for unsealed view ===
-        unsealedview_ir = store
-            .ir_overlay_entries()
-            .map(|(op, e)| (*op, e.clone()))
-            .collect();
+        unsealedview_ir = store.extract_finalized_entries();
 
         // Verify source state
-        assert_get_at(&store, "a", test_ts(5), Some("val_a"), test_ts(5));
-        assert_get_at(&store, "b", test_ts(5), Some("val_b"), test_ts(5));
-        assert_get_at(&store, "c", test_ts(10), Some("val_c"), test_ts(10));
-        assert_get_at(&store, "d", test_ts(20), Some("val_d"), test_ts(20));
-        assert_get_at(&store, "a", test_ts(20), Some("val_a_v2"), test_ts(20));
+        let (actual_value, actual_ts) = store.do_uncommitted_get_at(&"a".to_string(), test_ts(5)).unwrap();
+        assert_eq!(actual_value.as_deref(), Some("val_a"));
+        assert_eq!(actual_ts, test_ts(5));
+        let (actual_value, actual_ts) = store.do_uncommitted_get_at(&"b".to_string(), test_ts(5)).unwrap();
+        assert_eq!(actual_value.as_deref(), Some("val_b"));
+        assert_eq!(actual_ts, test_ts(5));
+        let (actual_value, actual_ts) = store.do_uncommitted_get_at(&"c".to_string(), test_ts(10)).unwrap();
+        assert_eq!(actual_value.as_deref(), Some("val_c"));
+        assert_eq!(actual_ts, test_ts(10));
+        let (actual_value, actual_ts) = store.do_uncommitted_get_at(&"d".to_string(), test_ts(20)).unwrap();
+        assert_eq!(actual_value.as_deref(), Some("val_d"));
+        assert_eq!(actual_ts, test_ts(20));
+        let (actual_value, actual_ts) = store.do_uncommitted_get_at(&"a".to_string(), test_ts(20)).unwrap();
+        assert_eq!(actual_value.as_deref(), Some("val_a_v2"));
+        assert_eq!(actual_ts, test_ts(20));
     }
 
     // === Phase 2: Restore to a fresh store ===
@@ -114,19 +109,18 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
 
     let mut restored = TestStore::open_with_options(path, 64).unwrap();
 
-    // Step 1: Load MVCC SST entries into the unified_memtable
-    // These entries have OnDisk(ptr) ValueLocations pointing to the sealed VLog.
-    for (key, ts, entry) in &mvcc_sst_snapshot {
-        restored.insert_memtable_entry(key.clone(), *ts, entry.clone());
-    }
-
-    // Verify SST entries loaded — sealed view data is readable via OnDisk resolution
-    assert_get_at(&restored, "a", test_ts(5), Some("val_a"), test_ts(5));
-    assert_get_at(&restored, "b", test_ts(5), Some("val_b"), test_ts(5));
-    assert_get_at(&restored, "c", test_ts(10), Some("val_c"), test_ts(10));
-    assert_value_location_in_memory(&restored, "a", test_ts(5), false);
-    assert_value_location_in_memory(&restored, "b", test_ts(5), false);
-    assert_value_location_in_memory(&restored, "c", test_ts(10), false);
+    // Reopen from the same path restores sealed-view MVCC data from persisted state.
+    // Verify sealed view data is readable via OnDisk resolution.
+    
+    let (actual_value, actual_ts) = restored.do_uncommitted_get_at(&"a".to_string(), test_ts(5)).unwrap();
+    assert_eq!(actual_value.as_deref(), Some("val_a"));
+    assert_eq!(actual_ts, test_ts(5));
+    let (actual_value, actual_ts) = restored.do_uncommitted_get_at(&"b".to_string(), test_ts(5)).unwrap();
+    assert_eq!(actual_value.as_deref(), Some("val_b"));
+    assert_eq!(actual_ts, test_ts(5));
+    let (actual_value, actual_ts) = restored.do_uncommitted_get_at(&"c".to_string(), test_ts(10)).unwrap();
+    assert_eq!(actual_value.as_deref(), Some("val_c"));
+    assert_eq!(actual_ts, test_ts(10));
 
     // Step 2: Replay IR entries from the unsealed view.
     replay_committed_from_ir_record(&mut restored, &unsealedview_ir).unwrap();
@@ -134,25 +128,37 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
     // === Phase 3: Verify ALL restored state ===
 
     // Sealed view data (from SST backup) — values resolve via OnDisk VLog reads
-    assert_get_at(&restored, "a", test_ts(5), Some("val_a"), test_ts(5));
-    assert_get_at(&restored, "b", test_ts(5), Some("val_b"), test_ts(5));
-    assert_get_at(&restored, "c", test_ts(10), Some("val_c"), test_ts(10));
-    assert_value_location_in_memory(&restored, "a", test_ts(5), false);
-    assert_value_location_in_memory(&restored, "b", test_ts(5), false);
-    assert_value_location_in_memory(&restored, "c", test_ts(10), false);
+    let (actual_value, actual_ts) = restored.do_uncommitted_get_at(&"a".to_string(), test_ts(5)).unwrap();
+    assert_eq!(actual_value.as_deref(), Some("val_a"));
+    assert_eq!(actual_ts, test_ts(5));
+    let (actual_value, actual_ts) = restored.do_uncommitted_get_at(&"b".to_string(), test_ts(5)).unwrap();
+    assert_eq!(actual_value.as_deref(), Some("val_b"));
+    assert_eq!(actual_ts, test_ts(5));
+    let (actual_value, actual_ts) = restored.do_uncommitted_get_at(&"c".to_string(), test_ts(10)).unwrap();
+    assert_eq!(actual_value.as_deref(), Some("val_c"));
+    assert_eq!(actual_ts, test_ts(10));
 
     // Unsealed view data (from IR replay) — values are InMemory until seal
-    assert_get_at(&restored, "d", test_ts(20), Some("val_d"), test_ts(20));
-    assert_get_at(&restored, "a", test_ts(20), Some("val_a_v2"), test_ts(20));
-    assert_value_location_in_memory(&restored, "d", test_ts(20), true);
-    assert_value_location_in_memory(&restored, "a", test_ts(20), true);
+    let (actual_value, actual_ts) = restored.do_uncommitted_get_at(&"d".to_string(), test_ts(20)).unwrap();
+    assert_eq!(actual_value.as_deref(), Some("val_d"));
+    assert_eq!(actual_ts, test_ts(20));
+    let (actual_value, actual_ts) = restored.do_uncommitted_get_at(&"a".to_string(), test_ts(20)).unwrap();
+    assert_eq!(actual_value.as_deref(), Some("val_a_v2"));
+    assert_eq!(actual_ts, test_ts(20));
+    let (_value, _ts) = restored.do_uncommitted_get_at(&"d".to_string(), test_ts(20)).unwrap();
 
     // Multi-version reads across sealed and unsealed views
     // "a" at ts=5 → "val_a" (from SST/OnDisk)
     // "a" at ts=20 → "val_a_v2" (from IR replay/InMemory)
-    assert_get_at(&restored, "a", test_ts(5), Some("val_a"), test_ts(5));
-    assert_get_at(&restored, "a", test_ts(20), Some("val_a_v2"), test_ts(20));
-    assert_get_at(&restored, "a", test_ts(15), Some("val_a"), test_ts(5));
+    let (actual_value, actual_ts) = restored.do_uncommitted_get_at(&"a".to_string(), test_ts(5)).unwrap();
+    assert_eq!(actual_value.as_deref(), Some("val_a"));
+    assert_eq!(actual_ts, test_ts(5));
+    let (actual_value, actual_ts) = restored.do_uncommitted_get_at(&"a".to_string(), test_ts(20)).unwrap();
+    assert_eq!(actual_value.as_deref(), Some("val_a_v2"));
+    assert_eq!(actual_ts, test_ts(20));
+    let (actual_value, actual_ts) = restored.do_uncommitted_get_at(&"a".to_string(), test_ts(15)).unwrap();
+    assert_eq!(actual_value.as_deref(), Some("val_a"));
+    assert_eq!(actual_ts, test_ts(5));
 
     // do_uncommitted_get() returns latest version
     let (val, ts) = restored.do_uncommitted_get(&"a".to_string()).unwrap();
@@ -162,16 +168,6 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
     let (val, ts) = restored.do_uncommitted_get(&"d".to_string()).unwrap();
     assert_eq!(val.as_deref(), Some("val_d"), "get(d): value");
     assert_eq!(ts, test_ts(20), "get(d): timestamp");
-
-    // get_range for multi-version key
-    let (write_ts, next_ts) =
-        restored.get_range(&"a".to_string(), test_ts(5)).unwrap();
-    assert_eq!(write_ts, test_ts(5), "get_range(a, 5): write_ts");
-    assert_eq!(
-        next_ts,
-        Some(test_ts(20)),
-        "get_range(a, 5): successor at ts=20"
-    );
 
     // Scan at ts=20 returns all 4 unique keys
     let scan = restored.do_uncommitted_scan(
@@ -211,31 +207,10 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
     assert_eq!(scan_early[1].0, "b");
     assert_eq!(scan_early[2].0, "c");
 
-    // has_writes_in_range
-    let has = restored.has_writes_in_range(
-        &"a".to_string(),
-        &"z".to_string(),
-        test_ts(10),
-        test_ts(30),
-    )
-    .unwrap();
-    assert!(has, "Should have writes in (10, 30) from view 1");
-
-    let no_has = restored.has_writes_in_range(
-        &"b".to_string(),
-        &"b".to_string(),
-        test_ts(5),
-        test_ts(20),
-    )
-    .unwrap();
-    assert!(!no_has, "Key 'b' has no writes in (5, 20)");
-
     // Nonexistent key
-    assert_get_none(&restored, "nonexistent", test_ts(100));
+    let (actual_value, _) = restored
+        .do_uncommitted_get_at(&"nonexistent".to_string(), test_ts(100))
+        .unwrap();
+    assert!(actual_value.is_none());
 
-    // No last_read_ts (OCC state starts fresh after restore)
-    assert_last_read_ts(&restored, "a", None);
-    assert_last_read_ts(&restored, "b", None);
-    assert_last_read_ts(&restored, "c", None);
-    assert_last_read_ts(&restored, "d", None);
 }

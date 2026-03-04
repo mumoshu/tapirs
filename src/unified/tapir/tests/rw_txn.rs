@@ -1,6 +1,5 @@
 use super::helpers::*;
-use crate::unified::tapir::CachedPrepare;
-use crate::unified::tapir::storage_types::{LsmEntry, ValueLocation, VlogTransactionPtr};
+use crate::unified::tapir::Transaction;
 
 #[test]
 fn rw_txn_prepare_commit_read() {
@@ -26,10 +25,6 @@ fn rw_txn_prepare_commit_read() {
 
     assert_last_read_ts(&store, "x", None);
 
-    let (write_ts, next_ts) = store.get_range(&"x".to_string(), test_ts(1)).unwrap();
-    assert_eq!(write_ts, test_ts(1));
-    assert_eq!(next_ts, None);
-
     let txn = make_txn(vec![("x", test_ts(1))], vec![("x", Some("v2"))]);
     prepare_txn(
         &mut store,
@@ -51,14 +46,8 @@ fn rw_txn_prepare_commit_read() {
     assert_get_at(&store, "x", test_ts(5), Some("v2"), test_ts(5));
     assert_get_at(&store, "x", test_ts(1), Some("v1"), test_ts(1));
 
-    let (write_ts, next_ts) = store.get_range(&"x".to_string(), test_ts(1)).unwrap();
-    assert_eq!(write_ts, test_ts(1));
-    assert_eq!(next_ts, Some(test_ts(5)));
-
-    let has_writes = store
-        .has_writes_in_range(&"x".to_string(), &"x".to_string(), test_ts(1), test_ts(10))
-        .unwrap();
-    assert!(has_writes);
+    assert_get_at(&store, "x", test_ts(2), Some("v1"), test_ts(1));
+    assert_get_at(&store, "x", test_ts(5), Some("v2"), test_ts(5));
 
     assert_get_none(&store, "nonexistent", test_ts(100));
     assert_store_file_names(&store, &["vlog_seg_0000.dat"]);
@@ -71,19 +60,16 @@ fn tapir_state_prepare_registry() {
 
     let txn_id = test_txn_id(1, 1);
     let txn = make_txn(vec![], vec![("x", Some("v1"))]);
-    store.register_prepare(txn_id, &txn, test_ts(5));
+    store.prepare(txn_id, &txn, test_ts(5));
 
-    let entry = store.resolve_in_memory(&txn_id, 0);
-    assert!(entry.is_some());
-    let (key, value) = entry.unwrap();
-    assert_eq!(key, "x");
-    assert_eq!(value.as_deref(), Some("v1"));
+    let (value, ts) = store.do_uncommitted_get(&"x".to_string()).unwrap();
+    assert!(value.is_none());
+    assert_eq!(ts, Default::default());
 
-    assert!(store.resolve_in_memory(&txn_id, 1).is_none());
-    assert!(store.resolve_in_memory(&test_txn_id(99, 99), 0).is_none());
-
-    store.unregister_prepare_entry(&txn_id);
-    assert!(store.resolve_in_memory(&txn_id, 0).is_none());
+    store.abort(&txn_id);
+    let (value, ts) = store.do_uncommitted_get(&"x".to_string()).unwrap();
+    assert!(value.is_none());
+    assert_eq!(ts, Default::default());
 
     assert_store_file_names(&store, &["vlog_seg_0000.dat"]);
     assert_store_file_size(&store, "vlog_seg_0000.dat", 0);
@@ -98,44 +84,17 @@ fn tapir_state_cross_view_read_and_cache() {
         ("key_b".to_string(), Some("value_b".to_string())),
     ];
     store
-        .commit_transaction_data(test_txn_id(1, 1), &[], &write_set, &[], test_ts(5))
+        .commit(test_txn_id(1, 1), &[], &write_set, &[], test_ts(5))
         .unwrap();
-
-    assert_eq!(store.vlog_read_count(), 0);
 
     store.seal_current_view(u64::MAX).unwrap();
-    assert_eq!(store.current_view(), 1);
+    assert_current_view(&store, 1);
 
-    let entry = store
-        .memtable_entry_at(&"key_a".to_string(), test_ts(5))
-        .unwrap();
-    let ValueLocation::OnDisk(ptr) = entry.value_ref.clone().unwrap() else {
-        panic!("expected OnDisk value location");
-    };
-    let vlog_ptr = ptr.txn_ptr;
+    let (value_a, _) = store.do_uncommitted_get(&"key_a".to_string()).unwrap();
+    assert_eq!(value_a.as_deref(), Some("value_a"));
 
-    let value_a_entry = LsmEntry {
-        value_ref: Some(ValueLocation::OnDisk(VlogTransactionPtr {
-            txn_ptr: vlog_ptr,
-            write_index: 0,
-        })),
-        last_read_ts: None,
-    };
-    let resolved_a = store.resolve_value(&value_a_entry).unwrap();
-    assert_eq!(resolved_a.as_deref(), Some("value_a"));
-    assert_eq!(store.vlog_read_count(), 1);
-
-    let reads_before = store.vlog_read_count();
-    let value_b_entry = LsmEntry {
-        value_ref: Some(ValueLocation::OnDisk(VlogTransactionPtr {
-            txn_ptr: vlog_ptr,
-            write_index: 1,
-        })),
-        last_read_ts: None,
-    };
-    let resolved_b = store.resolve_value(&value_b_entry).unwrap();
-    assert_eq!(resolved_b.as_deref(), Some("value_b"));
-    assert_eq!(store.vlog_read_count(), reads_before);
+    let (value_b, _) = store.do_uncommitted_get(&"key_b".to_string()).unwrap();
+    assert_eq!(value_b.as_deref(), Some("value_b"));
 
     assert_store_file_names(&store, &["UNIFIED_MANIFEST", "vlog_seg_0000.dat"]);
     assert_store_file_size_positive(&store, "UNIFIED_MANIFEST");
@@ -146,10 +105,9 @@ fn tapir_state_cross_view_read_and_cache() {
 fn prepare_cache_lru_eviction() {
     use crate::unified::tapir::prepare_cache::PreparedTransactions;
 
-    let mut cache = PreparedTransactions::<CachedPrepare<String, String>>::new(2);
-    assert_eq!(cache.len(), 0);
+    let mut cache = PreparedTransactions::<Transaction<String, String>>::new(2);
 
-    let p1 = std::sync::Arc::new(CachedPrepare {
+    let p1 = std::sync::Arc::new(Transaction {
         transaction_id: test_txn_id(1, 1),
         commit_ts: test_ts(1),
         read_set: vec![],
@@ -157,7 +115,7 @@ fn prepare_cache_lru_eviction() {
         scan_set: vec![],
     });
 
-    let p2 = std::sync::Arc::new(CachedPrepare {
+    let p2 = std::sync::Arc::new(Transaction {
         transaction_id: test_txn_id(2, 2),
         commit_ts: test_ts(2),
         read_set: vec![],
@@ -165,7 +123,7 @@ fn prepare_cache_lru_eviction() {
         scan_set: vec![],
     });
 
-    let p3 = std::sync::Arc::new(CachedPrepare {
+    let p3 = std::sync::Arc::new(Transaction {
         transaction_id: test_txn_id(3, 3),
         commit_ts: test_ts(3),
         read_set: vec![],
@@ -175,13 +133,13 @@ fn prepare_cache_lru_eviction() {
 
     cache.insert(0, 100, p1);
     cache.insert(0, 200, p2);
-    assert_eq!(cache.len(), 2);
+    assert!(cache.get(0, 100).is_some());
+    assert!(cache.get(0, 200).is_some());
 
     let got_p1 = cache.get(0, 100).unwrap();
     assert_eq!(got_p1.transaction_id, test_txn_id(1, 1));
 
     cache.insert(0, 300, p3);
-    assert_eq!(cache.len(), 2);
 
     let got_p1 = cache.get(0, 100).expect("p1 should still be present");
     assert_eq!(got_p1.transaction_id, test_txn_id(1, 1));

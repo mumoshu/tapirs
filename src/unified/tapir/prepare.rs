@@ -3,10 +3,8 @@ use crate::mvcc::disk::disk_io::{DiskIo, OpenFlags};
 use crate::occ::TransactionId as OccTransactionId;
 use crate::tapir::{Key, Timestamp, Value};
 #[cfg(test)]
-use crate::tapir::LeaderRecordDelta;
-#[cfg(test)]
-use crate::tapirstore::{RecordDeltaDuringView, TransactionLog};
-use crate::unified::tapir::CachedPrepare;
+use crate::tapirstore::TransactionLog;
+use crate::unified::tapir::Transaction;
 use crate::unified::tapir::{LsmEntry, ValueLocation, VlogSegment, VlogTransactionPtr};
 #[cfg(test)]
 use crate::IrClientId;
@@ -22,20 +20,41 @@ use std::sync::Arc;
 #[allow(dead_code)]
 pub(crate) struct TapirState<K: Ord, V, IO: DiskIo> {
     memtable: Memtable<K>,
-    prepare_registry: BTreeMap<OccTransactionId, Arc<CachedPrepare<K, V>>>,
-    prepare_cache: RefCell<PreparedTransactions<CachedPrepare<K, V>>>,
+    prepared_txns_in_mem: BTreeMap<OccTransactionId, Arc<Transaction<K, V>>>,
+    prepare_cache: RefCell<PreparedTransactions<Transaction<K, V>>>,
     committed_txn_vlog_index: BTreeMap<OccTransactionId, VlogPtr>,
     vlog_read_count: Cell<u64>,
     #[cfg(test)]
     txlog: TransactionLog,
-    #[cfg(test)]
-    cdc: RecordDeltaDuringView<K, V>,
     active_vlog: VlogSegment<IO>,
     sealed_vlog_segments: BTreeMap<u64, VlogSegment<IO>>,
     manifest: UnifiedManifest,
     base_dir: PathBuf,
     io_flags: OpenFlags,
     current_view_entry_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StatusCommit<K, V> {
+    pub(crate) offset: u64,
+    pub(crate) transaction_id: OccTransactionId,
+    pub(crate) commit_ts: Timestamp,
+    pub(crate) write_set: Vec<(K, Option<V>)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StatusSegment<K, V> {
+    pub(crate) id: u64,
+    pub(crate) size: u64,
+    pub(crate) views: Vec<u64>,
+    pub(crate) commits: Vec<StatusCommit<K, V>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StatusReport<K, V> {
+    pub(crate) view: u64,
+    pub(crate) sealed_segments: usize,
+    pub(crate) segments: Vec<StatusSegment<K, V>>,
 }
 
 fn new_store_state<K: Ord + Clone, V, IO: DiskIo>(
@@ -48,14 +67,12 @@ fn new_store_state<K: Ord + Clone, V, IO: DiskIo>(
 ) -> TapirState<K, V, IO> {
     TapirState {
         memtable: Memtable::new(),
-        prepare_registry: BTreeMap::new(),
+        prepared_txns_in_mem: BTreeMap::new(),
         prepare_cache: RefCell::new(PreparedTransactions::new(prepare_cache_capacity)),
         committed_txn_vlog_index: BTreeMap::new(),
         vlog_read_count: Cell::new(0),
         #[cfg(test)]
         txlog: TransactionLog::new(),
-        #[cfg(test)]
-        cdc: RecordDeltaDuringView::new(),
         active_vlog,
         sealed_vlog_segments,
         manifest,
@@ -67,15 +84,15 @@ fn new_store_state<K: Ord + Clone, V, IO: DiskIo>(
 
 #[allow(dead_code)]
 impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
-    pub(crate) fn vlog_read_count(&self) -> u64 {
+    fn vlog_read_count(&self) -> u64 {
         self.vlog_read_count.get()
     }
 
-    pub(crate) fn increment_vlog_read_count(&self) {
+    fn increment_vlog_read_count(&self) {
         self.vlog_read_count.set(self.vlog_read_count.get() + 1);
     }
 
-    pub(crate) fn insert_memtable_entry(
+    fn insert_memtable_entry(
         &mut self,
         key: K,
         ts: Timestamp,
@@ -84,45 +101,25 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         self.memtable.insert(key, ts, entry);
     }
 
-    pub(crate) fn update_memtable_last_read(&mut self, key: &K, read: Timestamp, commit_time: u64) {
+    fn update_memtable_last_read(&mut self, key: &K, read: Timestamp, commit_time: u64) {
         self.memtable.update_last_read(key, read, commit_time);
     }
 
     #[cfg(test)]
-    pub(crate) fn memtable_entry_at(&self, key: &K, ts: Timestamp) -> Option<&LsmEntry> {
+    fn memtable_entry_at(&self, key: &K, ts: Timestamp) -> Option<&LsmEntry> {
         self.memtable.get_at(key, ts).map(|(_, entry)| entry)
     }
 
-    #[cfg(test)]
-    pub(crate) fn memtable_snapshot(&self) -> Vec<(K, Timestamp, LsmEntry)>
-    where
-        K: Clone,
-    {
-        self.memtable
-            .iter()
-            .map(|(ck, entry)| (ck.key.clone(), ck.timestamp.0, entry.clone()))
-            .collect()
-    }
-
-    pub(crate) fn register_prepare_raw(
-        &mut self,
-        txn_id: OccTransactionId,
-        prepare: Arc<CachedPrepare<K, V>>,
-    ) {
-        self.prepare_registry.insert(txn_id, prepare);
+    pub(crate) fn abort(&mut self, txn_id: &OccTransactionId) {
+        self.prepared_txns_in_mem.remove(txn_id);
     }
 
     #[cfg(test)]
-    pub(crate) fn unregister_prepare(&mut self, txn_id: &OccTransactionId) {
-        self.prepare_registry.remove(txn_id);
+    fn lookup_prepare(&self, txn_id: &OccTransactionId) -> Option<Arc<Transaction<K, V>>> {
+        self.prepared_txns_in_mem.get(txn_id).cloned()
     }
 
-    #[cfg(test)]
-    pub(crate) fn lookup_prepare(&self, txn_id: &OccTransactionId) -> Option<Arc<CachedPrepare<K, V>>> {
-        self.prepare_registry.get(txn_id).cloned()
-    }
-
-    pub(crate) fn lookup_prepare_value_ref(
+    fn lookup_prepare_value_ref(
         &self,
         txn_id: &OccTransactionId,
         write_index: u16,
@@ -131,62 +128,62 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         K: Clone,
         V: Clone,
     {
-        self.prepare_registry
+        self.prepared_txns_in_mem
             .get(txn_id)
             .and_then(|p| p.write_set.get(write_index as usize))
             .cloned()
     }
 
     #[cfg(test)]
-    pub(crate) fn resolve_in_memory_ref(
+    fn resolve_in_memory_ref(
         &self,
         txn_id: &OccTransactionId,
         write_index: u16,
     ) -> Option<&(K, Option<V>)> {
-        self.prepare_registry
+        self.prepared_txns_in_mem
             .get(txn_id)
             .and_then(|p| p.write_set.get(write_index as usize))
     }
 
     #[cfg(test)]
-    pub(crate) fn has_prepare_write_conflict(&self, key: &K) -> bool {
-        self.prepare_registry
+    fn has_prepare_write_conflict(&self, key: &K) -> bool {
+        self.prepared_txns_in_mem
             .values()
             .flat_map(|p| p.write_set.iter())
             .any(|(k, _)| k == key)
     }
 
     #[cfg(test)]
-    pub(crate) fn contains_prepare(&self, txn_id: &OccTransactionId) -> bool {
-        self.prepare_registry.contains_key(txn_id)
+    fn contains_prepare(&self, txn_id: &OccTransactionId) -> bool {
+        self.prepared_txns_in_mem.contains_key(txn_id)
     }
 
-    pub(crate) fn clear_prepare_registry(&mut self) {
-        self.prepare_registry.clear();
+    fn clear_prepare_registry(&mut self) {
+        self.prepared_txns_in_mem.clear();
     }
 
-    pub(crate) fn index_committed_txn_ptr(&mut self, txn_id: OccTransactionId, ptr: VlogPtr) {
+    fn index_committed_txn_ptr(&mut self, txn_id: OccTransactionId, ptr: VlogPtr) {
         self.committed_txn_vlog_index.insert(txn_id, ptr);
     }
 
     #[cfg(test)]
-    pub(crate) fn lookup_committed_txn_ptr(&self, txn_id: &OccTransactionId) -> Option<VlogPtr> {
+    fn lookup_committed_txn_ptr(&self, txn_id: &OccTransactionId) -> Option<VlogPtr> {
         self.committed_txn_vlog_index.get(txn_id).copied()
     }
 
-    pub(crate) fn prepare_cache_get(
+    fn prepare_cache_get(
         &self,
         segment_id: u64,
         offset: u64,
-    ) -> Option<Arc<CachedPrepare<K, V>>> {
+    ) -> Option<Arc<Transaction<K, V>>> {
         self.prepare_cache.borrow_mut().get(segment_id, offset)
     }
 
-    pub(crate) fn prepare_cache_insert(
+    fn prepare_cache_insert(
         &self,
         segment_id: u64,
         offset: u64,
-        prepare: Arc<CachedPrepare<K, V>>,
+        prepare: Arc<Transaction<K, V>>,
     ) {
         self.prepare_cache
             .borrow_mut()
@@ -194,12 +191,12 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
     }
 
     #[cfg(test)]
-    pub(crate) fn txn_log_get(&self, id: &OccTransactionId) -> Option<(Timestamp, bool)> {
+    fn txn_log_get(&self, id: &OccTransactionId) -> Option<(Timestamp, bool)> {
         self.txlog.txn_log_get(id)
     }
 
     #[cfg(test)]
-    pub(crate) fn txn_log_insert(
+    fn txn_log_insert(
         &mut self,
         id: OccTransactionId,
         ts: Timestamp,
@@ -209,51 +206,33 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
     }
 
     #[cfg(test)]
-    pub(crate) fn txn_log_contains(&self, id: &OccTransactionId) -> bool {
+    fn txn_log_contains(&self, id: &OccTransactionId) -> bool {
         self.txlog.txn_log_contains(id)
     }
 
     #[cfg(test)]
-    pub(crate) fn txn_log_len(&self) -> usize {
+    fn txn_log_len(&self) -> usize {
         self.txlog.txn_log_len()
     }
 
     #[cfg(test)]
-    pub(crate) fn record_cdc_delta(&mut self, base_view: u64, delta: LeaderRecordDelta<K, V>) {
-        self.cdc.record_cdc_delta(base_view, delta);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn cdc_deltas_from(&self, from_view: u64) -> Vec<LeaderRecordDelta<K, V>>
-    where
-        V: Clone,
-    {
-        self.cdc.cdc_deltas_from(from_view)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn cdc_max_view(&self) -> Option<u64> {
-        self.cdc.cdc_max_view()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn base_dir(&self) -> &Path {
+    fn base_dir(&self) -> &Path {
         &self.base_dir
     }
 
-    pub(crate) fn current_view(&self) -> u64 {
+    fn current_view(&self) -> u64 {
         self.manifest.current_view
     }
 
-    pub(crate) fn sealed_vlog_segments(&self) -> &BTreeMap<u64, VlogSegment<IO>> {
+    fn sealed_vlog_segments(&self) -> &BTreeMap<u64, VlogSegment<IO>> {
         &self.sealed_vlog_segments
     }
 
-    pub(crate) fn active_vlog_id(&self) -> u64 {
+    fn active_vlog_id(&self) -> u64 {
         self.active_vlog.id
     }
 
-    pub(crate) fn active_or_sealed_segment_ref(&self, segment_id: u64) -> Option<&VlogSegment<IO>> {
+    fn active_or_sealed_segment_ref(&self, segment_id: u64) -> Option<&VlogSegment<IO>> {
         self.sealed_vlog_segments
             .get(&segment_id)
             .or(if self.active_vlog.id == segment_id {
@@ -263,7 +242,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
             })
     }
 
-    pub(crate) fn get_range(
+    fn get_range(
         &self,
         key: &K,
         timestamp: Timestamp,
@@ -276,7 +255,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         Ok((Timestamp::default(), None))
     }
 
-    pub(crate) fn has_writes_in_range(
+    fn has_writes_in_range(
         &self,
         start: &K,
         end: &K,
@@ -289,16 +268,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
     }
 
     #[cfg(test)]
-    pub(crate) fn resolve_in_memory(
-        &self,
-        txn_id: &OccTransactionId,
-        write_index: u16,
-    ) -> Option<&(K, Option<V>)> {
-        self.resolve_in_memory_ref(txn_id, write_index)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn commit_get(
+    fn commit_get(
         &mut self,
         key: K,
         read: Timestamp,
@@ -309,7 +279,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
     }
 
     #[cfg(test)]
-    pub(crate) fn get_last_read(&self, key: &K) -> Result<Option<Timestamp>, StorageError> {
+    fn get_last_read(&self, key: &K) -> Result<Option<Timestamp>, StorageError> {
         if let Some((_, entry)) = self.memtable.get_latest(key)
             && let Some(ts) = entry.last_read_ts
         {
@@ -322,7 +292,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
     }
 
     #[cfg(test)]
-    pub(crate) fn get_last_read_at(
+    fn get_last_read_at(
         &self,
         key: &K,
         timestamp: Timestamp,
@@ -338,19 +308,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         Ok(None)
     }
 
-    #[cfg(test)]
-    pub(crate) fn resolve_value(
-        &self,
-        entry: &LsmEntry,
-    ) -> Result<Option<V>, StorageError>
-    where
-        K: Key + serde::Serialize + serde::de::DeserializeOwned,
-        V: Value + serde::Serialize + serde::de::DeserializeOwned,
-    {
-        resolve_value(self, entry)
-    }
-
-    pub(crate) fn commit_transaction_data(
+    pub(crate) fn commit(
         &mut self,
         txn_id: OccTransactionId,
         read_set: &[(K, Timestamp)],
@@ -362,14 +320,16 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         K: Key,
         V: Value,
     {
-        let cached_prepare = Arc::new(CachedPrepare {
-            transaction_id: txn_id,
-            commit_ts: commit,
-            read_set: read_set.to_vec(),
-            write_set: write_set.to_vec(),
-            scan_set: scan_set.to_vec(),
-        });
-        self.register_prepare_raw(txn_id, cached_prepare);
+        self.prepared_txns_in_mem.insert(
+            txn_id,
+            Arc::new(Transaction {
+                transaction_id: txn_id,
+                commit_ts: commit,
+                read_set: read_set.to_vec(),
+                write_set: write_set.to_vec(),
+                scan_set: scan_set.to_vec(),
+            }),
+        );
 
         let txn_ptr =
             self.append_committed_txn_to_active(txn_id, commit, read_set, write_set, scan_set)?;
@@ -402,8 +362,34 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         Ok(())
     }
 
-    #[cfg(test)]
-    pub(crate) fn register_prepare(
+    pub(crate) fn commit_prepared(
+        &mut self,
+        txn_id: OccTransactionId,
+        commit: Timestamp,
+    ) -> Result<(), StorageError>
+    where
+        K: Key,
+        V: Value,
+    {
+        let prepared = self
+            .prepared_txns_in_mem
+            .get(&txn_id)
+            .cloned()
+            .ok_or_else(|| StorageError::Codec(format!(
+                "no prepared transaction for commit: {}:{}",
+                txn_id.client_id.0, txn_id.number
+            )))?;
+
+        self.commit(
+            txn_id,
+            &prepared.read_set,
+            &prepared.write_set,
+            &prepared.scan_set,
+            commit,
+        )
+    }
+
+    pub(crate) fn prepare(
         &mut self,
         txn_id: OccTransactionId,
         transaction: &crate::occ::Transaction<K, V, Timestamp>,
@@ -436,7 +422,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
             })
             .collect();
 
-        let prepare = Arc::new(CachedPrepare {
+        let prepare = Arc::new(Transaction {
             transaction_id: txn_id,
             commit_ts,
             read_set,
@@ -444,15 +430,10 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
             scan_set,
         });
 
-        self.register_prepare_raw(txn_id, prepare);
+        self.prepared_txns_in_mem.insert(txn_id, prepare);
     }
 
-    #[cfg(test)]
-    pub(crate) fn unregister_prepare_entry(&mut self, txn_id: &OccTransactionId) {
-        self.unregister_prepare(txn_id)
-    }
-
-    pub(crate) fn convert_in_memory_to_on_disk(&mut self) {
+    fn convert_in_memory_to_on_disk(&mut self) {
         let committed_index = self.committed_txn_vlog_index.clone();
         self.memtable
             .convert_in_memory_to_on_disk(&committed_index);
@@ -485,6 +466,135 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         )?;
         self.current_view_entry_count += 1;
         Ok(ptr)
+    }
+
+    fn recover_segment(&mut self, segment: &VlogSegment<IO>) -> Result<(), StorageError>
+    where
+        K: serde::de::DeserializeOwned,
+        V: serde::de::DeserializeOwned,
+    {
+        for (offset, raw) in segment.iter_raw_entries()? {
+            if raw.entry_type != TAPIR_COMMITTED_TXN_ENTRY_TYPE {
+                continue;
+            }
+
+            let prepared = crate::unified::tapir::vlog_codec::deserialize_committed_txn_payload::<K, V>(&raw.payload)?;
+            let txn_id = prepared.transaction_id;
+            let commit_ts = prepared.commit_ts;
+            let read_set = prepared.read_set;
+            let write_set = prepared.write_set;
+
+            let txn_ptr = VlogPtr {
+                segment_id: segment.id,
+                offset,
+                length: RAW_ENTRY_OVERHEAD + raw.payload.len() as u32,
+            };
+            self.index_committed_txn_ptr(txn_id, txn_ptr);
+
+            for (i, (key, value)) in write_set.iter().enumerate() {
+                let value_ref = if value.is_some() {
+                    Some(ValueLocation::OnDisk(VlogTransactionPtr {
+                        txn_ptr,
+                        write_index: i as u16,
+                    }))
+                } else {
+                    None
+                };
+                self.insert_memtable_entry(
+                    key.clone(),
+                    commit_ts,
+                    LsmEntry {
+                        value_ref,
+                        last_read_ts: None,
+                    },
+                );
+            }
+
+            for (key, read) in &read_set {
+                self.update_memtable_last_read(key, *read, commit_ts.time);
+            }
+        }
+
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn resolve_in_memory(
+        &self,
+        txn_id: &OccTransactionId,
+        write_index: u16,
+    ) -> Option<&(K, Option<V>)> {
+        self.resolve_in_memory_ref(txn_id, write_index)
+    }
+
+    #[cfg(test)]
+    fn resolve_value(
+        &self,
+        entry: &LsmEntry,
+    ) -> Result<Option<V>, StorageError>
+    where
+        K: Key + serde::Serialize + serde::de::DeserializeOwned,
+        V: Value + serde::Serialize + serde::de::DeserializeOwned,
+    {
+        self.resolve_value_internal(entry)
+    }
+
+    fn resolve_in_memory_owned(
+        &self,
+        txn_id: &OccTransactionId,
+        write_index: u16,
+    ) -> Option<(K, Option<V>)>
+    where
+        K: Clone,
+        V: Clone,
+    {
+        self.lookup_prepare_value_ref(txn_id, write_index)
+    }
+
+    fn resolve_on_disk(
+        &self,
+        ptr: &VlogTransactionPtr,
+    ) -> Result<Arc<Transaction<K, V>>, StorageError>
+    where
+        K: Key + serde::Serialize + serde::de::DeserializeOwned,
+        V: Value + serde::Serialize + serde::de::DeserializeOwned,
+    {
+        let segment_id = ptr.txn_ptr.segment_id;
+        let offset = ptr.txn_ptr.offset;
+
+        if let Some(cached) = self.prepare_cache_get(segment_id, offset) {
+            return Ok(cached);
+        }
+
+        self.increment_vlog_read_count();
+        let prepare = self.read_committed_txn(&ptr.txn_ptr)?;
+        let cached = Arc::new(prepare);
+        self.prepare_cache_insert(segment_id, offset, cached.clone());
+        Ok(cached)
+    }
+
+    fn resolve_value_internal(&self, entry: &LsmEntry) -> Result<Option<V>, StorageError>
+    where
+        K: Key + serde::Serialize + serde::de::DeserializeOwned,
+        V: Value + serde::Serialize + serde::de::DeserializeOwned,
+    {
+        match &entry.value_ref {
+            None => Ok(None),
+            Some(ValueLocation::InMemory { txn_id, write_index }) => {
+                match self.resolve_in_memory_owned(txn_id, *write_index) {
+                    Some((_key, value)) => Ok(value.clone()),
+                    None => Ok(None),
+                }
+            }
+            Some(ValueLocation::OnDisk(ptr)) => {
+                let cached = self.resolve_on_disk(ptr)?;
+                if let Some((_key, value)) = cached.write_set.get(ptr.write_index as usize) {
+                    Ok(value.clone())
+                } else {
+                    Ok(None)
+                }
+            }
+        }
     }
 
     pub(crate) fn seal_current_view(&mut self, min_view_vlog_size: u64) -> Result<(), StorageError> {
@@ -536,14 +646,49 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         self.manifest.save::<IO>(&self.base_dir)?;
         self.active_vlog.start_view(self.manifest.current_view);
 
-        self.finalize_after_seal();
+        self.convert_in_memory_to_on_disk();
+        self.clear_prepare_registry();
         self.current_view_entry_count = 0;
         Ok(())
     }
 
-    pub(crate) fn finalize_after_seal(&mut self) {
-        self.convert_in_memory_to_on_disk();
-        self.clear_prepare_registry();
+    pub(crate) fn status(&self) -> Result<StatusReport<K, V>, StorageError>
+    where
+        K: serde::de::DeserializeOwned + Clone,
+        V: serde::de::DeserializeOwned + Clone,
+    {
+        let mut segments = Vec::new();
+
+        let mut append_segment = |seg: &VlogSegment<IO>| -> Result<(), StorageError> {
+            let commits = iter_committed_txn_entries::<K, V, _>(seg)?
+                .into_iter()
+                .map(|(offset, prepared)| StatusCommit {
+                    offset,
+                    transaction_id: prepared.transaction_id,
+                    commit_ts: prepared.commit_ts,
+                    write_set: prepared.write_set,
+                })
+                .collect();
+
+            segments.push(StatusSegment {
+                id: seg.id,
+                size: seg.write_offset(),
+                views: seg.views.iter().map(|view| view.view).collect(),
+                commits,
+            });
+            Ok(())
+        };
+
+        append_segment(&self.active_vlog)?;
+        for seg in self.sealed_vlog_segments.values() {
+            append_segment(seg)?;
+        }
+
+        Ok(StatusReport {
+            view: self.current_view(),
+            sealed_segments: self.sealed_vlog_segments().len(),
+            segments,
+        })
     }
 }
 
@@ -558,7 +703,7 @@ fn read_committed_txn_from_segment<
 >(
     segment: &VlogSegment<IO>,
     txn_ptr: &VlogPtr,
-) -> Result<CachedPrepare<K, V>, StorageError> {
+) -> Result<Transaction<K, V>, StorageError> {
     let raw = segment.read_raw_entry(txn_ptr)?;
     if raw.entry_type != TAPIR_COMMITTED_TXN_ENTRY_TYPE {
         return Err(StorageError::Codec(format!(
@@ -575,7 +720,7 @@ pub(crate) fn iter_committed_txn_entries<
     IO: DiskIo,
 >(
     segment: &VlogSegment<IO>,
-) -> Result<Vec<(u64, CachedPrepare<K, V>)>, StorageError> {
+) -> Result<Vec<(u64, Transaction<K, V>)>, StorageError> {
     let mut out = Vec::new();
     for (offset, raw) in segment.iter_raw_entries()? {
         if raw.entry_type != TAPIR_COMMITTED_TXN_ENTRY_TYPE {
@@ -590,59 +735,6 @@ pub(crate) fn iter_committed_txn_entries<
         out.push((offset, prepared));
     }
     Ok(out)
-}
-
-fn recover_segment<
-    K: Ord + Clone + serde::de::DeserializeOwned,
-    V: serde::de::DeserializeOwned,
-    IO: DiskIo,
->(
-    state: &mut TapirState<K, V, IO>,
-    segment: &VlogSegment<IO>,
-) -> Result<(), StorageError> {
-    for (offset, raw) in segment.iter_raw_entries()? {
-        if raw.entry_type != TAPIR_COMMITTED_TXN_ENTRY_TYPE {
-            continue;
-        }
-
-        let prepared = crate::unified::tapir::vlog_codec::deserialize_committed_txn_payload::<K, V>(&raw.payload)?;
-        let txn_id = prepared.transaction_id;
-        let commit_ts = prepared.commit_ts;
-        let read_set = prepared.read_set;
-        let write_set = prepared.write_set;
-
-        let txn_ptr = VlogPtr {
-            segment_id: segment.id,
-            offset,
-            length: RAW_ENTRY_OVERHEAD + raw.payload.len() as u32,
-        };
-        state.index_committed_txn_ptr(txn_id, txn_ptr);
-
-        for (i, (key, value)) in write_set.iter().enumerate() {
-            let value_ref = if value.is_some() {
-                Some(ValueLocation::OnDisk(VlogTransactionPtr {
-                    txn_ptr,
-                    write_index: i as u16,
-                }))
-            } else {
-                None
-            };
-            state.insert_memtable_entry(
-                key.clone(),
-                commit_ts,
-                LsmEntry {
-                    value_ref,
-                    last_read_ts: None,
-                },
-            );
-        }
-
-        for (key, read) in &read_set {
-            state.update_memtable_last_read(key, *read, commit_ts.time);
-        }
-    }
-
-    Ok(())
 }
 
 pub(crate) fn open<K: Key, V: Value, IO: DiskIo>(
@@ -692,7 +784,7 @@ pub(crate) fn open<K: Key, V: Value, IO: DiskIo>(
             seg_meta.views,
             state.io_flags,
         )?;
-        recover_segment(&mut state, &seg)?;
+        state.recover_segment(&seg)?;
         seg.close();
     }
 
@@ -705,7 +797,7 @@ pub(crate) fn open<K: Key, V: Value, IO: DiskIo>(
         Vec::new(),
         state.io_flags,
     )?;
-    recover_segment(&mut state, &active_for_recover)?;
+    state.recover_segment(&active_for_recover)?;
     active_for_recover.close();
 
     Ok(state)
@@ -720,7 +812,7 @@ impl<
     pub(crate) fn do_uncommitted_get(&self, key: &K) -> Result<(Option<V>, Timestamp), StorageError> {
         if let Some((ck, entry)) = self.memtable.get_latest(key) {
             let ts = ck.timestamp.0;
-            let value = resolve_value(self, entry)?;
+            let value = self.resolve_value_internal(entry)?;
             return Ok((value, ts));
         }
         Ok((None, Timestamp::default()))
@@ -729,7 +821,7 @@ impl<
     pub(crate) fn do_uncommitted_get_at(&self, key: &K, ts: Timestamp) -> Result<(Option<V>, Timestamp), StorageError> {
         if let Some((ck, entry)) = self.memtable.get_at(key, ts) {
             let write_ts = ck.timestamp.0;
-            let value = resolve_value(self, entry)?;
+            let value = self.resolve_value_internal(entry)?;
             return Ok((value, write_ts));
         }
         Ok((None, Timestamp::default()))
@@ -743,16 +835,16 @@ impl<
     ) -> Result<Vec<(K, Option<V>, Timestamp)>, StorageError> {
         let mut out = Vec::new();
         for (ck, entry) in self.memtable.scan(start, end, ts) {
-            let value = resolve_value(self, entry)?;
+            let value = self.resolve_value_internal(entry)?;
             out.push((ck.key.clone(), value, ck.timestamp.0));
         }
         Ok(out)
     }
 
-    pub(crate) fn read_committed_txn(
+    fn read_committed_txn(
         &self,
         txn_ptr: &VlogPtr,
-    ) -> Result<CachedPrepare<K, V>, StorageError> {
+    ) -> Result<Transaction<K, V>, StorageError> {
         let segment_id = txn_ptr.segment_id;
         let segment = self
             .active_or_sealed_segment_ref(segment_id)
@@ -761,63 +853,6 @@ impl<
             )))?;
 
         read_committed_txn_from_segment(segment, txn_ptr)
-    }
-}
-
-pub(crate) fn resolve_in_memory<K: Key, V: Value, IO: DiskIo>(
-    store: &TapirState<K, V, IO>,
-    txn_id: &OccTransactionId,
-    write_index: u16,
-) -> Option<(K, Option<V>)> {
-    store.lookup_prepare_value_ref(txn_id, write_index)
-}
-
-pub(crate) fn resolve_on_disk<
-    K: Key + serde::Serialize + serde::de::DeserializeOwned,
-    V: Value + serde::Serialize + serde::de::DeserializeOwned,
-    IO: DiskIo,
->(
-    store: &TapirState<K, V, IO>,
-    ptr: &VlogTransactionPtr,
-) -> Result<Arc<CachedPrepare<K, V>>, StorageError> {
-    let segment_id = ptr.txn_ptr.segment_id;
-    let offset = ptr.txn_ptr.offset;
-
-    if let Some(cached) = store.prepare_cache_get(segment_id, offset) {
-        return Ok(cached);
-    }
-
-    store.increment_vlog_read_count();
-    let prepare = store.read_committed_txn(&ptr.txn_ptr)?;
-    let cached = Arc::new(prepare);
-    store.prepare_cache_insert(segment_id, offset, cached.clone());
-    Ok(cached)
-}
-
-pub(crate) fn resolve_value<
-    K: Key,
-    V: Value,
-    IO: DiskIo,
->(
-    store: &TapirState<K, V, IO>,
-    entry: &LsmEntry,
-) -> Result<Option<V>, StorageError> {
-    match &entry.value_ref {
-        None => Ok(None),
-        Some(ValueLocation::InMemory { txn_id, write_index }) => {
-            match resolve_in_memory(store, txn_id, *write_index) {
-                Some((_key, value)) => Ok(value.clone()),
-                None => Ok(None),
-            }
-        }
-        Some(ValueLocation::OnDisk(ptr)) => {
-            let cached = resolve_on_disk(store, ptr)?;
-            if let Some((_key, value)) = cached.write_set.get(ptr.write_index as usize) {
-                Ok(value.clone())
-            } else {
-                Ok(None)
-            }
-        }
     }
 }
 
@@ -860,7 +895,7 @@ impl TapirStateRunner {
         transaction: &crate::occ::Transaction<String, String, Timestamp>,
         commit_ts: Timestamp,
     ) {
-        self.tapir.register_prepare(txn_id, transaction, commit_ts);
+        self.tapir.prepare(txn_id, transaction, commit_ts);
     }
 
     pub(crate) fn commit_transaction_data(
@@ -872,7 +907,7 @@ impl TapirStateRunner {
         commit_ts: Timestamp,
     ) -> Result<(), StorageError> {
         self.tapir
-            .commit_transaction_data(txn_id, read_set, write_set, scan_set, commit_ts)
+            .commit(txn_id, read_set, write_set, scan_set, commit_ts)
     }
 
     pub(crate) fn seal(&mut self, min_view_vlog_size: u64) -> Result<(), StorageError> {
@@ -934,7 +969,7 @@ mod tests {
 
         runner
             .tapir
-            .commit_transaction_data(
+            .commit(
                 txn_id,
                 &[("r".to_string(), ts)],
                 &[("k".to_string(), Some("v".to_string()))],
@@ -953,11 +988,11 @@ mod tests {
             write_index: 0,
         };
 
-        let first = resolve_on_disk(&runner.tapir, &ptr).expect("first resolve should read from disk");
+        let first = runner.tapir.resolve_on_disk(&ptr).expect("first resolve should read from disk");
         assert_eq!(runner.tapir.vlog_read_count(), 1);
         assert_eq!(first.write_set[0].1.as_deref(), Some("v"));
 
-        let second = resolve_on_disk(&runner.tapir, &ptr).expect("second resolve should hit cache");
+        let second = runner.tapir.resolve_on_disk(&ptr).expect("second resolve should hit cache");
         assert_eq!(runner.tapir.vlog_read_count(), 1);
         assert!(Arc::ptr_eq(&first, &second));
     }

@@ -165,10 +165,6 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>, R: ShardRouter<K>> RoutingClient
         }
     }
 
-    #[cfg(test)]
-    pub fn inner(&self) -> &Client<K, V, T> {
-        &self.inner
-    }
 }
 
 pub struct RoutingTransaction<K: Key, V: Value, T: TapirTransport<K, V>, R: ShardRouter<K>> {

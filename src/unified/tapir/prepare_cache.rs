@@ -86,9 +86,4 @@ impl<T> PreparedTransactions<T> {
         self.access_order.insert(self.counter, key);
         self.key_to_counter.insert(key, self.counter);
     }
-
-    #[cfg(test)]
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
 }

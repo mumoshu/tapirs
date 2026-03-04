@@ -250,7 +250,7 @@ impl<IO: Clone, CO: Clone, CR: Clone> VersionedRecord<IO, CO, CR> {
 
     /// Returns a reference to the overlay (the delta since last seal).
     #[cfg(test)]
-    pub fn overlay(&self) -> &RecordImpl<IO, CO, CR> {
+    fn overlay(&self) -> &RecordImpl<IO, CO, CR> {
         &self.overlay
     }
 
@@ -292,7 +292,7 @@ impl<IO: Clone, CO: Clone, CR: Clone> VersionedRecord<IO, CO, CR> {
 
     /// Merge overlay into base and clear the overlay. Called at view change boundaries.
     #[cfg(test)]
-    pub fn seal(&mut self, new_view: u64) {
+    fn seal(&mut self, new_view: u64) {
         for (op_id, entry) in std::mem::take(&mut self.overlay.inconsistent) {
             self.base.inconsistent.insert(op_id, entry);
         }

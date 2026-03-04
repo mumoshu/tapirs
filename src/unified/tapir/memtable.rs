@@ -138,11 +138,6 @@ impl<K: Ord + Clone> Memtable<K> {
         best
     }
 
-    #[cfg(test)]
-    pub fn iter(&self) -> impl Iterator<Item = (&CompositeKey<K, Timestamp>, &LsmEntry)> {
-        self.map.iter()
-    }
-
     pub fn convert_in_memory_to_on_disk(
         &mut self,
         txn_vlog_index: &BTreeMap<OccTransactionId, VlogPtr>,

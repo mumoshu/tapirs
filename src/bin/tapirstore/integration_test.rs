@@ -42,14 +42,22 @@ fn tapir_scan_and_status() {
     );
     assert_eq!(stderr, "");
     assert_eq!(code, 0);
-    assert_eq!(stdout, "a=v1 @5\nb=v2 @10\nview=0 sealed_segments=0\n");
+    assert_eq!(
+        stdout,
+        "a=v1 @5\n\
+         b=v2 @10\n\
+         view=0 sealed_segments=0\n\
+         vlog_seg_0000 size=128 views=[0]\n\
+         @0 TAPIR_COMMIT txn=1:1 ts=5 a=v1\n\
+         @64 TAPIR_COMMIT txn=1:2 ts=10 b=v2\n"
+    );
 }
 
 #[test]
 fn tapir_seal_list_and_dump_vlog() {
     let dir = tempfile::TempDir::new().unwrap();
     let script = format!(
-        "open-with {} 0; prepare 1:1 5 x=v1; commit 1:1 5; seal; status; list-vlogs; dump-vlog 0",
+        "open-with {} 0; prepare 1:1 5 x=v1; commit 1:1 5; seal; status",
         dir.path().display()
     );
     let (stdout, stderr, code) = run_raw("tapir", &script);

@@ -2,7 +2,7 @@ use super::helpers::{test_op_id, test_ts, test_txn_id};
 use crate::mvcc::disk::disk_io::OpenFlags;
 use crate::mvcc::disk::memory_io::MemoryIo;
 use crate::unified::ir;
-use crate::unified::ir::record::{IrEntryRef, IrMemEntry, IrPayloadInline, IrState, PrepareRef, VlogEntryType};
+use crate::unified::ir::record::{IrMemEntry, IrPayloadInline, IrState, PrepareRef, VlogEntryType};
 
 fn list_dir_files(path: &std::path::Path) -> Vec<(String, usize)> {
     let files = MemoryIo::list_files(path);
@@ -114,17 +114,16 @@ fn ir_prepare_commit_seal_reopen_and_lookup_by_id() {
 
     let reopened = ir::store::open_store_state::<String, String, MemoryIo>(&path, io_flags).unwrap();
 
-    let prepare_ptr = match ir::store::ir_entry(&reopened, &prepare_op).expect("prepare op should exist") {
-        IrEntryRef::Base(base) => base.vlog_ptr,
-        IrEntryRef::Overlay(_) => panic!("prepare entry should be loaded from base after reopen"),
-    };
+    let seg0 = reopened
+        .active_or_sealed_segment(0)
+        .expect("segment 0 should exist after reopen");
+    let seg0_entries = ir::store::iter_entries::<String, String, _>(seg0).unwrap();
 
-    let commit_ptr = match ir::store::ir_entry(&reopened, &commit_op).expect("commit op should exist") {
-        IrEntryRef::Base(base) => base.vlog_ptr,
-        IrEntryRef::Overlay(_) => panic!("commit entry should be loaded from base after reopen"),
-    };
-
-    let (prepare_ty, prepare_payload) = reopened.read_payload(&prepare_ptr).unwrap();
+    let (_prepare_offset, _prepare_op, prepare_ty, prepare_payload) = seg0_entries
+        .iter()
+        .find(|(_, op_id, _, _)| *op_id == prepare_op)
+        .cloned()
+        .expect("prepare op should exist in segment 0");
     assert_eq!(prepare_ty, VlogEntryType::Prepare);
     match prepare_payload {
         IrPayloadInline::Prepare {
@@ -143,7 +142,11 @@ fn ir_prepare_commit_seal_reopen_and_lookup_by_id() {
         _ => panic!("unexpected payload variant for prepare op"),
     }
 
-    let (commit_ty, commit_payload) = reopened.read_payload(&commit_ptr).unwrap();
+    let (_commit_offset, _commit_op, commit_ty, commit_payload) = seg0_entries
+        .iter()
+        .find(|(_, op_id, _, _)| *op_id == commit_op)
+        .cloned()
+        .expect("commit op should exist in segment 0");
     assert_eq!(commit_ty, VlogEntryType::Commit);
     match commit_payload {
         IrPayloadInline::Commit {

@@ -1,4 +1,4 @@
-use super::types::CachedPrepare;
+use super::types::Transaction;
 use crate::mvcc::disk::error::StorageError;
 use crate::occ::TransactionId as OccTransactionId;
 use crate::tapir::Timestamp;
@@ -55,7 +55,7 @@ pub(crate) fn serialize_committed_txn_payload<K: Serialize, V: Serialize>(
 
 pub(crate) fn deserialize_committed_txn_payload<K: DeserializeOwned, V: DeserializeOwned>(
     bytes: &[u8],
-) -> Result<CachedPrepare<K, V>, StorageError> {
+) -> Result<Transaction<K, V>, StorageError> {
     let p: PreparePayloadSer =
         bitcode::deserialize(bytes).map_err(|e| StorageError::Codec(e.to_string()))?;
     let read_set: Vec<(K, Timestamp)> = p
@@ -90,7 +90,7 @@ pub(crate) fn deserialize_committed_txn_payload<K: DeserializeOwned, V: Deserial
             Ok((sk, ek, *ts))
         })
         .collect::<Result<_, StorageError>>()?;
-    Ok(CachedPrepare {
+    Ok(Transaction {
         transaction_id: OccTransactionId {
             client_id: IrClientId(p.txn_client_id),
             number: p.txn_number,

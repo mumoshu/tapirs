@@ -13,6 +13,16 @@ struct LocalCachedPrepare {
     scan_set: Vec<(String, String, crate::tapir::Timestamp)>,
 }
 
+fn append_one(
+    seg: &mut VlogSegment<MemoryIo>,
+    op_id: crate::ir::OpId,
+    entry_type: VlogEntryType,
+    payload: &IrPayloadInline<String, String>,
+) -> crate::unified::wisckeylsm::types::VlogPtr {
+    let ptrs = store::append_batch(seg, &[(op_id, entry_type, payload)]).unwrap();
+    *ptrs.first().expect("single append should return one ptr")
+}
+
 #[test]
 fn vlog_entry_roundtrip_prepare() {
     let path = MemoryIo::temp_path().join("test_vlog.dat");
@@ -37,7 +47,7 @@ fn vlog_entry_roundtrip_prepare() {
         scan_set: vec![],
     };
 
-    let ptr = store::append_entry(&mut seg, op_id, VlogEntryType::Prepare, &payload).unwrap();
+    let ptr = append_one(&mut seg, op_id, VlogEntryType::Prepare, &payload);
 
     assert_eq!(ptr.segment_id, 0);
     assert_eq!(ptr.offset, 0);
@@ -92,7 +102,7 @@ fn vlog_entry_roundtrip_commit() {
         prepare_ref: PrepareRef::SameView(prepare_op_id),
     };
 
-    let ptr = store::append_entry(&mut seg, commit_op_id, VlogEntryType::Commit, &payload).unwrap();
+    let ptr = append_one(&mut seg, commit_op_id, VlogEntryType::Commit, &payload);
 
     let (read_op_id, read_type, read_payload) = store::read_entry::<String, String, _>(&seg, &ptr).unwrap();
     assert_eq!(read_op_id, commit_op_id);
@@ -186,7 +196,7 @@ fn vlog_read_prepare_helper() {
         scan_set: vec![("s1".to_string(), "s2".to_string(), test_ts(5))],
     };
 
-    let ptr = store::append_entry(&mut seg, test_op_id(2, 1), VlogEntryType::Prepare, &payload).unwrap();
+    let ptr = append_one(&mut seg, test_op_id(2, 1), VlogEntryType::Prepare, &payload);
 
     let (_, _, read_payload) = store::read_entry::<String, String, _>(&seg, &ptr).unwrap();
     let cached = match read_payload {
@@ -235,7 +245,7 @@ fn vlog_all_entry_types_roundtrip() {
         transaction_id: test_txn_id(1, 1),
         commit_ts: Some(test_ts(5)),
     };
-    let ptr = store::append_entry(&mut seg, test_op_id(1, 1), VlogEntryType::Abort, &abort_payload).unwrap();
+    let ptr = append_one(&mut seg, test_op_id(1, 1), VlogEntryType::Abort, &abort_payload);
     let (_, t, p) = store::read_entry::<String, String, _>(&seg, &ptr).unwrap();
     assert_eq!(t, VlogEntryType::Abort);
     match p {
@@ -251,7 +261,7 @@ fn vlog_all_entry_types_roundtrip() {
         key: "mykey".to_string(),
         timestamp: test_ts(7),
     };
-    let ptr = store::append_entry(&mut seg, test_op_id(1, 2), VlogEntryType::QuorumRead, &qr_payload).unwrap();
+    let ptr = append_one(&mut seg, test_op_id(1, 2), VlogEntryType::QuorumRead, &qr_payload);
     let (_, t, p) = store::read_entry::<String, String, _>(&seg, &ptr).unwrap();
     assert_eq!(t, VlogEntryType::QuorumRead);
     match p {
@@ -268,7 +278,7 @@ fn vlog_all_entry_types_roundtrip() {
         end_key: "z".to_string(),
         snapshot_ts: test_ts(15),
     };
-    let ptr = store::append_entry(&mut seg, test_op_id(1, 3), VlogEntryType::QuorumScan, &qs_payload).unwrap();
+    let ptr = append_one(&mut seg, test_op_id(1, 3), VlogEntryType::QuorumScan, &qs_payload);
     let (_, t, p) = store::read_entry::<String, String, _>(&seg, &ptr).unwrap();
     assert_eq!(t, VlogEntryType::QuorumScan);
     match p {
@@ -282,13 +292,12 @@ fn vlog_all_entry_types_roundtrip() {
 
     // RaiseMinPrepareTime
     let rmpt_payload = IrPayloadInline::<String, String>::RaiseMinPrepareTime { time: 42 };
-    let ptr = store::append_entry(
+    let ptr = append_one(
         &mut seg,
         test_op_id(1, 4),
         VlogEntryType::RaiseMinPrepareTime,
         &rmpt_payload,
-    )
-    .unwrap();
+    );
     let (_, t, p) = store::read_entry::<String, String, _>(&seg, &ptr).unwrap();
     assert_eq!(t, VlogEntryType::RaiseMinPrepareTime);
     match p {

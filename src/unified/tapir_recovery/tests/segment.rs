@@ -1,18 +1,19 @@
 use super::helpers::*;
+use crate::mvcc::disk::memory_io::MemoryIo;
 
 // === Test 7: VLog Segment Grouping ===
 
 #[test]
 fn vlog_segment_grouping() {
     // Use 1KB threshold for segment rotation
-    let mut store = new_test_store_with_min_vlog_size(1024);
+    let path = MemoryIo::temp_path();
+    let mut store = TestStore::open_with_options(path.clone(), 1024).unwrap();
 
-    assert_current_view(&store, 0);
-    assert_sealed_segment_count(&store, 0);
+    assert_eq!(store.get_metrics().current_view, 0);
 
     // Fresh store: only active segment 0 (empty)
-    assert_store_file_names(&store, &["vlog_seg_0000.dat"]);
-    assert_store_file_size(&store, "vlog_seg_0000.dat", 0);
+    assert_store_file_names(&path, &["vlog_seg_0000.dat"]);
+    assert_store_file_size(&path, "vlog_seg_0000.dat", 0);
 
     // Views 0-1: small transactions (< 1KB each)
     prepare_and_commit(
@@ -24,12 +25,12 @@ fn vlog_segment_grouping() {
         test_ts(1),
     );
     seal_view(&mut store);
-    assert_current_view(&store, 1);
+    assert_eq!(store.get_metrics().current_view, 1);
 
     // After first seal: manifest + VLog with data, still same segment (< 1KB)
-    assert_store_file_names(&store, &["UNIFIED_MANIFEST", "vlog_seg_0000.dat"]);
-    assert_store_file_size_positive(&store, "vlog_seg_0000.dat");
-    let vlog_size_after_seal1 = get_store_file_size(&store, "vlog_seg_0000.dat");
+    assert_store_file_names(&path, &["UNIFIED_MANIFEST", "vlog_seg_0000.dat"]);
+    assert_store_file_size_positive(&path, "vlog_seg_0000.dat");
+    let vlog_size_after_seal1 = get_store_file_size(&path, "vlog_seg_0000.dat");
 
     prepare_and_commit(
         &mut store,
@@ -40,16 +41,16 @@ fn vlog_segment_grouping() {
         test_ts(2),
     );
     seal_view(&mut store);
-    assert_current_view(&store, 2);
+    assert_eq!(store.get_metrics().current_view, 2);
 
     // Views 0 and 1 should share same segment (both < 1KB, but
     // segment is sealed once cumulative size >= 1KB, which hasn't happened yet).
     // Small entries: each ~50-100 bytes, two seals ~200 bytes total < 1KB.
-    assert_sealed_segment_count(&store, 0);
+    assert_store_file_names(&path, &["UNIFIED_MANIFEST", "vlog_seg_0000.dat"]);
 
     // After second seal: VLog grew but still same segment (no rotation)
-    assert_store_file_names(&store, &["UNIFIED_MANIFEST", "vlog_seg_0000.dat"]);
-    let vlog_size_after_seal2 = get_store_file_size(&store, "vlog_seg_0000.dat");
+    assert_store_file_names(&path, &["UNIFIED_MANIFEST", "vlog_seg_0000.dat"]);
+    let vlog_size_after_seal2 = get_store_file_size(&path, "vlog_seg_0000.dat");
     assert!(
         vlog_size_after_seal2 > vlog_size_after_seal1,
         "VLog should grow after second seal: {vlog_size_after_seal2} > {vlog_size_after_seal1}"
@@ -66,36 +67,44 @@ fn vlog_segment_grouping() {
         test_ts(3),
     );
     seal_view(&mut store);
-    assert_current_view(&store, 3);
+    assert_eq!(store.get_metrics().current_view, 3);
 
     // Now the segment exceeded 1KB and was sealed → new active segment created
-    assert_sealed_segment_count(&store, 1);
+    assert_store_file_names(
+        &path,
+        &["UNIFIED_MANIFEST", "vlog_seg_0000.dat", "vlog_seg_0001.dat"],
+    );
 
     // After segment rotation: old segment sealed, new active segment created
     assert_store_file_names(
-        &store,
+        &path,
         &["UNIFIED_MANIFEST", "vlog_seg_0000.dat", "vlog_seg_0001.dat"],
     );
     // Sealed segment (0000) should have significant data (> 1KB with big_value)
-    let sealed_size = get_store_file_size(&store, "vlog_seg_0000.dat");
+    let sealed_size = get_store_file_size(&path, "vlog_seg_0000.dat");
     assert!(
         sealed_size > 1024,
         "Sealed segment should exceed 1KB threshold: got {sealed_size}"
     );
     // New active segment (0001) is empty (no writes in view 3 yet)
-    assert_store_file_size(&store, "vlog_seg_0001.dat", 0);
+    assert_store_file_size(&path, "vlog_seg_0001.dat", 0);
 
     // Reads across segments work correctly — verify all values AND timestamps
-    assert_get_at(&store, "a", test_ts(1), Some("v1"), test_ts(1));
-    assert_get_at(&store, "b", test_ts(2), Some("v2"), test_ts(2));
-    assert_get_at(&store, "c", test_ts(3), Some(&big_value), test_ts(3));
-
-    // All entries should be OnDisk (sealed)
-    assert_value_location_in_memory(&store, "a", test_ts(1), false);
-    assert_value_location_in_memory(&store, "b", test_ts(2), false);
-    assert_value_location_in_memory(&store, "c", test_ts(3), false);
+    let (actual_value, actual_ts) = store.do_uncommitted_get_at(&"a".to_string(), test_ts(1)).unwrap();
+    assert_eq!(actual_value.as_deref(), Some("v1"));
+    assert_eq!(actual_ts, test_ts(1));
+    let (actual_value, actual_ts) = store.do_uncommitted_get_at(&"b".to_string(), test_ts(2)).unwrap();
+    assert_eq!(actual_value.as_deref(), Some("v2"));
+    assert_eq!(actual_ts, test_ts(2));
+    let (actual_value, actual_ts) = store.do_uncommitted_get_at(&"c".to_string(), test_ts(3)).unwrap();
+    assert_eq!(actual_value.as_deref(), Some(big_value.as_str()));
+    assert_eq!(actual_ts, test_ts(3));
 
     // Nonexistent keys should return None
-    assert_get_none(&store, "d", test_ts(100));
-    assert_get_none(&store, "a", test_ts(0));
+    let (actual_value, _) = store
+        .do_uncommitted_get_at(&"d".to_string(), test_ts(100))
+        .unwrap();
+    assert!(actual_value.is_none());
+    let (actual_value, _) = store.do_uncommitted_get_at(&"a".to_string(), test_ts(0)).unwrap();
+    assert!(actual_value.is_none());
 }

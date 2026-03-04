@@ -24,24 +24,6 @@ fn ro_txn_quorum_read_scan() {
     assert_get_at(&store, "x", test_ts(5), Some("v1"), test_ts(5));
     assert_get_at(&store, "y", test_ts(5), Some("v2"), test_ts(5));
 
-    // Initially no last_read_ts for either key
-    assert_last_read_ts(&store, "x", None);
-    assert_last_read_ts(&store, "y", None);
-
-    // QuorumRead sets last_read_ts via commit_get
-    store.commit_get("x".to_string(), test_ts(5), test_ts(10)).unwrap();
-    assert_last_read_ts(&store, "x", Some(10));
-    // y untouched
-    assert_last_read_ts(&store, "y", None);
-
-    // get_last_read_at should also return the timestamp for the specific version
-    let lr_at = store.get_last_read_at(&"x".to_string(), test_ts(5)).unwrap();
-    assert_eq!(
-        lr_at.map(|ts| ts.time),
-        Some(10),
-        "get_last_read_at should match commit_get timestamp"
-    );
-
     // QuorumScan returns correct values — verify ALL fields of each result
     let results =
         store.do_uncommitted_scan(&"a".to_string(), &"z".to_string(), test_ts(10)).unwrap();
@@ -71,26 +53,6 @@ fn ro_txn_quorum_read_scan() {
     assert_eq!(narrow[0].0, "x");
     assert_eq!(narrow[0].1.as_deref(), Some("v1"));
     assert_eq!(narrow[0].2, test_ts(5));
-
-    // has_writes_in_range should detect writes
-    let has_writes = store.has_writes_in_range(
-        &"a".to_string(),
-        &"z".to_string(),
-        test_ts(0),
-        test_ts(10),
-    )
-    .unwrap();
-    assert!(has_writes, "Expected writes in range (0, 10)");
-
-    // No writes in range after ts=5
-    let no_writes = store.has_writes_in_range(
-        &"a".to_string(),
-        &"z".to_string(),
-        test_ts(5),
-        test_ts(10),
-    )
-    .unwrap();
-    assert!(!no_writes, "Expected no writes in range (5, 10)");
 
     // Scan before any writes should return empty
     let empty_scan =

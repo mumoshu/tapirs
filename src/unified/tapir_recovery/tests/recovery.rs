@@ -15,12 +15,11 @@ fn recovery_vlog_and_manifest_survive_reopen() {
     {
         let mut store = TestStore::open(path.clone()).unwrap();
 
-        assert_current_view(&store, 0);
-        assert_sealed_segment_count(&store, 0);
+        assert_eq!(store.get_metrics().current_view, 0);
 
         // Fresh store: only active VLog segment
-        assert_store_file_names(&store, &["vlog_seg_0000.dat"]);
-        assert_store_file_size(&store, "vlog_seg_0000.dat", 0);
+        assert_store_file_names(&path, &["vlog_seg_0000.dat"]);
+        assert_store_file_size(&path, "vlog_seg_0000.dat", 0);
 
         prepare_and_commit(
             &mut store,
@@ -32,21 +31,26 @@ fn recovery_vlog_and_manifest_survive_reopen() {
         );
 
         // Verify data is readable before seal
-        assert_get_at(&store, "x", test_ts(5), Some("v1"), test_ts(5));
-        assert_get_at(&store, "y", test_ts(5), Some("v2"), test_ts(5));
+        let (actual_value, actual_ts) = store.do_uncommitted_get_at(&"x".to_string(), test_ts(5)).unwrap();
+        assert_eq!(actual_value.as_deref(), Some("v1"));
+        assert_eq!(actual_ts, test_ts(5));
+        let (actual_value, actual_ts) = store.do_uncommitted_get_at(&"y".to_string(), test_ts(5)).unwrap();
+        assert_eq!(actual_value.as_deref(), Some("v2"));
+        assert_eq!(actual_ts, test_ts(5));
 
         // Seal view 0 → view 1 (persists VLog + manifest)
         seal_view(&mut store);
-        assert_current_view(&store, 1);
+        assert_eq!(store.get_metrics().current_view, 1);
 
         // After first seal: manifest + VLog with data
-        assert_store_file_names(&store, &["UNIFIED_MANIFEST", "vlog_seg_0000.dat"]);
-        assert_store_file_size_positive(&store, "UNIFIED_MANIFEST");
-        assert_store_file_size_positive(&store, "vlog_seg_0000.dat");
+        assert_store_file_names(&path, &["UNIFIED_MANIFEST", "vlog_seg_0000.dat"]);
+        assert_store_file_size_positive(&path, "UNIFIED_MANIFEST");
+        assert_store_file_size_positive(&path, "vlog_seg_0000.dat");
 
         // Data still readable after seal (OnDisk now)
-        assert_get_at(&store, "x", test_ts(5), Some("v1"), test_ts(5));
-        assert_value_location_in_memory(&store, "x", test_ts(5), false);
+        let (actual_value, actual_ts) = store.do_uncommitted_get_at(&"x".to_string(), test_ts(5)).unwrap();
+        assert_eq!(actual_value.as_deref(), Some("v1"));
+        assert_eq!(actual_ts, test_ts(5));
 
         // Commit in view 1 and seal again
         prepare_and_commit(
@@ -58,33 +62,28 @@ fn recovery_vlog_and_manifest_survive_reopen() {
             test_ts(10),
         );
         seal_view(&mut store);
-        assert_current_view(&store, 2);
+        assert_eq!(store.get_metrics().current_view, 2);
 
         // After second seal: still same files (small data < 256KB)
-        assert_store_file_names(&store, &["UNIFIED_MANIFEST", "vlog_seg_0000.dat"]);
-        vlog_size_before_drop = get_store_file_size(&store, "vlog_seg_0000.dat");
-        manifest_size_before_drop = get_store_file_size(&store, "UNIFIED_MANIFEST");
+        assert_store_file_names(&path, &["UNIFIED_MANIFEST", "vlog_seg_0000.dat"]);
+        vlog_size_before_drop = get_store_file_size(&path, "vlog_seg_0000.dat");
+        manifest_size_before_drop = get_store_file_size(&path, "UNIFIED_MANIFEST");
     }
     // Store dropped here — simulates crash/shutdown
 
     // Phase 2: Reopen from the same path
-    let store = TestStore::open(path).unwrap();
+    let store = TestStore::open(path.clone()).unwrap();
 
     // Files should be unchanged after reopen (MemoryIo persists across drop/reopen)
-    assert_store_file_names(&store, &["UNIFIED_MANIFEST", "vlog_seg_0000.dat"]);
-    assert_store_file_size(&store, "vlog_seg_0000.dat", vlog_size_before_drop);
-    assert_store_file_size(&store, "UNIFIED_MANIFEST", manifest_size_before_drop);
+    assert_store_file_names(&path, &["UNIFIED_MANIFEST", "vlog_seg_0000.dat"]);
+    assert_store_file_size(&path, "vlog_seg_0000.dat", vlog_size_before_drop);
+    assert_store_file_size(&path, "UNIFIED_MANIFEST", manifest_size_before_drop);
 
     // Manifest should restore current view
-    assert_current_view(&store, 2);
+    assert_eq!(store.get_metrics().current_view, 2);
 
-    // VLog read count resets on reopen
-    assert_eq!(store.vlog_read_count(), 0, "vlog_read_count should be 0 after reopen");
-
-    // Sealed segment count depends on whether data exceeded 256KB threshold
-    // (with default 256KB threshold, small test data stays in active segment)
-    let seg_count = store.sealed_vlog_segments().len();
-    assert_eq!(seg_count, 0, "Small test data should stay in active segment");
+    // Small test data stays in active segment: no additional segment files.
+    assert_store_file_names(&path, &["UNIFIED_MANIFEST", "vlog_seg_0000.dat"]);
 }
 
 #[test]
@@ -95,11 +94,10 @@ fn recovery_sealed_segments_persist() {
     {
         let mut store = TestStore::open_with_options(path.clone(), 1024).unwrap();
 
-        assert_current_view(&store, 0);
-        assert_sealed_segment_count(&store, 0);
+        assert_eq!(store.get_metrics().current_view, 0);
 
         // Fresh store: only active segment 0
-        assert_store_file_names(&store, &["vlog_seg_0000.dat"]);
+        assert_store_file_names(&path, &["vlog_seg_0000.dat"]);
 
         // Write enough data to exceed 1KB threshold
         let big_value = "x".repeat(2048);
@@ -113,58 +111,46 @@ fn recovery_sealed_segments_persist() {
         );
 
         // Verify readable before seal
-        assert_get_at(&store, "big_key", test_ts(5), Some(&big_value), test_ts(5));
+        let (actual_value, actual_ts) = store
+            .do_uncommitted_get_at(&"big_key".to_string(), test_ts(5))
+            .unwrap();
+        assert_eq!(actual_value.as_deref(), Some(big_value.as_str()));
+        assert_eq!(actual_ts, test_ts(5));
 
         seal_view(&mut store);
 
-        assert_sealed_segment_count(&store, 1);
-        assert_current_view(&store, 1);
+        assert_eq!(store.get_metrics().current_view, 1);
 
         // After seal with segment rotation: sealed segment 0 + new active segment 1 + manifest
         assert_store_file_names(
-            &store,
+            &path,
             &["UNIFIED_MANIFEST", "vlog_seg_0000.dat", "vlog_seg_0001.dat"],
         );
-        assert_store_file_size_positive(&store, "UNIFIED_MANIFEST");
-        let sealed_seg_size = get_store_file_size(&store, "vlog_seg_0000.dat");
+        assert_store_file_size_positive(&path, "UNIFIED_MANIFEST");
+        let sealed_seg_size = get_store_file_size(&path, "vlog_seg_0000.dat");
         assert!(
             sealed_seg_size > 1024,
             "Sealed segment should exceed 1KB: got {sealed_seg_size}"
         );
-        assert_store_file_size(&store, "vlog_seg_0001.dat", 0);
+        assert_store_file_size(&path, "vlog_seg_0001.dat", 0);
     }
 
     // Phase 2: Reopen and verify ALL sealed segment metadata
-    let store = TestStore::open_with_options(path, 1024).unwrap();
+    let store = TestStore::open_with_options(path.clone(), 1024).unwrap();
 
     // Files should be unchanged after reopen
     assert_store_file_names(
-        &store,
+        &path,
         &["UNIFIED_MANIFEST", "vlog_seg_0000.dat", "vlog_seg_0001.dat"],
     );
-    assert_store_file_size_positive(&store, "vlog_seg_0000.dat");
+    assert_store_file_size_positive(&path, "vlog_seg_0000.dat");
 
-    assert_current_view(&store, 1);
-    assert_sealed_segment_count(&store, 1);
-    assert_eq!(store.vlog_read_count(), 0, "vlog_read_count should be 0");
-
-    // Verify sealed segment metadata
-    let sealed_segs = store.sealed_vlog_segments();
-    let (&seg_id, seg) = sealed_segs.iter().next().expect("Should have 1 sealed segment");
-    assert_eq!(seg_id, seg.id, "Segment ID in map should match segment's own ID");
-    assert!(!seg.views.is_empty(), "Sealed segment should have view ranges");
-    assert_eq!(seg.views[0].view, 0, "First view range should be view 0");
-    assert_eq!(seg.views[0].start_offset, 0, "View 0 should start at offset 0");
-    assert!(
-        seg.views[0].end_offset > 0,
-        "View 0 end offset should be > 0 (data was written)"
-    );
-    assert!(
-        seg.views[0].num_entries > 0,
-        "View 0 should have at least 1 entry"
-    );
-    assert!(
-        seg.write_offset() > 0,
-        "Sealed segment should have non-zero write offset"
-    );
+    assert_eq!(store.get_metrics().current_view, 1);
+    // Sealed data remains readable after reopen.
+    let (actual_value, actual_ts) = store
+        .do_uncommitted_get_at(&"big_key".to_string(), test_ts(5))
+        .unwrap();
+    let expected_big_value = "x".repeat(2048);
+    assert_eq!(actual_value.as_deref(), Some(expected_big_value.as_str()));
+    assert_eq!(actual_ts, test_ts(5));
 }

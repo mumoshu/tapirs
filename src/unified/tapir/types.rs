@@ -5,7 +5,7 @@ use crate::tapir::Timestamp;
 ///
 /// TAPIR owns this type because its fields encode TAPIR/OCC transaction
 /// semantics (`transaction_id`, `commit_ts`, read/write/scan sets).
-pub struct CachedPrepare<K, V> {
+pub struct Transaction<K, V> {
     pub transaction_id: OccTransactionId,
     /// Prepare-time (proposed) commit timestamp.
     ///

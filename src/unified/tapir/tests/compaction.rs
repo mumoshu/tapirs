@@ -71,7 +71,7 @@ fn multi_view_data_integrity() {
     assert_current_view(&store, 3);
 
     // All sealed segments should exist (64-byte threshold is tiny)
-    let seg_count = store.sealed_vlog_segments().len();
+    let seg_count = store.status().unwrap().sealed_segments;
     assert!(
         seg_count >= 1,
         "Expected at least 1 sealed segment, got {seg_count}"
@@ -134,10 +134,4 @@ fn multi_view_data_integrity() {
         "Should have manifest + multiple VLog segments after 3 seals, got: {final_files:?}"
     );
     assert_store_file_size_positive(&store, "UNIFIED_MANIFEST");
-    // All VLog segment files should be non-empty (except possibly the latest active segment)
-    for (name, size) in &final_files {
-        if name.starts_with("vlog_seg_") && name != final_files.last().unwrap().0.as_str() {
-            assert!(*size > 0, "Sealed VLog segment {name} should be non-empty");
-        }
-    }
 }

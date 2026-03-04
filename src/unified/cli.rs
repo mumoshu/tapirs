@@ -4,12 +4,13 @@ use std::path::PathBuf;
 
 use crate::ir::OpId;
 use crate::mvcc::disk::disk_io::{BufferedIo, OpenFlags};
+use crate::occ::{SharedTransaction, Transaction};
 use crate::occ::TransactionId as OccTransactionId;
-use crate::tapir::Timestamp;
+use crate::tapir::{ShardNumber, Sharded, Timestamp};
 use crate::unified::ir::record::IrRecord;
-use crate::unified::tapir::VlogSegment;
 use crate::unified::tapir::store::TapirState;
 use crate::IrClientId;
+use std::sync::Arc;
 
 mod ir;
 mod tapir;
@@ -58,7 +59,6 @@ where
         Mode::Tapir => {
             let mut ctx = TapirContext {
                 store: None,
-                prepared: BTreeMap::new(),
                 min_view_vlog_size: DEFAULT_MIN_VIEW_VLOG_SIZE,
             };
             for line in script.split([';', '\n']) {
@@ -108,16 +108,8 @@ where
     if had_error { 1 } else { 0 }
 }
 
-#[derive(Clone)]
-struct PreparedTxnData {
-    read_set: Vec<(String, Timestamp)>,
-    write_set: Vec<(String, Option<String>)>,
-    scan_set: Vec<(String, String, Timestamp)>,
-}
-
 struct TapirContext {
     store: Option<Tapir>,
-    prepared: BTreeMap<OccTransactionId, PreparedTxnData>,
     min_view_vlog_size: u64,
 }
 
@@ -208,26 +200,41 @@ fn parse_read_item(s: &str) -> Result<(String, Timestamp), String> {
     Ok((k.to_string(), parse_ts(ts_str)?))
 }
 
-fn parse_prepare_payload(parts: &[&str]) -> Result<PreparedTxnData, String> {
-    let mut read_set = Vec::new();
-    let mut write_set = Vec::new();
-    let scan_set = Vec::new();
+fn parse_tapir_transaction(parts: &[&str]) -> Result<SharedTransaction<String, String, Timestamp>, String> {
+    let mut txn = Transaction::<String, String, Timestamp>::default();
 
     for item in parts {
         if let Some(rest) = item.strip_prefix("r:") {
-            read_set.push(parse_read_item(rest)?);
+            let (key, ts) = parse_read_item(rest)?;
+            txn.add_read(
+                Sharded {
+                    shard: ShardNumber(0),
+                    key,
+                },
+                ts,
+            );
         } else if let Some(rest) = item.strip_prefix("w:") {
-            write_set.push(parse_kv_pair(rest)?);
+            let (key, value) = parse_kv_pair(rest)?;
+            txn.add_write(
+                Sharded {
+                    shard: ShardNumber(0),
+                    key,
+                },
+                value,
+            );
         } else {
-            write_set.push(parse_kv_pair(item)?);
+            let (key, value) = parse_kv_pair(item)?;
+            txn.add_write(
+                Sharded {
+                    shard: ShardNumber(0),
+                    key,
+                },
+                value,
+            );
         }
     }
 
-    Ok(PreparedTxnData {
-        read_set,
-        write_set,
-        scan_set,
-    })
+    Ok(Arc::new(txn))
 }
 
 fn write_kv_result<W: Write>(
@@ -239,19 +246,4 @@ fn write_kv_result<W: Write>(
     let val_str = value.unwrap_or("<none>");
     writeln!(stdout, "{key}={val_str} @{}", ts.time)
         .map_err(|e| format!("write failed: {e}"))
-}
-
-fn write_tapir_segment<W: Write>(
-    stdout: &mut W,
-    seg: &VlogSegment<BufferedIo>,
-) -> Result<(), String> {
-    let id = seg.id;
-    let size = seg.write_offset();
-    let view_list: Vec<String> = seg.views.iter().map(|v| v.view.to_string()).collect();
-    writeln!(
-        stdout,
-        "vlog_seg_{id:04} size={size} views=[{}]",
-        view_list.join(",")
-    )
-    .map_err(|e| format!("write failed: {e}"))
 }

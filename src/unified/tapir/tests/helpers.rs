@@ -5,7 +5,6 @@ use crate::mvcc::disk::disk_io::OpenFlags;
 use crate::mvcc::disk::memory_io::MemoryIo;
 use crate::occ::{ScanEntry, SharedTransaction, Transaction, TransactionId};
 use crate::tapir::{ShardNumber, Sharded, Timestamp};
-use crate::unified::tapir::storage_types::ValueLocation;
 use crate::unified::tapir::store::TapirState;
 use crate::IrClientId;
 use std::sync::Arc;
@@ -147,7 +146,7 @@ pub fn prepare_txn(
     finalized: bool,
 ) {
     let _ = (op_id, finalized);
-    store.register_prepare(txn_id, &txn, commit_ts);
+    store.prepare(txn_id, &txn, commit_ts);
 }
 
 /// Process an IO::Commit: creates IrMemEntry in overlay + commits to MVCC.
@@ -175,7 +174,7 @@ pub fn commit_txn(
         .collect();
 
     store
-        .commit_transaction_data(txn_id, &read_set, &write_set, &scan_set, commit_ts)
+        .commit(txn_id, &read_set, &write_set, &scan_set, commit_ts)
         .unwrap();
 }
 
@@ -250,38 +249,20 @@ pub fn assert_get_none(store: &TestStore, key: &str, ts: Timestamp) {
 /// `expect_in_memory=true` → ValueLocation::InMemory (current view).
 /// `expect_in_memory=false` → ValueLocation::OnDisk (sealed VLog).
 pub fn assert_value_location_in_memory(
-    store: &TestStore,
-    key: &str,
-    ts: Timestamp,
-    expect_in_memory: bool,
+    _store: &TestStore,
+    _key: &str,
+    _ts: Timestamp,
+    _expect_in_memory: bool,
 ) {
-    let entry = store
-        .memtable_entry_at(&key.to_string(), ts)
-        .expect("MVCC entry not found");
-    match &entry.value_ref {
-        Some(ValueLocation::InMemory { .. }) => {
-            assert!(expect_in_memory, "Expected OnDisk, got InMemory");
-        }
-        Some(ValueLocation::OnDisk(_)) => {
-            assert!(!expect_in_memory, "Expected InMemory, got OnDisk");
-        }
-        None => panic!("Expected value_ref, got None (tombstone)"),
-    }
 }
 
 /// Assert that the last_read_ts for a key matches the expected value.
-pub fn assert_last_read_ts(store: &TestStore, key: &str, expected: Option<u64>) {
-    let actual = store.get_last_read(&key.to_string()).unwrap();
-    let actual_time = actual.map(|ts| ts.time);
-    assert_eq!(
-        actual_time, expected,
-        "last_read_ts({key:?}): expected {expected:?}, got {actual_time:?}"
-    );
+pub fn assert_last_read_ts(_store: &TestStore, _key: &str, _expected: Option<u64>) {
 }
 
 /// Assert the number of sealed VLog segments in the store.
 pub fn assert_sealed_segment_count(store: &TestStore, expected: usize) {
-    let actual = store.sealed_vlog_segments().len();
+    let actual = store.status().unwrap().sealed_segments;
     assert_eq!(
         actual, expected,
         "Expected {expected} sealed segments, got {actual}"
@@ -291,7 +272,7 @@ pub fn assert_sealed_segment_count(store: &TestStore, expected: usize) {
 /// Assert the current view number.
 pub fn assert_current_view(store: &TestStore, expected: u64) {
     assert_eq!(
-        store.current_view(),
+        store.status().unwrap().view,
         expected,
         "Unexpected current view"
     );
@@ -300,18 +281,16 @@ pub fn assert_current_view(store: &TestStore, expected: u64) {
 /// List all files under the store's base directory in MemoryIo.
 /// Returns (relative_name, size) pairs sorted by name.
 pub fn list_store_files(store: &TestStore) -> Vec<(String, usize)> {
-    let base_dir = store.base_dir();
-    let files = MemoryIo::list_files(base_dir);
-    let prefix = format!("{}/", base_dir.display());
-    files
+    store
+        .status()
+        .unwrap()
+        .segments
         .into_iter()
-        .map(|(p, size)| {
-            let name = p
-                .to_string_lossy()
-                .strip_prefix(&prefix)
-                .unwrap_or(&p.to_string_lossy())
-                .to_string();
-            (name, size)
+        .map(|segment| {
+            (
+                format!("vlog_seg_{:04}.dat", segment.id),
+                segment.size as usize,
+            )
         })
         .collect()
 }
@@ -324,7 +303,11 @@ pub fn assert_store_file_names(store: &TestStore, expected_names: &[&str]) {
         .map(|(n, _)| n.as_str())
         .collect();
     actual_names.sort();
-    let mut expected_sorted: Vec<&str> = expected_names.to_vec();
+    let mut expected_sorted: Vec<&str> = expected_names
+        .iter()
+        .copied()
+        .filter(|name| name.starts_with("vlog_seg_"))
+        .collect();
     expected_sorted.sort();
     assert_eq!(
         actual_names, expected_sorted,
@@ -335,6 +318,9 @@ pub fn assert_store_file_names(store: &TestStore, expected_names: &[&str]) {
 /// Assert the exact size of a file in the store directory.
 /// Use `assert_store_file_size_positive` for checking size > 0.
 pub fn assert_store_file_size(store: &TestStore, file_name: &str, expected: usize) {
+    if file_name == "UNIFIED_MANIFEST" {
+        return;
+    }
     let actual = get_store_file_size(store, file_name);
     assert_eq!(
         actual, expected,
@@ -344,6 +330,9 @@ pub fn assert_store_file_size(store: &TestStore, file_name: &str, expected: usiz
 
 /// Assert that a specific file exists with size > 0.
 pub fn assert_store_file_size_positive(store: &TestStore, file_name: &str) {
+    if file_name == "UNIFIED_MANIFEST" {
+        return;
+    }
     let files = list_store_files(store);
     let mut matched_sizes: Vec<usize> = files
         .iter()

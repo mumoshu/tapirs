@@ -56,7 +56,6 @@ impl MemoryIo {
 
     /// List all files under the given directory prefix, returning (path, size) pairs
     /// sorted by path. Only returns files whose path starts with `dir/`.
-    #[cfg(test)]
     pub fn list_files(dir: &Path) -> Vec<(PathBuf, usize)> {
         let fs = get_fs();
         let inner = fs.lock().unwrap();

@@ -4,8 +4,7 @@ use crate::mvcc::disk::disk_io::{BufferedIo, OpenFlags};
 use crate::unified::tapir::store as tapir_store;
 
 use super::{
-    TapirContext, parse_prepare_payload, parse_ts, parse_txn_id, write_kv_result,
-    write_tapir_segment,
+    TapirContext, parse_tapir_transaction, parse_ts, parse_txn_id, write_kv_result,
 };
 
 pub(super) fn execute_tapir_command<W: std::io::Write>(
@@ -51,8 +50,19 @@ pub(super) fn execute_tapir_command<W: std::io::Write>(
                 return Err("usage: prepare <client:num> <ts> [r:key@ts ...] [w:key=value ...]".to_string());
             }
             let txn_id = parse_txn_id(parts[1])?;
-            let payload = parse_prepare_payload(&parts[3..])?;
-            ctx.prepared.insert(txn_id, payload);
+            let commit_ts = parse_ts(parts[2])?;
+            let txn = parse_tapir_transaction(&parts[3..])?;
+            let store = ctx.store_mut()?;
+            store.prepare(txn_id, &txn, commit_ts);
+            Ok(())
+        }
+        "abort" => {
+            if parts.len() != 2 {
+                return Err("usage: abort <client:num>".to_string());
+            }
+            let txn_id = parse_txn_id(parts[1])?;
+            let store = ctx.store_mut()?;
+            store.abort(&txn_id);
             Ok(())
         }
         "commit" => {
@@ -61,19 +71,9 @@ pub(super) fn execute_tapir_command<W: std::io::Write>(
             }
             let txn_id = parse_txn_id(parts[1])?;
             let commit_ts = parse_ts(parts[2])?;
-            let payload = ctx
-                .prepared
-                .remove(&txn_id)
-                .ok_or_else(|| format!("no prepared transaction: {}", parts[1]))?;
             let store = ctx.store_mut()?;
             store
-                .commit_transaction_data(
-                txn_id,
-                &payload.read_set,
-                &payload.write_set,
-                &payload.scan_set,
-                commit_ts,
-            )
+                .commit_prepared(txn_id, commit_ts)
                 .map_err(|e| format!("commit failed: {e}"))
         }
         "get" => {
@@ -115,37 +115,6 @@ pub(super) fn execute_tapir_command<W: std::io::Write>(
             }
             Ok(())
         }
-        "get-range" => {
-            if parts.len() != 3 {
-                return Err("usage: get-range <key> <ts>".to_string());
-            }
-            let key = parts[1].to_string();
-            let ts = parse_ts(parts[2])?;
-            let store = ctx.store()?;
-            let (write_ts, next_ts) = store
-                .get_range(&key, ts)
-                .map_err(|e| format!("get-range failed: {e}"))?;
-            let next_str = match next_ts {
-                Some(t) => t.time.to_string(),
-                None => "none".to_string(),
-            };
-            writeln!(stdout, "write_ts={} next_ts={next_str}", write_ts.time)
-                .map_err(|e| format!("write failed: {e}"))
-        }
-        "has-writes" => {
-            if parts.len() != 5 {
-                return Err("usage: has-writes <start> <end> <after_ts> <before_ts>".to_string());
-            }
-            let start = parts[1].to_string();
-            let end = parts[2].to_string();
-            let after = parse_ts(parts[3])?;
-            let before = parse_ts(parts[4])?;
-            let store = ctx.store()?;
-            let has = store
-                .has_writes_in_range(&start, &end, after, before)
-                .map_err(|e| format!("has-writes failed: {e}"))?;
-            writeln!(stdout, "{has}").map_err(|e| format!("write failed: {e}"))
-        }
         "seal" => {
             let min_view_vlog_size = ctx.min_view_vlog_size;
             let store = ctx.store_mut()?;
@@ -155,48 +124,41 @@ pub(super) fn execute_tapir_command<W: std::io::Write>(
         }
         "status" => {
             let store = ctx.store()?;
-            let view = store.current_view();
-            let segments = store.sealed_vlog_segments().len();
-            writeln!(stdout, "view={view} sealed_segments={segments}")
-                .map_err(|e| format!("write failed: {e}"))
-        }
-        "list-vlogs" => {
-            let store = ctx.store()?;
-            if let Some(seg) = store.active_or_sealed_segment_ref(store.active_vlog_id()) {
-                write_tapir_segment(stdout, seg)?;
-            }
-            for seg in store.sealed_vlog_segments().values() {
-                write_tapir_segment(stdout, seg)?;
-            }
-            Ok(())
-        }
-        "dump-vlog" => {
-            if parts.len() != 2 {
-                return Err("usage: dump-vlog <segment-id>".to_string());
-            }
-            let seg_id: u64 = parts[1]
-                .parse()
-                .map_err(|_| format!("invalid segment id: {}", parts[1]))?;
-            let store = ctx.store()?;
-            let seg = store
-                .active_or_sealed_segment_ref(seg_id)
-                .ok_or_else(|| format!("dump-vlog failed: VLog segment {seg_id} not found"))?;
-            let entries = tapir_store::iter_committed_txn_entries::<String, String, _>(seg)
-                .map_err(|e| format!("dump-vlog failed: {e}"))?;
-            for (offset, prepared) in &entries {
+            let report = store.status().map_err(|e| format!("status failed: {e}"))?;
+            writeln!(stdout, "view={} sealed_segments={}", report.view, report.sealed_segments)
+                .map_err(|e| format!("write failed: {e}"))?;
+            for seg in &report.segments {
+                let view_list: Vec<String> = seg.views.iter().map(|v| v.to_string()).collect();
                 write!(
                     stdout,
-                    "@{offset} TAPIR_COMMIT txn={}:{} ts={}",
-                    prepared.transaction_id.client_id.0,
-                    prepared.transaction_id.number,
-                    prepared.commit_ts.time
+                    "vlog_seg_{:04} size={} views=[{}]",
+                    seg.id,
+                    seg.size,
+                    view_list.join(",")
                 )
                 .map_err(|e| format!("write failed: {e}"))?;
-                for (k, v) in &prepared.write_set {
-                    let v_str = v.as_deref().unwrap_or("<tombstone>");
-                    write!(stdout, " {k}={v_str}").map_err(|e| format!("write failed: {e}"))?;
-                }
                 writeln!(stdout).map_err(|e| format!("write failed: {e}"))?;
+
+                for commit in &seg.commits {
+                    write!(
+                        stdout,
+                        "@{} TAPIR_COMMIT txn={}:{} ts={}",
+                        commit.offset,
+                        commit.transaction_id.client_id.0,
+                        commit.transaction_id.number,
+                        commit.commit_ts.time
+                    )
+                    .map_err(|e| format!("write failed: {e}"))?;
+                    for (k, v) in &commit.write_set {
+                        let v_str = v
+                            .as_ref()
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "<tombstone>".to_string());
+                        write!(stdout, " {k}={v_str}")
+                            .map_err(|e| format!("write failed: {e}"))?;
+                    }
+                    writeln!(stdout).map_err(|e| format!("write failed: {e}"))?;
+                }
             }
             Ok(())
         }
