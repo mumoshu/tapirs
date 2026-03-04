@@ -17,20 +17,64 @@ use crate::unified::wisckeylsm::vlog::VlogSegment;
 ///
 /// Read path: memtable (fast clone) → index (VlogPtr → vlog) → SSTs (VlogPtr → vlog).
 pub(crate) struct VlogLsm<K: Ord, V, IO: DiskIo> {
-    /// Current view raw values, cleared on seal.
+    /// Current-view raw values. Written by `put()`, read first by `get()`.
+    /// Cleared on `seal_view()` after flushing to `active_vlog` + `index`.
+    /// Keys here may also appear in `index` (recovery case — index wins for
+    /// already-persisted entries; memtable wins for reads in `get()`).
     memtable: BTreeMap<K, V>,
-    /// All views K→VlogPtr, accumulates across seals, flushed to SST when large.
+
+    /// Accumulated K→VlogPtr across all sealed views. Each VlogPtr references
+    /// a (segment_id, offset) in either `active_vlog` or `sealed_segments`.
+    /// Grows on every `seal_view()`. Flushed to a new SST and cleared when
+    /// `index.len() >= max_index_entries`. Checked by `get()` after memtable.
     index: BTreeMap<K, VlogPtr>,
+
+    /// On-disk SST files containing flushed snapshots of `index`. Searched in
+    /// reverse order (newest first) by `get()` after memtable and index miss.
+    /// Each reader's K→VlogPtr entries resolve to `active_vlog` or
+    /// `sealed_segments`. Paired 1:1 with `sst_metas` by position.
     sst_readers: Vec<SSTableReader<IO>>,
+
+    /// Metadata (id, path, entry_count) for each SST, paired 1:1 with
+    /// `sst_readers`. Used for manifest persistence; not read at query time.
     sst_metas: Vec<SstMeta>,
+
+    /// Monotonic counter for SST file IDs. Incremented each time `seal_view()`
+    /// flushes `index` to a new SST. Drives filename: `{label}_sst_{id:04}.db`.
     next_sst_id: u64,
+
+    /// Threshold: when `index.len() >= max_index_entries`, `seal_view()` flushes
+    /// the entire index to a new SST and clears it. Set once at construction.
     max_index_entries: usize,
+
+    /// Current writable vlog segment. `seal_view()` appends serialized memtable
+    /// entries here via `append_raw_batch()`, producing VlogPtrs stored in
+    /// `index`. When its size exceeds `min_vlog_size` at seal time, it is moved
+    /// to `sealed_segments` and replaced with a fresh empty segment.
     active_vlog: VlogSegment<IO>,
+
+    /// Read-only vlog segments keyed by segment_id. Populated when `active_vlog`
+    /// is rotated. VlogPtrs from `index` and `sst_readers` whose segment_id
+    /// differs from `active_vlog.id` resolve here.
     sealed_segments: BTreeMap<u64, VlogSegment<IO>>,
+
+    /// Number of entries appended to `active_vlog` in the current view.
+    /// Passed to `active_vlog.finish_view()` at seal time, then reset to 0.
     entry_count: u32,
+
+    /// Root directory for all vlog and SST files.
     base_dir: PathBuf,
+
+    /// I/O flags (create, direct_io) propagated to all VlogSegment and SST opens.
     io_flags: OpenFlags,
+
+    /// Monotonic counter for vlog segment IDs. Incremented when `active_vlog`
+    /// rotates. Drives filename: `{label}_vlog_seg_{id:04}.dat`.
     next_segment_id: u64,
+
+    /// Filename prefix distinguishing this LSM instance. Examples: `""` (TAPIR
+    /// committed → `vlog_seg_XXXX.dat`), `"prep"` (TAPIR prepared →
+    /// `prep_vlog_seg_XXXX.dat`), `"ir"` (IR record → `ir_vlog_XXXX.dat`).
     label: String,
 }
 
