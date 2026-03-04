@@ -60,7 +60,7 @@ fn tapir_state_prepare_registry() {
 
     let txn_id = test_txn_id(1, 1);
     let txn = make_txn(vec![], vec![("x", Some("v1"))]);
-    store.prepare(txn_id, &txn, test_ts(5));
+    store.prepare(txn_id, &txn, test_ts(5)).unwrap();
 
     let (value, ts) = store.do_uncommitted_get(&"x".to_string()).unwrap();
     assert!(value.is_none());

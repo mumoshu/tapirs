@@ -97,6 +97,19 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
         self.next_segment_id
     }
 
+    /// Remove a key from both memtable and index. Returns the memtable value
+    /// if it was present. Vlog data is not removed (managed by compaction).
+    pub fn remove(&mut self, key: &K) -> Option<V> {
+        self.index.remove(key);
+        self.memtable.remove(key)
+    }
+
+    /// Insert a key-value pair directly into the memtable (no vlog write).
+    /// Used during recovery to rebuild in-memory state from existing vlog data.
+    pub(crate) fn mem_insert(&mut self, key: K, value: V) {
+        self.memtable.insert(key, value);
+    }
+
     /// Serialize V to the vlog, insert (K, V) into memtable, insert (K, VlogPtr)
     /// into the index. Atomic from the caller's perspective.
     pub fn put(

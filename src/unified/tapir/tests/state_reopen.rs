@@ -18,7 +18,10 @@ fn tapir_state_prepare_conflict_commit_seal_reopen_get_scan() {
         .into_iter()
         .map(|(name, _)| name)
         .collect();
-    assert_eq!(files_on_open, vec!["vlog_seg_0000.dat".to_string()]);
+    assert_eq!(
+        files_on_open,
+        vec!["prep_vlog_0000.dat".to_string(), "vlog_seg_0000.dat".to_string()]
+    );
 
     let txn1 = make_txn(vec![], vec![("x", Some("v1"))]);
     let txn1_id = test_txn_id(1, 1);
@@ -39,7 +42,10 @@ fn tapir_state_prepare_conflict_commit_seal_reopen_get_scan() {
         .into_iter()
         .map(|(name, _)| name)
         .collect();
-    assert_eq!(files_before_first_seal, vec!["vlog_seg_0000.dat".to_string()]);
+    assert_eq!(
+        files_before_first_seal,
+        vec!["prep_vlog_0000.dat".to_string(), "vlog_seg_0000.dat".to_string()]
+    );
 
     store.seal(u64::MAX).unwrap();
 
@@ -47,7 +53,7 @@ fn tapir_state_prepare_conflict_commit_seal_reopen_get_scan() {
     let names_after_first: Vec<&str> = files_after_first_seal.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(
         names_after_first,
-        vec!["UNIFIED_MANIFEST", "vlog_seg_0000.dat"],
+        vec!["UNIFIED_MANIFEST", "prep_vlog_0000.dat", "vlog_seg_0000.dat"],
         "exact files after first seal"
     );
     for (_, size) in &files_after_first_seal {

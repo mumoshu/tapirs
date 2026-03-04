@@ -97,7 +97,7 @@ impl TestStore {
             },
         );
 
-        self.tapir_state.prepare(txn_id, &txn, commit_ts);
+        self.tapir_state.prepare(txn_id, &txn, commit_ts).unwrap();
     }
 
     pub(crate) fn commit(

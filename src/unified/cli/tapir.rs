@@ -53,8 +53,9 @@ pub(super) fn execute_tapir_command<W: std::io::Write>(
             let commit_ts = parse_ts(parts[2])?;
             let txn = parse_tapir_transaction(&parts[3..])?;
             let store = ctx.store_mut()?;
-            store.prepare(txn_id, &txn, commit_ts);
-            Ok(())
+            store
+                .prepare(txn_id, &txn, commit_ts)
+                .map_err(|e| format!("prepare failed: {e}"))
         }
         "abort" => {
             if parts.len() != 2 {

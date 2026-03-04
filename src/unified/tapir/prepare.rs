@@ -17,7 +17,7 @@ use std::sync::Arc;
 pub(crate) struct TapirState<K: Ord, V, IO: DiskIo> {
     memtable: Memtable<K>,
     committed: VlogLsm<OccTransactionId, Arc<Transaction<K, V>>, IO>,
-    prepared_txns: BTreeMap<OccTransactionId, Arc<Transaction<K, V>>>,
+    prepared: VlogLsm<OccTransactionId, Arc<Transaction<K, V>>, IO>,
     prepare_cache: RefCell<PreparedTransactions<Transaction<K, V>>>,
     vlog_read_count: Cell<u64>,
     manifest: UnifiedManifest,
@@ -51,6 +51,7 @@ pub(crate) struct StatusReport<K, V> {
 const DEFAULT_PREPARE_CACHE_CAPACITY: usize = 1024;
 const RAW_ENTRY_OVERHEAD: u32 = 25;
 const TAPIR_COMMITTED_TXN_ENTRY_TYPE: u8 = 0x80;
+const TAPIR_PREPARED_TXN_ENTRY_TYPE: u8 = 0x81;
 
 impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
     fn increment_vlog_read_count(&self) {
@@ -71,7 +72,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
     }
 
     pub(crate) fn abort(&mut self, txn_id: &OccTransactionId) {
-        self.prepared_txns.remove(txn_id);
+        self.prepared.remove(txn_id);
     }
 
     fn prepare_cache_get(
@@ -109,7 +110,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         K: Key,
         V: Value,
     {
-        self.prepared_txns.remove(&txn_id);
+        self.prepared.remove(&txn_id);
 
         let arc_txn = Arc::new(Transaction {
             transaction_id: txn_id,
@@ -159,7 +160,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         txn_id: OccTransactionId,
         transaction: &crate::occ::Transaction<K, V, Timestamp>,
         commit_ts: Timestamp,
-    )
+    ) -> Result<(), StorageError>
     where
         K: Key,
         V: Value,
@@ -184,7 +185,13 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
             scan_set: Vec::new(),
         });
 
-        self.prepared_txns.insert(txn_id, prepare);
+        self.prepared.put(
+            txn_id,
+            prepare,
+            TAPIR_PREPARED_TXN_ENTRY_TYPE,
+            txn_id.client_id.0,
+            txn_id.number,
+        )
     }
 
     fn convert_in_memory_to_on_disk(&mut self) {
@@ -242,6 +249,34 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         Ok(())
     }
 
+    fn recover_prepared_segment(
+        &mut self,
+        segment: &VlogSegment<IO>,
+        committed_txn_ids: &std::collections::BTreeSet<OccTransactionId>,
+    ) -> Result<(), StorageError>
+    where
+        K: serde::de::DeserializeOwned,
+        V: serde::de::DeserializeOwned,
+    {
+        for (_offset, raw) in segment.iter_raw_entries()? {
+            if raw.entry_type != TAPIR_PREPARED_TXN_ENTRY_TYPE {
+                continue;
+            }
+
+            let txn: Transaction<K, V> = bitcode::deserialize(&raw.payload)
+                .map_err(|e| StorageError::Codec(e.to_string()))?;
+            let txn_id = txn.transaction_id;
+
+            if committed_txn_ids.contains(&txn_id) {
+                continue;
+            }
+
+            self.prepared.mem_insert(txn_id, Arc::new(txn));
+        }
+
+        Ok(())
+    }
+
     fn resolve_value_internal(&self, entry: &LsmEntry) -> Result<Option<V>, StorageError>
     where
         K: Key + serde::Serialize + serde::de::DeserializeOwned,
@@ -294,19 +329,25 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         self.convert_in_memory_to_on_disk();
 
         let sealed_meta = self.committed.seal_view(min_view_vlog_size)?;
-
         if let Some(meta) = sealed_meta {
             self.manifest.committed.sealed_vlog_segments.push(meta);
+        }
+
+        let prepared_sealed = self.prepared.seal_view(min_view_vlog_size)?;
+        if let Some(meta) = prepared_sealed {
+            self.manifest.prepared.sealed_vlog_segments.push(meta);
         }
 
         self.manifest.current_view += 1;
         self.manifest.committed.active_segment_id = self.committed.active_vlog_id();
         self.manifest.committed.active_write_offset = self.committed.active_write_offset();
         self.manifest.committed.next_segment_id = self.committed.next_segment_id();
+        self.manifest.prepared.active_segment_id = self.prepared.active_vlog_id();
+        self.manifest.prepared.active_write_offset = self.prepared.active_write_offset();
+        self.manifest.prepared.next_segment_id = self.prepared.next_segment_id();
         self.manifest.save::<IO>(&self.base_dir)?;
         self.committed.start_view(self.manifest.current_view);
-
-        self.prepared_txns.clear();
+        self.prepared.start_view(self.manifest.current_view);
         Ok(())
     }
 
@@ -431,10 +472,45 @@ pub(crate) fn open<K: Key, V: Value, IO: DiskIo>(
         usize::MAX,
     );
 
+    let mut prepared_sealed_segments = BTreeMap::new();
+    for seg_meta in &manifest.prepared.sealed_vlog_segments {
+        let seg = VlogSegment::<IO>::open_at(
+            seg_meta.segment_id,
+            seg_meta.path.clone(),
+            seg_meta.total_size,
+            seg_meta.views.clone(),
+            io_flags,
+        )?;
+        prepared_sealed_segments.insert(seg_meta.segment_id, seg);
+    }
+
+    let prep_active_path = base_dir.join(format!(
+        "prep_vlog_{:04}.dat",
+        manifest.prepared.active_segment_id
+    ));
+    let mut prep_active_vlog = VlogSegment::<IO>::open_at(
+        manifest.prepared.active_segment_id,
+        prep_active_path,
+        manifest.prepared.active_write_offset,
+        Vec::new(),
+        io_flags,
+    )?;
+    prep_active_vlog.start_view(manifest.current_view);
+
+    let prepared = VlogLsm::open_from_parts(
+        "prep",
+        base_dir,
+        prep_active_vlog,
+        prepared_sealed_segments,
+        io_flags,
+        manifest.prepared.next_segment_id,
+        usize::MAX,
+    );
+
     let mut state = TapirState {
         memtable: Memtable::new(),
         committed,
-        prepared_txns: BTreeMap::new(),
+        prepared,
         prepare_cache: RefCell::new(PreparedTransactions::new(DEFAULT_PREPARE_CACHE_CAPACITY)),
         vlog_read_count: Cell::new(0),
         manifest,
@@ -465,6 +541,36 @@ pub(crate) fn open<K: Key, V: Value, IO: DiskIo>(
     )?;
     state.recover_segment(&active_for_recover)?;
     active_for_recover.close();
+
+    let committed_txn_ids: std::collections::BTreeSet<OccTransactionId> =
+        state.committed.index().keys().cloned().collect();
+
+    for seg_meta in state.manifest.prepared.sealed_vlog_segments.clone() {
+        let seg = VlogSegment::<IO>::open_at(
+            seg_meta.segment_id,
+            seg_meta.path,
+            seg_meta.total_size,
+            seg_meta.views,
+            state.io_flags,
+        )?;
+        state.recover_prepared_segment(&seg, &committed_txn_ids)?;
+        seg.close();
+    }
+
+    let prep_active_for_recover = VlogSegment::<IO>::open_at(
+        state.manifest.prepared.active_segment_id,
+        state
+            .base_dir
+            .join(format!(
+                "prep_vlog_{:04}.dat",
+                state.manifest.prepared.active_segment_id
+            )),
+        state.manifest.prepared.active_write_offset,
+        Vec::new(),
+        state.io_flags,
+    )?;
+    state.recover_prepared_segment(&prep_active_for_recover, &committed_txn_ids)?;
+    prep_active_for_recover.close();
 
     Ok(state)
 }
@@ -562,7 +668,7 @@ impl TapirStateRunner {
         transaction: &crate::occ::Transaction<String, String, Timestamp>,
         commit_ts: Timestamp,
     ) {
-        self.tapir.prepare(txn_id, transaction, commit_ts);
+        self.tapir.prepare(txn_id, transaction, commit_ts).unwrap();
     }
 
     pub(crate) fn commit_transaction_data(
