@@ -1,6 +1,4 @@
-#[allow(dead_code)]
 pub(crate) mod cdc;
-#[allow(dead_code)]
 mod catchup;
 pub mod scan_changes_types;
 

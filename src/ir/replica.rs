@@ -21,11 +21,6 @@ use tracing::{info, trace, trace_span, warn};
 pub enum Status {
     Normal,
     ViewChanging,
-    /// Not yet used. Will be needed when we implement Recovering mode
-    /// where the replica replays its local IR record to recover state,
-    /// once recovery replay plumbing is complete.
-    #[allow(dead_code)]
-    Recovering,
 }
 
 impl Status {
@@ -1060,7 +1055,6 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
         let status = match sync.status {
             Status::Normal => 0,
             Status::ViewChanging => 1,
-            Status::Recovering => 2,
         };
         let app_metrics = sync.upcalls.metrics();
         Some(ReplicaMetrics {

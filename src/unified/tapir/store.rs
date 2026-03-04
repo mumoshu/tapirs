@@ -17,7 +17,6 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-#[allow(dead_code)]
 pub(crate) struct TapirState<K: Ord, V, IO: DiskIo> {
     memtable: Memtable<K>,
     prepare_registry: BTreeMap<OccTransactionId, Arc<CachedPrepare<K, V>>>,
@@ -63,7 +62,6 @@ fn new_store_state<K: Ord + Clone, V, IO: DiskIo>(
     }
 }
 
-#[allow(dead_code)]
 impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
     fn vlog_read_count(&self) -> u64 {
         self.vlog_read_count.get()

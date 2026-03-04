@@ -69,7 +69,6 @@ impl Default for NetworkFaultConfig {
 }
 
 /// Latency injection configuration
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub enum LatencyConfig {
     None,
@@ -97,7 +96,7 @@ impl<U: IrReplicaUpcalls> ReorderBuffer<U> {
         self.messages.len() >= max_size
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     fn flush(&mut self, rng: &mut StdRng) -> Vec<IrMessage<U, Channel<U>>> {
         self.messages.shuffle(rng);
         self.messages.drain(..).collect()
@@ -130,7 +129,7 @@ impl<U: IrReplicaUpcalls> FaultyChannelTransport<U> {
         self.state.write().unwrap().config.drop_rate = rate;
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn set_duplicate_rate(&self, rate: f64) {
         assert!(
             (0.0..=1.0).contains(&rate),
@@ -143,7 +142,7 @@ impl<U: IrReplicaUpcalls> FaultyChannelTransport<U> {
         self.state.write().unwrap().config.latency = latency;
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn set_reorder_buffer_size(&self, size: usize) {
         self.state.write().unwrap().config.reorder_buffer_size = size;
     }
@@ -173,26 +172,26 @@ impl<U: IrReplicaUpcalls> FaultyChannelTransport<U> {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn partition_pair(&self, a: usize, b: usize) {
         let mut state = self.state.write().unwrap();
         state.config.partition_pairs.insert((a, b));
         state.config.partition_pairs.insert((b, a));
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn heal_pair(&self, a: usize, b: usize) {
         let mut state = self.state.write().unwrap();
         state.config.partition_pairs.remove(&(a, b));
         state.config.partition_pairs.remove(&(b, a));
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn set_config(&self, config: NetworkFaultConfig) {
         self.state.write().unwrap().config = config;
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn config(&self) -> NetworkFaultConfig {
         self.state.read().unwrap().config.clone()
     }

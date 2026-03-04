@@ -26,7 +26,6 @@ pub(crate) struct Metrics {
     pub(crate) vlog_read_count: u64,
 }
 
-#[allow(dead_code)]
 impl TestStore {
     pub(crate) fn open(base_dir: PathBuf) -> Result<Self, StorageError> {
         Self::open_with_options(base_dir, DEFAULT_MIN_VIEW_VLOG_SIZE)

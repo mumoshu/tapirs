@@ -7,7 +7,6 @@ mod message;
 mod quorum_read;
 pub(crate) mod replica;
 mod routing_client;
-#[allow(dead_code)]
 mod shard_client;
 pub mod shard_router;
 mod timestamp;

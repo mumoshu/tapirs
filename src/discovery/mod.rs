@@ -292,7 +292,6 @@ impl<A: Clone + Send + Sync + 'static> ShardDirectory<A> for InMemoryShardDirect
 /// only — they never block or fail due to remote unavailability.
 pub struct CachingShardDirectory<A, K, T> {
     local: Arc<InMemoryShardDirectory<A>>,
-    #[allow(dead_code)]
     remote: Arc<T>,
     /// Shards hosted by this node's replicas — used as a **PUSH filter only**.
     ///

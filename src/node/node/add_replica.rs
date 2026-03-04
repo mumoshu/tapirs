@@ -9,7 +9,6 @@ impl Node {
     }
 
     /// Add a replica using a pre-bound TCP listener (no TOCTOU port race).
-    #[allow(dead_code)] // Used by integration tests
     pub async fn add_replica_with_listener(
         &self,
         cfg: &ReplicaConfig,

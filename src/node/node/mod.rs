@@ -73,7 +73,6 @@ impl Node {
         }
     }
 
-    #[allow(dead_code)] // Used by integration tests
     pub fn with_discovery_backend_and_shard_manager(
         persist_dir: String,
         backend: DiscoveryBackend,
@@ -98,7 +97,6 @@ impl Node {
 
     /// Returns the current view number of the replica hosting `shard` on this node,
     /// or None if this node has no replica for that shard.
-    #[allow(dead_code)] // Used by integration tests
     pub fn shard_view_number(&self, shard: ShardNumber) -> Option<u64> {
         let replicas = self.replicas.lock().unwrap();
         replicas.get(&shard).map(|h| h.replica.view_number())
