@@ -372,7 +372,7 @@ impl<K: Ord, V, IO: DiskIo> IrRecord<K, V, IO> {
             let sealed_views = self.active_vlog.views.clone();
             let sealed_size = self.active_vlog.write_offset();
 
-            self.manifest.sealed_vlog_segments.push(VlogSegmentMeta {
+            self.manifest.committed.sealed_vlog_segments.push(VlogSegmentMeta {
                 segment_id: sealed_id,
                 path: sealed_path.clone(),
                 views: sealed_views.clone(),
@@ -380,8 +380,8 @@ impl<K: Ord, V, IO: DiskIo> IrRecord<K, V, IO> {
             });
 
             let old_active = std::mem::replace(&mut self.active_vlog, {
-                let new_id = self.manifest.next_segment_id;
-                self.manifest.next_segment_id += 1;
+                let new_id = self.manifest.committed.next_segment_id;
+                self.manifest.committed.next_segment_id += 1;
                 let new_path = base_dir.join(format!("vlog_seg_{new_id:04}.dat"));
                 VlogSegment::<IO>::open(new_id, new_path, io_flags)?
             });
@@ -401,8 +401,8 @@ impl<K: Ord, V, IO: DiskIo> IrRecord<K, V, IO> {
 
         self.current_view += 1;
         self.manifest.current_view = self.current_view;
-        self.manifest.active_segment_id = self.active_vlog.id;
-        self.manifest.active_write_offset = self.active_vlog.write_offset();
+        self.manifest.committed.active_segment_id = self.active_vlog.id;
+        self.manifest.committed.active_write_offset = self.active_vlog.write_offset();
         self.manifest.save::<IO>(base_dir)?;
         self.active_vlog.start_view(self.current_view);
 

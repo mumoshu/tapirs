@@ -5,6 +5,26 @@ use crate::mvcc::disk::lsm::SSTableMeta;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+/// Per-LSM vlog + SST metadata, stored inside UnifiedManifest.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LsmManifestData {
+    pub active_segment_id: u64,
+    pub active_write_offset: u64,
+    pub sealed_vlog_segments: Vec<VlogSegmentMeta>,
+    pub next_segment_id: u64,
+}
+
+impl LsmManifestData {
+    pub fn new() -> Self {
+        Self {
+            active_segment_id: 0,
+            active_write_offset: 0,
+            sealed_vlog_segments: Vec::new(),
+            next_segment_id: 1,
+        }
+    }
+}
+
 /// Persisted metadata for the unified storage engine.
 ///
 /// Written atomically via write-temp-rename (same strategy as
@@ -13,22 +33,18 @@ use std::path::Path;
 pub struct UnifiedManifest {
     /// Current view number.
     pub current_view: u64,
-    /// Segment ID of the active VLog segment.
-    pub active_segment_id: u64,
-    /// Write offset within the active segment.
-    pub active_write_offset: u64,
-    /// Metadata for all sealed VLog segments.
-    pub sealed_vlog_segments: Vec<VlogSegmentMeta>,
+    /// Committed transaction vlog metadata (also used by IR op log).
+    pub committed: LsmManifestData,
+    /// Prepared transaction vlog metadata.
+    pub prepared: LsmManifestData,
     /// MVCC SST metadata — L0 level.
     pub mvcc_l0_sstables: Vec<SSTableMeta>,
     /// MVCC SST metadata — L1 level.
     pub mvcc_l1_sstables: Vec<SSTableMeta>,
-    /// Next SST file ID.
+    /// Next MVCC SST file ID.
     pub next_sst_id: u64,
     /// Reserved for future use (recovery replay).
     pub replay_start_offset: u64,
-    /// Next VLog segment ID.
-    pub next_segment_id: u64,
     /// CRC32 checksum.
     pub checksum: u32,
 }
@@ -37,14 +53,12 @@ impl UnifiedManifest {
     pub fn new() -> Self {
         Self {
             current_view: 0,
-            active_segment_id: 0,
-            active_write_offset: 0,
-            sealed_vlog_segments: Vec::new(),
+            committed: LsmManifestData::new(),
+            prepared: LsmManifestData::new(),
             mvcc_l0_sstables: Vec::new(),
             mvcc_l1_sstables: Vec::new(),
             next_sst_id: 0,
             replay_start_offset: 0,
-            next_segment_id: 1,
             checksum: 0,
         }
     }

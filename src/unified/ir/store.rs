@@ -126,7 +126,7 @@ pub(crate) fn open_store_state<K: Ord, V, IO: DiskIo>(
     };
 
     let mut sealed_vlog_segments = BTreeMap::new();
-    for seg_meta in &manifest.sealed_vlog_segments {
+    for seg_meta in &manifest.committed.sealed_vlog_segments {
         let seg = VlogSegment::<IO>::open_at(
             seg_meta.segment_id,
             seg_meta.path.clone(),
@@ -137,11 +137,11 @@ pub(crate) fn open_store_state<K: Ord, V, IO: DiskIo>(
         sealed_vlog_segments.insert(seg_meta.segment_id, seg);
     }
 
-    let active_path = base_dir.join(format!("vlog_seg_{:04}.dat", manifest.active_segment_id));
+    let active_path = base_dir.join(format!("vlog_seg_{:04}.dat", manifest.committed.active_segment_id));
     let mut active_vlog = VlogSegment::<IO>::open_at(
-        manifest.active_segment_id,
+        manifest.committed.active_segment_id,
         active_path,
-        manifest.active_write_offset,
+        manifest.committed.active_write_offset,
         Vec::new(),
         io_flags,
     )?;

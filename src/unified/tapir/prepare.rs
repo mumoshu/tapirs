@@ -396,7 +396,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
             let sealed_views = self.active_vlog.views.clone();
             let sealed_size = self.active_vlog.write_offset();
 
-            self.manifest.sealed_vlog_segments.push(VlogSegmentMeta {
+            self.manifest.committed.sealed_vlog_segments.push(VlogSegmentMeta {
                 segment_id: sealed_id,
                 path: sealed_path.clone(),
                 views: sealed_views.clone(),
@@ -406,8 +406,8 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
             let old_active = std::mem::replace(
                 &mut self.active_vlog,
                 {
-                    let new_id = self.manifest.next_segment_id;
-                    self.manifest.next_segment_id += 1;
+                    let new_id = self.manifest.committed.next_segment_id;
+                    self.manifest.committed.next_segment_id += 1;
                     let new_path = self
                         .base_dir
                         .join(format!("vlog_seg_{new_id:04}.dat"));
@@ -428,8 +428,8 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         }
 
         self.manifest.current_view += 1;
-        self.manifest.active_segment_id = self.active_vlog.id;
-        self.manifest.active_write_offset = self.active_vlog.write_offset();
+        self.manifest.committed.active_segment_id = self.active_vlog.id;
+        self.manifest.committed.active_write_offset = self.active_vlog.write_offset();
         self.manifest.save::<IO>(&self.base_dir)?;
         self.active_vlog.start_view(self.manifest.current_view);
 
@@ -533,7 +533,7 @@ pub(crate) fn open<K: Key, V: Value, IO: DiskIo>(
     let manifest = UnifiedManifest::load::<IO>(base_dir)?.unwrap_or_else(UnifiedManifest::new);
 
     let mut sealed_vlog_segments = BTreeMap::new();
-    for seg_meta in &manifest.sealed_vlog_segments {
+    for seg_meta in &manifest.committed.sealed_vlog_segments {
         let seg = VlogSegment::<IO>::open_at(
             seg_meta.segment_id,
             seg_meta.path.clone(),
@@ -544,11 +544,11 @@ pub(crate) fn open<K: Key, V: Value, IO: DiskIo>(
         sealed_vlog_segments.insert(seg_meta.segment_id, seg);
     }
 
-    let active_path = base_dir.join(format!("vlog_seg_{:04}.dat", manifest.active_segment_id));
+    let active_path = base_dir.join(format!("vlog_seg_{:04}.dat", manifest.committed.active_segment_id));
     let mut active_vlog = VlogSegment::<IO>::open_at(
-        manifest.active_segment_id,
+        manifest.committed.active_segment_id,
         active_path,
-        manifest.active_write_offset,
+        manifest.committed.active_write_offset,
         Vec::new(),
         io_flags,
     )?;
@@ -563,7 +563,7 @@ pub(crate) fn open<K: Key, V: Value, IO: DiskIo>(
         io_flags,
     );
 
-    for seg_meta in state.manifest.sealed_vlog_segments.clone() {
+    for seg_meta in state.manifest.committed.sealed_vlog_segments.clone() {
         let seg = VlogSegment::<IO>::open_at(
             seg_meta.segment_id,
             seg_meta.path,
@@ -576,11 +576,11 @@ pub(crate) fn open<K: Key, V: Value, IO: DiskIo>(
     }
 
     let active_for_recover = VlogSegment::<IO>::open_at(
-        state.manifest.active_segment_id,
+        state.manifest.committed.active_segment_id,
         state
             .base_dir
-            .join(format!("vlog_seg_{:04}.dat", state.manifest.active_segment_id)),
-        state.manifest.active_write_offset,
+            .join(format!("vlog_seg_{:04}.dat", state.manifest.committed.active_segment_id)),
+        state.manifest.committed.active_write_offset,
         Vec::new(),
         state.io_flags,
     )?;
