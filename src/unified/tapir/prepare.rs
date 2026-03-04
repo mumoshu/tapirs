@@ -2,12 +2,8 @@ use crate::mvcc::disk::error::StorageError;
 use crate::mvcc::disk::disk_io::{DiskIo, OpenFlags};
 use crate::occ::TransactionId as OccTransactionId;
 use crate::tapir::{Key, Timestamp, Value};
-#[cfg(test)]
-use crate::tapirstore::TransactionLog;
 use crate::unified::tapir::Transaction;
 use crate::unified::tapir::{LsmEntry, ValueLocation, VlogSegment, VlogTransactionPtr};
-#[cfg(test)]
-use crate::IrClientId;
 use crate::unified::tapir::memtable::Memtable;
 use crate::unified::wisckeylsm::manifest::UnifiedManifest;
 use crate::unified::tapir::prepare_cache::PreparedTransactions;
@@ -23,8 +19,6 @@ pub(crate) struct TapirState<K: Ord, V, IO: DiskIo> {
     prepare_cache: RefCell<PreparedTransactions<Transaction<K, V>>>,
     committed_txn_vlog_index: BTreeMap<OccTransactionId, VlogPtr>,
     vlog_read_count: Cell<u64>,
-    #[cfg(test)]
-    txlog: TransactionLog,
     active_vlog: VlogSegment<IO>,
     sealed_vlog_segments: BTreeMap<u64, VlogSegment<IO>>,
     manifest: UnifiedManifest,
@@ -70,8 +64,6 @@ fn new_store_state<K: Ord + Clone, V, IO: DiskIo>(
         prepare_cache: RefCell::new(PreparedTransactions::new(prepare_cache_capacity)),
         committed_txn_vlog_index: BTreeMap::new(),
         vlog_read_count: Cell::new(0),
-        #[cfg(test)]
-        txlog: TransactionLog::new(),
         active_vlog,
         sealed_vlog_segments,
         manifest,
@@ -103,18 +95,8 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         self.memtable.update_last_read(key, read, commit_time);
     }
 
-    #[cfg(test)]
-    fn memtable_entry_at(&self, key: &K, ts: Timestamp) -> Option<&LsmEntry> {
-        self.memtable.get_at(key, ts).map(|(_, entry)| entry)
-    }
-
     pub(crate) fn abort(&mut self, txn_id: &OccTransactionId) {
         self.prepared_txns_in_mem.remove(txn_id);
-    }
-
-    #[cfg(test)]
-    fn lookup_prepare(&self, txn_id: &OccTransactionId) -> Option<Arc<Transaction<K, V>>> {
-        self.prepared_txns_in_mem.get(txn_id).cloned()
     }
 
     fn lookup_prepare_value_ref(
@@ -132,41 +114,12 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
             .cloned()
     }
 
-    #[cfg(test)]
-    fn resolve_in_memory_ref(
-        &self,
-        txn_id: &OccTransactionId,
-        write_index: u16,
-    ) -> Option<&(K, Option<V>)> {
-        self.prepared_txns_in_mem
-            .get(txn_id)
-            .and_then(|p| p.write_set.get(write_index as usize))
-    }
-
-    #[cfg(test)]
-    fn has_prepare_write_conflict(&self, key: &K) -> bool {
-        self.prepared_txns_in_mem
-            .values()
-            .flat_map(|p| p.write_set.iter())
-            .any(|(k, _)| k == key)
-    }
-
-    #[cfg(test)]
-    fn contains_prepare(&self, txn_id: &OccTransactionId) -> bool {
-        self.prepared_txns_in_mem.contains_key(txn_id)
-    }
-
     fn clear_prepare_registry(&mut self) {
         self.prepared_txns_in_mem.clear();
     }
 
     fn index_committed_txn_ptr(&mut self, txn_id: OccTransactionId, ptr: VlogPtr) {
         self.committed_txn_vlog_index.insert(txn_id, ptr);
-    }
-
-    #[cfg(test)]
-    fn lookup_committed_txn_ptr(&self, txn_id: &OccTransactionId) -> Option<VlogPtr> {
-        self.committed_txn_vlog_index.get(txn_id).copied()
     }
 
     fn prepare_cache_get(
@@ -186,36 +139,6 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         self.prepare_cache
             .borrow_mut()
             .insert(segment_id, offset, prepare);
-    }
-
-    #[cfg(test)]
-    fn txn_log_get(&self, id: &OccTransactionId) -> Option<(Timestamp, bool)> {
-        self.txlog.txn_log_get(id)
-    }
-
-    #[cfg(test)]
-    fn txn_log_insert(
-        &mut self,
-        id: OccTransactionId,
-        ts: Timestamp,
-        committed: bool,
-    ) -> Option<(Timestamp, bool)> {
-        self.txlog.txn_log_insert(id, ts, committed)
-    }
-
-    #[cfg(test)]
-    fn txn_log_contains(&self, id: &OccTransactionId) -> bool {
-        self.txlog.txn_log_contains(id)
-    }
-
-    #[cfg(test)]
-    fn txn_log_len(&self) -> usize {
-        self.txlog.txn_log_len()
-    }
-
-    #[cfg(test)]
-    fn base_dir(&self) -> &Path {
-        &self.base_dir
     }
 
     fn current_view(&self) -> u64 {
@@ -263,47 +186,6 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         Ok(self
             .memtable
             .has_writes_in_range(start, end, after_ts, before_ts))
-    }
-
-    #[cfg(test)]
-    fn commit_get(
-        &mut self,
-        key: K,
-        read: Timestamp,
-        commit: Timestamp,
-    ) -> Result<(), StorageError> {
-        self.update_memtable_last_read(&key, read, commit.time);
-        Ok(())
-    }
-
-    #[cfg(test)]
-    fn get_last_read(&self, key: &K) -> Result<Option<Timestamp>, StorageError> {
-        if let Some((_, entry)) = self.memtable.get_latest(key)
-            && let Some(ts) = entry.last_read_ts
-        {
-            return Ok(Some(Timestamp {
-                time: ts,
-                client_id: IrClientId(1),
-            }));
-        }
-        Ok(None)
-    }
-
-    #[cfg(test)]
-    fn get_last_read_at(
-        &self,
-        key: &K,
-        timestamp: Timestamp,
-    ) -> Result<Option<Timestamp>, StorageError> {
-        if let Some((_, entry)) = self.memtable.get_at(key, timestamp)
-            && let Some(ts) = entry.last_read_ts
-        {
-            return Ok(Some(Timestamp {
-                time: ts,
-                client_id: IrClientId(1),
-            }));
-        }
-        Ok(None)
     }
 
     pub(crate) fn commit(
@@ -514,27 +396,6 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         }
 
         Ok(())
-    }
-
-    #[cfg(test)]
-    fn resolve_in_memory(
-        &self,
-        txn_id: &OccTransactionId,
-        write_index: u16,
-    ) -> Option<&(K, Option<V>)> {
-        self.resolve_in_memory_ref(txn_id, write_index)
-    }
-
-    #[cfg(test)]
-    fn resolve_value(
-        &self,
-        entry: &LsmEntry,
-    ) -> Result<Option<V>, StorageError>
-    where
-        K: Key + serde::Serialize + serde::de::DeserializeOwned,
-        V: Value + serde::Serialize + serde::de::DeserializeOwned,
-    {
-        self.resolve_value_internal(entry)
     }
 
     fn resolve_in_memory_owned(
@@ -930,13 +791,6 @@ impl TapirStateRunner {
             .do_uncommitted_scan(&start.to_string(), &end.to_string(), ts)
     }
 
-    pub(crate) fn has_prepare_write_conflict(&self, key: &str) -> bool {
-        self.tapir.has_prepare_write_conflict(&key.to_string())
-    }
-
-    pub(crate) fn contains_prepare(&self, txn_id: &OccTransactionId) -> bool {
-        self.tapir.contains_prepare(txn_id)
-    }
 }
 
 #[cfg(test)]
@@ -979,7 +833,9 @@ mod tests {
 
         let txn_ptr = runner
             .tapir
-            .lookup_committed_txn_ptr(&txn_id)
+            .committed_txn_vlog_index
+            .get(&txn_id)
+            .copied()
             .expect("committed txn ptr should exist after seal");
         let ptr = VlogTransactionPtr {
             txn_ptr,

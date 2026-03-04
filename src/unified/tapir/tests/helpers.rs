@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::ir::OpId;
 use crate::mvcc::disk::disk_io::OpenFlags;
 use crate::mvcc::disk::memory_io::MemoryIo;

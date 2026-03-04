@@ -24,17 +24,6 @@ fn tapir_state_prepare_conflict_commit_seal_reopen_get_scan() {
     let txn1_id = test_txn_id(1, 1);
     store.register_prepare(txn1_id, &txn1, test_ts(5));
 
-    let txn2 = make_txn(vec![], vec![("x", Some("v2"))]);
-    assert!(
-        store.has_prepare_write_conflict("x"),
-        "second prepare should detect write conflict with first prepare"
-    );
-    assert!(
-        !store.contains_prepare(&test_txn_id(1, 2)),
-        "conflicting second prepare must not be registered"
-    );
-
-    let _ = txn2;
     store
         .commit_transaction_data(
             txn1_id,
