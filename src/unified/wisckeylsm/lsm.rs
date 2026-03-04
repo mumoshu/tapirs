@@ -116,6 +116,11 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
         &self.index
     }
 
+    /// Iterate over all values in the memtable.
+    pub(crate) fn memtable_values(&self) -> std::collections::btree_map::Values<'_, K, V> {
+        self.memtable.values()
+    }
+
     /// Reference to the active vlog segment.
     pub(crate) fn active_vlog_ref(&self) -> &VlogSegment<IO> {
         &self.active_vlog

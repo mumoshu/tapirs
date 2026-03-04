@@ -146,3 +146,66 @@ fn prepared_txn_recovered_in_index_after_reopen() {
     assert_eq!(value.as_deref(), Some("v_a"));
     assert_eq!(write_ts, test_ts(5));
 }
+
+/// Same-view conflict: two prepares writing the same key in the same view
+/// (both in memtable) should conflict.
+#[test]
+fn prepare_conflict_same_view_memtable() {
+    let path = MemoryIo::temp_path();
+    let io_flags = OpenFlags {
+        create: true,
+        direct: false,
+    };
+    let mut store = tapir::store::TapirStateRunner::open(path, io_flags).unwrap();
+
+    // Prepare txn_a writing key "x"
+    let txn_a = make_txn(vec![], vec![("x", Some("v1"))]);
+    let txn_a_id = test_txn_id(1, 1);
+    store.register_prepare(txn_a_id, &txn_a, test_ts(5));
+
+    // Prepare txn_b also writing key "x" → should conflict
+    let txn_b = make_txn(vec![], vec![("x", Some("v2"))]);
+    let txn_b_id = test_txn_id(2, 1);
+    assert!(
+        store.register_prepare_expect_conflict(txn_b_id, &txn_b, test_ts(6)),
+        "Second prepare writing same key should conflict (memtable scenario)"
+    );
+
+    // Prepare txn_c writing a different key "y" → should succeed
+    let txn_c = make_txn(vec![], vec![("y", Some("v3"))]);
+    let txn_c_id = test_txn_id(3, 1);
+    store.register_prepare(txn_c_id, &txn_c, test_ts(7));
+}
+
+/// Cross-view conflict: prepare in view 0 (sealed to vlog+index), then
+/// prepare in view 1 writing the same key should conflict.
+#[test]
+fn prepare_conflict_cross_view_vlog() {
+    let path = MemoryIo::temp_path();
+    let io_flags = OpenFlags {
+        create: true,
+        direct: false,
+    };
+    let mut store = tapir::store::TapirStateRunner::open(path, io_flags).unwrap();
+
+    // View 0: Prepare txn_c writing key "y"
+    let txn_c = make_txn(vec![], vec![("y", Some("v1"))]);
+    let txn_c_id = test_txn_id(5, 1);
+    store.register_prepare(txn_c_id, &txn_c, test_ts(10));
+
+    // Seal → txn_c moves from memtable to prepared vlog + index
+    store.seal(u64::MAX).unwrap();
+
+    // View 1: Prepare txn_d also writing key "y" → should conflict (from index/vlog)
+    let txn_d = make_txn(vec![], vec![("y", Some("v2"))]);
+    let txn_d_id = test_txn_id(6, 1);
+    assert!(
+        store.register_prepare_expect_conflict(txn_d_id, &txn_d, test_ts(11)),
+        "Prepare writing same key as sealed prepared txn should conflict (vlog scenario)"
+    );
+
+    // Prepare txn_e writing a different key "z" → should succeed
+    let txn_e = make_txn(vec![], vec![("z", Some("v3"))]);
+    let txn_e_id = test_txn_id(7, 1);
+    store.register_prepare(txn_e_id, &txn_e, test_ts(12));
+}

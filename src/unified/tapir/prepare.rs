@@ -162,6 +162,44 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         Ok(())
     }
 
+    fn does_prepare_conflict(
+        &self,
+        write_set: &[(K, Option<V>)],
+    ) -> Result<bool, StorageError>
+    where
+        K: Key + serde::Serialize + serde::de::DeserializeOwned,
+        V: Value + serde::Serialize + serde::de::DeserializeOwned,
+    {
+        if write_set.is_empty() {
+            return Ok(false);
+        }
+
+        let new_keys: std::collections::BTreeSet<&K> =
+            write_set.iter().map(|(k, _)| k).collect();
+
+        // Check memtable entries (current view's prepared txns)
+        for txn in self.prepared.memtable_values() {
+            for (key, _) in &txn.write_set {
+                if new_keys.contains(key) {
+                    return Ok(true);
+                }
+            }
+        }
+
+        // Check index entries (sealed views' prepared txns, loaded from vlog)
+        for txn_id in self.prepared.index().keys() {
+            if let Some(txn) = self.prepared.get(txn_id)? {
+                for (key, _) in &txn.write_set {
+                    if new_keys.contains(key) {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+
+        Ok(false)
+    }
+
     pub(crate) fn prepare(
         &mut self,
         txn_id: OccTransactionId,
@@ -169,8 +207,8 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         commit_ts: Timestamp,
     ) -> Result<(), StorageError>
     where
-        K: Key,
-        V: Value,
+        K: Key + serde::Serialize + serde::de::DeserializeOwned,
+        V: Value + serde::Serialize + serde::de::DeserializeOwned,
     {
         let shard = crate::tapir::ShardNumber(0);
 
@@ -183,6 +221,12 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
             .shard_write_set(shard)
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
+
+        if self.does_prepare_conflict(&write_set)? {
+            return Err(StorageError::Codec(
+                format!("prepare conflict: transaction {txn_id:?} writes to keys already prepared"),
+            ));
+        }
 
         let prepare = Arc::new(Transaction {
             transaction_id: txn_id,
@@ -724,6 +768,15 @@ impl TapirStateRunner {
 
     pub(crate) fn prepared_index_contains(&self, txn_id: &OccTransactionId) -> bool {
         self.tapir.prepared.index().contains_key(txn_id)
+    }
+
+    pub(crate) fn register_prepare_expect_conflict(
+        &mut self,
+        txn_id: OccTransactionId,
+        transaction: &crate::occ::Transaction<String, String, Timestamp>,
+        commit_ts: Timestamp,
+    ) -> bool {
+        self.tapir.prepare(txn_id, transaction, commit_ts).is_err()
     }
 }
 
