@@ -37,6 +37,11 @@ pub enum VlogEntryType {
 ///
 /// At seal time, each finalized `IrMemEntry` is serialized into the VLog
 /// and replaced by an `IrSstEntry` (which *does* carry a `vlog_ptr`).
+#[derive(Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "K: Serialize, V: Serialize",
+    deserialize = "K: Deserialize<'de>, V: Deserialize<'de>"
+))]
 pub struct IrMemEntry<K, V> {
     /// Which IR operation type this entry represents.
     pub entry_type: VlogEntryType,
@@ -86,6 +91,11 @@ pub enum IrState {
 /// Because `Commit` and `Abort` variants carry no K/V data, they are
 /// unaffected by the type parameters.  Only `Prepare`, `QuorumRead`, and
 /// `QuorumScan` hold typed fields.
+#[derive(Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "K: Serialize, V: Serialize",
+    deserialize = "K: Deserialize<'de>, V: Deserialize<'de>"
+))]
 pub enum IrPayloadInline<K, V> {
     /// CO::Prepare payload — the full transaction data for OCC validation.
     /// This is the SOLE carrier of write_set values; IO::Commit only has
