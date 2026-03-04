@@ -1,5 +1,6 @@
 use crate::mvcc::disk::error::StorageError;
 use crate::mvcc::disk::disk_io::{DiskIo, OpenFlags};
+use crate::IrClientId;
 use crate::occ::TransactionId as OccTransactionId;
 use crate::tapir::{Key, Timestamp, Value};
 use crate::unified::tapir::Transaction;
@@ -253,26 +254,22 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
     fn recover_prepared_segment(
         &mut self,
         segment: &VlogSegment<IO>,
-        committed_txn_ids: &std::collections::BTreeSet<OccTransactionId>,
-    ) -> Result<(), StorageError>
-    where
-        K: serde::de::DeserializeOwned,
-        V: serde::de::DeserializeOwned,
-    {
-        for (_offset, raw) in segment.iter_raw_entries()? {
+    ) -> Result<(), StorageError> {
+        for (offset, raw) in segment.iter_raw_entries()? {
             if raw.entry_type != TAPIR_PREPARED_TXN_ENTRY_TYPE {
                 continue;
             }
 
-            let txn: Transaction<K, V> = bitcode::deserialize(&raw.payload)
-                .map_err(|e| StorageError::Codec(e.to_string()))?;
-            let txn_id = txn.transaction_id;
-
-            if committed_txn_ids.contains(&txn_id) {
-                continue;
-            }
-
-            self.prepared.put(txn_id, Arc::new(txn));
+            let txn_id = OccTransactionId {
+                client_id: IrClientId(raw.id_client),
+                number: raw.id_number,
+            };
+            let txn_ptr = VlogPtr {
+                segment_id: segment.id,
+                offset,
+                length: RAW_ENTRY_OVERHEAD + raw.payload.len() as u32,
+            };
+            self.prepared.index_insert(txn_id, txn_ptr);
         }
 
         Ok(())
@@ -565,9 +562,6 @@ pub(crate) fn open<K: Key, V: Value, IO: DiskIo>(
     state.recover_segment(&active_for_recover)?;
     active_for_recover.close();
 
-    let committed_txn_ids: std::collections::BTreeSet<OccTransactionId> =
-        state.committed.index().keys().cloned().collect();
-
     for seg_meta in state.manifest.prepared.sealed_vlog_segments.clone() {
         let seg = VlogSegment::<IO>::open_at(
             seg_meta.segment_id,
@@ -576,7 +570,7 @@ pub(crate) fn open<K: Key, V: Value, IO: DiskIo>(
             seg_meta.views,
             state.io_flags,
         )?;
-        state.recover_prepared_segment(&seg, &committed_txn_ids)?;
+        state.recover_prepared_segment(&seg)?;
         seg.close();
     }
 
@@ -592,7 +586,7 @@ pub(crate) fn open<K: Key, V: Value, IO: DiskIo>(
         Vec::new(),
         state.io_flags,
     )?;
-    state.recover_prepared_segment(&prep_active_for_recover, &committed_txn_ids)?;
+    state.recover_prepared_segment(&prep_active_for_recover)?;
     prep_active_for_recover.close();
 
     Ok(state)
@@ -728,6 +722,9 @@ impl TapirStateRunner {
             .do_uncommitted_scan(&start.to_string(), &end.to_string(), ts)
     }
 
+    pub(crate) fn prepared_index_contains(&self, txn_id: &OccTransactionId) -> bool {
+        self.tapir.prepared.index().contains_key(txn_id)
+    }
 }
 
 #[cfg(test)]
