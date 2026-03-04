@@ -372,6 +372,7 @@ impl<IO: DiskIo> SSTableReader<IO> {
         Ok(None)
     }
 
+    #[cfg(test)]
     pub async fn read_all<K, V>(&self) -> Result<Vec<(K, V)>, StorageError>
     where
         K: for<'de> Deserialize<'de>,
@@ -384,10 +385,6 @@ impl<IO: DiskIo> SSTableReader<IO> {
             all.extend(entries);
         }
         Ok(all)
-    }
-
-    pub fn num_entries(&self) -> u64 {
-        self.footer.num_entries
     }
 
 }
@@ -423,8 +420,6 @@ mod tests {
         let reader = SSTableReader::<BufferedIo>::open(path, test_flags())
             .await
             .unwrap();
-        assert_eq!(reader.num_entries(), 10);
-
         let all = reader.read_all::<String, String>().await.unwrap();
         assert_eq!(all.len(), 10);
         assert_eq!(all[0], ("key-000".to_string(), "val-000".to_string()));
@@ -519,8 +514,6 @@ mod tests {
         let reader = SSTableReader::<BufferedIo>::open(path, test_flags())
             .await
             .unwrap();
-        assert_eq!(reader.num_entries(), 0);
-
         let result = reader
             .get::<String, String>(&"any".to_string())
             .await

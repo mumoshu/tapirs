@@ -8,7 +8,6 @@ pub(crate) mod storage_types;
 pub(crate) mod store;
 pub(crate) mod types;
 pub(crate) mod memtable;
-pub(crate) mod vlog_codec;
 
 #[cfg(test)]
 mod tests;

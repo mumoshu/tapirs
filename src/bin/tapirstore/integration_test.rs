@@ -47,9 +47,9 @@ fn tapir_scan_and_status() {
         "a=v1 @5\n\
          b=v2 @10\n\
          view=0 sealed_segments=0\n\
-         vlog_seg_0000 size=128 views=[0]\n\
+         vlog_seg_0000 size=124 views=[0]\n\
          @0 TAPIR_COMMIT txn=1:1 ts=5 a=v1\n\
-         @64 TAPIR_COMMIT txn=1:2 ts=10 b=v2\n"
+         @62 TAPIR_COMMIT txn=1:2 ts=10 b=v2\n"
     );
 }
 
@@ -67,7 +67,7 @@ fn tapir_seal_list_and_dump_vlog() {
         stdout,
         "view=1 sealed_segments=1\n\
          vlog_seg_0001 size=0 views=[1]\n\
-         vlog_seg_0000 size=64 views=[0]\n\
+         vlog_seg_0000 size=62 views=[0]\n\
          @0 TAPIR_COMMIT txn=1:1 ts=5 x=v1\n"
     );
 }

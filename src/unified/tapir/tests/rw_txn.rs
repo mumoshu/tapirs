@@ -112,6 +112,7 @@ fn prepare_cache_lru_eviction() {
         commit_ts: test_ts(1),
         read_set: vec![],
         write_set: vec![],
+        scan_set: vec![],
     });
 
     let p2 = std::sync::Arc::new(Transaction {
@@ -119,6 +120,7 @@ fn prepare_cache_lru_eviction() {
         commit_ts: test_ts(2),
         read_set: vec![],
         write_set: vec![],
+        scan_set: vec![],
     });
 
     let p3 = std::sync::Arc::new(Transaction {
@@ -126,6 +128,7 @@ fn prepare_cache_lru_eviction() {
         commit_ts: test_ts(3),
         read_set: vec![],
         write_set: vec![],
+        scan_set: vec![],
     });
 
     cache.insert(0, 100, p1);

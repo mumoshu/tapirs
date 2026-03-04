@@ -9,8 +9,9 @@ use super::helpers::*;
 
 #[test]
 fn multi_view_data_integrity() {
-    // Use small segment threshold so each seal creates a sealed segment
-    let mut store = new_test_store_with_min_vlog_size(64);
+    // Use small segment threshold so each seal creates a sealed segment.
+    // Threshold must be below bitcode-serialized Transaction size (~62 bytes).
+    let mut store = new_test_store_with_min_vlog_size(1);
 
     assert_current_view(&store, 0);
     assert_sealed_segment_count(&store, 0);
@@ -29,12 +30,11 @@ fn multi_view_data_integrity() {
         test_ts(1),
     );
     assert_value_location_in_memory(&store, "a", test_ts(1), true);
-    store.seal_current_view(64).unwrap();
+    store.seal_current_view(1).unwrap();
     assert_current_view(&store, 1);
     assert_value_location_in_memory(&store, "a", test_ts(1), false);
 
-    // After first seal with 64-byte threshold: segment rotated
-    // (even small entry > 64 bytes after serialization)
+    // After first seal with threshold=1: segment rotated
     let files_after_seal1 = list_store_files(&store);
     assert!(
         files_after_seal1.len() >= 2,
@@ -53,7 +53,7 @@ fn multi_view_data_integrity() {
     );
     assert_value_location_in_memory(&store, "b", test_ts(2), true);
     assert_value_location_in_memory(&store, "a", test_ts(2), true);
-    store.seal_current_view(64).unwrap();
+    store.seal_current_view(1).unwrap();
     assert_current_view(&store, 2);
     assert_value_location_in_memory(&store, "b", test_ts(2), false);
     assert_value_location_in_memory(&store, "a", test_ts(2), false);
@@ -67,7 +67,7 @@ fn multi_view_data_integrity() {
         vec![("c", Some("v3"))],
         test_ts(3),
     );
-    store.seal_current_view(64).unwrap();
+    store.seal_current_view(1).unwrap();
     assert_current_view(&store, 3);
 
     // All sealed segments should exist (64-byte threshold is tiny)

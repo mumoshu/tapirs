@@ -7,7 +7,7 @@ use serde::Serialize;
 use crate::mvcc::disk::disk_io::{DiskIo, OpenFlags};
 use crate::mvcc::disk::error::StorageError;
 use crate::unified::wisckeylsm::sst::{SstMeta, SSTableReader, SSTableWriter};
-use crate::unified::wisckeylsm::types::VlogPtr;
+use crate::unified::wisckeylsm::types::{VlogPtr, VlogSegmentMeta};
 use crate::unified::wisckeylsm::vlog::VlogSegment;
 
 /// Generic WiscKey-style LSM that stores raw (K, V) pairs in a memtable for
@@ -35,19 +35,17 @@ pub(crate) struct VlogLsm<K: Ord, V, IO: DiskIo> {
 }
 
 impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
-    /// Create a fresh VlogLsm with an empty memtable, index, and a new vlog segment.
-    pub fn open(
+    /// Construct a VlogLsm from pre-opened parts.
+    pub(crate) fn open_from_parts(
         label: &str,
         base_dir: &Path,
+        active_vlog: VlogSegment<IO>,
+        sealed_segments: BTreeMap<u64, VlogSegment<IO>>,
         io_flags: OpenFlags,
+        next_segment_id: u64,
         max_index_entries: usize,
-    ) -> Result<Self, StorageError> {
-        IO::create_dir_all(base_dir)?;
-        let vlog_path = Self::make_vlog_path(base_dir, label, 0);
-        let mut active_vlog = VlogSegment::<IO>::open(0, vlog_path, io_flags)?;
-        active_vlog.start_view(0);
-
-        Ok(Self {
+    ) -> Self {
+        Self {
             memtable: BTreeMap::new(),
             index: BTreeMap::new(),
             sst_readers: Vec::new(),
@@ -55,13 +53,48 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
             next_sst_id: 0,
             max_index_entries,
             active_vlog,
-            sealed_segments: BTreeMap::new(),
+            sealed_segments,
             entry_count: 0,
             base_dir: base_dir.to_path_buf(),
             io_flags,
-            next_segment_id: 1,
+            next_segment_id,
             label: label.to_string(),
-        })
+        }
+    }
+
+    /// Insert a key → VlogPtr mapping into the index (used during recovery).
+    pub(crate) fn index_insert(&mut self, key: K, ptr: VlogPtr) {
+        self.index.insert(key, ptr);
+    }
+
+    /// Access the in-memory K→VlogPtr index.
+    pub(crate) fn index(&self) -> &BTreeMap<K, VlogPtr> {
+        &self.index
+    }
+
+    /// Reference to the active vlog segment.
+    pub(crate) fn active_vlog_ref(&self) -> &VlogSegment<IO> {
+        &self.active_vlog
+    }
+
+    /// Reference to sealed vlog segments.
+    pub(crate) fn sealed_segments_ref(&self) -> &BTreeMap<u64, VlogSegment<IO>> {
+        &self.sealed_segments
+    }
+
+    /// Active vlog segment id.
+    pub(crate) fn active_vlog_id(&self) -> u64 {
+        self.active_vlog.id
+    }
+
+    /// Active vlog segment write offset.
+    pub(crate) fn active_write_offset(&self) -> u64 {
+        self.active_vlog.write_offset()
+    }
+
+    /// Next segment id (for manifest persistence).
+    pub(crate) fn next_segment_id(&self) -> u64 {
+        self.next_segment_id
     }
 
     /// Serialize V to the vlog, insert (K, V) into memtable, insert (K, VlogPtr)
@@ -119,8 +152,8 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
 
     /// Clear memtable. If the index exceeds `max_index_entries`, flush it to a
     /// new SST and clear it. Rotate the vlog segment if it meets the size
-    /// threshold.
-    pub fn seal_view(&mut self, min_vlog_size: u64) -> Result<(), StorageError>
+    /// threshold. Returns sealed segment metadata if the segment was rotated.
+    pub fn seal_view(&mut self, min_vlog_size: u64) -> Result<Option<VlogSegmentMeta>, StorageError>
     where
         K: Serialize + DeserializeOwned + Clone,
     {
@@ -150,7 +183,7 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
         }
 
         let segment_size = self.active_vlog.write_offset();
-        if segment_size >= min_vlog_size {
+        let sealed_meta = if segment_size >= min_vlog_size {
             let sealed_id = self.active_vlog.id;
             let sealed_path = self.active_vlog.path().clone();
             let sealed_views = self.active_vlog.views.clone();
@@ -166,17 +199,26 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
                 sealed_id,
                 VlogSegment::<IO>::open_at(
                     sealed_id,
-                    sealed_path,
+                    sealed_path.clone(),
                     sealed_size,
-                    sealed_views,
+                    sealed_views.clone(),
                     self.io_flags,
                 )?,
             );
             old.close();
-        }
+
+            Some(VlogSegmentMeta {
+                segment_id: sealed_id,
+                path: sealed_path,
+                views: sealed_views,
+                total_size: sealed_size,
+            })
+        } else {
+            None
+        };
 
         self.entry_count = 0;
-        Ok(())
+        Ok(sealed_meta)
     }
 
     /// Start a new view on the active vlog segment.
@@ -195,7 +237,7 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
         bitcode::deserialize(&raw.payload).map_err(|e| StorageError::Codec(e.to_string()))
     }
 
-    fn segment_ref(&self, id: u64) -> Option<&VlogSegment<IO>> {
+    pub(crate) fn segment_ref(&self, id: u64) -> Option<&VlogSegment<IO>> {
         if self.active_vlog.id == id {
             Some(&self.active_vlog)
         } else {
@@ -236,19 +278,37 @@ mod tests {
         }
     }
 
+    fn open_test_lsm(
+        dir: &Path,
+        max_index_entries: usize,
+    ) -> VlogLsm<String, String, MemoryIo> {
+        MemoryIo::create_dir_all(dir).unwrap();
+        let vlog_path = dir.join("vlog_seg_0000.dat");
+        let mut active_vlog =
+            VlogSegment::<MemoryIo>::open(0, vlog_path, test_flags()).unwrap();
+        active_vlog.start_view(0);
+        VlogLsm::open_from_parts(
+            "",
+            dir,
+            active_vlog,
+            BTreeMap::new(),
+            test_flags(),
+            1,
+            max_index_entries,
+        )
+    }
+
     #[test]
     fn get_missing_key_returns_none() {
         let dir = MemoryIo::temp_path();
-        let lsm =
-            VlogLsm::<String, String, MemoryIo>::open("", &dir, test_flags(), 4).unwrap();
+        let lsm = open_test_lsm(&dir, 4);
         assert_eq!(lsm.get(&"missing".to_string()).unwrap(), None);
     }
 
     #[test]
     fn put_and_get_from_memtable() {
         let dir = MemoryIo::temp_path();
-        let mut lsm =
-            VlogLsm::<String, String, MemoryIo>::open("", &dir, test_flags(), 4).unwrap();
+        let mut lsm = open_test_lsm(&dir, 4);
 
         lsm.put("k_a".into(), "val_a".into(), 0x80, 1, 1).unwrap();
         lsm.put("k_b".into(), "val_b".into(), 0x80, 1, 2).unwrap();
@@ -262,8 +322,7 @@ mod tests {
     fn seal_reads_from_index_then_sst() {
         let dir = MemoryIo::temp_path();
         // max_index_entries=4 so index flushes to SST after accumulating 4 entries.
-        let mut lsm =
-            VlogLsm::<String, String, MemoryIo>::open("", &dir, test_flags(), 4).unwrap();
+        let mut lsm = open_test_lsm(&dir, 4);
 
         // Put k_a, k_b (2 entries in index, below threshold).
         lsm.put("k_a".into(), "val_a".into(), 0x80, 1, 1).unwrap();
@@ -299,8 +358,7 @@ mod tests {
     #[test]
     fn multi_seal_mixed_read_sources() {
         let dir = MemoryIo::temp_path();
-        let mut lsm =
-            VlogLsm::<String, String, MemoryIo>::open("", &dir, test_flags(), 4).unwrap();
+        let mut lsm = open_test_lsm(&dir, 4);
 
         // (1) Missing key.
         assert_eq!(lsm.get(&"k_a".into()).unwrap(), None);

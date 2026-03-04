@@ -1,10 +1,12 @@
 use crate::occ::TransactionId as OccTransactionId;
 use crate::tapir::Timestamp;
+use serde::{Deserialize, Serialize};
 
 /// Deserialized committed-transaction payload with typed keys and values.
 ///
 /// TAPIR owns this type because its fields encode TAPIR/OCC transaction
 /// semantics (`transaction_id`, `commit_ts`, read/write/scan sets).
+#[derive(Serialize, Deserialize)]
 pub(crate) struct Transaction<K, V> {
     pub transaction_id: OccTransactionId,
     /// Prepare-time (proposed) commit timestamp.
@@ -17,4 +19,5 @@ pub(crate) struct Transaction<K, V> {
     pub commit_ts: Timestamp,
     pub read_set: Vec<(K, Timestamp)>,
     pub write_set: Vec<(K, Option<V>)>,
+    pub scan_set: Vec<(K, K, Timestamp)>,
 }
