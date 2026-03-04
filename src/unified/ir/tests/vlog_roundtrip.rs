@@ -1,64 +1,78 @@
 use super::helpers::*;
-use crate::mvcc::disk::disk_io::OpenFlags;
+use crate::ir::OpId;
+use crate::mvcc::disk::disk_io::{DiskIo, OpenFlags};
 use crate::mvcc::disk::memory_io::MemoryIo;
-use crate::unified::ir::record::{IrPayloadInline, PrepareRef, VlogEntryType};
+use crate::unified::ir::record::{
+    IrMemEntry, IrPayloadInline, IrState, PrepareRef, VlogEntryType,
+};
 use crate::unified::ir::store;
+use crate::unified::wisckeylsm::lsm::VlogLsm;
 use crate::unified::wisckeylsm::vlog::VlogSegment;
+use std::collections::BTreeMap;
 
-struct LocalCachedPrepare {
-    transaction_id: crate::occ::TransactionId,
-    commit_ts: crate::tapir::Timestamp,
-    read_set: Vec<(String, crate::tapir::Timestamp)>,
-    write_set: Vec<(String, Option<String>)>,
-    scan_set: Vec<(String, String, crate::tapir::Timestamp)>,
+fn test_flags() -> OpenFlags {
+    OpenFlags {
+        create: true,
+        direct: false,
+    }
 }
 
-fn append_one(
-    seg: &mut VlogSegment<MemoryIo>,
-    op_id: crate::ir::OpId,
-    entry_type: VlogEntryType,
-    payload: &IrPayloadInline<String, String>,
-) -> crate::unified::wisckeylsm::types::VlogPtr {
-    let ptrs = store::append_batch(seg, &[(op_id, entry_type, payload)]).unwrap();
-    *ptrs.first().expect("single append should return one ptr")
+fn open_ir_lsm(dir: &std::path::Path) -> VlogLsm<OpId, IrMemEntry<String, String>, MemoryIo> {
+    MemoryIo::create_dir_all(dir).unwrap();
+    let vlog_path = dir.join("ir_vlog_0000.dat");
+    let mut active_vlog = VlogSegment::<MemoryIo>::open(0, vlog_path, test_flags()).unwrap();
+    active_vlog.start_view(0);
+    VlogLsm::open_from_parts(
+        "ir",
+        dir,
+        active_vlog,
+        BTreeMap::new(),
+        test_flags(),
+        1,
+        usize::MAX,
+    )
+}
+
+fn ir_header_fn(
+    op_id: &OpId,
+    entry: &IrMemEntry<String, String>,
+) -> Option<(u8, u64, u64)> {
+    if entry.state.is_finalized() {
+        Some((entry.entry_type as u8, op_id.client_id.0, op_id.number))
+    } else {
+        None
+    }
 }
 
 #[test]
 fn vlog_entry_roundtrip_prepare() {
-    let path = MemoryIo::temp_path().join("test_vlog.dat");
-    MemoryIo::create_dir_all(path.parent().unwrap()).unwrap();
-
-    use crate::mvcc::disk::disk_io::DiskIo;
-    MemoryIo::create_dir_all(path.parent().unwrap()).unwrap();
-
-    let flags = OpenFlags {
-        create: true,
-        direct: false,
-    };
-
-    let mut seg = VlogSegment::<MemoryIo>::open(0, path, flags).unwrap();
+    let dir = MemoryIo::temp_path();
+    let mut lsm = open_ir_lsm(&dir);
 
     let op_id = test_op_id(1, 1);
-    let payload = IrPayloadInline::<String, String>::Prepare {
-        transaction_id: test_txn_id(1, 1),
-        commit_ts: test_ts(5),
-        read_set: vec![("key_a".to_string(), test_ts(3))],
-        write_set: vec![("key_a".to_string(), Some("value_a".to_string()))],
-        scan_set: vec![],
+    let entry = IrMemEntry {
+        entry_type: VlogEntryType::Prepare,
+        state: IrState::Finalized(0),
+        payload: IrPayloadInline::<String, String>::Prepare {
+            transaction_id: test_txn_id(1, 1),
+            commit_ts: test_ts(5),
+            read_set: vec![("key_a".to_string(), test_ts(3))],
+            write_set: vec![("key_a".to_string(), Some("value_a".to_string()))],
+            scan_set: vec![],
+        },
     };
 
-    let ptr = append_one(&mut seg, op_id, VlogEntryType::Prepare, &payload);
+    lsm.put(op_id, entry);
+    lsm.seal_view(0, ir_header_fn).unwrap();
 
-    assert_eq!(ptr.segment_id, 0);
-    assert_eq!(ptr.offset, 0);
-    assert!(ptr.length > 0);
-
-    // Read it back
-    let (read_op_id, read_type, read_payload) = store::read_entry::<String, String, _>(&seg, &ptr).unwrap();
+    // Read back via VlogPtr in index.
+    let ptr = lsm.index().get(&op_id).expect("op_id should be in index");
+    let seg = lsm.segment_ref(ptr.segment_id).unwrap();
+    let (read_op_id, read_entry) = store::read_entry::<String, String, _>(seg, ptr).unwrap();
     assert_eq!(read_op_id, op_id);
-    assert_eq!(read_type, VlogEntryType::Prepare);
+    assert_eq!(read_entry.entry_type, VlogEntryType::Prepare);
 
-    match read_payload {
+    match read_entry.payload {
         IrPayloadInline::Prepare {
             transaction_id,
             commit_ts,
@@ -81,34 +95,32 @@ fn vlog_entry_roundtrip_prepare() {
 
 #[test]
 fn vlog_entry_roundtrip_commit() {
-    let path = MemoryIo::temp_path().join("test_vlog2.dat");
-
-    use crate::mvcc::disk::disk_io::DiskIo;
-    MemoryIo::create_dir_all(path.parent().unwrap()).unwrap();
-
-    let flags = OpenFlags {
-        create: true,
-        direct: false,
-    };
-
-    let mut seg = VlogSegment::<MemoryIo>::open(0, path, flags).unwrap();
+    let dir = MemoryIo::temp_path();
+    let mut lsm = open_ir_lsm(&dir);
 
     let prepare_op_id = test_op_id(1, 1);
     let commit_op_id = test_op_id(1, 2);
 
-    let payload = IrPayloadInline::<String, String>::Commit {
-        transaction_id: test_txn_id(1, 1),
-        commit_ts: test_ts(5),
-        prepare_ref: PrepareRef::SameView(prepare_op_id),
+    let entry = IrMemEntry {
+        entry_type: VlogEntryType::Commit,
+        state: IrState::Finalized(0),
+        payload: IrPayloadInline::<String, String>::Commit {
+            transaction_id: test_txn_id(1, 1),
+            commit_ts: test_ts(5),
+            prepare_ref: PrepareRef::SameView(prepare_op_id),
+        },
     };
 
-    let ptr = append_one(&mut seg, commit_op_id, VlogEntryType::Commit, &payload);
+    lsm.put(commit_op_id, entry);
+    lsm.seal_view(0, ir_header_fn).unwrap();
 
-    let (read_op_id, read_type, read_payload) = store::read_entry::<String, String, _>(&seg, &ptr).unwrap();
+    let ptr = lsm.index().get(&commit_op_id).expect("should be in index");
+    let seg = lsm.segment_ref(ptr.segment_id).unwrap();
+    let (read_op_id, read_entry) = store::read_entry::<String, String, _>(seg, ptr).unwrap();
     assert_eq!(read_op_id, commit_op_id);
-    assert_eq!(read_type, VlogEntryType::Commit);
+    assert_eq!(read_entry.entry_type, VlogEntryType::Commit);
 
-    match read_payload {
+    match read_entry.payload {
         IrPayloadInline::Commit {
             transaction_id,
             commit_ts,
@@ -126,129 +138,162 @@ fn vlog_entry_roundtrip_commit() {
 }
 
 #[test]
-fn vlog_batch_append() {
-    let path = MemoryIo::temp_path().join("test_vlog3.dat");
+fn vlog_batch_put_and_seal() {
+    let dir = MemoryIo::temp_path();
+    let mut lsm = open_ir_lsm(&dir);
 
-    use crate::mvcc::disk::disk_io::DiskIo;
-    MemoryIo::create_dir_all(path.parent().unwrap()).unwrap();
-
-    let flags = OpenFlags {
-        create: true,
-        direct: false,
+    let entry1 = IrMemEntry {
+        entry_type: VlogEntryType::Prepare,
+        state: IrState::Finalized(0),
+        payload: IrPayloadInline::<String, String>::Prepare {
+            transaction_id: test_txn_id(1, 1),
+            commit_ts: test_ts(5),
+            read_set: vec![],
+            write_set: vec![("x".to_string(), Some("v1".to_string()))],
+            scan_set: vec![],
+        },
     };
 
-    let mut seg = VlogSegment::<MemoryIo>::open(0, path, flags).unwrap();
-
-    let payload1 = IrPayloadInline::<String, String>::Prepare {
-        transaction_id: test_txn_id(1, 1),
-        commit_ts: test_ts(5),
-        read_set: vec![],
-        write_set: vec![("x".to_string(), Some("v1".to_string()))],
-        scan_set: vec![],
+    let entry2 = IrMemEntry {
+        entry_type: VlogEntryType::Commit,
+        state: IrState::Finalized(0),
+        payload: IrPayloadInline::<String, String>::Commit {
+            transaction_id: test_txn_id(1, 1),
+            commit_ts: test_ts(5),
+            prepare_ref: PrepareRef::SameView(test_op_id(1, 1)),
+        },
     };
 
-    let payload2 = IrPayloadInline::<String, String>::Commit {
-        transaction_id: test_txn_id(1, 1),
-        commit_ts: test_ts(5),
-        prepare_ref: PrepareRef::SameView(test_op_id(1, 1)),
-    };
+    lsm.put(test_op_id(1, 1), entry1);
+    lsm.put(test_op_id(1, 2), entry2);
+    lsm.seal_view(0, ir_header_fn).unwrap();
 
-    let entries = vec![
-        (test_op_id(1, 1), VlogEntryType::Prepare, &payload1),
-        (test_op_id(1, 2), VlogEntryType::Commit, &payload2),
-    ];
+    assert_eq!(lsm.index().len(), 2);
 
-    let ptrs = store::append_batch(&mut seg, &entries).unwrap();
-    assert_eq!(ptrs.len(), 2);
-    assert_eq!(ptrs[0].offset, 0);
-    assert!(ptrs[1].offset > 0);
+    let ptr1 = lsm.index().get(&test_op_id(1, 1)).unwrap();
+    let ptr2 = lsm.index().get(&test_op_id(1, 2)).unwrap();
+    assert_eq!(ptr1.offset, 0);
+    assert!(ptr2.offset > 0);
 
-    // Read both back
-    let (_, t1, _) = store::read_entry::<String, String, _>(&seg, &ptrs[0]).unwrap();
-    assert_eq!(t1, VlogEntryType::Prepare);
+    let seg = lsm.segment_ref(ptr1.segment_id).unwrap();
+    let (_, e1) = store::read_entry::<String, String, _>(seg, ptr1).unwrap();
+    assert_eq!(e1.entry_type, VlogEntryType::Prepare);
 
-    let (_, t2, _) = store::read_entry::<String, String, _>(&seg, &ptrs[1]).unwrap();
-    assert_eq!(t2, VlogEntryType::Commit);
+    let (_, e2) = store::read_entry::<String, String, _>(seg, ptr2).unwrap();
+    assert_eq!(e2.entry_type, VlogEntryType::Commit);
 }
 
 #[test]
-fn vlog_read_prepare_helper() {
-    let path = MemoryIo::temp_path().join("test_vlog4.dat");
+fn tentative_entries_discarded_at_seal() {
+    let dir = MemoryIo::temp_path();
+    let mut lsm = open_ir_lsm(&dir);
 
-    use crate::mvcc::disk::disk_io::DiskIo;
-    MemoryIo::create_dir_all(path.parent().unwrap()).unwrap();
-
-    let flags = OpenFlags {
-        create: true,
-        direct: false,
-    };
-
-    let mut seg = VlogSegment::<MemoryIo>::open(0, path, flags).unwrap();
-
-    let payload = IrPayloadInline::<String, String>::Prepare {
-        transaction_id: test_txn_id(2, 3),
-        commit_ts: test_ts(10),
-        read_set: vec![("r1".to_string(), test_ts(1))],
-        write_set: vec![
-            ("w1".to_string(), Some("val1".to_string())),
-            ("w2".to_string(), Some("val2".to_string())),
-        ],
-        scan_set: vec![("s1".to_string(), "s2".to_string(), test_ts(5))],
-    };
-
-    let ptr = append_one(&mut seg, test_op_id(2, 1), VlogEntryType::Prepare, &payload);
-
-    let (_, _, read_payload) = store::read_entry::<String, String, _>(&seg, &ptr).unwrap();
-    let cached = match read_payload {
-        IrPayloadInline::Prepare {
-            transaction_id,
-            commit_ts,
-            read_set,
-            write_set,
-            scan_set,
-        } => LocalCachedPrepare {
-            transaction_id,
-            commit_ts,
-            read_set,
-            write_set,
-            scan_set,
+    // Finalized entry
+    let finalized = IrMemEntry {
+        entry_type: VlogEntryType::Prepare,
+        state: IrState::Finalized(0),
+        payload: IrPayloadInline::<String, String>::Prepare {
+            transaction_id: test_txn_id(1, 1),
+            commit_ts: test_ts(5),
+            read_set: vec![],
+            write_set: vec![("x".to_string(), Some("v1".to_string()))],
+            scan_set: vec![],
         },
-        _ => panic!("expected Prepare payload"),
     };
-    assert_eq!(cached.transaction_id, test_txn_id(2, 3));
-    assert_eq!(cached.commit_ts, test_ts(10));
-    assert_eq!(cached.read_set.len(), 1);
-    assert_eq!(cached.write_set.len(), 2);
-    assert_eq!(cached.write_set[0].0, "w1");
-    assert_eq!(cached.write_set[0].1, Some("val1".to_string()));
-    assert_eq!(cached.write_set[1].0, "w2");
-    assert_eq!(cached.write_set[1].1, Some("val2".to_string()));
-    assert_eq!(cached.scan_set.len(), 1);
+
+    // Tentative entry
+    let tentative = IrMemEntry {
+        entry_type: VlogEntryType::Prepare,
+        state: IrState::Tentative,
+        payload: IrPayloadInline::<String, String>::Prepare {
+            transaction_id: test_txn_id(2, 1),
+            commit_ts: test_ts(10),
+            read_set: vec![],
+            write_set: vec![("y".to_string(), Some("v2".to_string()))],
+            scan_set: vec![],
+        },
+    };
+
+    lsm.put(test_op_id(1, 1), finalized);
+    lsm.put(test_op_id(2, 1), tentative);
+    lsm.seal_view(0, ir_header_fn).unwrap();
+
+    // Only finalized entry should be in the index.
+    assert_eq!(lsm.index().len(), 1);
+    assert!(lsm.index().contains_key(&test_op_id(1, 1)));
+    assert!(!lsm.index().contains_key(&test_op_id(2, 1)));
 }
 
 #[test]
 fn vlog_all_entry_types_roundtrip() {
-    let path = MemoryIo::temp_path().join("test_vlog5.dat");
-
-    use crate::mvcc::disk::disk_io::DiskIo;
-    MemoryIo::create_dir_all(path.parent().unwrap()).unwrap();
-
-    let flags = OpenFlags {
-        create: true,
-        direct: false,
-    };
-
-    let mut seg = VlogSegment::<MemoryIo>::open(0, path, flags).unwrap();
+    let dir = MemoryIo::temp_path();
+    let mut lsm = open_ir_lsm(&dir);
 
     // Abort
-    let abort_payload = IrPayloadInline::<String, String>::Abort {
-        transaction_id: test_txn_id(1, 1),
-        commit_ts: Some(test_ts(5)),
+    lsm.put(
+        test_op_id(1, 1),
+        IrMemEntry {
+            entry_type: VlogEntryType::Abort,
+            state: IrState::Finalized(0),
+            payload: IrPayloadInline::<String, String>::Abort {
+                transaction_id: test_txn_id(1, 1),
+                commit_ts: Some(test_ts(5)),
+            },
+        },
+    );
+
+    // QuorumRead
+    lsm.put(
+        test_op_id(1, 2),
+        IrMemEntry {
+            entry_type: VlogEntryType::QuorumRead,
+            state: IrState::Finalized(0),
+            payload: IrPayloadInline::<String, String>::QuorumRead {
+                key: "mykey".to_string(),
+                timestamp: test_ts(7),
+            },
+        },
+    );
+
+    // QuorumScan
+    lsm.put(
+        test_op_id(1, 3),
+        IrMemEntry {
+            entry_type: VlogEntryType::QuorumScan,
+            state: IrState::Finalized(0),
+            payload: IrPayloadInline::<String, String>::QuorumScan {
+                start_key: "a".to_string(),
+                end_key: "z".to_string(),
+                snapshot_ts: test_ts(15),
+            },
+        },
+    );
+
+    // RaiseMinPrepareTime
+    lsm.put(
+        test_op_id(1, 4),
+        IrMemEntry {
+            entry_type: VlogEntryType::RaiseMinPrepareTime,
+            state: IrState::Finalized(0),
+            payload: IrPayloadInline::<String, String>::RaiseMinPrepareTime { time: 42 },
+        },
+    );
+
+    lsm.seal_view(0, ir_header_fn).unwrap();
+
+    assert_eq!(lsm.index().len(), 4);
+
+    // Verify each entry type reads back correctly.
+    let check = |op_id: OpId, expected_type: VlogEntryType| {
+        let ptr = lsm.index().get(&op_id).unwrap();
+        let seg = lsm.segment_ref(ptr.segment_id).unwrap();
+        let (_, entry) = store::read_entry::<String, String, _>(seg, ptr).unwrap();
+        assert_eq!(entry.entry_type, expected_type);
+        entry
     };
-    let ptr = append_one(&mut seg, test_op_id(1, 1), VlogEntryType::Abort, &abort_payload);
-    let (_, t, p) = store::read_entry::<String, String, _>(&seg, &ptr).unwrap();
-    assert_eq!(t, VlogEntryType::Abort);
-    match p {
+
+    let abort = check(test_op_id(1, 1), VlogEntryType::Abort);
+    match abort.payload {
         IrPayloadInline::Abort { transaction_id, commit_ts } => {
             assert_eq!(transaction_id, test_txn_id(1, 1));
             assert_eq!(commit_ts, Some(test_ts(5)));
@@ -256,15 +301,8 @@ fn vlog_all_entry_types_roundtrip() {
         _ => panic!("wrong payload type"),
     }
 
-    // QuorumRead
-    let qr_payload = IrPayloadInline::<String, String>::QuorumRead {
-        key: "mykey".to_string(),
-        timestamp: test_ts(7),
-    };
-    let ptr = append_one(&mut seg, test_op_id(1, 2), VlogEntryType::QuorumRead, &qr_payload);
-    let (_, t, p) = store::read_entry::<String, String, _>(&seg, &ptr).unwrap();
-    assert_eq!(t, VlogEntryType::QuorumRead);
-    match p {
+    let qr = check(test_op_id(1, 2), VlogEntryType::QuorumRead);
+    match qr.payload {
         IrPayloadInline::QuorumRead { key, timestamp } => {
             assert_eq!(key, "mykey");
             assert_eq!(timestamp, test_ts(7));
@@ -272,16 +310,8 @@ fn vlog_all_entry_types_roundtrip() {
         _ => panic!("wrong payload type"),
     }
 
-    // QuorumScan
-    let qs_payload = IrPayloadInline::<String, String>::QuorumScan {
-        start_key: "a".to_string(),
-        end_key: "z".to_string(),
-        snapshot_ts: test_ts(15),
-    };
-    let ptr = append_one(&mut seg, test_op_id(1, 3), VlogEntryType::QuorumScan, &qs_payload);
-    let (_, t, p) = store::read_entry::<String, String, _>(&seg, &ptr).unwrap();
-    assert_eq!(t, VlogEntryType::QuorumScan);
-    match p {
+    let qs = check(test_op_id(1, 3), VlogEntryType::QuorumScan);
+    match qs.payload {
         IrPayloadInline::QuorumScan { start_key, end_key, snapshot_ts } => {
             assert_eq!(start_key, "a");
             assert_eq!(end_key, "z");
@@ -290,17 +320,8 @@ fn vlog_all_entry_types_roundtrip() {
         _ => panic!("wrong payload type"),
     }
 
-    // RaiseMinPrepareTime
-    let rmpt_payload = IrPayloadInline::<String, String>::RaiseMinPrepareTime { time: 42 };
-    let ptr = append_one(
-        &mut seg,
-        test_op_id(1, 4),
-        VlogEntryType::RaiseMinPrepareTime,
-        &rmpt_payload,
-    );
-    let (_, t, p) = store::read_entry::<String, String, _>(&seg, &ptr).unwrap();
-    assert_eq!(t, VlogEntryType::RaiseMinPrepareTime);
-    match p {
+    let rmpt = check(test_op_id(1, 4), VlogEntryType::RaiseMinPrepareTime);
+    match rmpt.payload {
         IrPayloadInline::RaiseMinPrepareTime { time } => {
             assert_eq!(time, 42);
         }

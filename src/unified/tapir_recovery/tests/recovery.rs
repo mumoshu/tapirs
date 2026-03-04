@@ -18,8 +18,8 @@ fn recovery_vlog_and_manifest_survive_reopen() {
         assert_eq!(store.get_metrics().current_view, 0);
 
         // Fresh store: only active VLog segment
-        assert_store_file_names(&path, &["vlog_seg_0000.dat"]);
-        assert_store_file_size(&path, "vlog_seg_0000.dat", 0);
+        assert_store_file_names(&path, &["ir_vlog_0000.dat"]);
+        assert_store_file_size(&path, "ir_vlog_0000.dat", 0);
 
         prepare_and_commit(
             &mut store,
@@ -43,9 +43,9 @@ fn recovery_vlog_and_manifest_survive_reopen() {
         assert_eq!(store.get_metrics().current_view, 1);
 
         // After first seal: manifest + VLog with data
-        assert_store_file_names(&path, &["UNIFIED_MANIFEST", "vlog_seg_0000.dat"]);
+        assert_store_file_names(&path, &["UNIFIED_MANIFEST", "ir_vlog_0000.dat"]);
         assert_store_file_size_positive(&path, "UNIFIED_MANIFEST");
-        assert_store_file_size_positive(&path, "vlog_seg_0000.dat");
+        assert_store_file_size_positive(&path, "ir_vlog_0000.dat");
 
         // Data still readable after seal (OnDisk now)
         let (actual_value, actual_ts) = store.do_uncommitted_get_at(&"x".to_string(), test_ts(5)).unwrap();
@@ -65,8 +65,8 @@ fn recovery_vlog_and_manifest_survive_reopen() {
         assert_eq!(store.get_metrics().current_view, 2);
 
         // After second seal: still same files (small data < 256KB)
-        assert_store_file_names(&path, &["UNIFIED_MANIFEST", "vlog_seg_0000.dat"]);
-        vlog_size_before_drop = get_store_file_size(&path, "vlog_seg_0000.dat");
+        assert_store_file_names(&path, &["UNIFIED_MANIFEST", "ir_vlog_0000.dat"]);
+        vlog_size_before_drop = get_store_file_size(&path, "ir_vlog_0000.dat");
         manifest_size_before_drop = get_store_file_size(&path, "UNIFIED_MANIFEST");
     }
     // Store dropped here — simulates crash/shutdown
@@ -75,15 +75,15 @@ fn recovery_vlog_and_manifest_survive_reopen() {
     let store = TestStore::open(path.clone()).unwrap();
 
     // Files should be unchanged after reopen (MemoryIo persists across drop/reopen)
-    assert_store_file_names(&path, &["UNIFIED_MANIFEST", "vlog_seg_0000.dat"]);
-    assert_store_file_size(&path, "vlog_seg_0000.dat", vlog_size_before_drop);
+    assert_store_file_names(&path, &["UNIFIED_MANIFEST", "ir_vlog_0000.dat"]);
+    assert_store_file_size(&path, "ir_vlog_0000.dat", vlog_size_before_drop);
     assert_store_file_size(&path, "UNIFIED_MANIFEST", manifest_size_before_drop);
 
     // Manifest should restore current view
     assert_eq!(store.get_metrics().current_view, 2);
 
     // Small test data stays in active segment: no additional segment files.
-    assert_store_file_names(&path, &["UNIFIED_MANIFEST", "vlog_seg_0000.dat"]);
+    assert_store_file_names(&path, &["UNIFIED_MANIFEST", "ir_vlog_0000.dat"]);
 }
 
 #[test]
@@ -97,7 +97,7 @@ fn recovery_sealed_segments_persist() {
         assert_eq!(store.get_metrics().current_view, 0);
 
         // Fresh store: only active segment 0
-        assert_store_file_names(&path, &["vlog_seg_0000.dat"]);
+        assert_store_file_names(&path, &["ir_vlog_0000.dat"]);
 
         // Write enough data to exceed 1KB threshold
         let big_value = "x".repeat(2048);
@@ -124,15 +124,15 @@ fn recovery_sealed_segments_persist() {
         // After seal with segment rotation: sealed segment 0 + new active segment 1 + manifest
         assert_store_file_names(
             &path,
-            &["UNIFIED_MANIFEST", "vlog_seg_0000.dat", "vlog_seg_0001.dat"],
+            &["UNIFIED_MANIFEST", "ir_vlog_0000.dat", "ir_vlog_0001.dat"],
         );
         assert_store_file_size_positive(&path, "UNIFIED_MANIFEST");
-        let sealed_seg_size = get_store_file_size(&path, "vlog_seg_0000.dat");
+        let sealed_seg_size = get_store_file_size(&path, "ir_vlog_0000.dat");
         assert!(
             sealed_seg_size > 1024,
             "Sealed segment should exceed 1KB: got {sealed_seg_size}"
         );
-        assert_store_file_size(&path, "vlog_seg_0001.dat", 0);
+        assert_store_file_size(&path, "ir_vlog_0001.dat", 0);
     }
 
     // Phase 2: Reopen and verify ALL sealed segment metadata
@@ -141,9 +141,9 @@ fn recovery_sealed_segments_persist() {
     // Files should be unchanged after reopen
     assert_store_file_names(
         &path,
-        &["UNIFIED_MANIFEST", "vlog_seg_0000.dat", "vlog_seg_0001.dat"],
+        &["UNIFIED_MANIFEST", "ir_vlog_0000.dat", "ir_vlog_0001.dat"],
     );
-    assert_store_file_size_positive(&path, "vlog_seg_0000.dat");
+    assert_store_file_size_positive(&path, "ir_vlog_0000.dat");
 
     assert_eq!(store.get_metrics().current_view, 1);
     // Sealed data remains readable after reopen.

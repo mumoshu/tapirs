@@ -1,6 +1,5 @@
 use crate::ir::OpId;
-use crate::mvcc::disk::disk_io::DiskIo;
-use crate::mvcc::disk::disk_io::OpenFlags;
+use crate::mvcc::disk::disk_io::{DiskIo, OpenFlags};
 use crate::mvcc::disk::error::StorageError;
 use crate::mvcc::disk::memory_io::MemoryIo;
 use crate::occ::{SharedTransaction, TransactionId};
@@ -13,9 +12,8 @@ use std::path::PathBuf;
 pub(crate) struct TestStore {
     ir_state: IrRecord<String, String, MemoryIo>,
     tapir_state: TapirState<String, String, MemoryIo>,
-    base_dir: PathBuf,
-    io_flags: OpenFlags,
     min_view_vlog_size: u64,
+    inserted_entries: Vec<(OpId, IrMemEntry<String, String>)>,
 }
 
 const DEFAULT_MIN_VIEW_VLOG_SIZE: u64 = 256 * 1024;
@@ -42,9 +40,8 @@ impl TestStore {
         Ok(Self {
             ir_state,
             tapir_state,
-            base_dir,
-            io_flags,
             min_view_vlog_size,
+            inserted_entries: Vec::new(),
         })
     }
 
@@ -60,6 +57,7 @@ impl TestStore {
     }
 
     fn insert_ir_entry(&mut self, op_id: OpId, entry: IrMemEntry<String, String>) {
+        self.inserted_entries.push((op_id, entry.clone()));
         ir_store::insert_ir_entry(&mut self.ir_state, op_id, entry);
     }
 
@@ -142,14 +140,8 @@ impl TestStore {
     }
 
     pub(crate) fn seal_current_view(&mut self) -> Result<(), StorageError> {
-        ir_store::seal_current_view(
-            &mut self.ir_state,
-            &self.base_dir,
-            self.io_flags,
-            self.min_view_vlog_size,
-        )?;
+        ir_store::seal_current_view(&mut self.ir_state, self.min_view_vlog_size)?;
         self.tapir_state.seal_current_view(self.min_view_vlog_size)?;
-        ir_store::clear_overlay(&mut self.ir_state);
         Ok(())
     }
 
@@ -171,19 +163,10 @@ impl TestStore {
     }
 
     pub(crate) fn extract_finalized_entries(&self) -> Vec<(OpId, IrMemEntry<String, String>)> {
-        let current_view = self.current_view();
-        ir_store::collect_finalized_for_seal(&self.ir_state)
+        self.inserted_entries
             .iter()
-            .map(|(op_id, entry_type, payload)| {
-                (
-                    *op_id,
-                    IrMemEntry {
-                        entry_type: *entry_type,
-                        state: IrState::Finalized(current_view),
-                        payload: payload.clone(),
-                    },
-                )
-            })
+            .filter(|(_, e)| e.state.is_finalized())
+            .cloned()
             .collect()
     }
 }

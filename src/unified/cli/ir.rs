@@ -1,10 +1,15 @@
 use std::path::PathBuf;
 
-use crate::mvcc::disk::disk_io::BufferedIo;
+use crate::mvcc::disk::disk_io::{BufferedIo, OpenFlags};
 use crate::unified::ir::record::{IrMemEntry, IrPayloadInline, IrState, PrepareRef, VlogEntryType};
 use crate::unified::ir::store as ir_store;
 
 use super::{IrContext, parse_kv_pair, parse_ts, parse_txn_id};
+
+const CLI_IO_FLAGS: OpenFlags = OpenFlags {
+    create: true,
+    direct: false,
+};
 
 pub(super) fn execute_ir_command<W: std::io::Write>(
     ctx: &mut IrContext,
@@ -17,9 +22,8 @@ pub(super) fn execute_ir_command<W: std::io::Write>(
                 return Err("usage: open <dir>".to_string());
             }
             let path = PathBuf::from(parts[1]);
-            let store = ir_store::open_store_state::<String, String, BufferedIo>(&path, ctx.io_flags)
+            let store = ir_store::open_store_state::<String, String, BufferedIo>(&path, CLI_IO_FLAGS)
                 .map_err(|e| format!("open failed: {e}"))?;
-            ctx.base_dir = Some(path);
             ctx.store = Some(store);
             Ok(())
         }
@@ -31,9 +35,8 @@ pub(super) fn execute_ir_command<W: std::io::Write>(
             let min_size: u64 = parts[2]
                 .parse()
                 .map_err(|_| format!("invalid min_vlog_size: {}", parts[2]))?;
-            let store = ir_store::open_store_state::<String, String, BufferedIo>(&path, ctx.io_flags)
+            let store = ir_store::open_store_state::<String, String, BufferedIo>(&path, CLI_IO_FLAGS)
                 .map_err(|e| format!("open-with failed: {e}"))?;
-            ctx.base_dir = Some(path);
             ctx.store = Some(store);
             ctx.min_view_vlog_size = min_size;
             Ok(())
@@ -101,28 +104,25 @@ pub(super) fn execute_ir_command<W: std::io::Write>(
             Ok(())
         }
         "seal" => {
-            let base_dir = ctx.base_dir()?.clone();
-            let io_flags = ctx.io_flags;
             let min_view_vlog_size = ctx.min_view_vlog_size;
             let store = ctx.store_mut()?;
-            ir_store::seal_current_view(store, &base_dir, io_flags, min_view_vlog_size)
+            ir_store::seal_current_view(store, min_view_vlog_size)
                 .map_err(|e| format!("seal failed: {e}"))?;
-            ir_store::clear_overlay(store);
             Ok(())
         }
         "status" => {
             let store = ctx.store()?;
             let view = store.current_view();
-            let segments = store.sealed_vlog_segments().len();
+            let segments = store.sealed_segments_ref().len();
             writeln!(stdout, "view={view} sealed_segments={segments}")
                 .map_err(|e| format!("write failed: {e}"))
         }
         "list-vlogs" => {
             let store = ctx.store()?;
-            let active_id = store.active_vlog_id();
-            let active_size = store.active_vlog_write_offset();
-            let active_views = store.active_vlog_views();
-            let view_list: Vec<String> = active_views.iter().map(|v| v.view.to_string()).collect();
+            let active = store.active_vlog_ref();
+            let active_id = active.id;
+            let active_size = active.write_offset();
+            let view_list: Vec<String> = active.views.iter().map(|v| v.view.to_string()).collect();
             writeln!(
                 stdout,
                 "vlog_seg_{active_id:04} size={active_size} views=[{}]",
@@ -130,7 +130,7 @@ pub(super) fn execute_ir_command<W: std::io::Write>(
             )
             .map_err(|e| format!("write failed: {e}"))?;
 
-            for (id, seg) in store.sealed_vlog_segments() {
+            for (id, seg) in store.sealed_segments_ref() {
                 let size = seg.write_offset();
                 let view_list: Vec<String> = seg.views.iter().map(|v| v.view.to_string()).collect();
                 writeln!(
@@ -151,18 +151,18 @@ pub(super) fn execute_ir_command<W: std::io::Write>(
                 .map_err(|_| format!("invalid segment id: {}", parts[1]))?;
             let store = ctx.store()?;
             let seg = store
-                .active_or_sealed_segment(seg_id)
+                .segment_ref(seg_id)
                 .ok_or_else(|| format!("dump-vlog failed: VLog segment {seg_id} not found"))?;
             let entries = ir_store::iter_entries::<String, String, _>(seg)
                 .map_err(|e| format!("dump-vlog failed: {e}"))?;
-            for (offset, op_id, _entry_type, payload) in &entries {
+            for (offset, op_id, entry) in &entries {
                 write!(
                     stdout,
                     "@{offset} op={}:{} ",
                     op_id.client_id.0, op_id.number
                 )
                 .map_err(|e| format!("write failed: {e}"))?;
-                match payload {
+                match &entry.payload {
                     IrPayloadInline::Prepare {
                         transaction_id,
                         commit_ts,

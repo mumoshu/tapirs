@@ -12,8 +12,8 @@ fn vlog_segment_grouping() {
     assert_eq!(store.get_metrics().current_view, 0);
 
     // Fresh store: only active segment 0 (empty)
-    assert_store_file_names(&path, &["vlog_seg_0000.dat"]);
-    assert_store_file_size(&path, "vlog_seg_0000.dat", 0);
+    assert_store_file_names(&path, &["ir_vlog_0000.dat"]);
+    assert_store_file_size(&path, "ir_vlog_0000.dat", 0);
 
     // Views 0-1: small transactions (< 1KB each)
     prepare_and_commit(
@@ -28,9 +28,9 @@ fn vlog_segment_grouping() {
     assert_eq!(store.get_metrics().current_view, 1);
 
     // After first seal: manifest + VLog with data, still same segment (< 1KB)
-    assert_store_file_names(&path, &["UNIFIED_MANIFEST", "vlog_seg_0000.dat"]);
-    assert_store_file_size_positive(&path, "vlog_seg_0000.dat");
-    let vlog_size_after_seal1 = get_store_file_size(&path, "vlog_seg_0000.dat");
+    assert_store_file_names(&path, &["UNIFIED_MANIFEST", "ir_vlog_0000.dat"]);
+    assert_store_file_size_positive(&path, "ir_vlog_0000.dat");
+    let vlog_size_after_seal1 = get_store_file_size(&path, "ir_vlog_0000.dat");
 
     prepare_and_commit(
         &mut store,
@@ -46,11 +46,11 @@ fn vlog_segment_grouping() {
     // Views 0 and 1 should share same segment (both < 1KB, but
     // segment is sealed once cumulative size >= 1KB, which hasn't happened yet).
     // Small entries: each ~50-100 bytes, two seals ~200 bytes total < 1KB.
-    assert_store_file_names(&path, &["UNIFIED_MANIFEST", "vlog_seg_0000.dat"]);
+    assert_store_file_names(&path, &["UNIFIED_MANIFEST", "ir_vlog_0000.dat"]);
 
     // After second seal: VLog grew but still same segment (no rotation)
-    assert_store_file_names(&path, &["UNIFIED_MANIFEST", "vlog_seg_0000.dat"]);
-    let vlog_size_after_seal2 = get_store_file_size(&path, "vlog_seg_0000.dat");
+    assert_store_file_names(&path, &["UNIFIED_MANIFEST", "ir_vlog_0000.dat"]);
+    let vlog_size_after_seal2 = get_store_file_size(&path, "ir_vlog_0000.dat");
     assert!(
         vlog_size_after_seal2 > vlog_size_after_seal1,
         "VLog should grow after second seal: {vlog_size_after_seal2} > {vlog_size_after_seal1}"
@@ -72,22 +72,22 @@ fn vlog_segment_grouping() {
     // Now the segment exceeded 1KB and was sealed → new active segment created
     assert_store_file_names(
         &path,
-        &["UNIFIED_MANIFEST", "vlog_seg_0000.dat", "vlog_seg_0001.dat"],
+        &["UNIFIED_MANIFEST", "ir_vlog_0000.dat", "ir_vlog_0001.dat"],
     );
 
     // After segment rotation: old segment sealed, new active segment created
     assert_store_file_names(
         &path,
-        &["UNIFIED_MANIFEST", "vlog_seg_0000.dat", "vlog_seg_0001.dat"],
+        &["UNIFIED_MANIFEST", "ir_vlog_0000.dat", "ir_vlog_0001.dat"],
     );
     // Sealed segment (0000) should have significant data (> 1KB with big_value)
-    let sealed_size = get_store_file_size(&path, "vlog_seg_0000.dat");
+    let sealed_size = get_store_file_size(&path, "ir_vlog_0000.dat");
     assert!(
         sealed_size > 1024,
         "Sealed segment should exceed 1KB threshold: got {sealed_size}"
     );
     // New active segment (0001) is empty (no writes in view 3 yet)
-    assert_store_file_size(&path, "vlog_seg_0001.dat", 0);
+    assert_store_file_size(&path, "ir_vlog_0001.dat", 0);
 
     // Reads across segments work correctly — verify all values AND timestamps
     let (actual_value, actual_ts) = store.do_uncommitted_get_at(&"a".to_string(), test_ts(1)).unwrap();

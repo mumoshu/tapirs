@@ -11,8 +11,8 @@ fn view_change_seal_merge_sync() {
     assert_eq!(store.get_metrics().current_view, 0);
 
     // Fresh store: only active VLog segment
-    assert_store_file_names(&path, &["vlog_seg_0000.dat"]);
-    assert_store_file_size(&path, "vlog_seg_0000.dat", 0);
+    assert_store_file_names(&path, &["ir_vlog_0000.dat"]);
+    assert_store_file_size(&path, "ir_vlog_0000.dat", 0);
 
     // Phase 1: View 0 operations
     prepare_and_commit(
@@ -44,9 +44,9 @@ fn view_change_seal_merge_sync() {
     assert_eq!(store.get_metrics().current_view, 1);
 
     // After seal: manifest saved, VLog has data
-    assert_store_file_names(&path, &["UNIFIED_MANIFEST", "vlog_seg_0000.dat"]);
+    assert_store_file_names(&path, &["UNIFIED_MANIFEST", "ir_vlog_0000.dat"]);
     assert_store_file_size_positive(&path, "UNIFIED_MANIFEST");
-    assert_store_file_size_positive(&path, "vlog_seg_0000.dat");
+    assert_store_file_size_positive(&path, "ir_vlog_0000.dat");
 
     // Phase 3: Reads across sealed views
     // Committed "a" should be readable (OnDisk after seal)
@@ -84,16 +84,16 @@ fn cross_view_prepare_commit() {
     );
 
     // Before seal: only active VLog segment
-    assert_store_file_names(&path, &["vlog_seg_0000.dat"]);
+    assert_store_file_names(&path, &["ir_vlog_0000.dat"]);
 
     // Seal view 0 → view 1
     seal_view(&mut store);
     assert_eq!(store.get_metrics().current_view, 1);
 
     // After seal: manifest + VLog with data
-    assert_store_file_names(&path, &["UNIFIED_MANIFEST", "vlog_seg_0000.dat"]);
+    assert_store_file_names(&path, &["UNIFIED_MANIFEST", "ir_vlog_0000.dat"]);
     assert_store_file_size_positive(&path, "UNIFIED_MANIFEST");
-    assert_store_file_size_positive(&path, "vlog_seg_0000.dat");
+    assert_store_file_size_positive(&path, "ir_vlog_0000.dat");
 
     // View 1: Commit prepared transaction.
     let txn = make_txn(vec![], vec![("x", Some("v1"))]);

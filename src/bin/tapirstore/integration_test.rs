@@ -81,7 +81,7 @@ fn ir_prepare_commit_dump_vlog() {
     assert_eq!(
         stdout,
         "@0 op=1:1 PREPARE txn=1:1 ts=5 x=v1\n\
-         @64 op=1:2 COMMIT txn=1:1 ts=5 ref=same_view(1:1)\n"
+         @71 op=1:2 COMMIT txn=1:1 ts=5 ref=same_view(1:1)\n"
     );
 }
 

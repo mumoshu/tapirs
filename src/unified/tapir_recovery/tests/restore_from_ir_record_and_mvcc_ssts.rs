@@ -30,8 +30,8 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
         let mut store = TestStore::open_with_options(path.clone(), 64).unwrap();
 
         // Fresh store: only active VLog segment
-        assert_store_file_names(&path, &["vlog_seg_0000.dat"]);
-        assert_store_file_size(&path, "vlog_seg_0000.dat", 0);
+        assert_store_file_names(&path, &["ir_vlog_0000.dat"]);
+        assert_store_file_size(&path, "ir_vlog_0000.dat", 0);
 
         // View 0: Commit txn 1 and 2
         prepare_and_commit(

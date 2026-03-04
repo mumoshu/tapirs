@@ -1,9 +1,8 @@
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
-use std::path::PathBuf;
 
 use crate::ir::OpId;
-use crate::mvcc::disk::disk_io::{BufferedIo, OpenFlags};
+use crate::mvcc::disk::disk_io::BufferedIo;
 use crate::occ::{SharedTransaction, Transaction};
 use crate::occ::TransactionId as OccTransactionId;
 use crate::tapir::{ShardNumber, Sharded, Timestamp};
@@ -81,11 +80,6 @@ where
                 store: None,
                 prepared: BTreeMap::new(),
                 op_counter: 0,
-                base_dir: None,
-                io_flags: OpenFlags {
-                    create: true,
-                    direct: false,
-                },
                 min_view_vlog_size: DEFAULT_MIN_VIEW_VLOG_SIZE,
             };
             for line in script.split([';', '\n']) {
@@ -127,8 +121,6 @@ struct IrContext {
     store: Option<Ir>,
     prepared: BTreeMap<OccTransactionId, (OpId, u64)>,
     op_counter: u64,
-    base_dir: Option<PathBuf>,
-    io_flags: OpenFlags,
     min_view_vlog_size: u64,
 }
 
@@ -147,12 +139,6 @@ impl IrContext {
 
     fn store_mut(&mut self) -> Result<&mut Ir, String> {
         self.store.as_mut().ok_or_else(|| "no store open".to_string())
-    }
-
-    fn base_dir(&self) -> Result<&PathBuf, String> {
-        self.base_dir
-            .as_ref()
-            .ok_or_else(|| "no store open".to_string())
     }
 }
 

@@ -72,14 +72,13 @@ fn ir_prepare_commit_seal_reopen_and_lookup_by_id() {
         ir::store::insert_ir_entry(&mut record, *op_id, entry.clone());
     }
 
-    ir::store::seal_current_view(&mut record, &path, io_flags, u64::MAX).unwrap();
-    ir::store::clear_overlay(&mut record);
+    ir::store::seal_current_view(&mut record, u64::MAX).unwrap();
 
     let files_after_first = list_dir_files(&path);
     let names_after_first: Vec<&str> = files_after_first.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(
         names_after_first,
-        vec!["UNIFIED_MANIFEST", "vlog_seg_0000.dat"],
+        vec!["UNIFIED_MANIFEST", "ir_vlog_0000.dat"],
         "exact files after first seal"
     );
     for (_, size) in &files_after_first {
@@ -102,30 +101,29 @@ fn ir_prepare_commit_seal_reopen_and_lookup_by_id() {
             },
         },
     );
-    ir::store::seal_current_view(&mut record, &path, io_flags, 1).unwrap();
-    ir::store::clear_overlay(&mut record);
+    ir::store::seal_current_view(&mut record, 1).unwrap();
 
     let files_after_second = list_dir_files(&path);
     let names_after_second: Vec<&str> = files_after_second.iter().map(|(n, _)| n.as_str()).collect();
     assert!(
-        names_after_second.contains(&"vlog_seg_0001.dat"),
+        names_after_second.contains(&"ir_vlog_0001.dat"),
         "second segment file should be created after threshold exceed"
     );
 
     let reopened = ir::store::open_store_state::<String, String, MemoryIo>(&path, io_flags).unwrap();
 
     let seg0 = reopened
-        .active_or_sealed_segment(0)
+        .segment_ref(0)
         .expect("segment 0 should exist after reopen");
     let seg0_entries = ir::store::iter_entries::<String, String, _>(seg0).unwrap();
 
-    let (_prepare_offset, _prepare_op, prepare_ty, prepare_payload) = seg0_entries
+    let (_prepare_offset, _prepare_op, prepare_entry) = seg0_entries
         .iter()
-        .find(|(_, op_id, _, _)| *op_id == prepare_op)
+        .find(|(_, op_id, _)| *op_id == prepare_op)
         .cloned()
         .expect("prepare op should exist in segment 0");
-    assert_eq!(prepare_ty, VlogEntryType::Prepare);
-    match prepare_payload {
+    assert_eq!(prepare_entry.entry_type, VlogEntryType::Prepare);
+    match prepare_entry.payload {
         IrPayloadInline::Prepare {
             transaction_id,
             commit_ts: ts,
@@ -142,13 +140,13 @@ fn ir_prepare_commit_seal_reopen_and_lookup_by_id() {
         _ => panic!("unexpected payload variant for prepare op"),
     }
 
-    let (_commit_offset, _commit_op, commit_ty, commit_payload) = seg0_entries
+    let (_commit_offset, _commit_op, commit_entry) = seg0_entries
         .iter()
-        .find(|(_, op_id, _, _)| *op_id == commit_op)
+        .find(|(_, op_id, _)| *op_id == commit_op)
         .cloned()
         .expect("commit op should exist in segment 0");
-    assert_eq!(commit_ty, VlogEntryType::Commit);
-    match commit_payload {
+    assert_eq!(commit_entry.entry_type, VlogEntryType::Commit);
+    match commit_entry.payload {
         IrPayloadInline::Commit {
             transaction_id,
             commit_ts: ts,

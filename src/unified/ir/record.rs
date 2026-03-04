@@ -1,13 +1,16 @@
 use crate::ir::OpId;
 use crate::mvcc::disk::disk_io::DiskIo;
+use crate::mvcc::disk::error::StorageError;
 use crate::occ::TransactionId as OccTransactionId;
 use crate::tapir::Timestamp;
+use crate::unified::wisckeylsm::lsm::VlogLsm;
 use crate::unified::wisckeylsm::manifest::UnifiedManifest;
-use crate::unified::wisckeylsm::types::{ViewRange, VlogPtr, VlogSegmentMeta};
+use crate::unified::wisckeylsm::types::VlogPtr;
 use crate::unified::wisckeylsm::vlog::VlogSegment;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt::Debug;
+use std::path::PathBuf;
 
 /// Entry type discriminator for IR VLog entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,7 +39,7 @@ pub enum VlogEntryType {
 /// view, so the field would be redundant.
 ///
 /// At seal time, each finalized `IrMemEntry` is serialized into the VLog
-/// and replaced by an `IrSstEntry` (which *does* carry a `vlog_ptr`).
+/// via VlogLsm's seal_view() closure.
 #[derive(Serialize, Deserialize)]
 #[serde(bound(
     serialize = "K: Serialize, V: Serialize",
@@ -80,12 +83,18 @@ pub enum IrState {
     Finalized(u64),
 }
 
+impl IrState {
+    pub fn is_finalized(&self) -> bool {
+        matches!(self, Self::Finalized(_))
+    }
+}
+
 /// Inline payload for IR entries — the source of truth for transaction data.
 ///
 /// Generic over `K` and `V` so that prepared transactions can be inspected,
 /// indexed, and committed without a serialization round-trip while they live
 /// in memory.  Serialization to bytes happens exactly once, at view seal
-/// time (`seal_current_view`), via `VlogSegment::serialize_payload`.
+/// time (`seal_current_view`), via VlogLsm's seal_view() closure.
 /// Deserialization from the VLog happens only for cross-view reads (rare).
 ///
 /// Because `Commit` and `Abort` variants carry no K/V data, they are
@@ -243,56 +252,31 @@ pub enum PrepareRef {
     },
 }
 
-/// IR SST entry: maps OpId → VLog location for the sealed IR base record.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IrSstEntry {
-    pub entry_type: VlogEntryType,
-    pub vlog_ptr: VlogPtr,
-}
-
-/// Reference to an IR entry — either a typed in-memory overlay entry
-/// or a byte-level base SST entry.
+/// In-memory IR record state backed by VlogLsm.
 ///
-/// Callers must handle both variants: `Overlay` gives direct access to
-/// typed payload fields, while `Base` only provides a VLog pointer
-/// (requires a VLog read to access the payload).
-/// In-memory IR record state: overlay (current view), base (sealed views),
-/// and the prepare VLog index for cross-view commits.
+/// All entries (tentative + finalized) go into the VlogLsm memtable via put().
+/// At seal time, seal_view() flushes finalized entries to vlog+index and
+/// discards tentative entries. Recovery rebuilds the VlogLsm index from
+/// vlog segments.
 pub(crate) struct IrRecord<K: Ord, V, IO: DiskIo> {
-    active_vlog: VlogSegment<IO>,
-    sealed_vlog_segments: BTreeMap<u64, VlogSegment<IO>>,
+    lsm: VlogLsm<OpId, IrMemEntry<K, V>, IO>,
     current_view: u64,
     manifest: UnifiedManifest,
-
-    /// Current view's IR entries (in-memory only).
-    ///
-    /// At seal time, finalized entries are serialized to the VLog and
-    /// replaced by `IrSstEntry` records in `ir_base`.  The overlay is
-    /// then cleared.  Typed K, V so that `Prepare` entries can be
-    /// inspected without deserializing from the VLog.
-    ir_overlay: BTreeMap<OpId, IrMemEntry<K, V>>,
-
-    /// IR base: maps OpId → IrSstEntry for the sealed IR base record.
-    /// In a full implementation this would be an on-disk IR SST.
-    /// For now, we use an in-memory BTreeMap as a stepping stone.
-    ir_base: BTreeMap<OpId, IrSstEntry>,
-
+    base_dir: PathBuf,
 }
 
 impl<K: Ord, V, IO: DiskIo> IrRecord<K, V, IO> {
     pub(crate) fn new(
-        active_vlog: VlogSegment<IO>,
-        sealed_vlog_segments: BTreeMap<u64, VlogSegment<IO>>,
+        lsm: VlogLsm<OpId, IrMemEntry<K, V>, IO>,
         current_view: u64,
         manifest: UnifiedManifest,
+        base_dir: PathBuf,
     ) -> Self {
         Self {
-            active_vlog,
-            sealed_vlog_segments,
+            lsm,
             current_view,
             manifest,
-            ir_overlay: BTreeMap::new(),
-            ir_base: BTreeMap::new(),
+            base_dir,
         }
     }
 
@@ -300,166 +284,53 @@ impl<K: Ord, V, IO: DiskIo> IrRecord<K, V, IO> {
         self.current_view
     }
 
-    pub(crate) fn sealed_vlog_segments(&self) -> &BTreeMap<u64, VlogSegment<IO>> {
-        &self.sealed_vlog_segments
+    /// Insert an IR entry into the memtable.
+    pub(crate) fn insert_ir_entry(&mut self, op_id: OpId, entry: IrMemEntry<K, V>) {
+        self.lsm.put(op_id, entry);
     }
 
-    pub(crate) fn active_vlog_id(&self) -> u64 {
-        self.active_vlog.id
-    }
-
-    pub(crate) fn active_vlog_write_offset(&self) -> u64 {
-        self.active_vlog.write_offset()
-    }
-
-    pub(crate) fn active_vlog_views(&self) -> &[ViewRange] {
-        &self.active_vlog.views
-    }
-
-    pub(crate) fn active_or_sealed_segment(
-        &self,
-        segment_id: u64,
-    ) -> Option<&VlogSegment<IO>> {
-        self.sealed_vlog_segments
-            .get(&segment_id)
-            .or(if self.active_vlog.id == segment_id {
-                Some(&self.active_vlog)
-            } else {
-                None
-            })
-    }
-
-    pub(crate) fn clear_ir_base(&mut self) {
-        self.ir_base.clear();
-    }
-
-    pub(crate) fn insert_ir_base_entry(&mut self, op_id: OpId, entry: IrSstEntry) {
-        self.ir_base.insert(op_id, entry);
-    }
-
-    pub(crate) fn sealed_vlog_segment_values(
-        &self,
-    ) -> impl Iterator<Item = &VlogSegment<IO>> {
-        self.sealed_vlog_segments.values()
-    }
-
-    pub(crate) fn active_vlog_ref(&self) -> &VlogSegment<IO> {
-        &self.active_vlog
-    }
-
-    pub(crate) fn append_ir_entries_for_seal(
+    /// Seal: flush finalized entries to vlog via closure, discard tentative,
+    /// update manifest, increment view.
+    pub(crate) fn seal_current_view(
         &mut self,
-        finalized_entries: &[(OpId, VlogEntryType, IrPayloadInline<K, V>)],
-    ) -> Result<Vec<VlogPtr>, crate::mvcc::disk::error::StorageError>
+        min_vlog_size: u64,
+    ) -> Result<(), StorageError>
     where
-        K: Clone + serde::Serialize,
-        V: Clone + serde::Serialize,
+        K: Serialize + serde::de::DeserializeOwned + Clone,
+        V: Serialize,
     {
-        if finalized_entries.is_empty() {
-            return Ok(Vec::new());
+        let sealed = self.lsm.seal_view(min_vlog_size, |op_id, entry| {
+            if entry.state.is_finalized() {
+                Some((entry.entry_type as u8, op_id.client_id.0, op_id.number))
+            } else {
+                None // tentative → discarded
+            }
+        })?;
+        if let Some(meta) = sealed {
+            self.manifest.ir.sealed_vlog_segments.push(meta);
         }
-        let entry_refs: Vec<(OpId, VlogEntryType, &IrPayloadInline<K, V>)> = finalized_entries
-            .iter()
-            .map(|(op, et, p)| (*op, *et, p))
-            .collect();
-        crate::unified::ir::store::append_batch(&mut self.active_vlog, &entry_refs)
-    }
-
-    pub(crate) fn seal_active_view_and_rotate_if_needed(
-        &mut self,
-        base_dir: &std::path::Path,
-        io_flags: crate::mvcc::disk::disk_io::OpenFlags,
-        min_view_vlog_size: u64,
-        finalized_count: usize,
-    ) -> Result<(), crate::mvcc::disk::error::StorageError> {
-        self.active_vlog.sync()?;
-        self.active_vlog.finish_view(finalized_count as u32);
-
-        let segment_size = self.active_vlog.write_offset();
-        if segment_size >= min_view_vlog_size {
-            let sealed_id = self.active_vlog.id;
-            let sealed_path = self.active_vlog.path().clone();
-            let sealed_views = self.active_vlog.views.clone();
-            let sealed_size = self.active_vlog.write_offset();
-
-            self.manifest.committed.sealed_vlog_segments.push(VlogSegmentMeta {
-                segment_id: sealed_id,
-                path: sealed_path.clone(),
-                views: sealed_views.clone(),
-                total_size: sealed_size,
-            });
-
-            let old_active = std::mem::replace(&mut self.active_vlog, {
-                let new_id = self.manifest.committed.next_segment_id;
-                self.manifest.committed.next_segment_id += 1;
-                let new_path = base_dir.join(format!("vlog_seg_{new_id:04}.dat"));
-                VlogSegment::<IO>::open(new_id, new_path, io_flags)?
-            });
-
-            self.sealed_vlog_segments.insert(
-                sealed_id,
-                VlogSegment::<IO>::open_at(
-                    sealed_id,
-                    sealed_path,
-                    sealed_size,
-                    sealed_views,
-                    io_flags,
-                )?,
-            );
-            old_active.close();
-        }
-
         self.current_view += 1;
         self.manifest.current_view = self.current_view;
-        self.manifest.committed.active_segment_id = self.active_vlog.id;
-        self.manifest.committed.active_write_offset = self.active_vlog.write_offset();
-        self.manifest.save::<IO>(base_dir)?;
-        self.active_vlog.start_view(self.current_view);
-
+        self.manifest.ir.active_segment_id = self.lsm.active_vlog_id();
+        self.manifest.ir.active_write_offset = self.lsm.active_write_offset();
+        self.manifest.ir.next_segment_id = self.lsm.next_segment_id();
+        self.manifest.save::<IO>(&self.base_dir)?;
+        self.lsm.start_view(self.current_view);
         Ok(())
     }
 
-    /// Insert an IR entry into the overlay.
-    pub(crate) fn insert_ir_entry(&mut self, op_id: OpId, entry: IrMemEntry<K, V>) {
-        self.ir_overlay.insert(op_id, entry);
+    /// Look up a vlog segment by ID (active or sealed).
+    pub(crate) fn segment_ref(&self, id: u64) -> Option<&VlogSegment<IO>> {
+        self.lsm.segment_ref(id)
     }
 
-    /// Apply VLog pointers to the IR base after a seal write.
-    pub(crate) fn apply_sealed_ptrs(
-        &mut self,
-        finalized: &[(OpId, VlogEntryType, IrPayloadInline<K, V>)],
-        vlog_ptrs: &[VlogPtr],
-    ) {
-        for (i, (op_id, entry_type, _payload)) in finalized.iter().enumerate() {
-            self.ir_base.insert(
-                *op_id,
-                IrSstEntry {
-                    entry_type: *entry_type,
-                    vlog_ptr: vlog_ptrs[i],
-                },
-            );
-        }
+    /// Reference to sealed vlog segments.
+    pub(crate) fn sealed_segments_ref(&self) -> &BTreeMap<u64, VlogSegment<IO>> {
+        self.lsm.sealed_segments_ref()
     }
 
-    /// Clear the overlay (called after seal or install).
-    pub(crate) fn clear_overlay(&mut self) {
-        self.ir_overlay.clear();
-    }
-}
-
-impl<K: Ord + Clone, V: Clone, IO: DiskIo> IrRecord<K, V, IO> {
-    /// Collect finalized overlay entries for VLog serialization at seal time.
-    ///
-    /// Returns `(OpId, VlogEntryType, IrPayloadInline)` tuples ready for
-    /// `VlogSegment::append_batch`.  The caller writes them to the
-    /// VLog and passes the resulting pointers to `apply_sealed_ptrs`.
-    pub(crate) fn collect_finalized_for_seal(
-        &self,
-    ) -> Vec<(OpId, VlogEntryType, IrPayloadInline<K, V>)> {
-        self.ir_overlay
-            .iter()
-            .filter(|(_, entry)| matches!(entry.state, IrState::Finalized(_)))
-            .map(|(op_id, entry)| (*op_id, entry.entry_type, entry.payload.clone()))
-            .collect()
+    /// Reference to the active vlog segment.
+    pub(crate) fn active_vlog_ref(&self) -> &VlogSegment<IO> {
+        self.lsm.active_vlog_ref()
     }
 }

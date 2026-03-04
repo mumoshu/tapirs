@@ -23,8 +23,8 @@ fn restore_from_ir_record_rebuilds_mvcc() {
     let mut source_store = TestStore::open(source_path.clone()).unwrap();
 
     // Fresh store: only active VLog segment
-    assert_store_file_names(&source_path, &["vlog_seg_0000.dat"]);
-    assert_store_file_size(&source_path, "vlog_seg_0000.dat", 0);
+    assert_store_file_names(&source_path, &["ir_vlog_0000.dat"]);
+    assert_store_file_size(&source_path, "ir_vlog_0000.dat", 0);
 
     // Txn 1: Write "x" = "v1" at ts=5
     prepare_and_commit(
@@ -95,8 +95,8 @@ fn restore_from_ir_record_rebuilds_mvcc() {
     let mut restored_store = TestStore::open(restored_path.clone()).unwrap();
 
     // Restored store starts fresh with just active VLog
-    assert_store_file_names(&restored_path, &["vlog_seg_0000.dat"]);
-    assert_store_file_size(&restored_path, "vlog_seg_0000.dat", 0);
+    assert_store_file_names(&restored_path, &["ir_vlog_0000.dat"]);
+    assert_store_file_size(&restored_path, "ir_vlog_0000.dat", 0);
 
     replay_committed_from_ir_record(&mut restored_store, &ir_record).unwrap();
 
@@ -165,7 +165,7 @@ fn restore_from_ir_record_rebuilds_mvcc() {
         .unwrap();
 
     // After restore (no seal): data is in memtable only, VLog is still empty.
-    assert_store_file_names(&restored_path, &["vlog_seg_0000.dat"]);
+    assert_store_file_names(&restored_path, &["ir_vlog_0000.dat"]);
 }
 
 /// Test that restore works after seal (IR entries are in VLog, not in memory).
@@ -214,9 +214,9 @@ fn restore_from_sealed_vlog_rebuilds_mvcc() {
         assert_eq!(store.get_metrics().current_view, 1);
 
         // After seal: manifest + VLog with data
-        assert_store_file_names(&path, &["UNIFIED_MANIFEST", "vlog_seg_0000.dat"]);
+        assert_store_file_names(&path, &["UNIFIED_MANIFEST", "ir_vlog_0000.dat"]);
         assert_store_file_size_positive(&path, "UNIFIED_MANIFEST");
-        assert_store_file_size_positive(&path, "vlog_seg_0000.dat");
+        assert_store_file_size_positive(&path, "ir_vlog_0000.dat");
 
         // Sealed values should remain readable.
         let (_value, _ts) = store.do_uncommitted_get_at(&"a".to_string(), test_ts(5)).unwrap();
@@ -226,7 +226,7 @@ fn restore_from_sealed_vlog_rebuilds_mvcc() {
 
     let restored_path = MemoryIo::temp_path();
     let mut restored = TestStore::open(restored_path.clone()).unwrap();
-    assert_store_file_names(&restored_path, &["vlog_seg_0000.dat"]);
+    assert_store_file_names(&restored_path, &["ir_vlog_0000.dat"]);
 
     replay_committed_from_ir_record(&mut restored, &ir_record).unwrap();
 
@@ -271,7 +271,7 @@ fn restore_from_sealed_vlog_rebuilds_mvcc() {
     assert_eq!(scan[2].2, test_ts(10));
 
     // After restore (no seal): data is in memtable only, VLog is still empty.
-    assert_store_file_names(&restored_path, &["vlog_seg_0000.dat"]);
+    assert_store_file_names(&restored_path, &["ir_vlog_0000.dat"]);
 }
 
 // === Helper ===

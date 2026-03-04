@@ -5,118 +5,24 @@ use crate::IrClientId;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use super::record::{IrMemEntry, IrPayloadInline, IrRecord, IrSstEntry, VlogEntryType};
+use super::record::{IrMemEntry, IrRecord};
+use crate::unified::wisckeylsm::lsm::VlogLsm;
 use crate::unified::wisckeylsm::manifest::UnifiedManifest;
 use crate::unified::wisckeylsm::types::VlogPtr;
 use crate::unified::wisckeylsm::vlog::VlogSegment;
 
+/// Raw entry overhead: header(21) + crc(4) = 25 bytes.
 const RAW_ENTRY_OVERHEAD: u32 = 25;
-const TAPIR_COMMITTED_TXN_ENTRY_TYPE: u8 = 0x80;
 
-pub(crate) fn append_batch<K: serde::Serialize, V: serde::Serialize, IO: DiskIo>(
-    seg: &mut VlogSegment<IO>,
-    entries: &[(OpId, VlogEntryType, &IrPayloadInline<K, V>)],
-) -> Result<Vec<VlogPtr>, StorageError> {
-    if entries.is_empty() {
-        return Ok(Vec::new());
-    }
+/// TAPIR committed transaction entries use entry_type >= 0x80;
+/// skip them when iterating IR entries.
+const TAPIR_ENTRY_TYPE_MIN: u8 = 0x80;
 
-    let mut serialized = Vec::with_capacity(entries.len());
-    for (op_id, entry_type, payload) in entries {
-        let payload_bytes = crate::unified::ir::vlog_codec::serialize_payload(payload)?;
-        serialized.push((*entry_type as u8, op_id.client_id.0, op_id.number, payload_bytes));
-    }
-    let raw_entries: Vec<(u8, u64, u64, &[u8])> = serialized
-        .iter()
-        .map(|(entry_type, client_id, number, bytes)| {
-            (*entry_type, *client_id, *number, bytes.as_slice())
-        })
-        .collect();
-    seg.append_raw_batch(&raw_entries)
-}
-
-pub(crate) fn read_entry<K: serde::de::DeserializeOwned, V: serde::de::DeserializeOwned, IO: DiskIo>(
-    seg: &VlogSegment<IO>,
-    ptr: &VlogPtr,
-) -> Result<(OpId, VlogEntryType, IrPayloadInline<K, V>), StorageError> {
-    let raw = seg.read_raw_entry(ptr)?;
-    let entry_type = crate::unified::ir::vlog_codec::entry_type_from_byte(raw.entry_type)?;
-    let op_id = OpId {
-        client_id: IrClientId(raw.id_client),
-        number: raw.id_number,
-    };
-    let payload = crate::unified::ir::vlog_codec::deserialize_payload(entry_type, &raw.payload)?;
-    Ok((op_id, entry_type, payload))
-}
-
-pub(crate) fn iter_entries<K: serde::de::DeserializeOwned, V: serde::de::DeserializeOwned, IO: DiskIo>(
-    seg: &VlogSegment<IO>,
-) -> Result<Vec<(u64, OpId, VlogEntryType, IrPayloadInline<K, V>)>, StorageError> {
-    let mut out = Vec::new();
-    for (offset, raw) in seg.iter_raw_entries()? {
-        if raw.entry_type == TAPIR_COMMITTED_TXN_ENTRY_TYPE {
-            continue;
-        }
-
-        let ptr = VlogPtr {
-            segment_id: seg.id,
-            offset,
-            length: RAW_ENTRY_OVERHEAD + raw.payload.len() as u32,
-        };
-        let (op_id, entry_type, payload) = read_entry(seg, &ptr)?;
-        out.push((offset, op_id, entry_type, payload));
-    }
-    Ok(out)
-}
-
-fn rebuild_ir_base_from_vlog<K: Ord, V, IO: DiskIo>(record: &mut IrRecord<K, V, IO>) -> Result<(), StorageError> {
-    record.clear_ir_base();
-
-    let mut rebuilt_entries: Vec<(OpId, IrSstEntry)> = Vec::new();
-
-    fn absorb_segment<IO: DiskIo>(
-        rebuilt_entries: &mut Vec<(OpId, IrSstEntry)>,
-        seg: &VlogSegment<IO>,
-    ) -> Result<(), StorageError> {
-        for (offset, raw) in seg.iter_raw_entries()? {
-            if raw.entry_type == TAPIR_COMMITTED_TXN_ENTRY_TYPE {
-                continue;
-            }
-
-            let entry_type = crate::unified::ir::vlog_codec::entry_type_from_byte(raw.entry_type)?;
-            let op_id = OpId {
-                client_id: crate::IrClientId(raw.id_client),
-                number: raw.id_number,
-            };
-
-            rebuilt_entries.push((
-                op_id,
-                IrSstEntry {
-                    entry_type,
-                    vlog_ptr: VlogPtr {
-                        segment_id: seg.id,
-                        offset,
-                        length: RAW_ENTRY_OVERHEAD + raw.payload.len() as u32,
-                    },
-                },
-            ));
-        }
-        Ok(())
-    }
-
-    for seg in record.sealed_vlog_segment_values() {
-        absorb_segment(&mut rebuilt_entries, seg)?;
-    }
-    absorb_segment(&mut rebuilt_entries, record.active_vlog_ref())?;
-
-    for (op_id, entry) in rebuilt_entries {
-        record.insert_ir_base_entry(op_id, entry);
-    }
-
-    Ok(())
-}
-
-pub(crate) fn open_store_state<K: Ord, V, IO: DiskIo>(
+pub(crate) fn open_store_state<
+    K: Ord + serde::de::DeserializeOwned,
+    V: serde::de::DeserializeOwned,
+    IO: DiskIo,
+>(
     base_dir: &Path,
     io_flags: OpenFlags,
 ) -> Result<IrRecord<K, V, IO>, StorageError> {
@@ -125,8 +31,8 @@ pub(crate) fn open_store_state<K: Ord, V, IO: DiskIo>(
         None => UnifiedManifest::new(),
     };
 
-    let mut sealed_vlog_segments = BTreeMap::new();
-    for seg_meta in &manifest.committed.sealed_vlog_segments {
+    let mut sealed_segments = BTreeMap::new();
+    for seg_meta in &manifest.ir.sealed_vlog_segments {
         let seg = VlogSegment::<IO>::open_at(
             seg_meta.segment_id,
             seg_meta.path.clone(),
@@ -134,14 +40,14 @@ pub(crate) fn open_store_state<K: Ord, V, IO: DiskIo>(
             seg_meta.views.clone(),
             io_flags,
         )?;
-        sealed_vlog_segments.insert(seg_meta.segment_id, seg);
+        sealed_segments.insert(seg_meta.segment_id, seg);
     }
 
-    let active_path = base_dir.join(format!("vlog_seg_{:04}.dat", manifest.committed.active_segment_id));
+    let active_path = base_dir.join(format!("ir_vlog_{:04}.dat", manifest.ir.active_segment_id));
     let mut active_vlog = VlogSegment::<IO>::open_at(
-        manifest.committed.active_segment_id,
+        manifest.ir.active_segment_id,
         active_path,
-        manifest.committed.active_write_offset,
+        manifest.ir.active_write_offset,
         Vec::new(),
         io_flags,
     )?;
@@ -149,35 +55,79 @@ pub(crate) fn open_store_state<K: Ord, V, IO: DiskIo>(
     let current_view = manifest.current_view;
     active_vlog.start_view(current_view);
 
-    let mut record = IrRecord::new(
+    let mut lsm = VlogLsm::open_from_parts(
+        "ir",
+        base_dir,
         active_vlog,
-        sealed_vlog_segments,
+        sealed_segments,
+        io_flags,
+        manifest.ir.next_segment_id,
+        usize::MAX, // never flush index to SST
+    );
+
+    // Recovery: rebuild index from vlog segments.
+    rebuild_index_from_vlog(&mut lsm)?;
+
+    Ok(IrRecord::new(
+        lsm,
         current_view,
         manifest,
-    );
-    rebuild_ir_base_from_vlog(&mut record)?;
-    Ok(record)
+        base_dir.to_path_buf(),
+    ))
 }
 
-pub(crate) fn seal_current_view<K: Ord + Clone + serde::Serialize, V: Clone + serde::Serialize, IO: DiskIo>(
-    record: &mut IrRecord<K, V, IO>,
-    base_dir: &Path,
-    io_flags: OpenFlags,
-    min_view_vlog_size: u64,
+/// Rebuild the VlogLsm index (OpId → VlogPtr) by scanning all vlog segments.
+fn rebuild_index_from_vlog<K: Ord, V, IO: DiskIo>(
+    lsm: &mut VlogLsm<OpId, IrMemEntry<K, V>, IO>,
 ) -> Result<(), StorageError> {
-    let finalized_entries = collect_finalized_for_seal(record);
+    let mut entries: Vec<(OpId, VlogPtr)> = Vec::new();
 
-    let vlog_ptrs = record.append_ir_entries_for_seal(&finalized_entries)?;
+    fn absorb_segment<IO: DiskIo>(
+        entries: &mut Vec<(OpId, VlogPtr)>,
+        seg: &VlogSegment<IO>,
+    ) -> Result<(), StorageError> {
+        for (offset, raw) in seg.iter_raw_entries()? {
+            if raw.entry_type >= TAPIR_ENTRY_TYPE_MIN {
+                continue;
+            }
+            let op_id = OpId {
+                client_id: IrClientId(raw.id_client),
+                number: raw.id_number,
+            };
+            let ptr = VlogPtr {
+                segment_id: seg.id,
+                offset,
+                length: RAW_ENTRY_OVERHEAD + raw.payload.len() as u32,
+            };
+            entries.push((op_id, ptr));
+        }
+        Ok(())
+    }
 
-    apply_sealed_ptrs(record, &finalized_entries, &vlog_ptrs);
-    record.seal_active_view_and_rotate_if_needed(
-        base_dir,
-        io_flags,
-        min_view_vlog_size,
-        finalized_entries.len(),
-    )?;
+    // Collect from sealed segments first, then active.
+    let sealed_ids: Vec<u64> = lsm.sealed_segments_ref().keys().copied().collect();
+    for seg_id in sealed_ids {
+        let seg = lsm.sealed_segments_ref().get(&seg_id).unwrap();
+        absorb_segment(&mut entries, seg)?;
+    }
+    absorb_segment(&mut entries, lsm.active_vlog_ref())?;
+
+    for (op_id, ptr) in entries {
+        lsm.index_insert(op_id, ptr);
+    }
 
     Ok(())
+}
+
+pub(crate) fn seal_current_view<
+    K: Ord + Clone + serde::Serialize + serde::de::DeserializeOwned,
+    V: Clone + serde::Serialize,
+    IO: DiskIo,
+>(
+    record: &mut IrRecord<K, V, IO>,
+    min_vlog_size: u64,
+) -> Result<(), StorageError> {
+    record.seal_current_view(min_vlog_size)
 }
 
 pub(crate) fn insert_ir_entry<K: Ord, V, IO: DiskIo>(
@@ -188,21 +138,44 @@ pub(crate) fn insert_ir_entry<K: Ord, V, IO: DiskIo>(
     record.insert_ir_entry(op_id, entry);
 }
 
-pub(crate) fn collect_finalized_for_seal<K: Ord + Clone, V: Clone, IO: DiskIo>(
-    record: &IrRecord<K, V, IO>,
-) -> Vec<(OpId, VlogEntryType, IrPayloadInline<K, V>)> {
-    record.collect_finalized_for_seal()
+pub(crate) fn read_entry<
+    K: serde::de::DeserializeOwned,
+    V: serde::de::DeserializeOwned,
+    IO: DiskIo,
+>(
+    seg: &VlogSegment<IO>,
+    ptr: &VlogPtr,
+) -> Result<(OpId, IrMemEntry<K, V>), StorageError> {
+    let raw = seg.read_raw_entry(ptr)?;
+    let op_id = OpId {
+        client_id: IrClientId(raw.id_client),
+        number: raw.id_number,
+    };
+    let entry: IrMemEntry<K, V> =
+        bitcode::deserialize(&raw.payload).map_err(|e| StorageError::Codec(e.to_string()))?;
+    Ok((op_id, entry))
 }
 
-pub(crate) fn apply_sealed_ptrs<K: Ord, V, IO: DiskIo>(
-    record: &mut IrRecord<K, V, IO>,
-    finalized: &[(OpId, VlogEntryType, IrPayloadInline<K, V>)],
-    vlog_ptrs: &[VlogPtr],
-) {
-    record.apply_sealed_ptrs(finalized, vlog_ptrs);
-}
+pub(crate) fn iter_entries<
+    K: serde::de::DeserializeOwned,
+    V: serde::de::DeserializeOwned,
+    IO: DiskIo,
+>(
+    seg: &VlogSegment<IO>,
+) -> Result<Vec<(u64, OpId, IrMemEntry<K, V>)>, StorageError> {
+    let mut out = Vec::new();
+    for (offset, raw) in seg.iter_raw_entries()? {
+        if raw.entry_type >= TAPIR_ENTRY_TYPE_MIN {
+            continue;
+        }
 
-pub(crate) fn clear_overlay<K: Ord, V, IO: DiskIo>(record: &mut IrRecord<K, V, IO>) {
-    record.clear_overlay();
+        let ptr = VlogPtr {
+            segment_id: seg.id,
+            offset,
+            length: RAW_ENTRY_OVERHEAD + raw.payload.len() as u32,
+        };
+        let (op_id, entry) = read_entry(seg, &ptr)?;
+        out.push((offset, op_id, entry));
+    }
+    Ok(out)
 }
-
