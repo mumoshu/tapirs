@@ -79,17 +79,8 @@ pub(crate) fn deserialize_committed_txn_payload<K: DeserializeOwned, V: Deserial
             Ok((k, v))
         })
         .collect::<Result<_, StorageError>>()?;
-    let scan_set: Vec<(K, K, Timestamp)> = p
-        .scan_set
-        .iter()
-        .map(|(skb, ekb, ts)| {
-            let sk: K =
-                bitcode::deserialize(skb).map_err(|e| StorageError::Codec(e.to_string()))?;
-            let ek: K =
-                bitcode::deserialize(ekb).map_err(|e| StorageError::Codec(e.to_string()))?;
-            Ok((sk, ek, *ts))
-        })
-        .collect::<Result<_, StorageError>>()?;
+    // scan_set is deserialized from the wire format but not stored in
+    // Transaction — it is only needed for the vlog serialization round-trip.
     Ok(Transaction {
         transaction_id: OccTransactionId {
             client_id: IrClientId(p.txn_client_id),
@@ -101,7 +92,6 @@ pub(crate) fn deserialize_committed_txn_payload<K: DeserializeOwned, V: Deserial
         },
         read_set,
         write_set,
-        scan_set,
     })
 }
 

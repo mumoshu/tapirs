@@ -167,6 +167,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         K: Key,
         V: Value,
     {
+        self.prepared_txns_in_mem.remove(&txn_id);
         self.prepared_txns_in_mem.insert(
             txn_id,
             Arc::new(Transaction {
@@ -174,7 +175,6 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
                 commit_ts: commit,
                 read_set: read_set.to_vec(),
                 write_set: write_set.to_vec(),
-                scan_set: scan_set.to_vec(),
             }),
         );
 
@@ -209,33 +209,6 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         Ok(())
     }
 
-    pub(crate) fn commit_prepared(
-        &mut self,
-        txn_id: OccTransactionId,
-        commit: Timestamp,
-    ) -> Result<(), StorageError>
-    where
-        K: Key,
-        V: Value,
-    {
-        let prepared = self
-            .prepared_txns_in_mem
-            .get(&txn_id)
-            .cloned()
-            .ok_or_else(|| StorageError::Codec(format!(
-                "no prepared transaction for commit: {}:{}",
-                txn_id.client_id.0, txn_id.number
-            )))?;
-
-        self.commit(
-            txn_id,
-            &prepared.read_set,
-            &prepared.write_set,
-            &prepared.scan_set,
-            commit,
-        )
-    }
-
     pub(crate) fn prepare(
         &mut self,
         txn_id: OccTransactionId,
@@ -258,23 +231,11 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
-        let scan_set: Vec<(K, K, Timestamp)> = transaction
-            .shard_scan_set(shard)
-            .map(|entry| {
-                (
-                    entry.start_key.clone(),
-                    entry.end_key.clone(),
-                    entry.timestamp,
-                )
-            })
-            .collect();
-
         let prepare = Arc::new(Transaction {
             transaction_id: txn_id,
             commit_ts,
             read_set,
             write_set,
-            scan_set,
         });
 
         self.prepared_txns_in_mem.insert(txn_id, prepare);

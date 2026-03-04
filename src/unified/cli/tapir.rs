@@ -66,14 +66,28 @@ pub(super) fn execute_tapir_command<W: std::io::Write>(
             Ok(())
         }
         "commit" => {
-            if parts.len() != 3 {
-                return Err("usage: commit <client:num> <ts>".to_string());
+            if parts.len() < 3 {
+                return Err("usage: commit <client:num> <ts> [r:key@ts ...] [w:key=value ...]".to_string());
             }
             let txn_id = parse_txn_id(parts[1])?;
             let commit_ts = parse_ts(parts[2])?;
+            let txn = parse_tapir_transaction(&parts[3..])?;
+            let shard = crate::tapir::ShardNumber(0);
+            let read_set: Vec<(String, crate::tapir::Timestamp)> = txn
+                .shard_read_set(shard)
+                .map(|(k, ts)| (k.clone(), ts))
+                .collect();
+            let write_set: Vec<(String, Option<String>)> = txn
+                .shard_write_set(shard)
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            let scan_set: Vec<(String, String, crate::tapir::Timestamp)> = txn
+                .shard_scan_set(shard)
+                .map(|entry| (entry.start_key.clone(), entry.end_key.clone(), entry.timestamp))
+                .collect();
             let store = ctx.store_mut()?;
             store
-                .commit_prepared(txn_id, commit_ts)
+                .commit(txn_id, &read_set, &write_set, &scan_set, commit_ts)
                 .map_err(|e| format!("commit failed: {e}"))
         }
         "get" => {

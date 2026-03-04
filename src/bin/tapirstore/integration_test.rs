@@ -27,7 +27,7 @@ fn run_with_tmpdir(mode: &str, script_tail: &str) -> (String, String, i32) {
 fn tapir_prepare_commit_get_roundtrip() {
     let (stdout, stderr, code) = run_with_tmpdir(
         "tapir",
-        "prepare 1:1 5 x=v1 y=v2; commit 1:1 5; get-at x 5; get-at y 5",
+        "prepare 1:1 5 w:x=v1 w:y=v2; commit 1:1 5 w:x=v1 w:y=v2; get-at x 5; get-at y 5",
     );
     assert_eq!(stderr, "");
     assert_eq!(code, 0);
@@ -38,7 +38,7 @@ fn tapir_prepare_commit_get_roundtrip() {
 fn tapir_scan_and_status() {
     let (stdout, stderr, code) = run_with_tmpdir(
         "tapir",
-        "prepare 1:1 5 a=v1; commit 1:1 5; prepare 1:2 10 b=v2; commit 1:2 10; scan a z 10; status",
+        "prepare 1:1 5 w:a=v1; commit 1:1 5 w:a=v1; prepare 1:2 10 w:b=v2; commit 1:2 10 w:b=v2; scan a z 10; status",
     );
     assert_eq!(stderr, "");
     assert_eq!(code, 0);
@@ -57,7 +57,7 @@ fn tapir_scan_and_status() {
 fn tapir_seal_list_and_dump_vlog() {
     let dir = tempfile::TempDir::new().unwrap();
     let script = format!(
-        "open-with {} 0; prepare 1:1 5 x=v1; commit 1:1 5; seal; status",
+        "open-with {} 0; prepare 1:1 5 w:x=v1; commit 1:1 5 w:x=v1; seal; status",
         dir.path().display()
     );
     let (stdout, stderr, code) = run_raw("tapir", &script);
