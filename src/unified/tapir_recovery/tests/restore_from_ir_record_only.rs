@@ -2,7 +2,6 @@ use crate::mvcc::disk::memory_io::MemoryIo;
 use crate::unified::ir::record::{IrMemEntry, VlogEntryType};
 
 use super::helpers::*;
-use super::super::replay_committed_from_ir_record;
 
 /// Demonstrates how to take a backup of the IR record only and rebuild
 /// everything including the MVCC memtable/SSTs.

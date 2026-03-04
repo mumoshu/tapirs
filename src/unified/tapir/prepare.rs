@@ -74,10 +74,6 @@ fn new_store_state<K: Ord + Clone, V, IO: DiskIo>(
 }
 
 impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
-    fn vlog_read_count(&self) -> u64 {
-        self.vlog_read_count.get()
-    }
-
     fn increment_vlog_read_count(&self) {
         self.vlog_read_count.set(self.vlog_read_count.get() + 1);
     }
@@ -149,10 +145,6 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         &self.sealed_vlog_segments
     }
 
-    fn active_vlog_id(&self) -> u64 {
-        self.active_vlog.id
-    }
-
     fn active_or_sealed_segment_ref(&self, segment_id: u64) -> Option<&VlogSegment<IO>> {
         self.sealed_vlog_segments
             .get(&segment_id)
@@ -161,31 +153,6 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
             } else {
                 None
             })
-    }
-
-    fn get_range(
-        &self,
-        key: &K,
-        timestamp: Timestamp,
-    ) -> Result<(Timestamp, Option<Timestamp>), StorageError> {
-        if let Some((ck, _entry)) = self.memtable.get_at(key, timestamp) {
-            let write_ts = ck.timestamp.0;
-            let next = self.memtable.find_next_version(key, write_ts);
-            return Ok((write_ts, next));
-        }
-        Ok((Timestamp::default(), None))
-    }
-
-    fn has_writes_in_range(
-        &self,
-        start: &K,
-        end: &K,
-        after_ts: Timestamp,
-        before_ts: Timestamp,
-    ) -> Result<bool, StorageError> {
-        Ok(self
-            .memtable
-            .has_writes_in_range(start, end, after_ts, before_ts))
     }
 
     pub(crate) fn commit(
@@ -843,11 +810,11 @@ mod tests {
         };
 
         let first = runner.tapir.resolve_on_disk(&ptr).expect("first resolve should read from disk");
-        assert_eq!(runner.tapir.vlog_read_count(), 1);
+        assert_eq!(runner.tapir.vlog_read_count.get(), 1);
         assert_eq!(first.write_set[0].1.as_deref(), Some("v"));
 
         let second = runner.tapir.resolve_on_disk(&ptr).expect("second resolve should hit cache");
-        assert_eq!(runner.tapir.vlog_read_count(), 1);
+        assert_eq!(runner.tapir.vlog_read_count.get(), 1);
         assert!(Arc::ptr_eq(&first, &second));
     }
 }

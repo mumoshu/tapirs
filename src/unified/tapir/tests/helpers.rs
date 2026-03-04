@@ -39,14 +39,6 @@ pub fn test_ts(time: u64) -> Timestamp {
     }
 }
 
-/// Create a Timestamp with explicit client_id.
-pub fn test_ts_client(time: u64, client: u64) -> Timestamp {
-    Timestamp {
-        time,
-        client_id: IrClientId(client),
-    }
-}
-
 /// Create a TransactionId.
 pub fn test_txn_id(client: u64, num: u64) -> TransactionId {
     TransactionId {
@@ -100,32 +92,6 @@ pub fn make_txn_with_scans(
             start_key: start.to_string(),
             end_key: end.to_string(),
             timestamp: ts,
-        });
-    }
-    Arc::new(txn)
-}
-
-/// Build a SharedTransaction from pre-extracted IrPayloadInline::Prepare fields.
-///
-/// Used by restore tests that replay committed transactions from IR record data.
-pub fn build_txn_from_parts(
-    read_set: &[(String, Timestamp)],
-    write_set: &[(String, Option<String>)],
-    scan_set: &[(String, String, Timestamp)],
-) -> SharedTransaction<String, String, Timestamp> {
-    let mut txn = Transaction::<String, String, Timestamp>::default();
-    for (k, ts) in read_set {
-        txn.add_read(sharded(k), *ts);
-    }
-    for (k, v) in write_set {
-        txn.add_write(sharded(k), v.clone());
-    }
-    for (start, end, ts) in scan_set {
-        txn.scan_set.push(ScanEntry {
-            shard: ShardNumber(0),
-            start_key: start.clone(),
-            end_key: end.clone(),
-            timestamp: *ts,
         });
     }
     Arc::new(txn)
@@ -201,13 +167,6 @@ pub fn prepare_and_commit(
         txn,
         commit_ts,
     );
-}
-
-// === View Change Operations ===
-
-/// Seal the current view.
-pub fn seal_view(store: &mut TestStore) {
-    store.seal_current_view(u64::MAX).unwrap();
 }
 
 // === Assertion Helpers ===

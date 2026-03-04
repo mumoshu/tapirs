@@ -915,12 +915,12 @@ async fn fuzz_tapir_transactions_inner(seed: u64) {
         for round in 0..num_reshard_rounds {
             let round_for_log = round;
             let log_for_cb = reshard_event_log.clone();
-            manager.set_progress_callback(move |phase| {
+            manager.on_progress = Some(Box::new(move |phase| {
                 log_for_cb.record(FuzzEvent::ReshardPhase {
                     round: round_for_log,
                     phase: phase.to_string(),
                 });
-            });
+            }));
             let mut shard_keys: Vec<_> = shard_ranges.keys().cloned().collect();
             shard_keys.sort();
 

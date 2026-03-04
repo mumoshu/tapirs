@@ -100,24 +100,6 @@ impl TestStore {
         self.tapir_state.prepare(txn_id, &txn, commit_ts);
     }
 
-    pub(crate) fn abort(&mut self, op_id: OpId, txn_id: TransactionId) {
-        let current_view = self.current_view();
-        self.insert_ir_entry(
-            op_id,
-            IrMemEntry {
-                entry_type: VlogEntryType::Abort,
-                // IR inconsistent operation upcalls to TAPIR on Finalize
-                // so when abort is called, the prepare entry is already finalized.
-                state: IrState::Finalized(current_view),
-                payload: IrPayloadInline::Abort {
-                    transaction_id: txn_id,
-                    commit_ts: None,
-                },
-            },
-        );
-        self.tapir_state.abort(&txn_id);
-    }
-
     pub(crate) fn commit(
         &mut self,
         op_id: OpId,

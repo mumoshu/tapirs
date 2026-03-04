@@ -2,7 +2,6 @@ use crate::mvcc::disk::memory_io::MemoryIo;
 use crate::unified::ir::record::IrMemEntry;
 
 use super::helpers::*;
-use super::super::replay_committed_from_ir_record;
 
 /// Demonstrates how to take a backup of the IR record AND MVCC SST entries
 /// and rebuild everything from those two sources.

@@ -6,7 +6,6 @@ use crate::{
 use rand::{seq::SliceRandom, Rng, RngCore, SeedableRng};
 use rand::rngs::StdRng;
 use rand::distributions::{Distribution, Uniform};
-use rand_distr::Normal;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Debug,
@@ -74,7 +73,6 @@ pub enum LatencyConfig {
     None,
     Fixed(Duration),
     Uniform { min: Duration, max: Duration },
-    Normal { mean: Duration, stddev: Duration },
 }
 
 struct ReorderBuffer<U: IrReplicaUpcalls> {
@@ -96,11 +94,6 @@ impl<U: IrReplicaUpcalls> ReorderBuffer<U> {
         self.messages.len() >= max_size
     }
 
-    #[cfg(test)]
-    fn flush(&mut self, rng: &mut StdRng) -> Vec<IrMessage<U, Channel<U>>> {
-        self.messages.shuffle(rng);
-        self.messages.drain(..).collect()
-    }
 }
 
 impl<U: IrReplicaUpcalls> FaultyChannelTransport<U> {
@@ -129,22 +122,8 @@ impl<U: IrReplicaUpcalls> FaultyChannelTransport<U> {
         self.state.write().unwrap().config.drop_rate = rate;
     }
 
-    #[cfg(test)]
-    pub fn set_duplicate_rate(&self, rate: f64) {
-        assert!(
-            (0.0..=1.0).contains(&rate),
-            "duplicate_rate must be in [0.0, 1.0]"
-        );
-        self.state.write().unwrap().config.duplicate_rate = rate;
-    }
-
     pub fn set_latency(&self, latency: LatencyConfig) {
         self.state.write().unwrap().config.latency = latency;
-    }
-
-    #[cfg(test)]
-    pub fn set_reorder_buffer_size(&self, size: usize) {
-        self.state.write().unwrap().config.reorder_buffer_size = size;
     }
 
     pub fn partition_node(&self, node: usize) {
@@ -170,30 +149,6 @@ impl<U: IrReplicaUpcalls> FaultyChannelTransport<U> {
                 }
             }
         }
-    }
-
-    #[cfg(test)]
-    pub fn partition_pair(&self, a: usize, b: usize) {
-        let mut state = self.state.write().unwrap();
-        state.config.partition_pairs.insert((a, b));
-        state.config.partition_pairs.insert((b, a));
-    }
-
-    #[cfg(test)]
-    pub fn heal_pair(&self, a: usize, b: usize) {
-        let mut state = self.state.write().unwrap();
-        state.config.partition_pairs.remove(&(a, b));
-        state.config.partition_pairs.remove(&(b, a));
-    }
-
-    #[cfg(test)]
-    pub fn set_config(&self, config: NetworkFaultConfig) {
-        self.state.write().unwrap().config = config;
-    }
-
-    #[cfg(test)]
-    pub fn config(&self) -> NetworkFaultConfig {
-        self.state.read().unwrap().config.clone()
     }
 
     pub fn set_shard(&self, shard: ShardNumber) {
@@ -261,16 +216,6 @@ impl<U: IrReplicaUpcalls> FaultyChannelTransport<U> {
                 let dist = Uniform::new(min_ms, max_ms);
                 Duration::from_millis(dist.sample(&mut s.rng))
             }
-            LatencyConfig::Normal { mean, stddev } => {
-                let mean_ms = mean.as_millis() as f64;
-                let stddev_ms = stddev.as_millis() as f64;
-                if let Ok(dist) = Normal::new(mean_ms, stddev_ms) {
-                    let sample = dist.sample(&mut s.rng).max(0.0);
-                    Duration::from_millis(sample as u64)
-                } else {
-                    *mean
-                }
-            }
         }
     }
 
@@ -311,16 +256,6 @@ impl<U: IrReplicaUpcalls> FaultyChannelTransport<U> {
                 }
                 let dist = Uniform::new(min_ms, max_ms);
                 Duration::from_millis(dist.sample(rng))
-            }
-            LatencyConfig::Normal { mean, stddev } => {
-                let mean_ms = mean.as_millis() as f64;
-                let stddev_ms = stddev.as_millis() as f64;
-                if let Ok(dist) = Normal::new(mean_ms, stddev_ms) {
-                    let sample = dist.sample(rng).max(0.0);
-                    Duration::from_millis(sample as u64)
-                } else {
-                    *mean
-                }
             }
         }
     }

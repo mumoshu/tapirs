@@ -92,52 +92,6 @@ impl<K: Ord + Clone> Memtable<K> {
         results
     }
 
-    pub fn has_writes_in_range(
-        &self,
-        start: &K,
-        end: &K,
-        after_ts: Timestamp,
-        before_ts: Timestamp,
-    ) -> bool
-    where
-        Timestamp: MaxValue,
-    {
-        let from = CompositeKey::new(start.clone(), Timestamp::max_value());
-        for (ck, entry) in self.map.range(from..) {
-            if ck.key > *end {
-                break;
-            }
-            let ts = ck.timestamp.0;
-            if ts > after_ts && ts < before_ts && entry.value_ref.is_some() {
-                return true;
-            }
-        }
-        false
-    }
-
-    pub fn find_next_version(&self, key: &K, after_ts: Timestamp) -> Option<Timestamp>
-    where
-        Timestamp: MaxValue,
-    {
-        let from = CompositeKey::new(key.clone(), Timestamp::max_value());
-        let mut best: Option<Timestamp> = None;
-
-        for (ck, _) in self.map.range(from..) {
-            if ck.key != *key {
-                break;
-            }
-            let ts = ck.timestamp.0;
-            if ts > after_ts {
-                best = Some(match best {
-                    Some(b) if ts < b => ts,
-                    Some(b) => b,
-                    None => ts,
-                });
-            }
-        }
-        best
-    }
-
     pub fn convert_in_memory_to_on_disk(
         &mut self,
         txn_vlog_index: &BTreeMap<OccTransactionId, VlogPtr>,

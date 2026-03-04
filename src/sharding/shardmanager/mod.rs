@@ -135,10 +135,6 @@ impl<
         }
     }
 
-    pub(crate) fn set_progress_callback(&mut self, cb: impl Fn(&str) + Send + Sync + 'static) {
-        self.on_progress = Some(Box::new(cb));
-    }
-
     pub(crate) fn report_progress(&self, msg: &str) {
         if let Some(ref cb) = self.on_progress {
             cb(msg);

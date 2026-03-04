@@ -248,12 +248,6 @@ impl<IO: Clone, CO: Clone, CR: Clone> VersionedRecord<IO, CO, CR> {
 
     // --- Delta extraction ---
 
-    /// Returns a reference to the overlay (the delta since last seal).
-    #[cfg(test)]
-    fn overlay(&self) -> &RecordImpl<IO, CO, CR> {
-        &self.overlay
-    }
-
     /// Returns a clone of the overlay.
     pub fn overlay_clone(&self) -> RecordImpl<IO, CO, CR> {
         self.overlay.clone()
@@ -286,20 +280,6 @@ impl<IO: Clone, CO: Clone, CR: Clone> VersionedRecord<IO, CO, CR> {
     /// Returns true if a base has been established (view change has occurred).
     pub fn has_base(&self) -> bool {
         self.base_view > 0
-    }
-
-    // --- View change operations ---
-
-    /// Merge overlay into base and clear the overlay. Called at view change boundaries.
-    #[cfg(test)]
-    fn seal(&mut self, new_view: u64) {
-        for (op_id, entry) in std::mem::take(&mut self.overlay.inconsistent) {
-            self.base.inconsistent.insert(op_id, entry);
-        }
-        for (op_id, entry) in std::mem::take(&mut self.overlay.consensus) {
-            self.base.consensus.insert(op_id, entry);
-        }
-        self.base_view = new_view;
     }
 
     // --- Size ---
@@ -373,7 +353,7 @@ mod tests {
             VersionedEntry::Occupied(_) => panic!("expected vacant"),
         }
         assert_eq!(vr.inconsistent_len(), 1);
-        assert_eq!(vr.overlay().inconsistent.len(), 1);
+        assert_eq!(vr.overlay_clone().inconsistent.len(), 1);
         assert_eq!(vr.base().inconsistent.len(), 0);
     }
 
@@ -388,7 +368,7 @@ mod tests {
             VersionedEntry::Vacant(_) => panic!("expected occupied"),
         }
         // No promotion to overlay — just reading
-        assert_eq!(vr.overlay().inconsistent.len(), 0);
+        assert_eq!(vr.overlay_clone().inconsistent.len(), 0);
     }
 
     #[test]
@@ -415,8 +395,8 @@ mod tests {
         entry.modified_view = 2;
 
         // Entry promoted to overlay
-        assert_eq!(vr.overlay().inconsistent.len(), 1);
-        assert!(vr.overlay().inconsistent.get(&op_id(1, 1)).unwrap().state.is_finalized());
+        assert_eq!(vr.overlay_clone().inconsistent.len(), 1);
+        assert!(vr.overlay_clone().inconsistent.get(&op_id(1, 1)).unwrap().state.is_finalized());
         // Base unchanged
         assert!(vr.base().inconsistent.get(&op_id(1, 1)).unwrap().state.is_tentative());
     }
@@ -493,11 +473,18 @@ mod tests {
         let entry = vr.get_mut_inconsistent(&op_id(1, 1)).unwrap();
         entry.state = State::Finalized(super::super::ViewNumber(2));
 
-        vr.seal(2);
+        // Inline seal: merge overlay into base
+        for (op_id, entry) in std::mem::take(&mut vr.overlay.inconsistent) {
+            vr.base.inconsistent.insert(op_id, entry);
+        }
+        for (op_id, entry) in std::mem::take(&mut vr.overlay.consensus) {
+            vr.base.consensus.insert(op_id, entry);
+        }
+        vr.base_view = 2;
 
         assert_eq!(vr.base_view(), 2);
-        assert!(vr.overlay().inconsistent.is_empty());
-        assert!(vr.overlay().consensus.is_empty());
+        assert!(vr.overlay_clone().inconsistent.is_empty());
+        assert!(vr.overlay_clone().consensus.is_empty());
         assert_eq!(vr.base().inconsistent.len(), 2);
         // Modified entry in base reflects the overlay update
         assert!(vr.base().inconsistent.get(&op_id(1, 1)).unwrap().state.is_finalized());
@@ -541,7 +528,7 @@ mod tests {
         entry.result = "r2".to_string();
         entry.state = State::Finalized(super::super::ViewNumber(1));
 
-        assert_eq!(vr.overlay().consensus.get(&op_id(1, 1)).unwrap().result, "r2");
+        assert_eq!(vr.overlay_clone().consensus.get(&op_id(1, 1)).unwrap().result, "r2");
     }
 
     #[test]
@@ -561,7 +548,7 @@ mod tests {
         let vr = VersionedRecord::from_full(base, 5);
 
         assert_eq!(vr.base_view(), 5);
-        assert!(vr.overlay().inconsistent.is_empty());
+        assert!(vr.overlay_clone().inconsistent.is_empty());
         assert_eq!(vr.inconsistent_len(), 1);
     }
 }
