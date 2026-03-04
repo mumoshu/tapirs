@@ -15,13 +15,25 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub(crate) struct TapirState<K: Ord, V, IO: DiskIo> {
+    /// MVCC index: maps (key, timestamp) → ValueLocation for get/get_at/scan.
+    /// Rebuilt on recovery by scanning committed vlog segments (see `recover_segment`),
+    /// which inserts OnDisk entries pointing into the committed VlogLsm.
     memtable: Memtable<K>,
+    /// Committed transaction store: txn_id → serialized Transaction in vlog.
+    /// On commit, the transaction is written here and MVCC entries point into it.
     committed: VlogLsm<OccTransactionId, Arc<Transaction<K, V>>, IO>,
+    /// Prepared transaction store: txn_id → serialized Transaction in vlog.
+    /// Provides crash durability for in-flight prepares. Cleared on commit/abort.
     prepared: VlogLsm<OccTransactionId, Arc<Transaction<K, V>>, IO>,
+    /// LRU cache for deserialized transactions read from sealed vlog segments.
     prepare_cache: RefCell<PreparedTransactions<Transaction<K, V>>>,
+    /// Number of vlog reads performed (for cache hit rate tracking in tests).
     vlog_read_count: Cell<u64>,
+    /// Persisted metadata: view number, vlog segment positions, SST lists.
     manifest: UnifiedManifest,
+    /// Root directory for all store files (vlogs, SSTs, manifest).
     base_dir: PathBuf,
+    /// File open flags (create, direct I/O).
     io_flags: OpenFlags,
 }
 
