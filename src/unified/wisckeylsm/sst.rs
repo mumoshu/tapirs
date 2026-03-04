@@ -5,6 +5,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+/// SST metadata stored in manifests.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct SstMeta {
+    pub id: u64,
+    pub path: PathBuf,
+    pub num_entries: u64,
+}
+
 /// On-disk footer (last block of the SSTable file).
 #[derive(Debug, Serialize, Deserialize)]
 struct Footer {
