@@ -56,8 +56,12 @@ fn tapir_state_prepare_conflict_commit_seal_reopen_get_scan() {
         vec!["UNIFIED_MANIFEST", "prep_vlog_0000.dat", "vlog_seg_0000.dat"],
         "exact files after first seal"
     );
-    for (_, size) in &files_after_first_seal {
-        assert!(*size > 0, "all persisted files should be non-empty after first seal");
+    for (name, size) in &files_after_first_seal {
+        // prep_vlog may be empty if all prepared txns were committed before seal.
+        if name.contains("prep_vlog") {
+            continue;
+        }
+        assert!(*size > 0, "persisted file {name:?} should be non-empty after first seal");
     }
 
     let txn3 = make_txn(vec![], vec![("y", Some("v3"))]);

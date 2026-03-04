@@ -164,9 +164,8 @@ fn restore_from_ir_record_rebuilds_mvcc() {
         .do_uncommitted_get_at(&"x".to_string(), test_ts(10))
         .unwrap();
 
-    // After restore (no seal): active VLog still contains committed transaction entries.
+    // After restore (no seal): data is in memtable only, VLog is still empty.
     assert_store_file_names(&restored_path, &["vlog_seg_0000.dat"]);
-    assert_store_file_size_positive(&restored_path, "vlog_seg_0000.dat");
 }
 
 /// Test that restore works after seal (IR entries are in VLog, not in memory).
@@ -271,9 +270,8 @@ fn restore_from_sealed_vlog_rebuilds_mvcc() {
     assert_eq!(scan[2].1.as_deref(), Some("val_c"));
     assert_eq!(scan[2].2, test_ts(10));
 
-    // Restored store has active VLog containing committed transaction entries.
+    // After restore (no seal): data is in memtable only, VLog is still empty.
     assert_store_file_names(&restored_path, &["vlog_seg_0000.dat"]);
-    assert_store_file_size_positive(&restored_path, "vlog_seg_0000.dat");
 }
 
 // === Helper ===

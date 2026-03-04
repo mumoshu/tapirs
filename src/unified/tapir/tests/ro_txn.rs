@@ -62,7 +62,7 @@ fn ro_txn_quorum_read_scan() {
         "Scan before commit_ts should return empty"
     );
 
-    // No seal performed, but commits append transaction entries to active VLog.
+    // No seal performed — data is in memtable only, VLog is still empty.
     assert_store_file_names(&store, &["vlog_seg_0000.dat"]);
-    assert_store_file_size_positive(&store, "vlog_seg_0000.dat");
+    assert_store_file_size(&store, "vlog_seg_0000.dat", 0);
 }

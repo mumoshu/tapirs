@@ -104,35 +104,10 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
         self.memtable.remove(key)
     }
 
-    /// Insert a key-value pair directly into the memtable (no vlog write).
-    /// Used during recovery to rebuild in-memory state from existing vlog data.
-    pub(crate) fn mem_insert(&mut self, key: K, value: V) {
+    /// Insert a key-value pair into the memtable. No vlog/index write —
+    /// those happen at `seal_view()` time via the caller-provided closure.
+    pub fn put(&mut self, key: K, value: V) {
         self.memtable.insert(key, value);
-    }
-
-    /// Serialize V to the vlog, insert (K, V) into memtable, insert (K, VlogPtr)
-    /// into the index. Atomic from the caller's perspective.
-    pub fn put(
-        &mut self,
-        key: K,
-        value: V,
-        entry_type: u8,
-        client_id: u64,
-        number: u64,
-    ) -> Result<(), StorageError>
-    where
-        K: Serialize + Clone,
-        V: Serialize,
-    {
-        let payload =
-            bitcode::serialize(&value).map_err(|e| StorageError::Codec(e.to_string()))?;
-        let ptr =
-            self.active_vlog
-                .append_raw_entry(entry_type, client_id, number, &payload)?;
-        self.entry_count += 1;
-        self.index.insert(key.clone(), ptr);
-        self.memtable.insert(key, value);
-        Ok(())
     }
 
     /// Full read path: memtable (clone V) → index (VlogPtr → vlog) → SSTs
@@ -163,13 +138,49 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
         Ok(None)
     }
 
-    /// Clear memtable. If the index exceeds `max_index_entries`, flush it to a
-    /// new SST and clear it. Rotate the vlog segment if it meets the size
-    /// threshold. Returns sealed segment metadata if the segment was rotated.
-    pub fn seal_view(&mut self, min_vlog_size: u64) -> Result<Option<VlogSegmentMeta>, StorageError>
+    /// Flush memtable to vlog+index via `header_fn`, clear memtable, optionally
+    /// flush index to SST, optionally rotate vlog. Returns sealed segment
+    /// metadata if the vlog segment was rotated.
+    ///
+    /// `header_fn` is called for each memtable entry not already in the index.
+    /// Return `Some((entry_type, client_id, number))` to flush to vlog, or
+    /// `None` to discard.
+    pub fn seal_view<F>(
+        &mut self,
+        min_vlog_size: u64,
+        header_fn: F,
+    ) -> Result<Option<VlogSegmentMeta>, StorageError>
     where
         K: Serialize + DeserializeOwned + Clone,
+        V: Serialize,
+        F: Fn(&K, &V) -> Option<(u8, u64, u64)>,
     {
+        // Batch-flush memtable entries not already in the index.
+        let mut batch_keys: Vec<K> = Vec::new();
+        let mut batch_raw: Vec<(u8, u64, u64, Vec<u8>)> = Vec::new();
+        for (key, value) in &self.memtable {
+            if self.index.contains_key(key) {
+                continue; // recovery entry — already in vlog
+            }
+            if let Some((entry_type, client_id, number)) = header_fn(key, value) {
+                let payload = bitcode::serialize(value)
+                    .map_err(|e| StorageError::Codec(e.to_string()))?;
+                batch_keys.push(key.clone());
+                batch_raw.push((entry_type, client_id, number, payload));
+            }
+        }
+        if !batch_raw.is_empty() {
+            let raw_refs: Vec<(u8, u64, u64, &[u8])> = batch_raw
+                .iter()
+                .map(|(et, cid, num, bytes)| (*et, *cid, *num, bytes.as_slice()))
+                .collect();
+            let ptrs = self.active_vlog.append_raw_batch(&raw_refs)?;
+            for (key, ptr) in batch_keys.into_iter().zip(ptrs) {
+                self.index.insert(key, ptr);
+            }
+            self.entry_count += batch_raw.len() as u32;
+        }
+
         self.active_vlog.sync()?;
         self.active_vlog.finish_view(self.entry_count);
 
@@ -323,12 +334,16 @@ mod tests {
         let dir = MemoryIo::temp_path();
         let mut lsm = open_test_lsm(&dir, 4);
 
-        lsm.put("k_a".into(), "val_a".into(), 0x80, 1, 1).unwrap();
-        lsm.put("k_b".into(), "val_b".into(), 0x80, 1, 2).unwrap();
+        lsm.put("k_a".into(), "val_a".into());
+        lsm.put("k_b".into(), "val_b".into());
 
         assert_eq!(lsm.get(&"k_a".into()).unwrap(), Some("val_a".into()));
         assert_eq!(lsm.get(&"k_b".into()).unwrap(), Some("val_b".into()));
         assert_eq!(lsm.get(&"missing".into()).unwrap(), None);
+    }
+
+    fn test_header_fn(_k: &String, _v: &String) -> Option<(u8, u64, u64)> {
+        Some((0x80, 0, 0))
     }
 
     #[test]
@@ -338,12 +353,12 @@ mod tests {
         let mut lsm = open_test_lsm(&dir, 4);
 
         // Put k_a, k_b (2 entries in index, below threshold).
-        lsm.put("k_a".into(), "val_a".into(), 0x80, 1, 1).unwrap();
-        lsm.put("k_b".into(), "val_b".into(), 0x80, 1, 2).unwrap();
+        lsm.put("k_a".into(), "val_a".into());
+        lsm.put("k_b".into(), "val_b".into());
 
         // Seal #1: memtable cleared, index stays (2 < 4).
         // min_vlog_size=0 forces vlog rotation.
-        lsm.seal_view(0).unwrap();
+        lsm.seal_view(0, test_header_fn).unwrap();
         lsm.start_view(1);
 
         // Reads go through index → vlog.
@@ -351,14 +366,14 @@ mod tests {
         assert_eq!(lsm.get(&"k_b".into()).unwrap(), Some("val_b".into()));
 
         // Put k_c, k_d (index now has 4 entries: k_a, k_b, k_c, k_d).
-        lsm.put("k_c".into(), "val_c".into(), 0x80, 1, 3).unwrap();
-        lsm.put("k_d".into(), "val_d".into(), 0x80, 1, 4).unwrap();
+        lsm.put("k_c".into(), "val_c".into());
+        lsm.put("k_d".into(), "val_d".into());
 
         // k_c from memtable (current view).
         assert_eq!(lsm.get(&"k_c".into()).unwrap(), Some("val_c".into()));
 
         // Seal #2: index has 4 entries >= threshold → flushed to SST, cleared.
-        lsm.seal_view(0).unwrap();
+        lsm.seal_view(0, test_header_fn).unwrap();
         lsm.start_view(2);
 
         // All reads now go through SST → vlog.
@@ -377,24 +392,24 @@ mod tests {
         assert_eq!(lsm.get(&"k_a".into()).unwrap(), None);
 
         // (2) Put k_a, k_b → memtable reads.
-        lsm.put("k_a".into(), "val_a".into(), 0x80, 1, 1).unwrap();
-        lsm.put("k_b".into(), "val_b".into(), 0x80, 1, 2).unwrap();
+        lsm.put("k_a".into(), "val_a".into());
+        lsm.put("k_b".into(), "val_b".into());
         assert_eq!(lsm.get(&"k_a".into()).unwrap(), Some("val_a".into()));
         assert_eq!(lsm.get(&"k_b".into()).unwrap(), Some("val_b".into()));
 
         // (3) Seal #1: index stays (2 < 4), vlog rotated.
-        lsm.seal_view(0).unwrap();
+        lsm.seal_view(0, test_header_fn).unwrap();
         lsm.start_view(1);
         assert_eq!(lsm.get(&"k_a".into()).unwrap(), Some("val_a".into()));
         assert_eq!(lsm.get(&"k_b".into()).unwrap(), Some("val_b".into()));
 
         // Put k_c, k_d into new segment.
-        lsm.put("k_c".into(), "val_c".into(), 0x80, 1, 3).unwrap();
-        lsm.put("k_d".into(), "val_d".into(), 0x80, 1, 4).unwrap();
+        lsm.put("k_c".into(), "val_c".into());
+        lsm.put("k_d".into(), "val_d".into());
         assert_eq!(lsm.get(&"k_c".into()).unwrap(), Some("val_c".into()));
 
         // (4) Seal #2: index has 4 >= 4 → flushed to SST.
-        lsm.seal_view(0).unwrap();
+        lsm.seal_view(0, test_header_fn).unwrap();
         lsm.start_view(2);
         assert_eq!(lsm.get(&"k_a".into()).unwrap(), Some("val_a".into()));
         assert_eq!(lsm.get(&"k_b".into()).unwrap(), Some("val_b".into()));
@@ -402,13 +417,13 @@ mod tests {
         assert_eq!(lsm.get(&"k_d".into()).unwrap(), Some("val_d".into()));
 
         // (5) Put k_e into seg 2, verify mixed reads.
-        lsm.put("k_e".into(), "val_e".into(), 0x80, 1, 5).unwrap();
+        lsm.put("k_e".into(), "val_e".into());
         assert_eq!(lsm.get(&"k_e".into()).unwrap(), Some("val_e".into())); // memtable
         assert_eq!(lsm.get(&"k_a".into()).unwrap(), Some("val_a".into())); // SST → vlog
         assert_eq!(lsm.get(&"k_c".into()).unwrap(), Some("val_c".into())); // SST → vlog
 
         // (6) Seal #3: index has 1 entry (k_e) < 4, stays in index.
-        lsm.seal_view(0).unwrap();
+        lsm.seal_view(0, test_header_fn).unwrap();
         lsm.start_view(3);
         assert_eq!(lsm.get(&"k_e".into()).unwrap(), Some("val_e".into())); // index → vlog
         assert_eq!(lsm.get(&"k_a".into()).unwrap(), Some("val_a".into())); // SST → vlog

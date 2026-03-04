@@ -132,13 +132,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
             scan_set: scan_set.to_vec(),
         });
 
-        self.committed.put(
-            txn_id,
-            arc_txn,
-            TAPIR_COMMITTED_TXN_ENTRY_TYPE,
-            txn_id.client_id.0,
-            txn_id.number,
-        )?;
+        self.committed.put(txn_id, arc_txn);
 
         for (i, (key, value)) in write_set.iter().enumerate() {
             let value_ref = if value.is_some() {
@@ -197,13 +191,8 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
             scan_set: Vec::new(),
         });
 
-        self.prepared.put(
-            txn_id,
-            prepare,
-            TAPIR_PREPARED_TXN_ENTRY_TYPE,
-            txn_id.client_id.0,
-            txn_id.number,
-        )
+        self.prepared.put(txn_id, prepare);
+        Ok(())
     }
 
     fn convert_in_memory_to_on_disk(&mut self) {
@@ -283,7 +272,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
                 continue;
             }
 
-            self.prepared.mem_insert(txn_id, Arc::new(txn));
+            self.prepared.put(txn_id, Arc::new(txn));
         }
 
         Ok(())
@@ -337,18 +326,40 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         Ok(cached)
     }
 
-    pub(crate) fn seal_current_view(&mut self, min_view_vlog_size: u64) -> Result<(), StorageError> {
-        self.convert_in_memory_to_on_disk();
-
-        let sealed_meta = self.committed.seal_view(min_view_vlog_size)?;
+    pub(crate) fn seal_current_view(&mut self, min_view_vlog_size: u64) -> Result<(), StorageError>
+    where
+        K: serde::Serialize,
+        V: serde::Serialize,
+    {
+        // FIRST: flush memtable→vlog+index, then clear memtable
+        let sealed_meta =
+            self.committed
+                .seal_view(min_view_vlog_size, |txn_id, _txn| {
+                    Some((
+                        TAPIR_COMMITTED_TXN_ENTRY_TYPE,
+                        txn_id.client_id.0,
+                        txn_id.number,
+                    ))
+                })?;
         if let Some(meta) = sealed_meta {
             self.manifest.committed.sealed_vlog_segments.push(meta);
         }
 
-        let prepared_sealed = self.prepared.seal_view(min_view_vlog_size)?;
+        let prepared_sealed =
+            self.prepared
+                .seal_view(min_view_vlog_size, |txn_id, _txn| {
+                    Some((
+                        TAPIR_PREPARED_TXN_ENTRY_TYPE,
+                        txn_id.client_id.0,
+                        txn_id.number,
+                    ))
+                })?;
         if let Some(meta) = prepared_sealed {
             self.manifest.prepared.sealed_vlog_segments.push(meta);
         }
+
+        // THEN: convert InMemory→OnDisk (index now populated by seal above)
+        self.convert_in_memory_to_on_disk();
 
         self.manifest.current_view += 1;
         self.manifest.committed.active_segment_id = self.committed.active_vlog_id();

@@ -47,9 +47,7 @@ fn tapir_scan_and_status() {
         "a=v1 @5\n\
          b=v2 @10\n\
          view=0 sealed_segments=0\n\
-         vlog_seg_0000 size=124 views=[0]\n\
-         @0 TAPIR_COMMIT txn=1:1 ts=5 a=v1\n\
-         @62 TAPIR_COMMIT txn=1:2 ts=10 b=v2\n"
+         vlog_seg_0000 size=0 views=[0]\n"
     );
 }
 

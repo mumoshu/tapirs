@@ -119,32 +119,6 @@ impl<IO: DiskIo> VlogSegment<IO> {
         })
     }
 
-    /// Append a protocol-agnostic entry to the segment.
-    pub fn append_raw_entry(
-        &mut self,
-        entry_type: u8,
-        id_client: u64,
-        id_number: u64,
-        payload_bytes: &[u8],
-    ) -> Result<VlogPtr, StorageError> {
-        let raw = Self::encode_raw_entry(entry_type, id_client, id_number, payload_bytes);
-        let total_len = raw.len();
-
-        let mut buf = AlignedBuf::new(total_len);
-        buf.as_full_slice_mut()[..total_len].copy_from_slice(&raw);
-        buf.set_len(total_len);
-
-        let offset = self.write_offset;
-        IO::block_on(self.io.as_ref().unwrap().pwrite(&buf, offset))?;
-        self.write_offset += total_len as u64;
-
-        Ok(VlogPtr {
-            segment_id: self.id,
-            offset,
-            length: total_len as u32,
-        })
-    }
-
     /// Append a protocol-agnostic batch to the segment in one write.
     pub fn append_raw_batch(
         &mut self,

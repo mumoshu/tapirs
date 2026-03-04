@@ -50,8 +50,9 @@ fn rw_txn_prepare_commit_read() {
     assert_get_at(&store, "x", test_ts(5), Some("v2"), test_ts(5));
 
     assert_get_none(&store, "nonexistent", test_ts(100));
+    // No seal performed — data is in memtable only, VLog is still empty.
     assert_store_file_names(&store, &["vlog_seg_0000.dat"]);
-    assert_store_file_size_positive(&store, "vlog_seg_0000.dat");
+    assert_store_file_size(&store, "vlog_seg_0000.dat", 0);
 }
 
 #[test]
