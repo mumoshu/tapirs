@@ -38,7 +38,7 @@ impl Default for CoreConfig {
 
 /// Launches reactor threads, one per core.
 pub struct CoreLauncher {
-    pub configs: Vec<CoreConfig>,
+    configs: Vec<CoreConfig>,
 }
 
 impl CoreLauncher {

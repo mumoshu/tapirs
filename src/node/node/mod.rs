@@ -21,19 +21,19 @@ pub struct ReplicaHandle {
 }
 
 pub struct Node {
-    pub replicas: Mutex<BTreeMap<ShardNumber, ReplicaHandle>>,
+    pub(crate) replicas: Mutex<BTreeMap<ShardNumber, ReplicaHandle>>,
     pub(crate) persist_dir: String,
     pub(crate) directory: Arc<InMemoryShardDirectory<TcpAddress>>,
     /// Holds the CachingShardDirectory alive so its background sync task
     /// continues running. When None, no discovery sync is active.
     /// Also used to register/unregister own_shards for PUSH filtering.
     pub(crate) discovery_dir: Option<Arc<CachingShardDirectory<TcpAddress, String, DiscoveryBackend>>>,
-    pub shard_manager_url: Option<String>,
+    pub(crate) shard_manager_url: Option<String>,
     /// Factory function for creating new RNG instances.
     /// Kept out of library to avoid thread_rng() in library code.
-    pub new_rng: fn() -> crate::Rng,
+    pub(crate) new_rng: fn() -> crate::Rng,
     #[cfg(feature = "tls")]
-    pub tls_config: Option<crate::tls::TlsConfig>,
+    pub(crate) tls_config: Option<crate::tls::TlsConfig>,
 }
 
 impl Node {
@@ -82,6 +82,15 @@ impl Node {
         let mut node = Self::with_discovery_backend(persist_dir, backend, new_rng);
         node.shard_manager_url = Some(shard_manager_url.to_string());
         node
+    }
+
+    pub fn set_shard_manager_url(&mut self, url: String) {
+        self.shard_manager_url = Some(url);
+    }
+
+    #[cfg(feature = "tls")]
+    pub fn set_tls_config(&mut self, config: Option<crate::tls::TlsConfig>) {
+        self.tls_config = config;
     }
 
     pub fn force_view_change(&self, shard: ShardNumber) -> bool {

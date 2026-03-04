@@ -5,8 +5,8 @@ use super::traits::{BenchWorkload, TargetResolver};
 use std::sync::Arc;
 use tikv_client::TransactionClient;
 
-pub struct TikvTarget {
-    pub client: Arc<TransactionClient>,
+pub(crate) struct TikvTarget {
+    pub(crate) client: Arc<TransactionClient>,
 }
 
 pub struct TikvResolver;

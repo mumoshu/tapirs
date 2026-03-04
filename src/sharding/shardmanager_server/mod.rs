@@ -22,7 +22,7 @@ pub type TapirShardManager<RD> = ShardManager<
 >;
 
 /// Shared state for the shard-manager HTTP server.
-pub struct ShardManagerState<RD: RemoteShardDirectory<TcpAddress, String>> {
+pub(crate) struct ShardManagerState<RD: RemoteShardDirectory<TcpAddress, String>> {
     pub(crate) manager: tokio::sync::Mutex<TapirShardManager<RD>>,
     pub(crate) remote: Arc<RD>,
 }

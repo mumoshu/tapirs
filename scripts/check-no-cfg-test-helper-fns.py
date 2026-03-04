@@ -13,6 +13,27 @@ TARGET_GLOBS = (
 EXCLUDE_PATHS = {
 }
 
+# Structs exempt from the "public struct with public fields must derive an
+# API trait" check. These are infrastructure or configuration types where
+# public fields are the intended API surface, or types that are `pub` only
+# because Rust requires matching visibility in trait impls or public
+# function signatures within otherwise-private modules.
+EXEMPT_STRUCTS = {
+    # Simple data holder (Arc + SocketAddr), not a data-transfer type.
+    "src/node/node/mod.rs:ReplicaHandle",
+    # io_uring configuration DTOs — users construct via struct literals.
+    "src/transport/uring/launcher.rs:ShardAssignment",
+    "src/transport/uring/launcher.rs:CoreConfig",
+    # `pub` required by trait impl in private bench module.
+    "src/bench/cluster.rs:BenchTarget",
+    # Returned from pub functions in internal testing module.
+    "src/testing/discovery.rs:TestDiscoveryCluster",
+    # Internal IR record type re-exported for convenience.
+    "src/unified/ir/record.rs:IrMemEntry",
+    # Returned from pub method `list_backups` used by binary crate.
+    "src/backup/types.rs:BackupInfo",
+}
+
 ALLOWED_UNUSED_ATTRS = {
     "src/bin/tapi/node/mod.rs:58",
     "src/ir/record.rs:50",
@@ -40,21 +61,23 @@ CFG_TEST_FN_HEADER_PATTERN = re.compile(
 )
 
 # Detects a struct header line that opens a braced struct body.
-# Only matches public structs (any pub visibility qualifier).
+# Only matches fully-public structs (`pub struct`, NOT `pub(crate) struct`
+# or `pub(super) struct`). Private and restricted structs are exempt.
 # Does NOT match tuple structs or unit structs.
 STRUCT_HEADER_PATTERN = re.compile(
     r"""(?mx)
-    ^[ \t]*pub(?:\([^)]+\))?[ \t]+struct[ \t]+(?P<name>[A-Za-z_]\w*)\b[^{;]*\{[ \t]*$
+    ^[ \t]*pub[ \t]+struct[ \t]+(?P<name>[A-Za-z_]\w*)\b[^{;]*\{[ \t]*$
     """
 )
 
 # Detects a `#[derive(...)]` line and captures derive items.
 DERIVE_PATTERN = re.compile(r"^\s*#\s*\[\s*derive\s*\((?P<items>[^)]*)\)\s*\]\s*$")
 
-# Detects a field line starting with a Rust visibility modifier (`pub`,
-# `pub(crate)`, `pub(super)`, etc.). Used to identify structs with public
-# fields.
-PUBLIC_FIELD_PATTERN = re.compile(r"^\s*pub(?:\([^)]+\))?\s+")
+# Detects a field line starting with a fully-public visibility modifier
+# (`pub field`). Does NOT match restricted visibility (`pub(crate) field`,
+# `pub(super) field`). The `\s+` after `pub` ensures `pub(crate)` does
+# not match (no whitespace between `pub` and `(`).
+PUBLIC_FIELD_PATTERN = re.compile(r"^\s*pub\s+")
 
 # Traits that indicate a struct is a genuine API type (not just an
 # internal implementation detail with accidentally-public fields).
@@ -208,7 +231,12 @@ def main() -> int:
                 continue
 
             if line.strip().startswith("#"):
+                # Skip multi-line attributes (e.g., #[serde(bound(\n...\n))])
+                bracket_depth = line.count("[") - line.count("]")
                 idx += 1
+                while idx < len(lines) and bracket_depth > 0:
+                    bracket_depth += lines[idx].count("[") - lines[idx].count("]")
+                    idx += 1
                 continue
 
             header_match = STRUCT_HEADER_PATTERN.match(line)
@@ -225,7 +253,8 @@ def main() -> int:
                     brace_depth += body_line.count("{") - body_line.count("}")
                     idx += 1
 
-                if has_public_field and not pending_derive_has_api_trait:
+                exempt_key = f"{rel}:{struct_name}"
+                if has_public_field and not pending_derive_has_api_trait and exempt_key not in EXEMPT_STRUCTS:
                     public_field_derive_violations.append((rel, struct_line, struct_name))
 
                 pending_derive_has_api_trait = False

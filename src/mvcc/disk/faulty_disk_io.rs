@@ -32,10 +32,10 @@ pub struct FaultyDiskIo<IO: DiskIo> {
 /// Internal fault state shared across FaultyDiskIo instances.
 ///
 /// Public to allow test access via `get_shared_fault_state()`.
-pub struct FaultState {
-    pub config: DiskFaultConfig,
-    pub rng: StdRng,
-    pub bytes_written: u64,
+pub(crate) struct FaultState {
+    pub(crate) config: DiskFaultConfig,
+    pub(crate) rng: StdRng,
+    pub(crate) bytes_written: u64,
 }
 
 /// Configuration for disk fault injection.

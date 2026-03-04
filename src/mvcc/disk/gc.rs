@@ -153,11 +153,11 @@ impl GarbageCollector {
 
 /// Statistics from a GC run.
 #[derive(Debug, Default)]
-pub struct GcStats {
-    pub entries_scanned: u64,
-    pub entries_live: u64,
-    pub entries_dead: u64,
-    pub bytes_reclaimed: u64,
+pub(crate) struct GcStats {
+    pub(crate) entries_scanned: u64,
+    pub(crate) entries_live: u64,
+    pub(crate) entries_dead: u64,
+    pub(crate) bytes_reclaimed: u64,
 }
 
 #[cfg(test)]

@@ -1070,6 +1070,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
 }
 
 /// Point-in-time snapshot of IR replica metrics.
+#[derive(Clone)]
 pub struct ReplicaMetrics {
     /// Replica status: 0=Normal, 1=ViewChanging, 2=Recovering.
     pub status: u8,

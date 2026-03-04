@@ -75,7 +75,7 @@ mod traits;
 mod workload;
 mod workload_gen;
 
-pub use cluster::{bootstrap_cluster, external_target, BenchCluster, BenchTarget};
+pub(crate) use cluster::{bootstrap_cluster, external_target, BenchCluster, BenchTarget};
 
 use crate::{DynamicRouter, RoutingClient, TapirClient, TapirReplica, TcpTransport};
 
@@ -85,22 +85,22 @@ pub type BenchTransport = TcpTransport<TapirReplica<K, V>>;
 pub type BenchTapirClient = TapirClient<K, V, BenchTransport>;
 pub type BenchRoutingClient = RoutingClient<K, V, BenchTransport, DynamicRouter<K>>;
 
-pub struct ClusterConfig {
-    pub num_replicas: usize,
-    pub linearizable: bool,
+pub(crate) struct ClusterConfig {
+    pub(crate) num_replicas: usize,
+    pub(crate) linearizable: bool,
 }
 
-pub struct WorkloadConfig {
-    pub key_space_size: usize,
+pub(crate) struct WorkloadConfig {
+    pub(crate) key_space_size: usize,
     /// (workload_type, num_clients) pairs.
-    pub workloads: Vec<(WorkloadType, usize)>,
-    pub duration_secs: u64,
-    pub max_sleep_ms: u64,
+    pub(crate) workloads: Vec<(WorkloadType, usize)>,
+    pub(crate) duration_secs: u64,
+    pub(crate) max_sleep_ms: u64,
 }
 
-pub struct BenchConfig {
-    pub cluster: ClusterConfig,
-    pub workload: WorkloadConfig,
+pub(crate) struct BenchConfig {
+    pub(crate) cluster: ClusterConfig,
+    pub(crate) workload: WorkloadConfig,
 }
 
 #[derive(Clone)]

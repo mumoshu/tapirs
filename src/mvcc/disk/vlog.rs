@@ -28,8 +28,8 @@ pub struct VlogEntry<K, V, TS> {
 }
 
 /// An append-only segment file in the value log.
-pub struct VlogSegment<IO: DiskIo> {
-    pub id: u64,
+pub(crate) struct VlogSegment<IO: DiskIo> {
+    pub(crate) id: u64,
     io: IO,
     write_offset: u64,
     path: PathBuf,

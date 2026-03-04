@@ -32,11 +32,11 @@ pub async fn run(
         let backend = load_json_discovery_backend(&json_path).await;
         let mut node = Node::with_discovery_backend(persist_dir, backend, production_rng);
         if let Some(ref url) = cfg.shard_manager_url {
-            node.shard_manager_url = Some(url.clone());
+            node.set_shard_manager_url(url.clone());
         }
         #[cfg(feature = "tls")]
         {
-            node.tls_config = tls_config.clone();
+            node.set_tls_config(tls_config.clone());
         }
         Arc::new(node)
     } else if let Some(endpoint) = discovery_tapir_endpoint {
@@ -47,11 +47,11 @@ pub async fn run(
         ).await;
         let mut node = Node::with_discovery_backend(persist_dir, backend, production_rng);
         if let Some(ref url) = cfg.shard_manager_url {
-            node.shard_manager_url = Some(url.clone());
+            node.set_shard_manager_url(url.clone());
         }
         #[cfg(feature = "tls")]
         {
-            node.tls_config = tls_config.clone();
+            node.set_tls_config(tls_config.clone());
         }
         Arc::new(node)
     } else {
@@ -59,7 +59,7 @@ pub async fn run(
         let mut node = Node::new(persist_dir, production_rng);
         #[cfg(feature = "tls")]
         {
-            node.tls_config = tls_config.clone();
+            node.set_tls_config(tls_config.clone());
         }
         Arc::new(node)
     };

@@ -101,7 +101,7 @@ async fn test_tls_read_write() {
     for (addr, listener) in listeners {
         let td = TempDir::new().unwrap();
         let mut node = Node::new(td.path().to_str().unwrap().to_string(), crate::node::production_rng);
-        node.tls_config = Some(tls_config.clone());
+        node.set_tls_config(Some(tls_config.clone()));
         let node = Arc::new(node);
 
         node.add_replica_with_listener(
@@ -187,7 +187,7 @@ async fn test_tls_admin_server() {
 
     let td = TempDir::new().unwrap();
     let mut node = Node::new(td.path().to_str().unwrap().to_string(), crate::node::production_rng);
-    node.tls_config = Some(tls_config.clone());
+    node.set_tls_config(Some(tls_config.clone()));
     let node = Arc::new(node);
 
     // Create a replica with static membership.

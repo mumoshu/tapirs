@@ -16,7 +16,7 @@ pub struct BenchTarget {
     pub replica_addrs: Vec<SocketAddr>,
 }
 
-pub struct BenchCluster {
+pub(crate) struct BenchCluster {
     pub nodes: Vec<Arc<Node>>,
     _temp_dirs: Vec<TempDir>,
 }
