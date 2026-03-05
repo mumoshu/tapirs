@@ -473,7 +473,7 @@ impl<
 
 #[cfg(test)]
 pub(crate) struct TapirStateRunner {
-    tapir: TapirState<String, String, crate::mvcc::disk::memory_io::MemoryIo>,
+    state: TapirState<String, String, crate::mvcc::disk::memory_io::MemoryIo>,
     base_dir: PathBuf,
 }
 
@@ -481,9 +481,9 @@ pub(crate) struct TapirStateRunner {
 impl TapirStateRunner {
     pub(crate) fn open(base_dir: PathBuf, io_flags: OpenFlags) -> Result<Self, StorageError> {
         crate::mvcc::disk::memory_io::MemoryIo::create_dir_all(&base_dir)?;
-        let tapir = open::<String, String, crate::mvcc::disk::memory_io::MemoryIo>(&base_dir, io_flags)?;
+        let state = open::<String, String, crate::mvcc::disk::memory_io::MemoryIo>(&base_dir, io_flags)?;
         Ok(Self {
-            tapir,
+            state,
             base_dir,
         })
     }
@@ -504,16 +504,16 @@ impl TapirStateRunner {
             .collect()
     }
 
-    pub(crate) fn register_prepare(
+    pub(crate) fn prepare(
         &mut self,
         txn_id: OccTransactionId,
         transaction: &crate::occ::Transaction<String, String, Timestamp>,
         commit_ts: Timestamp,
     ) {
-        self.tapir.prepare(txn_id, transaction, commit_ts).unwrap();
+        self.state.prepare(txn_id, transaction, commit_ts).unwrap();
     }
 
-    pub(crate) fn commit_transaction_data(
+    pub(crate) fn commit(
         &mut self,
         txn_id: OccTransactionId,
         read_set: &[(String, Timestamp)],
@@ -521,12 +521,12 @@ impl TapirStateRunner {
         scan_set: &[(String, String, Timestamp)],
         commit_ts: Timestamp,
     ) -> Result<(), StorageError> {
-        self.tapir
+        self.state
             .commit(txn_id, read_set, write_set, scan_set, commit_ts)
     }
 
     pub(crate) fn seal(&mut self, min_view_vlog_size: u64) -> Result<(), StorageError> {
-        self.tapir.seal_current_view(min_view_vlog_size)
+        self.state.seal_current_view(min_view_vlog_size)
     }
 
     pub(crate) fn get_at(
@@ -534,7 +534,7 @@ impl TapirStateRunner {
         key: &str,
         ts: Timestamp,
     ) -> Result<(Option<String>, Timestamp), StorageError> {
-        self.tapir.snapshot_get_at(&key.to_string(), ts)
+        self.state.snapshot_get_at(&key.to_string(), ts)
     }
 
     pub(crate) fn scan(
@@ -543,22 +543,22 @@ impl TapirStateRunner {
         end: &str,
         ts: Timestamp,
     ) -> Result<Vec<(String, Option<String>, Timestamp)>, StorageError> {
-        self.tapir
+        self.state
             .snapshot_scan(&start.to_string(), &end.to_string(), ts)
     }
 
     pub(crate) fn prepared_index_contains(&self, txn_id: &OccTransactionId) -> bool {
         // get() checks memtable then index. Some(Some(_)) = active, Some(None) = tombstone.
-        matches!(self.tapir.prepared.get(txn_id), Ok(Some(Some(_))))
+        matches!(self.state.prepared.get(txn_id), Ok(Some(Some(_))))
     }
 
-    pub(crate) fn register_prepare_expect_conflict(
+    pub(crate) fn prepare_expect_conflict(
         &mut self,
         txn_id: OccTransactionId,
         transaction: &crate::occ::Transaction<String, String, Timestamp>,
         commit_ts: Timestamp,
     ) -> bool {
-        self.tapir.prepare(txn_id, transaction, commit_ts).is_err()
+        self.state.prepare(txn_id, transaction, commit_ts).is_err()
     }
 }
 
@@ -589,7 +589,7 @@ mod tests {
         };
 
         runner
-            .tapir
+            .state
             .commit(
                 txn_id,
                 &[("r".to_string(), ts)],
@@ -599,14 +599,14 @@ mod tests {
             )
         .expect("commit should append committed txn");
 
-        let (value, _) = runner.tapir.snapshot_get(&"k".to_string())
+        let (value, _) = runner.state.snapshot_get(&"k".to_string())
             .expect("get should succeed");
         assert_eq!(value.as_deref(), Some("v"));
 
         // After seal, value should still be readable via committed VlogLsm
         runner.seal(0).expect("seal should finalize current view");
 
-        let (value2, _) = runner.tapir.snapshot_get(&"k".to_string())
+        let (value2, _) = runner.state.snapshot_get(&"k".to_string())
             .expect("get after seal should succeed");
         assert_eq!(value2.as_deref(), Some("v"));
     }

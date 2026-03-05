@@ -25,10 +25,10 @@ fn tapir_state_prepare_conflict_commit_seal_reopen_get_scan() {
 
     let txn1 = make_txn(vec![], vec![("x", Some("v1"))]);
     let txn1_id = test_txn_id(1, 1);
-    store.register_prepare(txn1_id, &txn1, test_ts(5));
+    store.prepare(txn1_id, &txn1, test_ts(5));
 
     store
-        .commit_transaction_data(
+        .commit(
             txn1_id,
             &[],
             &[("x".to_string(), Some("v1".to_string()))],
@@ -62,9 +62,9 @@ fn tapir_state_prepare_conflict_commit_seal_reopen_get_scan() {
 
     let txn3 = make_txn(vec![], vec![("y", Some("v3"))]);
     let txn3_id = test_txn_id(2, 1);
-    store.register_prepare(txn3_id, &txn3, test_ts(7));
+    store.prepare(txn3_id, &txn3, test_ts(7));
     store
-        .commit_transaction_data(
+        .commit(
             txn3_id,
             &[],
             &[("y".to_string(), Some("v3".to_string()))],
@@ -109,14 +109,14 @@ fn prepared_txn_recovered_in_index_after_reopen() {
     // Prepare txn1 (not committed — should survive in prepared index after reopen)
     let txn1 = make_txn(vec![], vec![("z", Some("v_z"))]);
     let txn1_id = test_txn_id(3, 1);
-    store.register_prepare(txn1_id, &txn1, test_ts(10));
+    store.prepare(txn1_id, &txn1, test_ts(10));
 
     // Prepare+commit txn2 (committed — removed from prepared before seal)
     let txn2 = make_txn(vec![], vec![("a", Some("v_a"))]);
     let txn2_id = test_txn_id(4, 1);
-    store.register_prepare(txn2_id, &txn2, test_ts(5));
+    store.prepare(txn2_id, &txn2, test_ts(5));
     store
-        .commit_transaction_data(
+        .commit(
             txn2_id,
             &[],
             &[("a".to_string(), Some("v_a".to_string()))],
@@ -157,20 +157,20 @@ fn prepare_conflict_same_view_memtable() {
     // Prepare txn_a writing key "x"
     let txn_a = make_txn(vec![], vec![("x", Some("v1"))]);
     let txn_a_id = test_txn_id(1, 1);
-    store.register_prepare(txn_a_id, &txn_a, test_ts(5));
+    store.prepare(txn_a_id, &txn_a, test_ts(5));
 
     // Prepare txn_b also writing key "x" → should conflict
     let txn_b = make_txn(vec![], vec![("x", Some("v2"))]);
     let txn_b_id = test_txn_id(2, 1);
     assert!(
-        store.register_prepare_expect_conflict(txn_b_id, &txn_b, test_ts(6)),
+        store.prepare_expect_conflict(txn_b_id, &txn_b, test_ts(6)),
         "Second prepare writing same key should conflict (memtable scenario)"
     );
 
     // Prepare txn_c writing a different key "y" → should succeed
     let txn_c = make_txn(vec![], vec![("y", Some("v3"))]);
     let txn_c_id = test_txn_id(3, 1);
-    store.register_prepare(txn_c_id, &txn_c, test_ts(7));
+    store.prepare(txn_c_id, &txn_c, test_ts(7));
 }
 
 /// Cross-view conflict: prepare in view 0 (sealed to vlog+index), then
@@ -187,7 +187,7 @@ fn prepare_conflict_cross_view_vlog() {
     // View 0: Prepare txn_c writing key "y"
     let txn_c = make_txn(vec![], vec![("y", Some("v1"))]);
     let txn_c_id = test_txn_id(5, 1);
-    store.register_prepare(txn_c_id, &txn_c, test_ts(10));
+    store.prepare(txn_c_id, &txn_c, test_ts(10));
 
     // Seal → txn_c moves from memtable to prepared vlog + index
     store.seal(u64::MAX).unwrap();
@@ -196,12 +196,12 @@ fn prepare_conflict_cross_view_vlog() {
     let txn_d = make_txn(vec![], vec![("y", Some("v2"))]);
     let txn_d_id = test_txn_id(6, 1);
     assert!(
-        store.register_prepare_expect_conflict(txn_d_id, &txn_d, test_ts(11)),
+        store.prepare_expect_conflict(txn_d_id, &txn_d, test_ts(11)),
         "Prepare writing same key as sealed prepared txn should conflict (vlog scenario)"
     );
 
     // Prepare txn_e writing a different key "z" → should succeed
     let txn_e = make_txn(vec![], vec![("z", Some("v3"))]);
     let txn_e_id = test_txn_id(7, 1);
-    store.register_prepare(txn_e_id, &txn_e, test_ts(12));
+    store.prepare(txn_e_id, &txn_e, test_ts(12));
 }
