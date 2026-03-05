@@ -58,7 +58,7 @@ const TAPIR_PREPARED_TXN_ENTRY_TYPE: u8 = 0x81;
 const TAPIR_MVCC_ENTRY_TYPE: u8 = 0x82;
 
 impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
-    fn insert_memtable_entry(
+    fn insert_mvcc_entry(
         &mut self,
         key: K,
         ts: Timestamp,
@@ -69,7 +69,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         self.mvcc.put(ck, LsmEntry { txn_id, write_index, last_read_ts: None });
     }
 
-    fn update_memtable_last_read(&mut self, key: &K, read: Timestamp, commit_time: u64)
+    fn update_mvcc_last_read_ts(&mut self, key: &K, read: Timestamp, commit_time: u64)
     where
         K: serde::Serialize + serde::de::DeserializeOwned,
     {
@@ -118,17 +118,17 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         self.committed.put(txn_id, arc_txn);
 
         for (i, (key, _value)) in write_set.iter().enumerate() {
-            self.insert_memtable_entry(key.clone(), commit, txn_id, i as u16);
+            self.insert_mvcc_entry(key.clone(), commit, txn_id, i as u16);
         }
 
         for (key, read) in read_set {
-            self.update_memtable_last_read(key, *read, commit.time);
+            self.update_mvcc_last_read_ts(key, *read, commit.time);
         }
 
         Ok(())
     }
 
-    fn does_prepare_conflict(
+    fn has_conflicting_prepare(
         &self,
         write_set: &[(K, Option<V>)],
     ) -> Result<bool, StorageError>
@@ -188,7 +188,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
-        if self.does_prepare_conflict(&write_set)? {
+        if self.has_conflicting_prepare(&write_set)? {
             return Err(StorageError::Codec(
                 format!("prepare conflict: transaction {txn_id:?} writes to keys already prepared"),
             ));
@@ -206,7 +206,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         Ok(())
     }
 
-    fn resolve_value_internal(&self, entry: &LsmEntry) -> Result<Option<V>, StorageError>
+    fn resolve_value(&self, entry: &LsmEntry) -> Result<Option<V>, StorageError>
     where
         K: Key + serde::Serialize + serde::de::DeserializeOwned,
         V: Value + serde::Serialize + serde::de::DeserializeOwned,
@@ -422,7 +422,7 @@ impl<
         if let Some((ck, entry)) = self.mvcc.range_get_first(&search)?
             && ck.key == *key
         {
-            return Ok((self.resolve_value_internal(&entry)?, ck.timestamp.0));
+            return Ok((self.resolve_value(&entry)?, ck.timestamp.0));
         }
         Ok((None, Timestamp::default()))
     }
@@ -432,7 +432,7 @@ impl<
         if let Some((ck, entry)) = self.mvcc.range_get_first(&search)?
             && ck.key == *key
         {
-            return Ok((self.resolve_value_internal(&entry)?, ck.timestamp.0));
+            return Ok((self.resolve_value(&entry)?, ck.timestamp.0));
         }
         Ok((None, Timestamp::default()))
     }
@@ -464,7 +464,7 @@ impl<
             if ck.timestamp.0 > ts { continue; }
             if last_key == Some(&ck.key) { continue; }
             last_key = Some(&ck.key);
-            let value = self.resolve_value_internal(entry)?;
+            let value = self.resolve_value(entry)?;
             out.push((ck.key.clone(), value, ck.timestamp.0));
         }
         Ok(out)
