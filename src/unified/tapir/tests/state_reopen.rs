@@ -53,7 +53,7 @@ fn tapir_state_prepare_conflict_commit_seal_reopen_get_scan() {
     let names_after_first: Vec<&str> = files_after_first_seal.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(
         names_after_first,
-        vec!["UNIFIED_MANIFEST", "prep_vlog_0000.dat", "vlog_seg_0000.dat"],
+        vec!["UNIFIED_MANIFEST", "prep_vlog_0000.dat", "sst_0000.db", "vlog_seg_0000.dat"],
         "exact files after first seal"
     );
     for (name, size) in &files_after_first_seal {

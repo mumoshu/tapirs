@@ -27,8 +27,8 @@ fn vlog_segment_grouping() {
     seal_view(&mut store);
     assert_eq!(store.get_metrics().current_view, 1);
 
-    // After first seal: manifest + VLog with data, still same segment (< 1KB)
-    assert_store_file_names(&path, &["UNIFIED_MANIFEST", "ir_vlog_0000.dat"]);
+    // After first seal: manifest + VLog with data + SST, still same segment (< 1KB)
+    assert_store_file_names(&path, &["UNIFIED_MANIFEST", "ir_sst_0000.db", "ir_vlog_0000.dat"]);
     assert_store_file_size_positive(&path, "ir_vlog_0000.dat");
     let vlog_size_after_seal1 = get_store_file_size(&path, "ir_vlog_0000.dat");
 
@@ -46,10 +46,10 @@ fn vlog_segment_grouping() {
     // Views 0 and 1 should share same segment (both < 1KB, but
     // segment is sealed once cumulative size >= 1KB, which hasn't happened yet).
     // Small entries: each ~50-100 bytes, two seals ~200 bytes total < 1KB.
-    assert_store_file_names(&path, &["UNIFIED_MANIFEST", "ir_vlog_0000.dat"]);
+    assert_store_file_names(&path, &["UNIFIED_MANIFEST", "ir_sst_0000.db", "ir_sst_0001.db", "ir_vlog_0000.dat"]);
 
     // After second seal: VLog grew but still same segment (no rotation)
-    assert_store_file_names(&path, &["UNIFIED_MANIFEST", "ir_vlog_0000.dat"]);
+    assert_store_file_names(&path, &["UNIFIED_MANIFEST", "ir_sst_0000.db", "ir_sst_0001.db", "ir_vlog_0000.dat"]);
     let vlog_size_after_seal2 = get_store_file_size(&path, "ir_vlog_0000.dat");
     assert!(
         vlog_size_after_seal2 > vlog_size_after_seal1,
@@ -72,13 +72,13 @@ fn vlog_segment_grouping() {
     // Now the segment exceeded 1KB and was sealed → new active segment created
     assert_store_file_names(
         &path,
-        &["UNIFIED_MANIFEST", "ir_vlog_0000.dat", "ir_vlog_0001.dat"],
+        &["UNIFIED_MANIFEST", "ir_sst_0000.db", "ir_sst_0001.db", "ir_sst_0002.db", "ir_vlog_0000.dat", "ir_vlog_0001.dat"],
     );
 
     // After segment rotation: old segment sealed, new active segment created
     assert_store_file_names(
         &path,
-        &["UNIFIED_MANIFEST", "ir_vlog_0000.dat", "ir_vlog_0001.dat"],
+        &["UNIFIED_MANIFEST", "ir_sst_0000.db", "ir_sst_0001.db", "ir_sst_0002.db", "ir_vlog_0000.dat", "ir_vlog_0001.dat"],
     );
     // Sealed segment (0000) should have significant data (> 1KB with big_value)
     let sealed_size = get_store_file_size(&path, "ir_vlog_0000.dat");

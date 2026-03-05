@@ -12,10 +12,11 @@ use crate::unified::wisckeylsm::vlog::VlogSegment;
 
 /// Generic WiscKey-style LSM that stores raw (K, V) pairs in a memtable for
 /// the current view and maintains a K→VlogPtr index that accumulates across
-/// seals. When the index exceeds a configurable threshold, `seal_view` flushes
-/// it to a new SST and clears it.
+/// seals. Each `seal_view` writes new entries to both vlog and a per-seal SST.
+/// The index is never cleared — it is the complete in-memory map.
 ///
-/// Read path: memtable (fast clone) → index (VlogPtr → vlog) → SSTs (VlogPtr → vlog).
+/// Read path: memtable (fast clone) → index (VlogPtr → vlog). SSTs are only
+/// used to rebuild the index on open.
 pub(crate) struct VlogLsm<K: Ord, V, IO: DiskIo> {
     /// Current-view raw values. Written by `put()`, read first by `get()`.
     /// Cleared on `seal_view()` after flushing to `active_vlog` + `index`.
@@ -25,8 +26,8 @@ pub(crate) struct VlogLsm<K: Ord, V, IO: DiskIo> {
 
     /// Accumulated K→VlogPtr across all sealed views. Each VlogPtr references
     /// a (segment_id, offset) in either `active_vlog` or `sealed_segments`.
-    /// Grows on every `seal_view()`. Flushed to a new SST and cleared when
-    /// `index.len() >= max_index_entries`. Checked by `get()` after memtable.
+    /// Grows on every `seal_view()`. Flushed to a new SST at each seal but
+    /// never cleared — serves as the complete in-memory map.
     index: BTreeMap<K, VlogPtr>,
 
     /// On-disk SST files containing flushed snapshots of `index`. Searched in
@@ -42,10 +43,6 @@ pub(crate) struct VlogLsm<K: Ord, V, IO: DiskIo> {
     /// Monotonic counter for SST file IDs. Incremented each time `seal_view()`
     /// flushes `index` to a new SST. Drives filename: `{label}_sst_{id:04}.db`.
     next_sst_id: u64,
-
-    /// Threshold: when `index.len() >= max_index_entries`, `seal_view()` flushes
-    /// the entire index to a new SST and clears it. Set once at construction.
-    max_index_entries: usize,
 
     /// Current writable vlog segment. `seal_view()` appends serialized memtable
     /// entries here via `append_raw_batch()`, producing VlogPtrs stored in
@@ -87,7 +84,6 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
         sealed_segments: BTreeMap<u64, VlogSegment<IO>>,
         io_flags: OpenFlags,
         next_segment_id: u64,
-        max_index_entries: usize,
     ) -> Self {
         Self {
             memtable: BTreeMap::new(),
@@ -95,7 +91,6 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
             sst_readers: Vec::new(),
             sst_metas: Vec::new(),
             next_sst_id: 0,
-            max_index_entries,
             active_vlog,
             sealed_segments,
             entry_count: 0,
@@ -204,13 +199,10 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
         V: Serialize,
         F: Fn(&K, &V) -> Option<(u8, u64, u64)>,
     {
-        // Batch-flush memtable entries not already in the index.
+        // Batch-flush memtable entries to vlog.
         let mut batch_keys: Vec<K> = Vec::new();
         let mut batch_raw: Vec<(u8, u64, u64, Vec<u8>)> = Vec::new();
         for (key, value) in &self.memtable {
-            if self.index.contains_key(key) {
-                continue; // recovery entry — already in vlog
-            }
             if let Some((entry_type, client_id, number)) = header_fn(key, value) {
                 let payload = bitcode::serialize(value)
                     .map_err(|e| StorageError::Codec(e.to_string()))?;
@@ -218,6 +210,7 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
                 batch_raw.push((entry_type, client_id, number, payload));
             }
         }
+        let mut new_entries: BTreeMap<K, VlogPtr> = BTreeMap::new();
         if !batch_raw.is_empty() {
             let raw_refs: Vec<(u8, u64, u64, &[u8])> = batch_raw
                 .iter()
@@ -225,7 +218,8 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
                 .collect();
             let ptrs = self.active_vlog.append_raw_batch(&raw_refs)?;
             for (key, ptr) in batch_keys.into_iter().zip(ptrs) {
-                self.index.insert(key, ptr);
+                self.index.insert(key.clone(), ptr);
+                new_entries.insert(key, ptr);
             }
             self.entry_count += batch_raw.len() as u32;
         }
@@ -235,25 +229,7 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
 
         self.memtable.clear();
 
-        if self.index.len() >= self.max_index_entries && !self.index.is_empty() {
-            let id = self.next_sst_id;
-            self.next_sst_id += 1;
-            let path = self.sst_path(id);
-
-            let n = IO::block_on(SSTableWriter::write::<K, VlogPtr, IO>(
-                &path,
-                &self.index,
-                self.io_flags,
-            ))?;
-            let reader = IO::block_on(SSTableReader::open(path.clone(), self.io_flags))?;
-            self.sst_readers.push(reader);
-            self.sst_metas.push(SstMeta {
-                id,
-                path,
-                num_entries: n,
-            });
-            self.index.clear();
-        }
+        self.write_sst(&new_entries)?;
 
         let segment_size = self.active_vlog.write_offset();
         let sealed_meta = if segment_size >= min_vlog_size {
@@ -292,6 +268,25 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
 
         self.entry_count = 0;
         Ok(sealed_meta)
+    }
+
+    fn write_sst(&mut self, entries: &BTreeMap<K, VlogPtr>) -> Result<(), StorageError>
+    where
+        K: Serialize + DeserializeOwned + Clone,
+    {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let id = self.next_sst_id;
+        self.next_sst_id += 1;
+        let path = self.sst_path(id);
+        let n = IO::block_on(SSTableWriter::write::<K, VlogPtr, IO>(
+            &path, entries, self.io_flags,
+        ))?;
+        let reader = IO::block_on(SSTableReader::open(path.clone(), self.io_flags))?;
+        self.sst_readers.push(reader);
+        self.sst_metas.push(SstMeta { id, path, num_entries: n });
+        Ok(())
     }
 
     /// Start a new view on the active vlog segment.
@@ -351,10 +346,7 @@ mod tests {
         }
     }
 
-    fn open_test_lsm(
-        dir: &Path,
-        max_index_entries: usize,
-    ) -> VlogLsm<String, String, MemoryIo> {
+    fn open_test_lsm(dir: &Path) -> VlogLsm<String, String, MemoryIo> {
         MemoryIo::create_dir_all(dir).unwrap();
         let vlog_path = dir.join("vlog_seg_0000.dat");
         let mut active_vlog =
@@ -367,21 +359,20 @@ mod tests {
             BTreeMap::new(),
             test_flags(),
             1,
-            max_index_entries,
         )
     }
 
     #[test]
     fn get_missing_key_returns_none() {
         let dir = MemoryIo::temp_path();
-        let lsm = open_test_lsm(&dir, 4);
+        let lsm = open_test_lsm(&dir);
         assert_eq!(lsm.get(&"missing".to_string()).unwrap(), None);
     }
 
     #[test]
     fn put_and_get_from_memtable() {
         let dir = MemoryIo::temp_path();
-        let mut lsm = open_test_lsm(&dir, 4);
+        let mut lsm = open_test_lsm(&dir);
 
         lsm.put("k_a".into(), "val_a".into());
         lsm.put("k_b".into(), "val_b".into());
@@ -396,36 +387,31 @@ mod tests {
     }
 
     #[test]
-    fn seal_reads_from_index_then_sst() {
+    fn seal_reads_from_index() {
         let dir = MemoryIo::temp_path();
-        // max_index_entries=4 so index flushes to SST after accumulating 4 entries.
-        let mut lsm = open_test_lsm(&dir, 4);
+        let mut lsm = open_test_lsm(&dir);
 
-        // Put k_a, k_b (2 entries in index, below threshold).
         lsm.put("k_a".into(), "val_a".into());
         lsm.put("k_b".into(), "val_b".into());
 
-        // Seal #1: memtable cleared, index stays (2 < 4).
-        // min_vlog_size=0 forces vlog rotation.
+        // Seal #1: memtable flushed to vlog + SST + index. min_vlog_size=0 forces rotation.
         lsm.seal_view(0, test_header_fn).unwrap();
         lsm.start_view(1);
 
-        // Reads go through index → vlog.
+        // Reads go through index (complete in-memory map).
         assert_eq!(lsm.get(&"k_a".into()).unwrap(), Some("val_a".into()));
         assert_eq!(lsm.get(&"k_b".into()).unwrap(), Some("val_b".into()));
 
-        // Put k_c, k_d (index now has 4 entries: k_a, k_b, k_c, k_d).
         lsm.put("k_c".into(), "val_c".into());
         lsm.put("k_d".into(), "val_d".into());
 
-        // k_c from memtable (current view).
         assert_eq!(lsm.get(&"k_c".into()).unwrap(), Some("val_c".into()));
 
-        // Seal #2: index has 4 entries >= threshold → flushed to SST, cleared.
+        // Seal #2: index accumulates (k_a, k_b from seal #1 + k_c, k_d).
         lsm.seal_view(0, test_header_fn).unwrap();
         lsm.start_view(2);
 
-        // All reads now go through SST → vlog.
+        // All reads via index (never cleared).
         assert_eq!(lsm.get(&"k_a".into()).unwrap(), Some("val_a".into()));
         assert_eq!(lsm.get(&"k_b".into()).unwrap(), Some("val_b".into()));
         assert_eq!(lsm.get(&"k_c".into()).unwrap(), Some("val_c".into()));
@@ -435,7 +421,7 @@ mod tests {
     #[test]
     fn multi_seal_mixed_read_sources() {
         let dir = MemoryIo::temp_path();
-        let mut lsm = open_test_lsm(&dir, 4);
+        let mut lsm = open_test_lsm(&dir);
 
         // (1) Missing key.
         assert_eq!(lsm.get(&"k_a".into()).unwrap(), None);
@@ -446,7 +432,7 @@ mod tests {
         assert_eq!(lsm.get(&"k_a".into()).unwrap(), Some("val_a".into()));
         assert_eq!(lsm.get(&"k_b".into()).unwrap(), Some("val_b".into()));
 
-        // (3) Seal #1: index stays (2 < 4), vlog rotated.
+        // (3) Seal #1: vlog rotated, index accumulates.
         lsm.seal_view(0, test_header_fn).unwrap();
         lsm.start_view(1);
         assert_eq!(lsm.get(&"k_a".into()).unwrap(), Some("val_a".into()));
@@ -457,7 +443,7 @@ mod tests {
         lsm.put("k_d".into(), "val_d".into());
         assert_eq!(lsm.get(&"k_c".into()).unwrap(), Some("val_c".into()));
 
-        // (4) Seal #2: index has 4 >= 4 → flushed to SST.
+        // (4) Seal #2: index now has k_a..k_d.
         lsm.seal_view(0, test_header_fn).unwrap();
         lsm.start_view(2);
         assert_eq!(lsm.get(&"k_a".into()).unwrap(), Some("val_a".into()));
@@ -465,20 +451,54 @@ mod tests {
         assert_eq!(lsm.get(&"k_c".into()).unwrap(), Some("val_c".into()));
         assert_eq!(lsm.get(&"k_d".into()).unwrap(), Some("val_d".into()));
 
-        // (5) Put k_e into seg 2, verify mixed reads.
+        // (5) Put k_e, verify mixed reads (memtable + index).
         lsm.put("k_e".into(), "val_e".into());
         assert_eq!(lsm.get(&"k_e".into()).unwrap(), Some("val_e".into())); // memtable
-        assert_eq!(lsm.get(&"k_a".into()).unwrap(), Some("val_a".into())); // SST → vlog
-        assert_eq!(lsm.get(&"k_c".into()).unwrap(), Some("val_c".into())); // SST → vlog
+        assert_eq!(lsm.get(&"k_a".into()).unwrap(), Some("val_a".into())); // index
+        assert_eq!(lsm.get(&"k_c".into()).unwrap(), Some("val_c".into())); // index
 
-        // (6) Seal #3: index has 1 entry (k_e) < 4, stays in index.
+        // (6) Seal #3: index now has k_a..k_e.
         lsm.seal_view(0, test_header_fn).unwrap();
         lsm.start_view(3);
-        assert_eq!(lsm.get(&"k_e".into()).unwrap(), Some("val_e".into())); // index → vlog
-        assert_eq!(lsm.get(&"k_a".into()).unwrap(), Some("val_a".into())); // SST → vlog
-        assert_eq!(lsm.get(&"k_d".into()).unwrap(), Some("val_d".into())); // SST → vlog
+        assert_eq!(lsm.get(&"k_e".into()).unwrap(), Some("val_e".into())); // index
+        assert_eq!(lsm.get(&"k_a".into()).unwrap(), Some("val_a".into())); // index
+        assert_eq!(lsm.get(&"k_d".into()).unwrap(), Some("val_d".into())); // index
 
         // (7) Missing key still returns None.
         assert_eq!(lsm.get(&"missing".into()).unwrap(), None);
+    }
+
+    #[test]
+    fn seal_writes_sst_and_tracks_metadata() {
+        let dir = MemoryIo::temp_path();
+        let mut lsm = open_test_lsm(&dir);
+
+        assert_eq!(lsm.sst_metas.len(), 0);
+        assert_eq!(lsm.next_sst_id, 0);
+        let k_a: String = "k_a".into();
+        assert!(!lsm.memtable.contains_key(&k_a));
+        assert!(!lsm.index.contains_key(&k_a));
+
+        lsm.put("k_a".into(), "val_a".into());
+        assert!(lsm.memtable.contains_key(&k_a));
+
+        lsm.seal_view(u64::MAX, test_header_fn).unwrap();
+        lsm.start_view(1);
+
+        // After seal, SST written with 1 entry.
+        assert_eq!(lsm.sst_metas.len(), 1);
+        assert_eq!(lsm.sst_metas[0].num_entries, 1);
+        assert_eq!(lsm.next_sst_id, 1);
+        // Key still accessible via index.
+        assert!(lsm.index.contains_key(&k_a));
+
+        lsm.put("k_b".into(), "val_b".into());
+        lsm.seal_view(u64::MAX, test_header_fn).unwrap();
+        lsm.start_view(2);
+
+        // Second seal writes second SST with only the new entry.
+        assert_eq!(lsm.sst_metas.len(), 2);
+        assert_eq!(lsm.sst_metas[1].num_entries, 1);
+        assert_eq!(lsm.next_sst_id, 2);
     }
 }

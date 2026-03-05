@@ -78,7 +78,7 @@ fn ir_prepare_commit_seal_reopen_and_lookup_by_id() {
     let names_after_first: Vec<&str> = files_after_first.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(
         names_after_first,
-        vec!["UNIFIED_MANIFEST", "ir_vlog_0000.dat"],
+        vec!["UNIFIED_MANIFEST", "ir_sst_0000.db", "ir_vlog_0000.dat"],
         "exact files after first seal"
     );
     for (_, size) in &files_after_first {

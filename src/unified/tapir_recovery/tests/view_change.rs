@@ -43,8 +43,8 @@ fn view_change_seal_merge_sync() {
     seal_view(&mut store);
     assert_eq!(store.get_metrics().current_view, 1);
 
-    // After seal: manifest saved, VLog has data
-    assert_store_file_names(&path, &["UNIFIED_MANIFEST", "ir_vlog_0000.dat"]);
+    // After seal: manifest saved, VLog has data, SST written
+    assert_store_file_names(&path, &["UNIFIED_MANIFEST", "ir_sst_0000.db", "ir_vlog_0000.dat"]);
     assert_store_file_size_positive(&path, "UNIFIED_MANIFEST");
     assert_store_file_size_positive(&path, "ir_vlog_0000.dat");
 
@@ -90,8 +90,8 @@ fn cross_view_prepare_commit() {
     seal_view(&mut store);
     assert_eq!(store.get_metrics().current_view, 1);
 
-    // After seal: manifest + VLog with data
-    assert_store_file_names(&path, &["UNIFIED_MANIFEST", "ir_vlog_0000.dat"]);
+    // After seal: manifest + VLog with data + SST
+    assert_store_file_names(&path, &["UNIFIED_MANIFEST", "ir_sst_0000.db", "ir_vlog_0000.dat"]);
     assert_store_file_size_positive(&path, "UNIFIED_MANIFEST");
     assert_store_file_size_positive(&path, "ir_vlog_0000.dat");
 

@@ -29,7 +29,6 @@ fn open_ir_lsm(dir: &std::path::Path) -> VlogLsm<OpId, IrMemEntry<String, String
         BTreeMap::new(),
         test_flags(),
         1,
-        usize::MAX,
     )
 }
 

@@ -213,8 +213,8 @@ fn restore_from_sealed_vlog_rebuilds_mvcc() {
         seal_view(&mut store);
         assert_eq!(store.get_metrics().current_view, 1);
 
-        // After seal: manifest + VLog with data
-        assert_store_file_names(&path, &["UNIFIED_MANIFEST", "ir_vlog_0000.dat"]);
+        // After seal: manifest + VLog with data + SST
+        assert_store_file_names(&path, &["UNIFIED_MANIFEST", "ir_sst_0000.db", "ir_vlog_0000.dat"]);
         assert_store_file_size_positive(&path, "UNIFIED_MANIFEST");
         assert_store_file_size_positive(&path, "ir_vlog_0000.dat");
 

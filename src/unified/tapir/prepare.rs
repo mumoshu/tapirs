@@ -533,7 +533,6 @@ pub(crate) fn open<K: Key, V: Value, IO: DiskIo>(
         sealed_vlog_segments,
         io_flags,
         manifest.committed.next_segment_id,
-        usize::MAX,
     );
 
     let mut prepared_sealed_segments = BTreeMap::new();
@@ -568,7 +567,6 @@ pub(crate) fn open<K: Key, V: Value, IO: DiskIo>(
         prepared_sealed_segments,
         io_flags,
         manifest.prepared.next_segment_id,
-        usize::MAX,
     );
 
     let mut state = TapirState {

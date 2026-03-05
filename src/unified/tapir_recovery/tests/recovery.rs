@@ -42,8 +42,8 @@ fn recovery_vlog_and_manifest_survive_reopen() {
         seal_view(&mut store);
         assert_eq!(store.get_metrics().current_view, 1);
 
-        // After first seal: manifest + VLog with data
-        assert_store_file_names(&path, &["UNIFIED_MANIFEST", "ir_vlog_0000.dat"]);
+        // After first seal: manifest + VLog with data + SST
+        assert_store_file_names(&path, &["UNIFIED_MANIFEST", "ir_sst_0000.db", "ir_vlog_0000.dat"]);
         assert_store_file_size_positive(&path, "UNIFIED_MANIFEST");
         assert_store_file_size_positive(&path, "ir_vlog_0000.dat");
 
@@ -64,8 +64,8 @@ fn recovery_vlog_and_manifest_survive_reopen() {
         seal_view(&mut store);
         assert_eq!(store.get_metrics().current_view, 2);
 
-        // After second seal: still same files (small data < 256KB)
-        assert_store_file_names(&path, &["UNIFIED_MANIFEST", "ir_vlog_0000.dat"]);
+        // After second seal: still same vlog files (small data < 256KB), plus second SST
+        assert_store_file_names(&path, &["UNIFIED_MANIFEST", "ir_sst_0000.db", "ir_sst_0001.db", "ir_vlog_0000.dat"]);
         vlog_size_before_drop = get_store_file_size(&path, "ir_vlog_0000.dat");
         manifest_size_before_drop = get_store_file_size(&path, "UNIFIED_MANIFEST");
     }
@@ -75,7 +75,7 @@ fn recovery_vlog_and_manifest_survive_reopen() {
     let store = TestStore::open(path.clone()).unwrap();
 
     // Files should be unchanged after reopen (MemoryIo persists across drop/reopen)
-    assert_store_file_names(&path, &["UNIFIED_MANIFEST", "ir_vlog_0000.dat"]);
+    assert_store_file_names(&path, &["UNIFIED_MANIFEST", "ir_sst_0000.db", "ir_sst_0001.db", "ir_vlog_0000.dat"]);
     assert_store_file_size(&path, "ir_vlog_0000.dat", vlog_size_before_drop);
     assert_store_file_size(&path, "UNIFIED_MANIFEST", manifest_size_before_drop);
 
@@ -83,7 +83,7 @@ fn recovery_vlog_and_manifest_survive_reopen() {
     assert_eq!(store.get_metrics().current_view, 2);
 
     // Small test data stays in active segment: no additional segment files.
-    assert_store_file_names(&path, &["UNIFIED_MANIFEST", "ir_vlog_0000.dat"]);
+    assert_store_file_names(&path, &["UNIFIED_MANIFEST", "ir_sst_0000.db", "ir_sst_0001.db", "ir_vlog_0000.dat"]);
 }
 
 #[test]
@@ -121,10 +121,10 @@ fn recovery_sealed_segments_persist() {
 
         assert_eq!(store.get_metrics().current_view, 1);
 
-        // After seal with segment rotation: sealed segment 0 + new active segment 1 + manifest
+        // After seal with segment rotation: sealed segment 0 + new active segment 1 + manifest + SST
         assert_store_file_names(
             &path,
-            &["UNIFIED_MANIFEST", "ir_vlog_0000.dat", "ir_vlog_0001.dat"],
+            &["UNIFIED_MANIFEST", "ir_sst_0000.db", "ir_vlog_0000.dat", "ir_vlog_0001.dat"],
         );
         assert_store_file_size_positive(&path, "UNIFIED_MANIFEST");
         let sealed_seg_size = get_store_file_size(&path, "ir_vlog_0000.dat");
@@ -141,7 +141,7 @@ fn recovery_sealed_segments_persist() {
     // Files should be unchanged after reopen
     assert_store_file_names(
         &path,
-        &["UNIFIED_MANIFEST", "ir_vlog_0000.dat", "ir_vlog_0001.dat"],
+        &["UNIFIED_MANIFEST", "ir_sst_0000.db", "ir_vlog_0000.dat", "ir_vlog_0001.dat"],
     );
     assert_store_file_size_positive(&path, "ir_vlog_0000.dat");
 

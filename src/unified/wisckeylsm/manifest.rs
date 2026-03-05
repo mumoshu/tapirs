@@ -1,3 +1,4 @@
+use super::sst::SstMeta;
 use super::types::VlogSegmentMeta;
 use crate::mvcc::disk::disk_io::DiskIo;
 use crate::mvcc::disk::error::StorageError;
@@ -12,6 +13,8 @@ pub struct LsmManifestData {
     pub active_write_offset: u64,
     pub sealed_vlog_segments: Vec<VlogSegmentMeta>,
     pub next_segment_id: u64,
+    pub sst_metas: Vec<SstMeta>,
+    pub next_sst_id: u64,
 }
 
 impl LsmManifestData {
@@ -21,6 +24,8 @@ impl LsmManifestData {
             active_write_offset: 0,
             sealed_vlog_segments: Vec::new(),
             next_segment_id: 1,
+            sst_metas: Vec::new(),
+            next_sst_id: 0,
         }
     }
 }

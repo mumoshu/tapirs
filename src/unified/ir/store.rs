@@ -62,7 +62,6 @@ pub(crate) fn open_store_state<
         sealed_segments,
         io_flags,
         manifest.ir.next_segment_id,
-        usize::MAX, // never flush index to SST
     );
 
     // Recovery: rebuild index from vlog segments.
