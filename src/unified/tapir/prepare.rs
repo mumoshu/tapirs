@@ -1,7 +1,6 @@
 use crate::mvcc::disk::error::StorageError;
 use crate::mvcc::disk::disk_io::{DiskIo, OpenFlags};
 use crate::mvcc::disk::memtable::{CompositeKey, MaxValue};
-use crate::IrClientId;
 use crate::occ::TransactionId as OccTransactionId;
 use crate::tapir::{Key, Timestamp, Value};
 use crate::unified::tapir::Transaction;
@@ -28,8 +27,6 @@ pub(crate) struct TapirState<K: Ord, V, IO: DiskIo> {
     manifest: UnifiedManifest,
     /// Root directory for all store files (vlogs, SSTs, manifest).
     base_dir: PathBuf,
-    /// File open flags (create, direct I/O).
-    io_flags: OpenFlags,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -206,68 +203,6 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         });
 
         self.prepared.put(txn_id, Some(prepare));
-        Ok(())
-    }
-
-    fn recover_segment(&mut self, segment: &VlogSegment<IO>) -> Result<(), StorageError>
-    where
-        K: serde::de::DeserializeOwned + serde::Serialize,
-        V: serde::de::DeserializeOwned,
-    {
-        for (offset, raw) in segment.iter_raw_entries()? {
-            if raw.entry_type != TAPIR_COMMITTED_TXN_ENTRY_TYPE {
-                continue;
-            }
-
-            let txn: Transaction<K, V> = bitcode::deserialize(&raw.payload)
-                .map_err(|e| StorageError::Codec(e.to_string()))?;
-            let txn_id = txn.transaction_id;
-            let commit_ts = txn.commit_ts;
-
-            let txn_ptr = VlogPtr {
-                segment_id: segment.id,
-                offset,
-                length: RAW_ENTRY_OVERHEAD + raw.payload.len() as u32,
-            };
-            self.committed.index_insert(txn_id, txn_ptr);
-
-            for (i, (key, _value)) in txn.write_set.iter().enumerate() {
-                self.insert_memtable_entry(key.clone(), commit_ts, txn_id, i as u16);
-            }
-
-            for (key, read) in &txn.read_set {
-                self.update_memtable_last_read(key, *read, commit_ts.time);
-            }
-        }
-
-        Ok(())
-    }
-
-    fn recover_prepared_segment(
-        &mut self,
-        segment: &VlogSegment<IO>,
-    ) -> Result<(), StorageError> {
-        for (offset, raw) in segment.iter_raw_entries()? {
-            if raw.entry_type != TAPIR_PREPARED_TXN_ENTRY_TYPE {
-                continue;
-            }
-
-            let txn_id = OccTransactionId {
-                client_id: IrClientId(raw.id_client),
-                number: raw.id_number,
-            };
-            let txn_ptr = VlogPtr {
-                segment_id: segment.id,
-                offset,
-                length: RAW_ENTRY_OVERHEAD + raw.payload.len() as u32,
-            };
-            // Insert the VlogPtr into the index. On get(), the value will be
-            // deserialized as Option<Arc<Transaction>>. If it's None (tombstone),
-            // the entry is treated as removed by does_prepare_conflict() and
-            // prepared_index_contains().
-            self.prepared.index_insert(txn_id, txn_ptr);
-        }
-
         Ok(())
     }
 
@@ -472,8 +407,8 @@ pub(crate) fn open<K: Key, V: Value, IO: DiskIo>(
         sealed_vlog_segments,
         io_flags,
         manifest.committed.next_segment_id,
-        Vec::new(),
-        0,
+        manifest.committed.sst_metas.clone(),
+        manifest.committed.next_sst_id,
     )?;
 
     let mut prepared_sealed_segments = BTreeMap::new();
@@ -508,8 +443,8 @@ pub(crate) fn open<K: Key, V: Value, IO: DiskIo>(
         prepared_sealed_segments,
         io_flags,
         manifest.prepared.next_segment_id,
-        Vec::new(),
-        0,
+        manifest.prepared.sst_metas.clone(),
+        manifest.prepared.next_sst_id,
     )?;
 
     let mvcc_active_path = base_dir.join(format!(
@@ -525,76 +460,36 @@ pub(crate) fn open<K: Key, V: Value, IO: DiskIo>(
     )?;
     mvcc_active.start_view(manifest.current_view);
 
+    let mut mvcc_sealed_segments = BTreeMap::new();
+    for seg_meta in &manifest.mvcc.sealed_vlog_segments {
+        let seg = VlogSegment::<IO>::open_at(
+            seg_meta.segment_id,
+            seg_meta.path.clone(),
+            seg_meta.total_size,
+            seg_meta.views.clone(),
+            io_flags,
+        )?;
+        mvcc_sealed_segments.insert(seg_meta.segment_id, seg);
+    }
+
     let mvcc = VlogLsm::open_from_parts(
         "mvcc",
         base_dir,
         mvcc_active,
-        BTreeMap::new(),
+        mvcc_sealed_segments,
         io_flags,
         manifest.mvcc.next_segment_id,
-        Vec::new(),
-        0,
+        manifest.mvcc.sst_metas.clone(),
+        manifest.mvcc.next_sst_id,
     )?;
 
-    let mut state = TapirState {
+    let state = TapirState {
         mvcc,
         committed,
         prepared,
         manifest,
         base_dir: base_dir.to_path_buf(),
-        io_flags,
     };
-
-    for seg_meta in state.manifest.committed.sealed_vlog_segments.clone() {
-        let seg = VlogSegment::<IO>::open_at(
-            seg_meta.segment_id,
-            seg_meta.path,
-            seg_meta.total_size,
-            seg_meta.views,
-            state.io_flags,
-        )?;
-        state.recover_segment(&seg)?;
-        seg.close();
-    }
-
-    let active_for_recover = VlogSegment::<IO>::open_at(
-        state.manifest.committed.active_segment_id,
-        state
-            .base_dir
-            .join(format!("vlog_seg_{:04}.dat", state.manifest.committed.active_segment_id)),
-        state.manifest.committed.active_write_offset,
-        Vec::new(),
-        state.io_flags,
-    )?;
-    state.recover_segment(&active_for_recover)?;
-    active_for_recover.close();
-
-    for seg_meta in state.manifest.prepared.sealed_vlog_segments.clone() {
-        let seg = VlogSegment::<IO>::open_at(
-            seg_meta.segment_id,
-            seg_meta.path,
-            seg_meta.total_size,
-            seg_meta.views,
-            state.io_flags,
-        )?;
-        state.recover_prepared_segment(&seg)?;
-        seg.close();
-    }
-
-    let prep_active_for_recover = VlogSegment::<IO>::open_at(
-        state.manifest.prepared.active_segment_id,
-        state
-            .base_dir
-            .join(format!(
-                "prep_vlog_{:04}.dat",
-                state.manifest.prepared.active_segment_id
-            )),
-        state.manifest.prepared.active_write_offset,
-        Vec::new(),
-        state.io_flags,
-    )?;
-    state.recover_prepared_segment(&prep_active_for_recover)?;
-    prep_active_for_recover.close();
 
     Ok(state)
 }
