@@ -145,21 +145,21 @@ impl TestStore {
         Ok(())
     }
 
-    pub(crate) fn do_uncommitted_get(&self, key: &String) -> Result<(Option<String>, Timestamp), StorageError> {
-        self.tapir_state.do_uncommitted_get(key)
+    pub(crate) fn snapshot_get(&self, key: &String) -> Result<(Option<String>, Timestamp), StorageError> {
+        self.tapir_state.snapshot_get(key)
     }
 
-    pub(crate) fn do_uncommitted_get_at(&self, key: &String, ts: Timestamp) -> Result<(Option<String>, Timestamp), StorageError> {
-        self.tapir_state.do_uncommitted_get_at(key, ts)
+    pub(crate) fn snapshot_get_at(&self, key: &String, ts: Timestamp) -> Result<(Option<String>, Timestamp), StorageError> {
+        self.tapir_state.snapshot_get_at(key, ts)
     }
 
-    pub(crate) fn do_uncommitted_scan(
+    pub(crate) fn snapshot_scan(
         &self,
         start: &String,
         end: &String,
         ts: Timestamp,
     ) -> Result<Vec<(String, Option<String>, Timestamp)>, StorageError> {
-        self.tapir_state.do_uncommitted_scan(start, end, ts)
+        self.tapir_state.snapshot_scan(start, end, ts)
     }
 
     pub(crate) fn extract_finalized_entries(&self) -> Vec<(OpId, IrMemEntry<String, String>)> {

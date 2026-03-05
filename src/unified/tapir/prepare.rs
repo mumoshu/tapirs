@@ -417,7 +417,7 @@ impl<
         IO: DiskIo,
     > TapirState<K, V, IO>
 {
-    pub(crate) fn do_uncommitted_get(&self, key: &K) -> Result<(Option<V>, Timestamp), StorageError> {
+    pub(crate) fn snapshot_get(&self, key: &K) -> Result<(Option<V>, Timestamp), StorageError> {
         let search = CompositeKey::new(key.clone(), Timestamp::max_value());
         if let Some((ck, entry)) = self.mvcc.range_get_first(&search)?
             && ck.key == *key
@@ -427,7 +427,7 @@ impl<
         Ok((None, Timestamp::default()))
     }
 
-    pub(crate) fn do_uncommitted_get_at(&self, key: &K, ts: Timestamp) -> Result<(Option<V>, Timestamp), StorageError> {
+    pub(crate) fn snapshot_get_at(&self, key: &K, ts: Timestamp) -> Result<(Option<V>, Timestamp), StorageError> {
         let search = CompositeKey::new(key.clone(), ts);
         if let Some((ck, entry)) = self.mvcc.range_get_first(&search)?
             && ck.key == *key
@@ -437,7 +437,7 @@ impl<
         Ok((None, Timestamp::default()))
     }
 
-    pub(crate) fn do_uncommitted_scan(
+    pub(crate) fn snapshot_scan(
         &self,
         start: &K,
         end: &K,
@@ -534,7 +534,7 @@ impl TapirStateRunner {
         key: &str,
         ts: Timestamp,
     ) -> Result<(Option<String>, Timestamp), StorageError> {
-        self.tapir.do_uncommitted_get_at(&key.to_string(), ts)
+        self.tapir.snapshot_get_at(&key.to_string(), ts)
     }
 
     pub(crate) fn scan(
@@ -544,7 +544,7 @@ impl TapirStateRunner {
         ts: Timestamp,
     ) -> Result<Vec<(String, Option<String>, Timestamp)>, StorageError> {
         self.tapir
-            .do_uncommitted_scan(&start.to_string(), &end.to_string(), ts)
+            .snapshot_scan(&start.to_string(), &end.to_string(), ts)
     }
 
     pub(crate) fn prepared_index_contains(&self, txn_id: &OccTransactionId) -> bool {
@@ -599,14 +599,14 @@ mod tests {
             )
         .expect("commit should append committed txn");
 
-        let (value, _) = runner.tapir.do_uncommitted_get(&"k".to_string())
+        let (value, _) = runner.tapir.snapshot_get(&"k".to_string())
             .expect("get should succeed");
         assert_eq!(value.as_deref(), Some("v"));
 
         // After seal, value should still be readable via committed VlogLsm
         runner.seal(0).expect("seal should finalize current view");
 
-        let (value2, _) = runner.tapir.do_uncommitted_get(&"k".to_string())
+        let (value2, _) = runner.tapir.snapshot_get(&"k".to_string())
             .expect("get after seal should succeed");
         assert_eq!(value2.as_deref(), Some("v"));
     }

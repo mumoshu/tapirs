@@ -98,7 +98,7 @@ pub(super) fn execute_tapir_command<W: std::io::Write>(
             let key = parts[1].to_string();
             let store = ctx.store()?;
             let (value, ts) = store
-                .do_uncommitted_get(&key)
+                .snapshot_get(&key)
                 .map_err(|e| format!("get failed: {e}"))?;
             write_kv_result(stdout, &key, value.as_deref(), ts)
         }
@@ -110,7 +110,7 @@ pub(super) fn execute_tapir_command<W: std::io::Write>(
             let ts = parse_ts(parts[2])?;
             let store = ctx.store()?;
             let (value, actual_ts) = store
-                .do_uncommitted_get_at(&key, ts)
+                .snapshot_get_at(&key, ts)
                 .map_err(|e| format!("get-at failed: {e}"))?;
             write_kv_result(stdout, &key, value.as_deref(), actual_ts)
         }
@@ -123,7 +123,7 @@ pub(super) fn execute_tapir_command<W: std::io::Write>(
             let ts = parse_ts(parts[3])?;
             let store = ctx.store()?;
             let results = store
-                .do_uncommitted_scan(&start, &end, ts)
+                .snapshot_scan(&start, &end, ts)
                 .map_err(|e| format!("scan failed: {e}"))?;
             for (key, value, entry_ts) in &results {
                 write_kv_result(stdout, key, value.as_deref(), *entry_ts)?;

@@ -102,8 +102,8 @@ fn multi_view_data_integrity() {
     assert_last_read_ts(&store, "b", None);
     assert_last_read_ts(&store, "c", None);
 
-    // do_uncommitted_get() returns latest version of "a" (v1-updated at ts=2)
-    let (val, ts) = store.do_uncommitted_get(&"a".to_string()).unwrap();
+    // snapshot_get() returns latest version of "a" (v1-updated at ts=2)
+    let (val, ts) = store.snapshot_get(&"a".to_string()).unwrap();
     assert_eq!(
         val.as_deref(),
         Some("v1-updated"),
@@ -113,7 +113,7 @@ fn multi_view_data_integrity() {
 
     // Scan returns all 3 unique keys at ts=3
     let results =
-        store.do_uncommitted_scan(&"a".to_string(), &"z".to_string(), test_ts(3)).unwrap();
+        store.snapshot_scan(&"a".to_string(), &"z".to_string(), test_ts(3)).unwrap();
     assert_eq!(results.len(), 3, "scan should return 3 entries at ts=3");
     // Verify each result's key, value, AND timestamp
     assert_eq!(results[0].0, "a");

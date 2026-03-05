@@ -64,7 +64,7 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
         assert_store_file_size_positive(&path, "UNIFIED_MANIFEST");
 
         // Sealed values should remain readable.
-        let (_value, _ts) = store.do_uncommitted_get_at(&"a".to_string(), test_ts(5)).unwrap();
+        let (_value, _ts) = store.snapshot_get_at(&"a".to_string(), test_ts(5)).unwrap();
 
         // View 1: Commit more data (not yet sealed)
         prepare_and_commit(
@@ -77,25 +77,25 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
         );
 
         // Unsealed commits should resolve correctly.
-        let (_value, _ts) = store.do_uncommitted_get_at(&"d".to_string(), test_ts(20)).unwrap();
+        let (_value, _ts) = store.snapshot_get_at(&"d".to_string(), test_ts(20)).unwrap();
 
         // === Take "IR record" for unsealed view ===
         unsealedview_ir = store.extract_finalized_entries();
 
         // Verify source state
-        let (actual_value, actual_ts) = store.do_uncommitted_get_at(&"a".to_string(), test_ts(5)).unwrap();
+        let (actual_value, actual_ts) = store.snapshot_get_at(&"a".to_string(), test_ts(5)).unwrap();
         assert_eq!(actual_value.as_deref(), Some("val_a"));
         assert_eq!(actual_ts, test_ts(5));
-        let (actual_value, actual_ts) = store.do_uncommitted_get_at(&"b".to_string(), test_ts(5)).unwrap();
+        let (actual_value, actual_ts) = store.snapshot_get_at(&"b".to_string(), test_ts(5)).unwrap();
         assert_eq!(actual_value.as_deref(), Some("val_b"));
         assert_eq!(actual_ts, test_ts(5));
-        let (actual_value, actual_ts) = store.do_uncommitted_get_at(&"c".to_string(), test_ts(10)).unwrap();
+        let (actual_value, actual_ts) = store.snapshot_get_at(&"c".to_string(), test_ts(10)).unwrap();
         assert_eq!(actual_value.as_deref(), Some("val_c"));
         assert_eq!(actual_ts, test_ts(10));
-        let (actual_value, actual_ts) = store.do_uncommitted_get_at(&"d".to_string(), test_ts(20)).unwrap();
+        let (actual_value, actual_ts) = store.snapshot_get_at(&"d".to_string(), test_ts(20)).unwrap();
         assert_eq!(actual_value.as_deref(), Some("val_d"));
         assert_eq!(actual_ts, test_ts(20));
-        let (actual_value, actual_ts) = store.do_uncommitted_get_at(&"a".to_string(), test_ts(20)).unwrap();
+        let (actual_value, actual_ts) = store.snapshot_get_at(&"a".to_string(), test_ts(20)).unwrap();
         assert_eq!(actual_value.as_deref(), Some("val_a_v2"));
         assert_eq!(actual_ts, test_ts(20));
     }
@@ -110,13 +110,13 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
     // Reopen from the same path restores sealed-view MVCC data from persisted state.
     // Verify sealed view data is readable via committed VlogLsm resolution.
     
-    let (actual_value, actual_ts) = restored.do_uncommitted_get_at(&"a".to_string(), test_ts(5)).unwrap();
+    let (actual_value, actual_ts) = restored.snapshot_get_at(&"a".to_string(), test_ts(5)).unwrap();
     assert_eq!(actual_value.as_deref(), Some("val_a"));
     assert_eq!(actual_ts, test_ts(5));
-    let (actual_value, actual_ts) = restored.do_uncommitted_get_at(&"b".to_string(), test_ts(5)).unwrap();
+    let (actual_value, actual_ts) = restored.snapshot_get_at(&"b".to_string(), test_ts(5)).unwrap();
     assert_eq!(actual_value.as_deref(), Some("val_b"));
     assert_eq!(actual_ts, test_ts(5));
-    let (actual_value, actual_ts) = restored.do_uncommitted_get_at(&"c".to_string(), test_ts(10)).unwrap();
+    let (actual_value, actual_ts) = restored.snapshot_get_at(&"c".to_string(), test_ts(10)).unwrap();
     assert_eq!(actual_value.as_deref(), Some("val_c"));
     assert_eq!(actual_ts, test_ts(10));
 
@@ -126,49 +126,49 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
     // === Phase 3: Verify ALL restored state ===
 
     // Sealed view data (from SST backup) — values resolve via OnDisk VLog reads
-    let (actual_value, actual_ts) = restored.do_uncommitted_get_at(&"a".to_string(), test_ts(5)).unwrap();
+    let (actual_value, actual_ts) = restored.snapshot_get_at(&"a".to_string(), test_ts(5)).unwrap();
     assert_eq!(actual_value.as_deref(), Some("val_a"));
     assert_eq!(actual_ts, test_ts(5));
-    let (actual_value, actual_ts) = restored.do_uncommitted_get_at(&"b".to_string(), test_ts(5)).unwrap();
+    let (actual_value, actual_ts) = restored.snapshot_get_at(&"b".to_string(), test_ts(5)).unwrap();
     assert_eq!(actual_value.as_deref(), Some("val_b"));
     assert_eq!(actual_ts, test_ts(5));
-    let (actual_value, actual_ts) = restored.do_uncommitted_get_at(&"c".to_string(), test_ts(10)).unwrap();
+    let (actual_value, actual_ts) = restored.snapshot_get_at(&"c".to_string(), test_ts(10)).unwrap();
     assert_eq!(actual_value.as_deref(), Some("val_c"));
     assert_eq!(actual_ts, test_ts(10));
 
     // Unsealed view data (from IR replay) — values are InMemory until seal
-    let (actual_value, actual_ts) = restored.do_uncommitted_get_at(&"d".to_string(), test_ts(20)).unwrap();
+    let (actual_value, actual_ts) = restored.snapshot_get_at(&"d".to_string(), test_ts(20)).unwrap();
     assert_eq!(actual_value.as_deref(), Some("val_d"));
     assert_eq!(actual_ts, test_ts(20));
-    let (actual_value, actual_ts) = restored.do_uncommitted_get_at(&"a".to_string(), test_ts(20)).unwrap();
+    let (actual_value, actual_ts) = restored.snapshot_get_at(&"a".to_string(), test_ts(20)).unwrap();
     assert_eq!(actual_value.as_deref(), Some("val_a_v2"));
     assert_eq!(actual_ts, test_ts(20));
-    let (_value, _ts) = restored.do_uncommitted_get_at(&"d".to_string(), test_ts(20)).unwrap();
+    let (_value, _ts) = restored.snapshot_get_at(&"d".to_string(), test_ts(20)).unwrap();
 
     // Multi-version reads across sealed and unsealed views
     // "a" at ts=5 → "val_a" (from SST/OnDisk)
     // "a" at ts=20 → "val_a_v2" (from IR replay/InMemory)
-    let (actual_value, actual_ts) = restored.do_uncommitted_get_at(&"a".to_string(), test_ts(5)).unwrap();
+    let (actual_value, actual_ts) = restored.snapshot_get_at(&"a".to_string(), test_ts(5)).unwrap();
     assert_eq!(actual_value.as_deref(), Some("val_a"));
     assert_eq!(actual_ts, test_ts(5));
-    let (actual_value, actual_ts) = restored.do_uncommitted_get_at(&"a".to_string(), test_ts(20)).unwrap();
+    let (actual_value, actual_ts) = restored.snapshot_get_at(&"a".to_string(), test_ts(20)).unwrap();
     assert_eq!(actual_value.as_deref(), Some("val_a_v2"));
     assert_eq!(actual_ts, test_ts(20));
-    let (actual_value, actual_ts) = restored.do_uncommitted_get_at(&"a".to_string(), test_ts(15)).unwrap();
+    let (actual_value, actual_ts) = restored.snapshot_get_at(&"a".to_string(), test_ts(15)).unwrap();
     assert_eq!(actual_value.as_deref(), Some("val_a"));
     assert_eq!(actual_ts, test_ts(5));
 
-    // do_uncommitted_get() returns latest version
-    let (val, ts) = restored.do_uncommitted_get(&"a".to_string()).unwrap();
+    // snapshot_get() returns latest version
+    let (val, ts) = restored.snapshot_get(&"a".to_string()).unwrap();
     assert_eq!(val.as_deref(), Some("val_a_v2"), "get(a): latest value");
     assert_eq!(ts, test_ts(20), "get(a): latest timestamp");
 
-    let (val, ts) = restored.do_uncommitted_get(&"d".to_string()).unwrap();
+    let (val, ts) = restored.snapshot_get(&"d".to_string()).unwrap();
     assert_eq!(val.as_deref(), Some("val_d"), "get(d): value");
     assert_eq!(ts, test_ts(20), "get(d): timestamp");
 
     // Scan at ts=20 returns all 4 unique keys
-    let scan = restored.do_uncommitted_scan(
+    let scan = restored.snapshot_scan(
         &"a".to_string(),
         &"z".to_string(),
         test_ts(20),
@@ -189,7 +189,7 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
     assert_eq!(scan[3].2, test_ts(20));
 
     // Scan at ts=10 returns only sealed-view keys (before view 1 data)
-    let scan_early = restored.do_uncommitted_scan(
+    let scan_early = restored.snapshot_scan(
         &"a".to_string(),
         &"z".to_string(),
         test_ts(10),
@@ -207,7 +207,7 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
 
     // Nonexistent key
     let (actual_value, _) = restored
-        .do_uncommitted_get_at(&"nonexistent".to_string(), test_ts(100))
+        .snapshot_get_at(&"nonexistent".to_string(), test_ts(100))
         .unwrap();
     assert!(actual_value.is_none());
 

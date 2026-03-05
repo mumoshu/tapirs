@@ -90,21 +90,21 @@ fn vlog_segment_grouping() {
     assert_store_file_size(&path, "ir_vlog_0001.dat", 0);
 
     // Reads across segments work correctly — verify all values AND timestamps
-    let (actual_value, actual_ts) = store.do_uncommitted_get_at(&"a".to_string(), test_ts(1)).unwrap();
+    let (actual_value, actual_ts) = store.snapshot_get_at(&"a".to_string(), test_ts(1)).unwrap();
     assert_eq!(actual_value.as_deref(), Some("v1"));
     assert_eq!(actual_ts, test_ts(1));
-    let (actual_value, actual_ts) = store.do_uncommitted_get_at(&"b".to_string(), test_ts(2)).unwrap();
+    let (actual_value, actual_ts) = store.snapshot_get_at(&"b".to_string(), test_ts(2)).unwrap();
     assert_eq!(actual_value.as_deref(), Some("v2"));
     assert_eq!(actual_ts, test_ts(2));
-    let (actual_value, actual_ts) = store.do_uncommitted_get_at(&"c".to_string(), test_ts(3)).unwrap();
+    let (actual_value, actual_ts) = store.snapshot_get_at(&"c".to_string(), test_ts(3)).unwrap();
     assert_eq!(actual_value.as_deref(), Some(big_value.as_str()));
     assert_eq!(actual_ts, test_ts(3));
 
     // Nonexistent keys should return None
     let (actual_value, _) = store
-        .do_uncommitted_get_at(&"d".to_string(), test_ts(100))
+        .snapshot_get_at(&"d".to_string(), test_ts(100))
         .unwrap();
     assert!(actual_value.is_none());
-    let (actual_value, _) = store.do_uncommitted_get_at(&"a".to_string(), test_ts(0)).unwrap();
+    let (actual_value, _) = store.snapshot_get_at(&"a".to_string(), test_ts(0)).unwrap();
     assert!(actual_value.is_none());
 }

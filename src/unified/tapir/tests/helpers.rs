@@ -180,7 +180,7 @@ pub fn assert_get_at(
     expected_ts: Timestamp,
 ) {
     let (actual_value, actual_ts) =
-        store.do_uncommitted_get_at(&key.to_string(), ts).unwrap();
+        store.snapshot_get_at(&key.to_string(), ts).unwrap();
     assert_eq!(
         actual_value.as_deref(),
         expected_value,
@@ -195,7 +195,7 @@ pub fn assert_get_at(
 /// Assert that get_at(key, ts) returns None (key doesn't exist at this ts).
 pub fn assert_get_none(store: &TestStore, key: &str, ts: Timestamp) {
     let (actual_value, _) =
-        store.do_uncommitted_get_at(&key.to_string(), ts).unwrap();
+        store.snapshot_get_at(&key.to_string(), ts).unwrap();
     assert!(
         actual_value.is_none(),
         "get_at({key:?}, {ts:?}): expected None, got {actual_value:?}"

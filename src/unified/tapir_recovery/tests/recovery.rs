@@ -31,10 +31,10 @@ fn recovery_vlog_and_manifest_survive_reopen() {
         );
 
         // Verify data is readable before seal
-        let (actual_value, actual_ts) = store.do_uncommitted_get_at(&"x".to_string(), test_ts(5)).unwrap();
+        let (actual_value, actual_ts) = store.snapshot_get_at(&"x".to_string(), test_ts(5)).unwrap();
         assert_eq!(actual_value.as_deref(), Some("v1"));
         assert_eq!(actual_ts, test_ts(5));
-        let (actual_value, actual_ts) = store.do_uncommitted_get_at(&"y".to_string(), test_ts(5)).unwrap();
+        let (actual_value, actual_ts) = store.snapshot_get_at(&"y".to_string(), test_ts(5)).unwrap();
         assert_eq!(actual_value.as_deref(), Some("v2"));
         assert_eq!(actual_ts, test_ts(5));
 
@@ -48,7 +48,7 @@ fn recovery_vlog_and_manifest_survive_reopen() {
         assert_store_file_size_positive(&path, "ir_vlog_0000.dat");
 
         // Data still readable after seal (OnDisk now)
-        let (actual_value, actual_ts) = store.do_uncommitted_get_at(&"x".to_string(), test_ts(5)).unwrap();
+        let (actual_value, actual_ts) = store.snapshot_get_at(&"x".to_string(), test_ts(5)).unwrap();
         assert_eq!(actual_value.as_deref(), Some("v1"));
         assert_eq!(actual_ts, test_ts(5));
 
@@ -112,7 +112,7 @@ fn recovery_sealed_segments_persist() {
 
         // Verify readable before seal
         let (actual_value, actual_ts) = store
-            .do_uncommitted_get_at(&"big_key".to_string(), test_ts(5))
+            .snapshot_get_at(&"big_key".to_string(), test_ts(5))
             .unwrap();
         assert_eq!(actual_value.as_deref(), Some(big_value.as_str()));
         assert_eq!(actual_ts, test_ts(5));
@@ -148,7 +148,7 @@ fn recovery_sealed_segments_persist() {
     assert_eq!(store.get_metrics().current_view, 1);
     // Sealed data remains readable after reopen.
     let (actual_value, actual_ts) = store
-        .do_uncommitted_get_at(&"big_key".to_string(), test_ts(5))
+        .snapshot_get_at(&"big_key".to_string(), test_ts(5))
         .unwrap();
     let expected_big_value = "x".repeat(2048);
     assert_eq!(actual_value.as_deref(), Some(expected_big_value.as_str()));

@@ -19,7 +19,7 @@ fn rw_txn_prepare_commit_read() {
     assert_get_at(&store, "x", test_ts(1), Some("v1"), test_ts(1));
     assert_value_location_in_memory(&store, "x", test_ts(1), true);
 
-    let (val, ts) = store.do_uncommitted_get(&"x".to_string()).unwrap();
+    let (val, ts) = store.snapshot_get(&"x".to_string()).unwrap();
     assert_eq!(val.as_deref(), Some("v1"));
     assert_eq!(ts, test_ts(1));
 
@@ -63,12 +63,12 @@ fn tapir_state_prepare_registry() {
     let txn = make_txn(vec![], vec![("x", Some("v1"))]);
     store.prepare(txn_id, &txn, test_ts(5)).unwrap();
 
-    let (value, ts) = store.do_uncommitted_get(&"x".to_string()).unwrap();
+    let (value, ts) = store.snapshot_get(&"x".to_string()).unwrap();
     assert!(value.is_none());
     assert_eq!(ts, Default::default());
 
     store.abort(&txn_id);
-    let (value, ts) = store.do_uncommitted_get(&"x".to_string()).unwrap();
+    let (value, ts) = store.snapshot_get(&"x".to_string()).unwrap();
     assert!(value.is_none());
     assert_eq!(ts, Default::default());
 
@@ -91,10 +91,10 @@ fn tapir_state_cross_view_read_and_cache() {
     store.seal_current_view(u64::MAX).unwrap();
     assert_current_view(&store, 1);
 
-    let (value_a, _) = store.do_uncommitted_get(&"key_a".to_string()).unwrap();
+    let (value_a, _) = store.snapshot_get(&"key_a".to_string()).unwrap();
     assert_eq!(value_a.as_deref(), Some("value_a"));
 
-    let (value_b, _) = store.do_uncommitted_get(&"key_b".to_string()).unwrap();
+    let (value_b, _) = store.snapshot_get(&"key_b".to_string()).unwrap();
     assert_eq!(value_b.as_deref(), Some("value_b"));
 
     assert_store_file_names(&store, &["UNIFIED_MANIFEST", "vlog_seg_0000.dat"]);

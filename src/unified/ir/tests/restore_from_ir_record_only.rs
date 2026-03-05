@@ -182,17 +182,17 @@ fn restore_from_ir_record_rebuilds_mvcc() {
     assert_get_none(&restored_store, "z", test_ts(15));
     assert_get_none(&restored_store, "z", test_ts(100));
 
-    // do_uncommitted_get() returns latest version
-    let (val, ts) = restored_store.do_uncommitted_get(&"x".to_string()).unwrap();
+    // snapshot_get() returns latest version
+    let (val, ts) = restored_store.snapshot_get(&"x".to_string()).unwrap();
     assert_eq!(val.as_deref(), Some("v1-updated"), "get(x): value mismatch");
     assert_eq!(ts, test_ts(10), "get(x): timestamp mismatch");
 
-    let (val, ts) = restored_store.do_uncommitted_get(&"y".to_string()).unwrap();
+    let (val, ts) = restored_store.snapshot_get(&"y".to_string()).unwrap();
     assert_eq!(val.as_deref(), Some("v2"), "get(y): value mismatch");
     assert_eq!(ts, test_ts(10), "get(y): timestamp mismatch");
 
     // Key not found returns None
-    let (val, _) = restored_store.do_uncommitted_get(&"nonexistent".to_string()).unwrap();
+    let (val, _) = restored_store.snapshot_get(&"nonexistent".to_string()).unwrap();
     assert!(val.is_none(), "Nonexistent key should return None");
 
     // Multi-version reads work correctly
@@ -223,7 +223,7 @@ fn restore_from_ir_record_rebuilds_mvcc() {
     );
 
     // Scan returns all committed keys at ts=10
-    let scan_results = restored_store.do_uncommitted_scan(
+    let scan_results = restored_store.snapshot_scan(
         &"a".to_string(),
         &"z".to_string(),
         test_ts(10),
@@ -368,7 +368,7 @@ fn restore_from_sealed_vlog_rebuilds_mvcc() {
     assert_value_location_in_memory(&restored, "c", test_ts(10), false);
 
     // Scan
-    let scan = restored.do_uncommitted_scan(
+    let scan = restored.snapshot_scan(
         &"a".to_string(),
         &"z".to_string(),
         test_ts(10),

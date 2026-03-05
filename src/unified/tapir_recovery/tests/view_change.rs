@@ -25,7 +25,7 @@ fn view_change_seal_merge_sync() {
     );
 
     // Unsealed committed value should be readable
-    let (actual_value, actual_ts) = store.do_uncommitted_get_at(&"a".to_string(), test_ts(5)).unwrap();
+    let (actual_value, actual_ts) = store.snapshot_get_at(&"a".to_string(), test_ts(5)).unwrap();
     assert_eq!(actual_value.as_deref(), Some("v1"));
     assert_eq!(actual_ts, test_ts(5));
 
@@ -50,18 +50,18 @@ fn view_change_seal_merge_sync() {
 
     // Phase 3: Reads across sealed views
     // Committed "a" should be readable (OnDisk after seal)
-    let (actual_value, actual_ts) = store.do_uncommitted_get_at(&"a".to_string(), test_ts(5)).unwrap();
+    let (actual_value, actual_ts) = store.snapshot_get_at(&"a".to_string(), test_ts(5)).unwrap();
     assert_eq!(actual_value.as_deref(), Some("v1"));
     assert_eq!(actual_ts, test_ts(5));
 
     // Tentative "b" was never committed — not in unified_memtable
     let (actual_value, _) = store
-        .do_uncommitted_get_at(&"b".to_string(), test_ts(10))
+        .snapshot_get_at(&"b".to_string(), test_ts(10))
         .unwrap();
     assert!(actual_value.is_none());
 
-    // do_uncommitted_get() returns the latest version of "a"
-    let (val, ts) = store.do_uncommitted_get(&"a".to_string()).unwrap();
+    // snapshot_get() returns the latest version of "a"
+    let (val, ts) = store.snapshot_get(&"a".to_string()).unwrap();
     assert_eq!(val.as_deref(), Some("v1"), "get(a): value mismatch");
     assert_eq!(ts, test_ts(5), "get(a): timestamp mismatch");
 }
@@ -106,17 +106,17 @@ fn cross_view_prepare_commit() {
     );
 
     // Before seal, committed value resolves from in-memory prepare data
-    let (actual_value, actual_ts) = store.do_uncommitted_get_at(&"x".to_string(), test_ts(5)).unwrap();
+    let (actual_value, actual_ts) = store.snapshot_get_at(&"x".to_string(), test_ts(5)).unwrap();
     assert_eq!(actual_value.as_deref(), Some("v1"));
     assert_eq!(actual_ts, test_ts(5));
 
     // Second read: LRU cache hit (zero additional VLog I/O)
-    let (actual_value, actual_ts) = store.do_uncommitted_get_at(&"x".to_string(), test_ts(5)).unwrap();
+    let (actual_value, actual_ts) = store.snapshot_get_at(&"x".to_string(), test_ts(5)).unwrap();
     assert_eq!(actual_value.as_deref(), Some("v1"));
     assert_eq!(actual_ts, test_ts(5));
 
     // Nonexistent key should return None
-    let (actual_value, _) = store.do_uncommitted_get_at(&"y".to_string(), test_ts(5)).unwrap();
+    let (actual_value, _) = store.snapshot_get_at(&"y".to_string(), test_ts(5)).unwrap();
     assert!(actual_value.is_none());
 
 }
@@ -165,12 +165,12 @@ fn multi_client_commits_survive_seal() {
 
     // Both readable before seal
     let (actual_value, actual_ts) = store
-        .do_uncommitted_get_at(&"a".to_string(), test_ts_client(5, 1))
+        .snapshot_get_at(&"a".to_string(), test_ts_client(5, 1))
         .unwrap();
     assert_eq!(actual_value.as_deref(), Some("from_c1"));
     assert_eq!(actual_ts, test_ts_client(5, 1));
     let (actual_value, actual_ts) = store
-        .do_uncommitted_get_at(&"b".to_string(), test_ts_client(10, 2))
+        .snapshot_get_at(&"b".to_string(), test_ts_client(10, 2))
         .unwrap();
     assert_eq!(actual_value.as_deref(), Some("from_c2"));
     assert_eq!(actual_ts, test_ts_client(10, 2));
@@ -181,18 +181,18 @@ fn multi_client_commits_survive_seal() {
 
     // Data still readable after seal (OnDisk)
     let (actual_value, actual_ts) = store
-        .do_uncommitted_get_at(&"a".to_string(), test_ts_client(5, 1))
+        .snapshot_get_at(&"a".to_string(), test_ts_client(5, 1))
         .unwrap();
     assert_eq!(actual_value.as_deref(), Some("from_c1"));
     assert_eq!(actual_ts, test_ts_client(5, 1));
     let (actual_value, actual_ts) = store
-        .do_uncommitted_get_at(&"b".to_string(), test_ts_client(10, 2))
+        .snapshot_get_at(&"b".to_string(), test_ts_client(10, 2))
         .unwrap();
     assert_eq!(actual_value.as_deref(), Some("from_c2"));
     assert_eq!(actual_ts, test_ts_client(10, 2));
 
     // Scan returns both keys
-    let scan = store.do_uncommitted_scan(
+    let scan = store.snapshot_scan(
         &"a".to_string(),
         &"z".to_string(),
         test_ts_client(20, 1),
