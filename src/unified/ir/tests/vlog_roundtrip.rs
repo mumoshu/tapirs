@@ -6,7 +6,7 @@ use crate::unified::ir::record::{
     IrMemEntry, IrPayloadInline, IrState, PrepareRef, VlogEntryType,
 };
 use crate::unified::ir::store;
-use crate::unified::wisckeylsm::lsm::VlogLsm;
+use crate::unified::wisckeylsm::lsm::{IndexMode, VlogLsm};
 use crate::unified::wisckeylsm::vlog::VlogSegment;
 use std::collections::BTreeMap;
 
@@ -31,6 +31,7 @@ fn open_ir_lsm(dir: &std::path::Path) -> VlogLsm<OpId, IrMemEntry<String, String
         1,
         Vec::new(),
         0,
+        IndexMode::InMemory,
     )
     .unwrap()
 }

@@ -5,7 +5,7 @@ use crate::occ::TransactionId as OccTransactionId;
 use crate::tapir::{Key, Timestamp, Value};
 use crate::unified::tapir::Transaction;
 use crate::unified::tapir::{MvccIndexEntry, VlogSegment};
-use crate::unified::wisckeylsm::lsm::VlogLsm;
+use crate::unified::wisckeylsm::lsm::{IndexMode, VlogLsm};
 use crate::unified::wisckeylsm::manifest::UnifiedManifest;
 use crate::unified::wisckeylsm::types::VlogPtr;
 use std::collections::BTreeMap;
@@ -384,6 +384,7 @@ pub(crate) fn open<K: Key, V: Value, IO: DiskIo>(
         &manifest.committed,
         manifest.current_view,
         io_flags,
+        IndexMode::SstOnly,
     )?;
     let prepared = VlogLsm::open_from_manifest(
         "prep",
@@ -391,6 +392,7 @@ pub(crate) fn open<K: Key, V: Value, IO: DiskIo>(
         &manifest.prepared,
         manifest.current_view,
         io_flags,
+        IndexMode::InMemory,
     )?;
     let mvcc = VlogLsm::open_from_manifest(
         "mvcc",
@@ -398,6 +400,7 @@ pub(crate) fn open<K: Key, V: Value, IO: DiskIo>(
         &manifest.mvcc,
         manifest.current_view,
         io_flags,
+        IndexMode::InMemory,
     )?;
 
     let state = TapirState {

@@ -5,7 +5,7 @@ use crate::IrClientId;
 use std::path::Path;
 
 use super::record::{IrMemEntry, IrRecord};
-use crate::unified::wisckeylsm::lsm::VlogLsm;
+use crate::unified::wisckeylsm::lsm::{IndexMode, VlogLsm};
 use crate::unified::wisckeylsm::manifest::UnifiedManifest;
 use crate::unified::wisckeylsm::types::VlogPtr;
 use crate::unified::wisckeylsm::vlog::VlogSegment;
@@ -38,6 +38,7 @@ pub(crate) fn open_store_state<
         &manifest.ir,
         current_view,
         io_flags,
+        IndexMode::InMemory,
     )?;
 
     // Recovery: rebuild index from vlog segments.

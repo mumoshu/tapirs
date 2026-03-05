@@ -11,6 +11,16 @@ use crate::unified::wisckeylsm::sst::{SstMeta, SSTableReader, SSTableWriter};
 use crate::unified::wisckeylsm::types::{VlogPtr, VlogSegmentMeta};
 use crate::unified::wisckeylsm::vlog::VlogSegment;
 
+/// Controls whether VlogLsm maintains an in-memory K→VlogPtr index.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum IndexMode {
+    /// Maintain full in-memory BTreeMap<K, VlogPtr> (current behavior).
+    /// SSTs are only used for durability; reads go through the index.
+    InMemory,
+    /// No in-memory index; reads go directly to SSTs.
+    SstOnly,
+}
+
 /// Generic WiscKey-style LSM that stores raw (K, V) pairs in a memtable for
 /// the current view and maintains a K→VlogPtr index that accumulates across
 /// seals. Each `seal_view` writes new entries to both vlog and a per-seal SST.
@@ -29,7 +39,8 @@ pub(crate) struct VlogLsm<K: Ord, V, IO: DiskIo> {
     /// a (segment_id, offset) in either `active_vlog` or `sealed_segments`.
     /// Grows on every `seal_view()`. Flushed to a new SST at each seal but
     /// never cleared — serves as the complete in-memory map.
-    index: BTreeMap<K, VlogPtr>,
+    /// `None` in `SstOnly` mode — reads go directly to SSTs.
+    index: Option<BTreeMap<K, VlogPtr>>,
 
     /// On-disk SST files containing flushed snapshots of `index`. Searched in
     /// reverse order (newest first) by `get()` after memtable and index miss.
@@ -91,17 +102,23 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
         next_segment_id: u64,
         sst_metas: Vec<SstMeta>,
         next_sst_id: u64,
+        index_mode: IndexMode,
     ) -> Result<Self, StorageError>
     where
         K: Serialize + DeserializeOwned + Clone,
     {
         let mut sst_readers = Vec::with_capacity(sst_metas.len());
-        let mut index = BTreeMap::new();
+        let mut index = match index_mode {
+            IndexMode::InMemory => Some(BTreeMap::new()),
+            IndexMode::SstOnly => None,
+        };
         for meta in &sst_metas {
             let reader = IO::block_on(SSTableReader::open(meta.path.clone(), io_flags))?;
-            let entries: Vec<(K, VlogPtr)> = IO::block_on(reader.read_all())?;
-            for (k, ptr) in entries {
-                index.insert(k, ptr);
+            if let Some(ref mut idx) = index {
+                let entries: Vec<(K, VlogPtr)> = IO::block_on(reader.read_all())?;
+                for (k, ptr) in entries {
+                    idx.insert(k, ptr);
+                }
             }
             sst_readers.push(reader);
         }
@@ -132,6 +149,7 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
         manifest_data: &LsmManifestData,
         current_view: u64,
         io_flags: OpenFlags,
+        index_mode: IndexMode,
     ) -> Result<Self, StorageError>
     where
         K: Serialize + DeserializeOwned + Clone,
@@ -168,17 +186,25 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
             manifest_data.next_segment_id,
             manifest_data.sst_metas.clone(),
             manifest_data.next_sst_id,
+            index_mode,
         )
     }
 
     /// Insert a key → VlogPtr mapping into the index (used during recovery).
+    /// Panics in `SstOnly` mode — recovery callers must use `InMemory`.
     pub(crate) fn index_insert(&mut self, key: K, ptr: VlogPtr) {
-        self.index.insert(key, ptr);
+        self.index
+            .as_mut()
+            .expect("index_insert requires IndexMode::InMemory")
+            .insert(key, ptr);
     }
 
     /// Access the in-memory K→VlogPtr index.
+    /// Panics in `SstOnly` mode — callers must use `InMemory`.
     pub(crate) fn index(&self) -> &BTreeMap<K, VlogPtr> {
-        &self.index
+        self.index
+            .as_ref()
+            .expect("index() requires IndexMode::InMemory")
     }
 
     /// Iterate over all values in the memtable.
@@ -238,7 +264,9 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
             return Ok(Some(v.clone()));
         }
 
-        if let Some(ptr) = self.index.get(key) {
+        if let Some(ref idx) = self.index
+            && let Some(ptr) = idx.get(key)
+        {
             let v = self.read_value_from_vlog(ptr)?;
             return Ok(Some(v));
         }
@@ -264,7 +292,12 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
         V: Clone + DeserializeOwned,
     {
         let mem_entry = self.memtable.range(from..).next();
-        let idx_entry = self.index.range(from..).next();
+        let idx_entry = self
+            .index
+            .as_ref()
+            .expect("range_get_first() requires IndexMode::InMemory")
+            .range(from..)
+            .next();
 
         match (mem_entry, idx_entry) {
             (Some((mk, mv)), Some((ik, ip))) => {
@@ -289,11 +322,15 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
     }
 
     /// Range accessor over the index.
+    /// Panics in `SstOnly` mode — callers must use `InMemory`.
     pub(crate) fn index_range<R: std::ops::RangeBounds<K>>(
         &self,
         range: R,
     ) -> std::collections::btree_map::Range<'_, K, VlogPtr> {
-        self.index.range(range)
+        self.index
+            .as_ref()
+            .expect("index_range() requires IndexMode::InMemory")
+            .range(range)
     }
 
     /// Flush memtable to vlog+index via `header_fn`, clear memtable, optionally
@@ -332,7 +369,9 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
                 .collect();
             let ptrs = self.active_vlog.append_raw_batch(&raw_refs)?;
             for (key, ptr) in batch_keys.into_iter().zip(ptrs) {
-                self.index.insert(key.clone(), ptr);
+                if let Some(ref mut idx) = self.index {
+                    idx.insert(key.clone(), ptr);
+                }
                 new_entries.insert(key, ptr);
             }
             self.entry_count += batch_raw.len() as u32;
@@ -475,6 +514,27 @@ mod tests {
             1,
             Vec::new(),
             0,
+            IndexMode::InMemory,
+        )
+        .unwrap()
+    }
+
+    fn open_test_lsm_sst_only(dir: &Path) -> VlogLsm<String, String, MemoryIo> {
+        MemoryIo::create_dir_all(dir).unwrap();
+        let vlog_path = dir.join("vlog_seg_0000.dat");
+        let mut active_vlog =
+            VlogSegment::<MemoryIo>::open(0, vlog_path, test_flags()).unwrap();
+        active_vlog.start_view(0);
+        VlogLsm::open_from_parts(
+            "",
+            dir,
+            active_vlog,
+            BTreeMap::new(),
+            test_flags(),
+            1,
+            Vec::new(),
+            0,
+            IndexMode::SstOnly,
         )
         .unwrap()
     }
@@ -594,7 +654,7 @@ mod tests {
         assert_eq!(lsm.next_sst_id, 0);
         let k_a: String = "k_a".into();
         assert!(!lsm.memtable.contains_key(&k_a));
-        assert!(!lsm.index.contains_key(&k_a));
+        assert!(!lsm.index().contains_key(&k_a));
 
         lsm.put("k_a".into(), "val_a".into());
         assert!(lsm.memtable.contains_key(&k_a));
@@ -607,7 +667,7 @@ mod tests {
         assert_eq!(lsm.sst_metas[0].num_entries, 1);
         assert_eq!(lsm.next_sst_id, 1);
         // Key still accessible via index.
-        assert!(lsm.index.contains_key(&k_a));
+        assert!(lsm.index().contains_key(&k_a));
 
         lsm.put("k_b".into(), "val_b".into());
         lsm.seal_view(u64::MAX, test_header_fn).unwrap();
@@ -617,5 +677,67 @@ mod tests {
         assert_eq!(lsm.sst_metas.len(), 2);
         assert_eq!(lsm.sst_metas[1].num_entries, 1);
         assert_eq!(lsm.next_sst_id, 2);
+    }
+
+    #[test]
+    fn sst_only_get_after_seal() {
+        let dir = MemoryIo::temp_path();
+        let mut lsm = open_test_lsm_sst_only(&dir);
+
+        lsm.put("k_a".into(), "val_a".into());
+        lsm.put("k_b".into(), "val_b".into());
+
+        // Before seal, reads come from memtable.
+        assert_eq!(lsm.get(&"k_a".into()).unwrap(), Some("val_a".into()));
+
+        lsm.seal_view(0, test_header_fn).unwrap();
+        lsm.start_view(1);
+
+        // After seal in SstOnly mode, reads go through SSTs.
+        assert_eq!(lsm.get(&"k_a".into()).unwrap(), Some("val_a".into()));
+        assert_eq!(lsm.get(&"k_b".into()).unwrap(), Some("val_b".into()));
+        assert_eq!(lsm.get(&"missing".into()).unwrap(), None);
+    }
+
+    #[test]
+    fn sst_only_multi_seal_reads() {
+        let dir = MemoryIo::temp_path();
+        let mut lsm = open_test_lsm_sst_only(&dir);
+
+        lsm.put("k_a".into(), "val_a".into());
+        lsm.seal_view(0, test_header_fn).unwrap();
+        lsm.start_view(1);
+
+        lsm.put("k_b".into(), "val_b".into());
+        lsm.seal_view(0, test_header_fn).unwrap();
+        lsm.start_view(2);
+
+        // Keys from both seals accessible via SSTs.
+        assert_eq!(lsm.get(&"k_a".into()).unwrap(), Some("val_a".into()));
+        assert_eq!(lsm.get(&"k_b".into()).unwrap(), Some("val_b".into()));
+        assert_eq!(lsm.get(&"missing".into()).unwrap(), None);
+    }
+
+    #[test]
+    fn sst_only_mixed_memtable_and_sst_reads() {
+        let dir = MemoryIo::temp_path();
+        let mut lsm = open_test_lsm_sst_only(&dir);
+
+        lsm.put("k_a".into(), "val_a".into());
+        lsm.seal_view(0, test_header_fn).unwrap();
+        lsm.start_view(1);
+
+        // k_b is in memtable, k_a is in SST.
+        lsm.put("k_b".into(), "val_b".into());
+        assert_eq!(lsm.get(&"k_a".into()).unwrap(), Some("val_a".into()));
+        assert_eq!(lsm.get(&"k_b".into()).unwrap(), Some("val_b".into()));
+    }
+
+    #[test]
+    #[should_panic(expected = "IndexMode::InMemory")]
+    fn sst_only_index_panics() {
+        let dir = MemoryIo::temp_path();
+        let lsm = open_test_lsm_sst_only(&dir);
+        let _ = lsm.index();
     }
 }
