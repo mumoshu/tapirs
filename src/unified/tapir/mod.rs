@@ -1,5 +1,5 @@
 pub(crate) use types::Transaction;
-pub(crate) use storage_types::LsmEntry;
+pub(crate) use storage_types::MvccIndexEntry;
 pub(crate) use super::wisckeylsm::vlog::VlogSegment;
 
 #[cfg(test)]

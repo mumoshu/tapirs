@@ -4,7 +4,7 @@ use crate::mvcc::disk::memtable::{CompositeKey, MaxValue};
 use crate::occ::TransactionId as OccTransactionId;
 use crate::tapir::{Key, Timestamp, Value};
 use crate::unified::tapir::Transaction;
-use crate::unified::tapir::{LsmEntry, VlogSegment};
+use crate::unified::tapir::{MvccIndexEntry, VlogSegment};
 use crate::unified::wisckeylsm::lsm::VlogLsm;
 use crate::unified::wisckeylsm::manifest::UnifiedManifest;
 use crate::unified::wisckeylsm::types::VlogPtr;
@@ -13,9 +13,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub(crate) struct TapirState<K: Ord, V, IO: DiskIo> {
-    /// MVCC index: maps (key, timestamp) → LsmEntry for get/get_at/scan.
-    /// Each LsmEntry stores (txn_id, write_index) resolved via committed VlogLsm.
-    mvcc: VlogLsm<CompositeKey<K, Timestamp>, LsmEntry, IO>,
+    /// MVCC index: maps (key, timestamp) → MvccIndexEntry for get/get_at/scan.
+    /// Each MvccIndexEntry stores (txn_id, write_index) resolved via committed VlogLsm.
+    mvcc: VlogLsm<CompositeKey<K, Timestamp>, MvccIndexEntry, IO>,
     /// Committed transaction store: txn_id → serialized Transaction in vlog.
     /// On commit, the transaction is written here and MVCC entries point into it.
     committed: VlogLsm<OccTransactionId, Arc<Transaction<K, V>>, IO>,
@@ -66,7 +66,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         write_index: u16,
     ) {
         let ck = CompositeKey::new(key, ts);
-        self.mvcc.put(ck, LsmEntry { txn_id, write_index, last_read_ts: None });
+        self.mvcc.put(ck, MvccIndexEntry { txn_id, write_index, last_read_ts: None });
     }
 
     fn update_mvcc_last_read_ts(&mut self, key: &K, read: Timestamp, commit_time: u64)
@@ -206,7 +206,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         Ok(())
     }
 
-    fn resolve_value(&self, entry: &LsmEntry) -> Result<Option<V>, StorageError>
+    fn resolve_value(&self, entry: &MvccIndexEntry) -> Result<Option<V>, StorageError>
     where
         K: Key + serde::Serialize + serde::de::DeserializeOwned,
         V: Value + serde::Serialize + serde::de::DeserializeOwned,
@@ -446,10 +446,10 @@ impl<
         let from_ck = CompositeKey::new(start.clone(), Timestamp::max_value());
 
         // Collect all entries: index (older, sealed) then memtable (newer, overrides)
-        let mut merged: BTreeMap<CompositeKey<K, Timestamp>, LsmEntry> = BTreeMap::new();
+        let mut merged: BTreeMap<CompositeKey<K, Timestamp>, MvccIndexEntry> = BTreeMap::new();
         for (ck, ptr) in self.mvcc.index_range(from_ck.clone()..) {
             if ck.key > *end { break; }
-            let entry: LsmEntry = self.mvcc.read_value_from_vlog(ptr)?;
+            let entry: MvccIndexEntry = self.mvcc.read_value_from_vlog(ptr)?;
             merged.insert(ck.clone(), entry);
         }
         for (ck, entry) in self.mvcc.memtable_range(from_ck..) {
