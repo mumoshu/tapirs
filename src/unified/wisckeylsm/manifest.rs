@@ -44,6 +44,8 @@ pub struct UnifiedManifest {
     pub prepared: LsmManifestData,
     /// IR operation log vlog metadata.
     pub ir: LsmManifestData,
+    /// MVCC VlogLsm metadata (key→timestamp→txn_id index).
+    pub mvcc: LsmManifestData,
     /// MVCC SST metadata — L0 level.
     pub mvcc_l0_sstables: Vec<SSTableMeta>,
     /// MVCC SST metadata — L1 level.
@@ -63,6 +65,7 @@ impl UnifiedManifest {
             committed: LsmManifestData::new(),
             prepared: LsmManifestData::new(),
             ir: LsmManifestData::new(),
+            mvcc: LsmManifestData::new(),
             mvcc_l0_sstables: Vec::new(),
             mvcc_l1_sstables: Vec::new(),
             next_sst_id: 0,

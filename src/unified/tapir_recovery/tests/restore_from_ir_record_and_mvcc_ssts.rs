@@ -14,10 +14,9 @@ use super::helpers::*;
 /// This is faster than full IR replay because sealed-view data is already
 /// indexed in the SST — no need to re-match Prepare↔Commit pairs.
 ///
-/// In the current implementation, "MVCC SSTs" are represented by the
-/// unified_memtable entries with OnDisk ValueLocations (after seal, all
-/// InMemory entries are converted to OnDisk). Once SST flush is implemented,
-/// these would come from on-disk SST files.
+/// MVCC data is stored in a VlogLsm with SST-based index persistence.
+/// On reopen, sealed-view MVCC entries are rebuilt from committed vlog
+/// segments via recover_segment().
 #[test]
 fn restore_from_ir_record_and_mvcc_sst_entries() {
     let path = MemoryIo::temp_path();
@@ -109,7 +108,7 @@ fn restore_from_ir_record_and_mvcc_sst_entries() {
     let mut restored = TestStore::open_with_options(path, 64).unwrap();
 
     // Reopen from the same path restores sealed-view MVCC data from persisted state.
-    // Verify sealed view data is readable via OnDisk resolution.
+    // Verify sealed view data is readable via committed VlogLsm resolution.
     
     let (actual_value, actual_ts) = restored.do_uncommitted_get_at(&"a".to_string(), test_ts(5)).unwrap();
     assert_eq!(actual_value.as_deref(), Some("val_a"));

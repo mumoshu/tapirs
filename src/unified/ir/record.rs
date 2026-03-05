@@ -115,7 +115,7 @@ pub enum IrPayloadInline<K, V> {
         /// Read set: `(key, read_timestamp)` per read.
         read_set: Vec<(K, Timestamp)>,
         /// Write set: `(key, value)` per write. `None` = delete tombstone.
-        /// MVCC VlogTransactionPtr entries reference `write_set[index]`.
+        /// MVCC LsmEntry entries reference `write_set[index]`.
         write_set: Vec<(K, Option<V>)>,
         /// Scan set: `(start_key, end_key, timestamp)` per scan.
         scan_set: Vec<(K, K, Timestamp)>,

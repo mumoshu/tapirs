@@ -202,9 +202,8 @@ pub fn assert_get_none(store: &TestStore, key: &str, ts: Timestamp) {
     );
 }
 
-/// Assert the ValueLocation type of the MVCC entry for (key, ts).
-/// `expect_in_memory=true` → ValueLocation::InMemory (current view).
-/// `expect_in_memory=false` → ValueLocation::OnDisk (sealed VLog).
+/// Assert the location of the MVCC entry for (key, ts).
+/// No-op: with VlogLsm-based MVCC, all entries are resolved uniformly.
 pub fn assert_value_location_in_memory(
     _store: &TestStore,
     _key: &str,

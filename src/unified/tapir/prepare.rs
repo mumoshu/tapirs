@@ -1,25 +1,22 @@
 use crate::mvcc::disk::error::StorageError;
 use crate::mvcc::disk::disk_io::{DiskIo, OpenFlags};
+use crate::mvcc::disk::memtable::{CompositeKey, MaxValue};
 use crate::IrClientId;
 use crate::occ::TransactionId as OccTransactionId;
 use crate::tapir::{Key, Timestamp, Value};
 use crate::unified::tapir::Transaction;
-use crate::unified::tapir::{LsmEntry, ValueLocation, VlogSegment, VlogTransactionPtr};
-use crate::unified::tapir::memtable::Memtable;
+use crate::unified::tapir::{LsmEntry, VlogSegment};
 use crate::unified::wisckeylsm::lsm::VlogLsm;
 use crate::unified::wisckeylsm::manifest::UnifiedManifest;
-use crate::unified::tapir::prepare_cache::PreparedTransactions;
 use crate::unified::wisckeylsm::types::VlogPtr;
-use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub(crate) struct TapirState<K: Ord, V, IO: DiskIo> {
-    /// MVCC index: maps (key, timestamp) → ValueLocation for get/get_at/scan.
-    /// Rebuilt on recovery by scanning committed vlog segments (see `recover_segment`),
-    /// which inserts OnDisk entries pointing into the committed VlogLsm.
-    memtable: Memtable<K>,
+    /// MVCC index: maps (key, timestamp) → LsmEntry for get/get_at/scan.
+    /// Each LsmEntry stores (txn_id, write_index) resolved via committed VlogLsm.
+    mvcc: VlogLsm<CompositeKey<K, Timestamp>, LsmEntry, IO>,
     /// Committed transaction store: txn_id → serialized Transaction in vlog.
     /// On commit, the transaction is written here and MVCC entries point into it.
     committed: VlogLsm<OccTransactionId, Arc<Transaction<K, V>>, IO>,
@@ -27,10 +24,6 @@ pub(crate) struct TapirState<K: Ord, V, IO: DiskIo> {
     /// Some(txn) = actively prepared, None = tombstone (committed/aborted).
     /// Tombstones flow through seal to SSTs for durable removal on reopen.
     prepared: VlogLsm<OccTransactionId, Option<Arc<Transaction<K, V>>>, IO>,
-    /// LRU cache for deserialized transactions read from sealed vlog segments.
-    prepare_cache: RefCell<PreparedTransactions<Transaction<K, V>>>,
-    /// Number of vlog reads performed (for cache hit rate tracking in tests).
-    vlog_read_count: Cell<u64>,
     /// Persisted metadata: view number, vlog segment positions, SST lists.
     manifest: UnifiedManifest,
     /// Root directory for all store files (vlogs, SSTs, manifest).
@@ -62,50 +55,40 @@ pub(crate) struct StatusReport<K, V> {
     pub(crate) segments: Vec<StatusSegment<K, V>>,
 }
 
-const DEFAULT_PREPARE_CACHE_CAPACITY: usize = 1024;
 const RAW_ENTRY_OVERHEAD: u32 = 25;
 const TAPIR_COMMITTED_TXN_ENTRY_TYPE: u8 = 0x80;
 const TAPIR_PREPARED_TXN_ENTRY_TYPE: u8 = 0x81;
 
 impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
-    fn increment_vlog_read_count(&self) {
-        self.vlog_read_count.set(self.vlog_read_count.get() + 1);
-    }
-
     fn insert_memtable_entry(
         &mut self,
         key: K,
         ts: Timestamp,
-        entry: LsmEntry,
+        txn_id: OccTransactionId,
+        write_index: u16,
     ) {
-        self.memtable.insert(key, ts, entry);
+        let ck = CompositeKey::new(key, ts);
+        self.mvcc.put(ck, LsmEntry { txn_id, write_index, last_read_ts: None });
     }
 
-    fn update_memtable_last_read(&mut self, key: &K, read: Timestamp, commit_time: u64) {
-        self.memtable.update_last_read(key, read, commit_time);
+    fn update_memtable_last_read(&mut self, key: &K, read: Timestamp, commit_time: u64)
+    where
+        K: serde::Serialize + serde::de::DeserializeOwned,
+    {
+        let search = CompositeKey::new(key.clone(), read);
+        if let Ok(Some((found_ck, mut entry))) = self.mvcc.range_get_first(&search)
+            && found_ck.key == *key
+        {
+            entry.last_read_ts = Some(match entry.last_read_ts {
+                Some(existing) => existing.max(commit_time),
+                None => commit_time,
+            });
+            self.mvcc.put(found_ck, entry);
+        }
     }
 
     pub(crate) fn abort(&mut self, txn_id: &OccTransactionId) {
         self.prepared.put(*txn_id, None);
-    }
-
-    fn prepare_cache_get(
-        &self,
-        segment_id: u64,
-        offset: u64,
-    ) -> Option<Arc<Transaction<K, V>>> {
-        self.prepare_cache.borrow_mut().get(segment_id, offset)
-    }
-
-    fn prepare_cache_insert(
-        &self,
-        segment_id: u64,
-        offset: u64,
-        prepare: Arc<Transaction<K, V>>,
-    ) {
-        self.prepare_cache
-            .borrow_mut()
-            .insert(segment_id, offset, prepare);
     }
 
     fn current_view(&self) -> u64 {
@@ -136,24 +119,8 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
 
         self.committed.put(txn_id, arc_txn);
 
-        for (i, (key, value)) in write_set.iter().enumerate() {
-            let value_ref = if value.is_some() {
-                Some(ValueLocation::InMemory {
-                    txn_id,
-                    write_index: i as u16,
-                })
-            } else {
-                None
-            };
-
-            self.insert_memtable_entry(
-                key.clone(),
-                commit,
-                LsmEntry {
-                    value_ref,
-                    last_read_ts: None,
-                },
-            );
+        for (i, (key, _value)) in write_set.iter().enumerate() {
+            self.insert_memtable_entry(key.clone(), commit, txn_id, i as u16);
         }
 
         for (key, read) in read_set {
@@ -241,15 +208,9 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         Ok(())
     }
 
-    fn convert_in_memory_to_on_disk(&mut self) {
-        let committed_index = self.committed.index().clone();
-        self.memtable
-            .convert_in_memory_to_on_disk(&committed_index);
-    }
-
     fn recover_segment(&mut self, segment: &VlogSegment<IO>) -> Result<(), StorageError>
     where
-        K: serde::de::DeserializeOwned,
+        K: serde::de::DeserializeOwned + serde::Serialize,
         V: serde::de::DeserializeOwned,
     {
         for (offset, raw) in segment.iter_raw_entries()? {
@@ -269,23 +230,8 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
             };
             self.committed.index_insert(txn_id, txn_ptr);
 
-            for (i, (key, value)) in txn.write_set.iter().enumerate() {
-                let value_ref = if value.is_some() {
-                    Some(ValueLocation::OnDisk(VlogTransactionPtr {
-                        txn_ptr,
-                        write_index: i as u16,
-                    }))
-                } else {
-                    None
-                };
-                self.insert_memtable_entry(
-                    key.clone(),
-                    commit_ts,
-                    LsmEntry {
-                        value_ref,
-                        last_read_ts: None,
-                    },
-                );
+            for (i, (key, _value)) in txn.write_set.iter().enumerate() {
+                self.insert_memtable_entry(key.clone(), commit_ts, txn_id, i as u16);
             }
 
             for (key, read) in &txn.read_set {
@@ -329,47 +275,11 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         K: Key + serde::Serialize + serde::de::DeserializeOwned,
         V: Value + serde::Serialize + serde::de::DeserializeOwned,
     {
-        match &entry.value_ref {
-            None => Ok(None),
-            Some(ValueLocation::InMemory { txn_id, write_index }) => {
-                match self.committed.get(txn_id)? {
-                    Some(txn) => {
-                        Ok(txn.write_set.get(*write_index as usize).and_then(|(_, v)| v.clone()))
-                    }
-                    None => Ok(None),
-                }
-            }
-            Some(ValueLocation::OnDisk(ptr)) => {
-                let cached = self.resolve_on_disk(ptr)?;
-                if let Some((_key, value)) = cached.write_set.get(ptr.write_index as usize) {
-                    Ok(value.clone())
-                } else {
-                    Ok(None)
-                }
-            }
+        if let Some(txn) = self.committed.get(&entry.txn_id)? {
+            Ok(txn.write_set.get(entry.write_index as usize).and_then(|(_, v)| v.clone()))
+        } else {
+            Ok(None)
         }
-    }
-
-    fn resolve_on_disk(
-        &self,
-        ptr: &VlogTransactionPtr,
-    ) -> Result<Arc<Transaction<K, V>>, StorageError>
-    where
-        K: Key + serde::Serialize + serde::de::DeserializeOwned,
-        V: Value + serde::Serialize + serde::de::DeserializeOwned,
-    {
-        let segment_id = ptr.txn_ptr.segment_id;
-        let offset = ptr.txn_ptr.offset;
-
-        if let Some(cached) = self.prepare_cache_get(segment_id, offset) {
-            return Ok(cached);
-        }
-
-        self.increment_vlog_read_count();
-        let prepare = self.read_committed_txn(&ptr.txn_ptr)?;
-        let cached = Arc::new(prepare);
-        self.prepare_cache_insert(segment_id, offset, cached.clone());
-        Ok(cached)
     }
 
     pub(crate) fn seal_current_view(&mut self, min_view_vlog_size: u64) -> Result<(), StorageError>
@@ -403,9 +313,6 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         if let Some(meta) = prepared_sealed {
             self.manifest.prepared.sealed_vlog_segments.push(meta);
         }
-
-        // THEN: convert InMemory→OnDisk (index now populated by seal above)
-        self.convert_in_memory_to_on_disk();
 
         self.manifest.current_view += 1;
         self.manifest.committed.active_segment_id = self.committed.active_vlog_id();
@@ -507,7 +414,14 @@ pub(crate) fn open<K: Key, V: Value, IO: DiskIo>(
 ) -> Result<TapirState<K, V, IO>, StorageError> {
     IO::create_dir_all(base_dir)?;
 
-    let manifest = UnifiedManifest::load::<IO>(base_dir)?.unwrap_or_else(UnifiedManifest::new);
+    let manifest = match UnifiedManifest::load::<IO>(base_dir) {
+        Ok(Some(m)) => m,
+        Ok(None) => UnifiedManifest::new(),
+        Err(_) => {
+            // Old manifest format without mvcc field — start fresh
+            UnifiedManifest::new()
+        }
+    };
 
     let mut sealed_vlog_segments = BTreeMap::new();
     for seg_meta in &manifest.committed.sealed_vlog_segments {
@@ -578,12 +492,34 @@ pub(crate) fn open<K: Key, V: Value, IO: DiskIo>(
         0,
     )?;
 
+    let mvcc_active_path = base_dir.join(format!(
+        "mvcc_vlog_{:04}.dat",
+        manifest.mvcc.active_segment_id
+    ));
+    let mut mvcc_active = VlogSegment::<IO>::open_at(
+        manifest.mvcc.active_segment_id,
+        mvcc_active_path,
+        manifest.mvcc.active_write_offset,
+        Vec::new(),
+        io_flags,
+    )?;
+    mvcc_active.start_view(manifest.current_view);
+
+    let mvcc = VlogLsm::open_from_parts(
+        "mvcc",
+        base_dir,
+        mvcc_active,
+        BTreeMap::new(),
+        io_flags,
+        manifest.mvcc.next_segment_id,
+        Vec::new(),
+        0,
+    )?;
+
     let mut state = TapirState {
-        memtable: Memtable::new(),
+        mvcc,
         committed,
         prepared,
-        prepare_cache: RefCell::new(PreparedTransactions::new(DEFAULT_PREPARE_CACHE_CAPACITY)),
-        vlog_read_count: Cell::new(0),
         manifest,
         base_dir: base_dir.to_path_buf(),
         io_flags,
@@ -650,19 +586,21 @@ impl<
     > TapirState<K, V, IO>
 {
     pub(crate) fn do_uncommitted_get(&self, key: &K) -> Result<(Option<V>, Timestamp), StorageError> {
-        if let Some((ck, entry)) = self.memtable.get_latest(key) {
-            let ts = ck.timestamp.0;
-            let value = self.resolve_value_internal(entry)?;
-            return Ok((value, ts));
+        let search = CompositeKey::new(key.clone(), Timestamp::max_value());
+        if let Some((ck, entry)) = self.mvcc.range_get_first(&search)?
+            && ck.key == *key
+        {
+            return Ok((self.resolve_value_internal(&entry)?, ck.timestamp.0));
         }
         Ok((None, Timestamp::default()))
     }
 
     pub(crate) fn do_uncommitted_get_at(&self, key: &K, ts: Timestamp) -> Result<(Option<V>, Timestamp), StorageError> {
-        if let Some((ck, entry)) = self.memtable.get_at(key, ts) {
-            let write_ts = ck.timestamp.0;
-            let value = self.resolve_value_internal(entry)?;
-            return Ok((value, write_ts));
+        let search = CompositeKey::new(key.clone(), ts);
+        if let Some((ck, entry)) = self.mvcc.range_get_first(&search)?
+            && ck.key == *key
+        {
+            return Ok((self.resolve_value_internal(&entry)?, ck.timestamp.0));
         }
         Ok((None, Timestamp::default()))
     }
@@ -673,27 +611,31 @@ impl<
         end: &K,
         ts: Timestamp,
     ) -> Result<Vec<(K, Option<V>, Timestamp)>, StorageError> {
+        let from_ck = CompositeKey::new(start.clone(), Timestamp::max_value());
+
+        // Collect all entries: index (older, sealed) then memtable (newer, overrides)
+        let mut merged: BTreeMap<CompositeKey<K, Timestamp>, LsmEntry> = BTreeMap::new();
+        for (ck, ptr) in self.mvcc.index_range(from_ck.clone()..) {
+            if ck.key > *end { break; }
+            let entry: LsmEntry = self.mvcc.read_value_from_vlog(ptr)?;
+            merged.insert(ck.clone(), entry);
+        }
+        for (ck, entry) in self.mvcc.memtable_range(from_ck..) {
+            if ck.key > *end { break; }
+            merged.insert(ck.clone(), entry.clone());
+        }
+
+        // Filter by timestamp, dedup by user key (first = latest due to CompositeKey ordering)
         let mut out = Vec::new();
-        for (ck, entry) in self.memtable.scan(start, end, ts) {
+        let mut last_key: Option<&K> = None;
+        for (ck, entry) in &merged {
+            if ck.timestamp.0 > ts { continue; }
+            if last_key == Some(&ck.key) { continue; }
+            last_key = Some(&ck.key);
             let value = self.resolve_value_internal(entry)?;
             out.push((ck.key.clone(), value, ck.timestamp.0));
         }
         Ok(out)
-    }
-
-    fn read_committed_txn(
-        &self,
-        txn_ptr: &VlogPtr,
-    ) -> Result<Transaction<K, V>, StorageError> {
-        let segment_id = txn_ptr.segment_id;
-        let segment = self
-            .committed
-            .segment_ref(segment_id)
-            .ok_or_else(|| StorageError::Codec(format!(
-                "VLog segment {segment_id} not found for prepare resolution"
-            )))?;
-
-        read_committed_txn_from_segment(segment, txn_ptr)
     }
 }
 
@@ -794,7 +736,7 @@ mod tests {
     use crate::IrClientId;
 
     #[test]
-    fn resolve_on_disk_uses_cache_after_first_read() {
+    fn commit_and_get_basic() {
         let base_dir = std::path::PathBuf::from(format!(
             "/tapir-store-test-{}",
             std::time::SystemTime::now()
@@ -824,19 +766,16 @@ mod tests {
                 ts,
             )
         .expect("commit should append committed txn");
-        runner.seal(0).expect("seal should finalize current view");
 
-        // After seal, InMemory entries are converted to OnDisk. Verify reads
-        // go through the vlog + cache.
         let (value, _) = runner.tapir.do_uncommitted_get(&"k".to_string())
             .expect("get should succeed");
         assert_eq!(value.as_deref(), Some("v"));
-        assert_eq!(runner.tapir.vlog_read_count.get(), 1);
 
-        // Second read should hit the prepare_cache.
+        // After seal, value should still be readable via committed VlogLsm
+        runner.seal(0).expect("seal should finalize current view");
+
         let (value2, _) = runner.tapir.do_uncommitted_get(&"k".to_string())
-            .expect("second get should succeed");
+            .expect("get after seal should succeed");
         assert_eq!(value2.as_deref(), Some("v"));
-        assert_eq!(runner.tapir.vlog_read_count.get(), 1);
     }
 }

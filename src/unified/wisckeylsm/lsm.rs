@@ -160,8 +160,6 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
         self.next_segment_id
     }
 
-    /// Remove a key from both memtable and index. Returns the memtable value
-    /// if it was present. Vlog data is not removed (managed by compaction).
     /// Insert a key-value pair into the memtable. No vlog/index write —
     /// those happen at `seal_view()` time via the caller-provided closure.
     pub fn put(&mut self, key: K, value: V) {
@@ -194,6 +192,47 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
         }
 
         Ok(None)
+    }
+
+    /// Range lookup: return the first entry with key >= `from` by checking
+    /// memtable then index, picking the smaller key. No SST fallback needed
+    /// since the index is always the complete in-memory map.
+    pub fn range_get_first(&self, from: &K) -> Result<Option<(K, V)>, StorageError>
+    where
+        K: Serialize + DeserializeOwned + Clone,
+        V: Clone + DeserializeOwned,
+    {
+        let mem_entry = self.memtable.range(from..).next();
+        let idx_entry = self.index.range(from..).next();
+
+        match (mem_entry, idx_entry) {
+            (Some((mk, mv)), Some((ik, ip))) => {
+                if mk <= ik {
+                    Ok(Some((mk.clone(), mv.clone())))
+                } else {
+                    Ok(Some((ik.clone(), self.read_value_from_vlog(ip)?)))
+                }
+            }
+            (Some((mk, mv)), None) => Ok(Some((mk.clone(), mv.clone()))),
+            (None, Some((ik, ip))) => Ok(Some((ik.clone(), self.read_value_from_vlog(ip)?))),
+            (None, None) => Ok(None),
+        }
+    }
+
+    /// Range accessor over the memtable.
+    pub(crate) fn memtable_range<R: std::ops::RangeBounds<K>>(
+        &self,
+        range: R,
+    ) -> std::collections::btree_map::Range<'_, K, V> {
+        self.memtable.range(range)
+    }
+
+    /// Range accessor over the index.
+    pub(crate) fn index_range<R: std::ops::RangeBounds<K>>(
+        &self,
+        range: R,
+    ) -> std::collections::btree_map::Range<'_, K, VlogPtr> {
+        self.index.range(range)
     }
 
     /// Flush memtable to vlog+index via `header_fn`, clear memtable, optionally
@@ -308,7 +347,7 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
         self.active_vlog.start_view(view);
     }
 
-    fn read_value_from_vlog(&self, ptr: &VlogPtr) -> Result<V, StorageError>
+    pub(crate) fn read_value_from_vlog(&self, ptr: &VlogPtr) -> Result<V, StorageError>
     where
         V: DeserializeOwned,
     {

@@ -20,7 +20,7 @@ fn tapir_state_prepare_conflict_commit_seal_reopen_get_scan() {
         .collect();
     assert_eq!(
         files_on_open,
-        vec!["prep_vlog_0000.dat".to_string(), "vlog_seg_0000.dat".to_string()]
+        vec!["mvcc_vlog_0000.dat".to_string(), "prep_vlog_0000.dat".to_string(), "vlog_seg_0000.dat".to_string()]
     );
 
     let txn1 = make_txn(vec![], vec![("x", Some("v1"))]);
@@ -44,7 +44,7 @@ fn tapir_state_prepare_conflict_commit_seal_reopen_get_scan() {
         .collect();
     assert_eq!(
         files_before_first_seal,
-        vec!["prep_vlog_0000.dat".to_string(), "vlog_seg_0000.dat".to_string()]
+        vec!["mvcc_vlog_0000.dat".to_string(), "prep_vlog_0000.dat".to_string(), "vlog_seg_0000.dat".to_string()]
     );
 
     store.seal(u64::MAX).unwrap();
@@ -53,12 +53,13 @@ fn tapir_state_prepare_conflict_commit_seal_reopen_get_scan() {
     let names_after_first: Vec<&str> = files_after_first_seal.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(
         names_after_first,
-        vec!["UNIFIED_MANIFEST", "prep_sst_0000.db", "prep_vlog_0000.dat", "sst_0000.db", "vlog_seg_0000.dat"],
+        vec!["UNIFIED_MANIFEST", "mvcc_vlog_0000.dat", "prep_sst_0000.db", "prep_vlog_0000.dat", "sst_0000.db", "vlog_seg_0000.dat"],
         "exact files after first seal"
     );
     for (name, size) in &files_after_first_seal {
-        // prep_vlog may be empty if all prepared txns were committed before seal.
-        if name.contains("prep_vlog") {
+        // prep_vlog/mvcc_vlog may be empty if all prepared txns were committed before seal
+        // or MVCC VlogLsm is not sealed yet.
+        if name.contains("prep_vlog") || name.contains("mvcc_vlog") {
             continue;
         }
         assert!(*size > 0, "persisted file {name:?} should be non-empty after first seal");
