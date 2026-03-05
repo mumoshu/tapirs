@@ -58,6 +58,7 @@ pub(crate) struct StatusReport<K, V> {
 const RAW_ENTRY_OVERHEAD: u32 = 25;
 const TAPIR_COMMITTED_TXN_ENTRY_TYPE: u8 = 0x80;
 const TAPIR_PREPARED_TXN_ENTRY_TYPE: u8 = 0x81;
+const TAPIR_MVCC_ENTRY_TYPE: u8 = 0x82;
 
 impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
     fn insert_memtable_entry(
@@ -284,7 +285,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
 
     pub(crate) fn seal_current_view(&mut self, min_view_vlog_size: u64) -> Result<(), StorageError>
     where
-        K: serde::Serialize,
+        K: serde::Serialize + serde::de::DeserializeOwned,
         V: serde::Serialize,
     {
         // FIRST: flush memtable→vlog+index, then clear memtable
@@ -314,16 +315,35 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
             self.manifest.prepared.sealed_vlog_segments.push(meta);
         }
 
+        let mvcc_sealed =
+            self.mvcc
+                .seal_view(min_view_vlog_size, |_ck, _entry| {
+                    Some((TAPIR_MVCC_ENTRY_TYPE, 0, 0))
+                })?;
+        if let Some(meta) = mvcc_sealed {
+            self.manifest.mvcc.sealed_vlog_segments.push(meta);
+        }
+
         self.manifest.current_view += 1;
         self.manifest.committed.active_segment_id = self.committed.active_vlog_id();
         self.manifest.committed.active_write_offset = self.committed.active_write_offset();
         self.manifest.committed.next_segment_id = self.committed.next_segment_id();
+        self.manifest.committed.sst_metas = self.committed.sst_metas().to_vec();
+        self.manifest.committed.next_sst_id = self.committed.next_sst_id();
         self.manifest.prepared.active_segment_id = self.prepared.active_vlog_id();
         self.manifest.prepared.active_write_offset = self.prepared.active_write_offset();
         self.manifest.prepared.next_segment_id = self.prepared.next_segment_id();
+        self.manifest.prepared.sst_metas = self.prepared.sst_metas().to_vec();
+        self.manifest.prepared.next_sst_id = self.prepared.next_sst_id();
+        self.manifest.mvcc.active_segment_id = self.mvcc.active_vlog_id();
+        self.manifest.mvcc.active_write_offset = self.mvcc.active_write_offset();
+        self.manifest.mvcc.next_segment_id = self.mvcc.next_segment_id();
+        self.manifest.mvcc.sst_metas = self.mvcc.sst_metas().to_vec();
+        self.manifest.mvcc.next_sst_id = self.mvcc.next_sst_id();
         self.manifest.save::<IO>(&self.base_dir)?;
         self.committed.start_view(self.manifest.current_view);
         self.prepared.start_view(self.manifest.current_view);
+        self.mvcc.start_view(self.manifest.current_view);
         Ok(())
     }
 

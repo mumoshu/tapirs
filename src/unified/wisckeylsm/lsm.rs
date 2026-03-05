@@ -160,6 +160,16 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
         self.next_segment_id
     }
 
+    /// SST metadata for manifest persistence.
+    pub(crate) fn sst_metas(&self) -> &[SstMeta] {
+        &self.sst_metas
+    }
+
+    /// Next SST id (for manifest persistence).
+    pub(crate) fn next_sst_id(&self) -> u64 {
+        self.next_sst_id
+    }
+
     /// Insert a key-value pair into the memtable. No vlog/index write —
     /// those happen at `seal_view()` time via the caller-provided closure.
     pub fn put(&mut self, key: K, value: V) {
