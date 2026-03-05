@@ -104,9 +104,9 @@ fn tapir_state_cross_view_read_and_cache() {
 
 #[test]
 fn prepare_cache_lru_eviction() {
-    use crate::unified::tapir::prepare_cache::PreparedTransactions;
+    use crate::unified::tapir::prepare_cache::VlogEntryCache;
 
-    let mut cache = PreparedTransactions::<Transaction<String, String>>::new(2);
+    let mut cache = VlogEntryCache::<Transaction<String, String>>::new(2);
 
     let p1 = std::sync::Arc::new(Transaction {
         transaction_id: test_txn_id(1, 1),
