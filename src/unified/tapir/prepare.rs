@@ -378,109 +378,26 @@ pub(crate) fn open<K: Key, V: Value, IO: DiskIo>(
         }
     };
 
-    let mut sealed_vlog_segments = BTreeMap::new();
-    for seg_meta in &manifest.committed.sealed_vlog_segments {
-        let seg = VlogSegment::<IO>::open_at(
-            seg_meta.segment_id,
-            seg_meta.path.clone(),
-            seg_meta.total_size,
-            seg_meta.views.clone(),
-            io_flags,
-        )?;
-        sealed_vlog_segments.insert(seg_meta.segment_id, seg);
-    }
-
-    let active_path = base_dir.join(format!("vlog_seg_{:04}.dat", manifest.committed.active_segment_id));
-    let mut active_vlog = VlogSegment::<IO>::open_at(
-        manifest.committed.active_segment_id,
-        active_path,
-        manifest.committed.active_write_offset,
-        Vec::new(),
-        io_flags,
-    )?;
-    active_vlog.start_view(manifest.current_view);
-
-    let committed = VlogLsm::open_from_parts(
+    let committed = VlogLsm::open_from_manifest(
         "",
         base_dir,
-        active_vlog,
-        sealed_vlog_segments,
-        io_flags,
-        manifest.committed.next_segment_id,
-        manifest.committed.sst_metas.clone(),
-        manifest.committed.next_sst_id,
-    )?;
-
-    let mut prepared_sealed_segments = BTreeMap::new();
-    for seg_meta in &manifest.prepared.sealed_vlog_segments {
-        let seg = VlogSegment::<IO>::open_at(
-            seg_meta.segment_id,
-            seg_meta.path.clone(),
-            seg_meta.total_size,
-            seg_meta.views.clone(),
-            io_flags,
-        )?;
-        prepared_sealed_segments.insert(seg_meta.segment_id, seg);
-    }
-
-    let prep_active_path = base_dir.join(format!(
-        "prep_vlog_{:04}.dat",
-        manifest.prepared.active_segment_id
-    ));
-    let mut prep_active_vlog = VlogSegment::<IO>::open_at(
-        manifest.prepared.active_segment_id,
-        prep_active_path,
-        manifest.prepared.active_write_offset,
-        Vec::new(),
+        &manifest.committed,
+        manifest.current_view,
         io_flags,
     )?;
-    prep_active_vlog.start_view(manifest.current_view);
-
-    let prepared = VlogLsm::open_from_parts(
+    let prepared = VlogLsm::open_from_manifest(
         "prep",
         base_dir,
-        prep_active_vlog,
-        prepared_sealed_segments,
-        io_flags,
-        manifest.prepared.next_segment_id,
-        manifest.prepared.sst_metas.clone(),
-        manifest.prepared.next_sst_id,
-    )?;
-
-    let mvcc_active_path = base_dir.join(format!(
-        "mvcc_vlog_{:04}.dat",
-        manifest.mvcc.active_segment_id
-    ));
-    let mut mvcc_active = VlogSegment::<IO>::open_at(
-        manifest.mvcc.active_segment_id,
-        mvcc_active_path,
-        manifest.mvcc.active_write_offset,
-        Vec::new(),
+        &manifest.prepared,
+        manifest.current_view,
         io_flags,
     )?;
-    mvcc_active.start_view(manifest.current_view);
-
-    let mut mvcc_sealed_segments = BTreeMap::new();
-    for seg_meta in &manifest.mvcc.sealed_vlog_segments {
-        let seg = VlogSegment::<IO>::open_at(
-            seg_meta.segment_id,
-            seg_meta.path.clone(),
-            seg_meta.total_size,
-            seg_meta.views.clone(),
-            io_flags,
-        )?;
-        mvcc_sealed_segments.insert(seg_meta.segment_id, seg);
-    }
-
-    let mvcc = VlogLsm::open_from_parts(
+    let mvcc = VlogLsm::open_from_manifest(
         "mvcc",
         base_dir,
-        mvcc_active,
-        mvcc_sealed_segments,
+        &manifest.mvcc,
+        manifest.current_view,
         io_flags,
-        manifest.mvcc.next_segment_id,
-        manifest.mvcc.sst_metas.clone(),
-        manifest.mvcc.next_sst_id,
     )?;
 
     let state = TapirState {

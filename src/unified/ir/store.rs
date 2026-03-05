@@ -2,7 +2,6 @@ use crate::ir::OpId;
 use crate::mvcc::disk::disk_io::{DiskIo, OpenFlags};
 use crate::mvcc::disk::error::StorageError;
 use crate::IrClientId;
-use std::collections::BTreeMap;
 use std::path::Path;
 
 use super::record::{IrMemEntry, IrRecord};
@@ -31,39 +30,14 @@ pub(crate) fn open_store_state<
         None => UnifiedManifest::new(),
     };
 
-    let mut sealed_segments = BTreeMap::new();
-    for seg_meta in &manifest.ir.sealed_vlog_segments {
-        let seg = VlogSegment::<IO>::open_at(
-            seg_meta.segment_id,
-            seg_meta.path.clone(),
-            seg_meta.total_size,
-            seg_meta.views.clone(),
-            io_flags,
-        )?;
-        sealed_segments.insert(seg_meta.segment_id, seg);
-    }
-
-    let active_path = base_dir.join(format!("ir_vlog_{:04}.dat", manifest.ir.active_segment_id));
-    let mut active_vlog = VlogSegment::<IO>::open_at(
-        manifest.ir.active_segment_id,
-        active_path,
-        manifest.ir.active_write_offset,
-        Vec::new(),
-        io_flags,
-    )?;
-
     let current_view = manifest.current_view;
-    active_vlog.start_view(current_view);
 
-    let mut lsm = VlogLsm::open_from_parts(
+    let mut lsm = VlogLsm::open_from_manifest(
         "ir",
         base_dir,
-        active_vlog,
-        sealed_segments,
+        &manifest.ir,
+        current_view,
         io_flags,
-        manifest.ir.next_segment_id,
-        Vec::new(),
-        0,
     )?;
 
     // Recovery: rebuild index from vlog segments.

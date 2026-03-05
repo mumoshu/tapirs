@@ -6,6 +6,7 @@ use serde::Serialize;
 
 use crate::mvcc::disk::disk_io::{DiskIo, OpenFlags};
 use crate::mvcc::disk::error::StorageError;
+use crate::unified::wisckeylsm::manifest::LsmManifestData;
 use crate::unified::wisckeylsm::sst::{SstMeta, SSTableReader, SSTableWriter};
 use crate::unified::wisckeylsm::types::{VlogPtr, VlogSegmentMeta};
 use crate::unified::wisckeylsm::vlog::VlogSegment;
@@ -118,6 +119,56 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
             next_segment_id,
             label: label.to_string(),
         })
+    }
+
+    /// Open a VlogLsm from persisted manifest data.
+    ///
+    /// Opens all sealed vlog segments, opens the active segment at the
+    /// label-derived path, starts the current view, then delegates to
+    /// `open_from_parts` for SST index loading.
+    pub(crate) fn open_from_manifest(
+        label: &str,
+        base_dir: &Path,
+        manifest_data: &LsmManifestData,
+        current_view: u64,
+        io_flags: OpenFlags,
+    ) -> Result<Self, StorageError>
+    where
+        K: Serialize + DeserializeOwned + Clone,
+    {
+        let mut sealed_segments = BTreeMap::new();
+        for seg_meta in &manifest_data.sealed_vlog_segments {
+            let seg = VlogSegment::<IO>::open_at(
+                seg_meta.segment_id,
+                seg_meta.path.clone(),
+                seg_meta.total_size,
+                seg_meta.views.clone(),
+                io_flags,
+            )?;
+            sealed_segments.insert(seg_meta.segment_id, seg);
+        }
+
+        let active_path =
+            Self::make_vlog_path(base_dir, label, manifest_data.active_segment_id);
+        let mut active_vlog = VlogSegment::<IO>::open_at(
+            manifest_data.active_segment_id,
+            active_path,
+            manifest_data.active_write_offset,
+            Vec::new(),
+            io_flags,
+        )?;
+        active_vlog.start_view(current_view);
+
+        Self::open_from_parts(
+            label,
+            base_dir,
+            active_vlog,
+            sealed_segments,
+            io_flags,
+            manifest_data.next_segment_id,
+            manifest_data.sst_metas.clone(),
+            manifest_data.next_sst_id,
+        )
     }
 
     /// Insert a key → VlogPtr mapping into the index (used during recovery).
