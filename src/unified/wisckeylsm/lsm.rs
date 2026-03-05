@@ -283,34 +283,57 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
         Ok(None)
     }
 
-    /// Range lookup: return the first entry with key >= `from` by checking
-    /// memtable then index, picking the smaller key. No SST fallback needed
-    /// since the index is always the complete in-memory map.
+    /// Range lookup: return the first entry with key >= `from`.
+    ///
+    /// In `InMemory` mode, checks memtable then index and picks the smaller key.
+    /// In `SstOnly` mode, checks memtable then searches all SSTs for the
+    /// smallest key >= `from`.
     pub fn range_get_first(&self, from: &K) -> Result<Option<(K, V)>, StorageError>
     where
         K: Serialize + DeserializeOwned + Clone,
         V: Clone + DeserializeOwned,
     {
         let mem_entry = self.memtable.range(from..).next();
-        let idx_entry = self
-            .index
-            .as_ref()
-            .expect("range_get_first() requires IndexMode::InMemory")
-            .range(from..)
-            .next();
 
-        match (mem_entry, idx_entry) {
+        // Persistent-store candidate: index (InMemory) or SSTs (SstOnly).
+        let store_candidate: Option<(K, VlogPtr)> = match &self.index {
+            Some(idx) => idx.range(from..).next().map(|(k, p)| (k.clone(), *p)),
+            None => self.sst_range_get_first(from)?,
+        };
+
+        match (mem_entry, store_candidate) {
             (Some((mk, mv)), Some((ik, ip))) => {
-                if mk <= ik {
+                if *mk <= ik {
                     Ok(Some((mk.clone(), mv.clone())))
                 } else {
-                    Ok(Some((ik.clone(), self.read_value_from_vlog(ip)?)))
+                    Ok(Some((ik, self.read_value_from_vlog(&ip)?)))
                 }
             }
             (Some((mk, mv)), None) => Ok(Some((mk.clone(), mv.clone()))),
-            (None, Some((ik, ip))) => Ok(Some((ik.clone(), self.read_value_from_vlog(ip)?))),
+            (None, Some((ik, ip))) => Ok(Some((ik, self.read_value_from_vlog(&ip)?))),
             (None, None) => Ok(None),
         }
+    }
+
+    /// Search all SSTs for the smallest (K, VlogPtr) with key >= `from`.
+    /// Each SST contains only its seal's new entries, so we must check all.
+    fn sst_range_get_first(&self, from: &K) -> Result<Option<(K, VlogPtr)>, StorageError>
+    where
+        K: Serialize + DeserializeOwned + Clone,
+    {
+        let mut best: Option<(K, VlogPtr)> = None;
+        for reader in &self.sst_readers {
+            if let Some((k, ptr)) =
+                IO::block_on(reader.range_get_first::<K, VlogPtr>(from))?
+            {
+                match &best {
+                    None => best = Some((k, ptr)),
+                    Some((bk, _)) if k < *bk => best = Some((k, ptr)),
+                    _ => {}
+                }
+            }
+        }
+        Ok(best)
     }
 
     /// Range accessor over the memtable.
@@ -731,6 +754,81 @@ mod tests {
         lsm.put("k_b".into(), "val_b".into());
         assert_eq!(lsm.get(&"k_a".into()).unwrap(), Some("val_a".into()));
         assert_eq!(lsm.get(&"k_b".into()).unwrap(), Some("val_b".into()));
+    }
+
+    #[test]
+    fn sst_only_range_get_first_after_seal() {
+        let dir = MemoryIo::temp_path();
+        let mut lsm = open_test_lsm_sst_only(&dir);
+
+        lsm.put("k_a".into(), "val_a".into());
+        lsm.put("k_c".into(), "val_c".into());
+        lsm.put("k_e".into(), "val_e".into());
+        lsm.seal_view(0, test_header_fn).unwrap();
+        lsm.start_view(1);
+
+        // Exact match.
+        assert_eq!(
+            lsm.range_get_first(&"k_a".into()).unwrap(),
+            Some(("k_a".into(), "val_a".into()))
+        );
+
+        // Between keys: k_b -> k_c.
+        assert_eq!(
+            lsm.range_get_first(&"k_b".into()).unwrap(),
+            Some(("k_c".into(), "val_c".into()))
+        );
+
+        // After all keys.
+        assert_eq!(lsm.range_get_first(&"k_z".into()).unwrap(), None);
+    }
+
+    #[test]
+    fn sst_only_range_get_first_multi_seal() {
+        let dir = MemoryIo::temp_path();
+        let mut lsm = open_test_lsm_sst_only(&dir);
+
+        lsm.put("k_a".into(), "val_a".into());
+        lsm.seal_view(0, test_header_fn).unwrap();
+        lsm.start_view(1);
+
+        lsm.put("k_c".into(), "val_c".into());
+        lsm.seal_view(0, test_header_fn).unwrap();
+        lsm.start_view(2);
+
+        // Searches across SSTs from different seals.
+        assert_eq!(
+            lsm.range_get_first(&"k_b".into()).unwrap(),
+            Some(("k_c".into(), "val_c".into()))
+        );
+        assert_eq!(
+            lsm.range_get_first(&"k_a".into()).unwrap(),
+            Some(("k_a".into(), "val_a".into()))
+        );
+    }
+
+    #[test]
+    fn sst_only_range_get_first_mixed_memtable_and_sst() {
+        let dir = MemoryIo::temp_path();
+        let mut lsm = open_test_lsm_sst_only(&dir);
+
+        lsm.put("k_c".into(), "val_c".into());
+        lsm.seal_view(0, test_header_fn).unwrap();
+        lsm.start_view(1);
+
+        // k_a is in memtable (smaller than k_c in SST).
+        lsm.put("k_a".into(), "val_a".into());
+        assert_eq!(
+            lsm.range_get_first(&"k_a".into()).unwrap(),
+            Some(("k_a".into(), "val_a".into()))
+        );
+
+        // k_b: not in memtable, falls to SST -> k_c.
+        // But memtable has nothing >= k_b either, so SST wins.
+        assert_eq!(
+            lsm.range_get_first(&"k_b".into()).unwrap(),
+            Some(("k_c".into(), "val_c".into()))
+        );
     }
 
     #[test]

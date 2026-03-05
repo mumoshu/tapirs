@@ -372,6 +372,36 @@ impl<IO: DiskIo> SSTableReader<IO> {
         Ok(None)
     }
 
+    /// Return the first (K, V) entry with key >= `from`, or None.
+    /// Uses binary search on the block index, then scans forward.
+    pub async fn range_get_first<K, V>(&self, from: &K) -> Result<Option<(K, V)>, StorageError>
+    where
+        K: Serialize + for<'de> Deserialize<'de> + Ord + Clone,
+        V: for<'de> Deserialize<'de>,
+    {
+        let index = self.read_index::<K>().await?;
+        if index.is_empty() {
+            return Ok(None);
+        }
+
+        // Find the block whose first_key <= from (the key could be in that block).
+        let block_idx = match index.binary_search_by(|entry| entry.first_key.cmp(from)) {
+            Ok(i) => i,
+            Err(i) => i.saturating_sub(1),
+        };
+
+        // Scan from candidate block forward until we find key >= from.
+        for idx_entry in index.iter().skip(block_idx) {
+            let entries = self.read_block::<K, V>(idx_entry).await?;
+            for (k, v) in entries {
+                if k >= *from {
+                    return Ok(Some((k, v)));
+                }
+            }
+        }
+        Ok(None)
+    }
+
     pub async fn read_all<K, V>(&self) -> Result<Vec<(K, V)>, StorageError>
     where
         K: for<'de> Deserialize<'de>,
@@ -568,5 +598,131 @@ mod tests {
 
         let all = reader.read_all::<String, String>().await.unwrap();
         assert_eq!(all.len(), 100);
+    }
+
+    async fn build_sst_for_range_tests() -> (PathBuf, NamedTempFile) {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+        let mut entries = BTreeMap::new();
+        for i in (0u64..10).map(|i| i * 10) {
+            entries.insert(format!("key-{i:03}"), format!("val-{i:03}"));
+        }
+        // keys: key-000, key-010, key-020, ..., key-090
+        SSTableWriter::write::<String, String, BufferedIo>(&path, &entries, test_flags())
+            .await
+            .unwrap();
+        (path, tmp)
+    }
+
+    #[tokio::test]
+    async fn range_get_first_exact_match() {
+        let (path, _tmp) = build_sst_for_range_tests().await;
+        let reader = SSTableReader::<BufferedIo>::open(path, test_flags())
+            .await
+            .unwrap();
+
+        let result = reader
+            .range_get_first::<String, String>(&"key-030".to_string())
+            .await
+            .unwrap();
+        assert_eq!(result, Some(("key-030".to_string(), "val-030".to_string())));
+    }
+
+    #[tokio::test]
+    async fn range_get_first_between_keys() {
+        let (path, _tmp) = build_sst_for_range_tests().await;
+        let reader = SSTableReader::<BufferedIo>::open(path, test_flags())
+            .await
+            .unwrap();
+
+        // key-025 doesn't exist; should return key-030 (next >=).
+        let result = reader
+            .range_get_first::<String, String>(&"key-025".to_string())
+            .await
+            .unwrap();
+        assert_eq!(result, Some(("key-030".to_string(), "val-030".to_string())));
+    }
+
+    #[tokio::test]
+    async fn range_get_first_before_all() {
+        let (path, _tmp) = build_sst_for_range_tests().await;
+        let reader = SSTableReader::<BufferedIo>::open(path, test_flags())
+            .await
+            .unwrap();
+
+        // Before all keys — should return the first entry.
+        let result = reader
+            .range_get_first::<String, String>(&"aaa".to_string())
+            .await
+            .unwrap();
+        assert_eq!(result, Some(("key-000".to_string(), "val-000".to_string())));
+    }
+
+    #[tokio::test]
+    async fn range_get_first_after_all() {
+        let (path, _tmp) = build_sst_for_range_tests().await;
+        let reader = SSTableReader::<BufferedIo>::open(path, test_flags())
+            .await
+            .unwrap();
+
+        // After all keys — should return None.
+        let result = reader
+            .range_get_first::<String, String>(&"zzz".to_string())
+            .await
+            .unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn range_get_first_multi_block() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+
+        // Large entries to span multiple 4KiB blocks.
+        let mut entries = BTreeMap::new();
+        for i in 0u64..100 {
+            let key = format!("mb-{i:04}");
+            let value = format!("val-{}", "x".repeat(150));
+            entries.insert(key, value);
+        }
+        SSTableWriter::write::<String, String, BufferedIo>(&path, &entries, test_flags())
+            .await
+            .unwrap();
+
+        let reader = SSTableReader::<BufferedIo>::open(path, test_flags())
+            .await
+            .unwrap();
+
+        // First key.
+        let result = reader
+            .range_get_first::<String, String>(&"mb-0000".to_string())
+            .await
+            .unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().0, "mb-0000");
+
+        // Key between blocks.
+        let result = reader
+            .range_get_first::<String, String>(&"mb-0055".to_string())
+            .await
+            .unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().0, "mb-0055");
+
+        // Key not present, should find next.
+        let result = reader
+            .range_get_first::<String, String>(&"mb-0050a".to_string())
+            .await
+            .unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().0, "mb-0051");
+
+        // Last key.
+        let result = reader
+            .range_get_first::<String, String>(&"mb-0099".to_string())
+            .await
+            .unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().0, "mb-0099");
     }
 }
