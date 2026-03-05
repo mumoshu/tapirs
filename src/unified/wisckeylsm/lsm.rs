@@ -162,11 +162,6 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
 
     /// Remove a key from both memtable and index. Returns the memtable value
     /// if it was present. Vlog data is not removed (managed by compaction).
-    pub fn remove(&mut self, key: &K) -> Option<V> {
-        self.index.remove(key);
-        self.memtable.remove(key)
-    }
-
     /// Insert a key-value pair into the memtable. No vlog/index write —
     /// those happen at `seal_view()` time via the caller-provided closure.
     pub fn put(&mut self, key: K, value: V) {

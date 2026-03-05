@@ -23,9 +23,10 @@ pub(crate) struct TapirState<K: Ord, V, IO: DiskIo> {
     /// Committed transaction store: txn_id → serialized Transaction in vlog.
     /// On commit, the transaction is written here and MVCC entries point into it.
     committed: VlogLsm<OccTransactionId, Arc<Transaction<K, V>>, IO>,
-    /// Prepared transaction store: txn_id → serialized Transaction in vlog.
-    /// Provides crash durability for in-flight prepares. Cleared on commit/abort.
-    prepared: VlogLsm<OccTransactionId, Arc<Transaction<K, V>>, IO>,
+    /// Prepared transaction store: txn_id → Option<Transaction> in vlog.
+    /// Some(txn) = actively prepared, None = tombstone (committed/aborted).
+    /// Tombstones flow through seal to SSTs for durable removal on reopen.
+    prepared: VlogLsm<OccTransactionId, Option<Arc<Transaction<K, V>>>, IO>,
     /// LRU cache for deserialized transactions read from sealed vlog segments.
     prepare_cache: RefCell<PreparedTransactions<Transaction<K, V>>>,
     /// Number of vlog reads performed (for cache hit rate tracking in tests).
@@ -85,7 +86,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
     }
 
     pub(crate) fn abort(&mut self, txn_id: &OccTransactionId) {
-        self.prepared.remove(txn_id);
+        self.prepared.put(*txn_id, None);
     }
 
     fn prepare_cache_get(
@@ -123,7 +124,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         K: Key,
         V: Value,
     {
-        self.prepared.remove(&txn_id);
+        self.prepared.put(txn_id, None);
 
         let arc_txn = Arc::new(Transaction {
             transaction_id: txn_id,
@@ -177,8 +178,8 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         let new_keys: std::collections::BTreeSet<&K> =
             write_set.iter().map(|(k, _)| k).collect();
 
-        // Check memtable entries (current view's prepared txns)
-        for txn in self.prepared.memtable_values() {
+        // Check memtable entries (current view's prepared txns, skip tombstones)
+        for txn in self.prepared.memtable_values().flatten() {
             for (key, _) in &txn.write_set {
                 if new_keys.contains(key) {
                     return Ok(true);
@@ -188,7 +189,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
 
         // Check index entries (sealed views' prepared txns, loaded from vlog)
         for txn_id in self.prepared.index().keys() {
-            if let Some(txn) = self.prepared.get(txn_id)? {
+            if let Some(Some(txn)) = self.prepared.get(txn_id)? {
                 for (key, _) in &txn.write_set {
                     if new_keys.contains(key) {
                         return Ok(true);
@@ -236,7 +237,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
             scan_set: Vec::new(),
         });
 
-        self.prepared.put(txn_id, prepare);
+        self.prepared.put(txn_id, Some(prepare));
         Ok(())
     }
 
@@ -313,6 +314,10 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
                 offset,
                 length: RAW_ENTRY_OVERHEAD + raw.payload.len() as u32,
             };
+            // Insert the VlogPtr into the index. On get(), the value will be
+            // deserialized as Option<Arc<Transaction>>. If it's None (tombstone),
+            // the entry is treated as removed by does_prepare_conflict() and
+            // prepared_index_contains().
             self.prepared.index_insert(txn_id, txn_ptr);
         }
 
@@ -769,7 +774,8 @@ impl TapirStateRunner {
     }
 
     pub(crate) fn prepared_index_contains(&self, txn_id: &OccTransactionId) -> bool {
-        self.tapir.prepared.index().contains_key(txn_id)
+        // get() checks memtable then index. Some(Some(_)) = active, Some(None) = tombstone.
+        matches!(self.tapir.prepared.get(txn_id), Ok(Some(Some(_))))
     }
 
     pub(crate) fn register_prepare_expect_conflict(
