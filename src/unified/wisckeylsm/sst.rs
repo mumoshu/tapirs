@@ -372,7 +372,6 @@ impl<IO: DiskIo> SSTableReader<IO> {
         Ok(None)
     }
 
-    #[cfg(test)]
     pub async fn read_all<K, V>(&self) -> Result<Vec<(K, V)>, StorageError>
     where
         K: for<'de> Deserialize<'de>,

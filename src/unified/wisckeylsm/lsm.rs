@@ -77,6 +77,10 @@ pub(crate) struct VlogLsm<K: Ord, V, IO: DiskIo> {
 
 impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
     /// Construct a VlogLsm from pre-opened parts.
+    ///
+    /// Opens each SST from `sst_metas`, loads all (K, VlogPtr) entries into the
+    /// in-memory index, and keeps readers for future SST path management.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn open_from_parts(
         label: &str,
         base_dir: &Path,
@@ -84,13 +88,28 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
         sealed_segments: BTreeMap<u64, VlogSegment<IO>>,
         io_flags: OpenFlags,
         next_segment_id: u64,
-    ) -> Self {
-        Self {
+        sst_metas: Vec<SstMeta>,
+        next_sst_id: u64,
+    ) -> Result<Self, StorageError>
+    where
+        K: Serialize + DeserializeOwned + Clone,
+    {
+        let mut sst_readers = Vec::with_capacity(sst_metas.len());
+        let mut index = BTreeMap::new();
+        for meta in &sst_metas {
+            let reader = IO::block_on(SSTableReader::open(meta.path.clone(), io_flags))?;
+            let entries: Vec<(K, VlogPtr)> = IO::block_on(reader.read_all())?;
+            for (k, ptr) in entries {
+                index.insert(k, ptr);
+            }
+            sst_readers.push(reader);
+        }
+        Ok(Self {
             memtable: BTreeMap::new(),
-            index: BTreeMap::new(),
-            sst_readers: Vec::new(),
-            sst_metas: Vec::new(),
-            next_sst_id: 0,
+            index,
+            sst_readers,
+            sst_metas,
+            next_sst_id,
             active_vlog,
             sealed_segments,
             entry_count: 0,
@@ -98,7 +117,7 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
             io_flags,
             next_segment_id,
             label: label.to_string(),
-        }
+        })
     }
 
     /// Insert a key → VlogPtr mapping into the index (used during recovery).
@@ -359,7 +378,10 @@ mod tests {
             BTreeMap::new(),
             test_flags(),
             1,
+            Vec::new(),
+            0,
         )
+        .unwrap()
     }
 
     #[test]

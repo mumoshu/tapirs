@@ -62,7 +62,9 @@ pub(crate) fn open_store_state<
         sealed_segments,
         io_flags,
         manifest.ir.next_segment_id,
-    );
+        Vec::new(),
+        0,
+    )?;
 
     // Recovery: rebuild index from vlog segments.
     rebuild_index_from_vlog(&mut lsm)?;

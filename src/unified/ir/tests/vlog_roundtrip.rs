@@ -29,7 +29,10 @@ fn open_ir_lsm(dir: &std::path::Path) -> VlogLsm<OpId, IrMemEntry<String, String
         BTreeMap::new(),
         test_flags(),
         1,
+        Vec::new(),
+        0,
     )
+    .unwrap()
 }
 
 fn ir_header_fn(
