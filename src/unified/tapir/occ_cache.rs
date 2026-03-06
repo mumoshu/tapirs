@@ -74,12 +74,19 @@ pub(crate) struct OccCache<K: Ord> {
     /// snapshot_get_protected of non-existent key (degenerate (key, key, ts)).
     /// Used by write-set validation to block writes at commit_ts < snapshot_ts.
     range_reads: Vec<(K, K, Timestamp)>,
+    /// Highest timestamp seen across all RO read operations.
+    /// Persisted in manifest for recovery. After crash, subsumes all historical
+    /// range_reads as a conservative global watermark: any prepare with
+    /// commit_ts < max_read_time → Retry.
+    max_read_time: Option<Timestamp>,
 }
 
 /// Recovered state for OccCache initialization.
 pub(crate) struct OccCacheState<K> {
     /// Active prepared txns recovered from prepared VlogLsm.
     pub transactions: Vec<OccCachedTransaction<K>>,
+    /// Persisted max_read_time from manifest.
+    pub max_read_time: Option<Timestamp>,
 }
 
 pub(crate) struct OccCachedTransaction<K> {
@@ -95,9 +102,11 @@ impl<K: Ord + Clone> OccCache<K> {
             reads: BTreeMap::new(),
             writes: BTreeMap::new(),
             range_reads: Vec::new(),
+            max_read_time: None,
         };
 
         if let Some(state) = state {
+            cache.max_read_time = state.max_read_time;
             for txn in state.transactions {
                 let write_keys: Vec<(K, Option<()>)> =
                     txn.write_set.into_iter().map(|k| (k, None)).collect();
@@ -106,6 +115,11 @@ impl<K: Ord + Clone> OccCache<K> {
         }
 
         cache
+    }
+
+    /// Returns the max_read_time for manifest persistence.
+    pub(crate) fn max_read_time(&self) -> Option<Timestamp> {
+        self.max_read_time
     }
 
     /// Populate reads/writes caches when a transaction is prepared.
@@ -260,6 +274,16 @@ impl<K: Ord + Clone> OccCache<K> {
                     });
                 }
             }
+
+            // Global watermark from recovery: subsumes all historical range_reads
+            // lost on crash.
+            if let Some(max_read) = self.max_read_time
+                && max_read > commit
+            {
+                return Ok(PrepareResult::Retry {
+                    proposed: max_read.time,
+                });
+            }
         }
 
         // Check for conflicts with the scan set (phantom prevention).
@@ -286,6 +310,14 @@ impl<K: Ord + Clone> OccCache<K> {
 
 #[cfg(test)]
 impl<K: Ord + Clone> OccCache<K> {
+    /// Update max_read_time to track the highest read timestamp.
+    pub(crate) fn update_max_read_time(&mut self, ts: Timestamp) {
+        self.max_read_time = Some(match self.max_read_time {
+            Some(existing) => existing.max(ts),
+            None => ts,
+        });
+    }
+
     /// Check if a point read conflicts with in-flight prepared writes.
     /// Used by snapshot_get_protected for RO transaction protection.
     pub(crate) fn check_get_conflict(&self, key: &K, snapshot_ts: Timestamp) -> bool {
@@ -387,6 +419,7 @@ mod tests {
                 write_set: vec!["w".to_string()],
                 commit_ts: ts(10),
             }],
+            max_read_time: None,
         };
 
         let cache: OccCache<String> = OccCache::new(true, Some(state));

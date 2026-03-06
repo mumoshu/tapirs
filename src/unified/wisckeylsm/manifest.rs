@@ -52,6 +52,10 @@ pub struct UnifiedManifest {
     pub mvcc_l1_sstables: Vec<SSTableMeta>,
     /// Next MVCC SST file ID.
     pub next_sst_id: u64,
+    /// Highest timestamp seen across all RO read operations.
+    /// Used as a conservative global watermark on recovery: any prepare with
+    /// commit_ts < max_read_time → Retry. Subsumes all lost range_reads.
+    pub max_read_time: Option<u64>,
     /// Reserved for future use (recovery replay).
     pub replay_start_offset: u64,
     /// CRC32 checksum.
@@ -69,6 +73,7 @@ impl UnifiedManifest {
             mvcc_l0_sstables: Vec::new(),
             mvcc_l1_sstables: Vec::new(),
             next_sst_id: 0,
+            max_read_time: None,
             replay_start_offset: 0,
             checksum: 0,
         }

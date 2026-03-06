@@ -3,7 +3,7 @@ use crate::mvcc::disk::disk_io::{DiskIo, OpenFlags};
 use crate::mvcc::disk::memtable::{CompositeKey, MaxValue};
 use crate::occ::TransactionId as OccTransactionId;
 use crate::tapir::{Key, Timestamp, Value};
-use crate::unified::tapir::occ_cache::{MvccQueries, OccCache};
+use crate::unified::tapir::occ_cache::{MvccQueries, OccCache, OccCacheState, OccCachedTransaction};
 use crate::unified::tapir::Transaction;
 use crate::unified::tapir::{MvccIndexEntry, VlogSegment};
 use crate::unified::wisckeylsm::lsm::{IndexMode, VlogLsm};
@@ -360,6 +360,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
             self.manifest.mvcc.sealed_vlog_segments.push(meta);
         }
 
+        self.manifest.max_read_time = self.occ_cache.max_read_time().map(|ts| ts.time);
         self.manifest.current_view += 1;
         self.manifest.committed.active_segment_id = self.committed.active_vlog_id();
         self.manifest.committed.active_write_offset = self.committed.active_write_offset();
@@ -504,7 +505,39 @@ pub(crate) fn open<K: Key, V: Value, IO: DiskIo>(
         IndexMode::InMemory,
     )?;
 
-    let occ_cache = OccCache::new(true, None);
+    // Rebuild OccCache from prepared VlogLsm + manifest's max_read_time.
+    // Iterate index to find all txn_ids, get() each to filter active prepares.
+    let mut recovered_txns = Vec::new();
+    let index_keys: Vec<OccTransactionId> = prepared
+        .index_range(..)
+        .map(|(k, _)| *k)
+        .collect();
+    for txn_id in index_keys {
+        let entry: Option<Option<Arc<Transaction<K, V>>>> = prepared.get(&txn_id)?;
+        if let Some(Some(txn)) = entry {
+            recovered_txns.push(OccCachedTransaction {
+                read_set: txn.read_set.clone(),
+                write_set: txn.write_set.iter().map(|(k, _v)| k.clone()).collect(),
+                commit_ts: txn.commit_ts,
+            });
+        }
+    }
+
+    let recovered_max_read_time = manifest.max_read_time.map(|time| Timestamp {
+        time,
+        client_id: crate::IrClientId(0),
+    });
+
+    let occ_state = if recovered_txns.is_empty() && recovered_max_read_time.is_none() {
+        None
+    } else {
+        Some(OccCacheState {
+            transactions: recovered_txns,
+            max_read_time: recovered_max_read_time,
+        })
+    };
+
+    let occ_cache = OccCache::new(true, occ_state);
 
     let state = TapirState {
         mvcc,
@@ -609,6 +642,7 @@ impl<
             self.occ_cache
                 .record_range_read(key.clone(), key.clone(), snapshot_ts);
         }
+        self.occ_cache.update_max_read_time(snapshot_ts);
 
         Ok((value, ts))
     }
@@ -633,6 +667,7 @@ impl<
 
         self.occ_cache
             .record_range_read(start.clone(), end.clone(), snapshot_ts);
+        self.occ_cache.update_max_read_time(snapshot_ts);
 
         Ok(results)
     }
@@ -931,5 +966,87 @@ mod tests {
             read_result.is_err(),
             "protected read should fail when prepared write exists at ts <= snapshot_ts"
         );
+    }
+
+    #[test]
+    fn recovery_rebuilds_occ_cache_from_prepared() {
+        let base_dir = crate::mvcc::disk::memory_io::MemoryIo::temp_path();
+        let flags = OpenFlags { create: true, direct: false };
+
+        // Phase 1: prepare a transaction, seal, then "crash" (drop state)
+        {
+            let mut state: TapirState<String, String, crate::mvcc::disk::memory_io::MemoryIo> =
+                open(&base_dir, flags).unwrap();
+
+            let txn = make_write_only_txn(vec![("x", Some("v1"))]);
+            let result = state.prepare(test_txn_id(1, 1), &txn, test_ts(10)).unwrap();
+            assert!(result.is_ok());
+
+            state.seal_current_view(0).unwrap();
+        }
+
+        // Phase 2: reopen — OccCache should be rebuilt from prepared VlogLsm
+        {
+            let mut state: TapirState<String, String, crate::mvcc::disk::memory_io::MemoryIo> =
+                open(&base_dir, flags).unwrap();
+
+            // Another prepare writing to the same key "x" should conflict
+            // because the recovered OccCache has "x" registered as a prepared write
+            let txn2 = make_write_only_txn(vec![("x", Some("v2"))]);
+            let result = state.prepare(test_txn_id(2, 1), &txn2, test_ts(15)).unwrap();
+            assert!(
+                !result.is_ok(),
+                "prepare to same key as recovered prepared txn should conflict, got {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn recovery_max_read_time_blocks_low_ts_prepare() {
+        let base_dir = crate::mvcc::disk::memory_io::MemoryIo::temp_path();
+        let flags = OpenFlags { create: true, direct: false };
+
+        // Phase 1: protected read (sets max_read_time), seal, "crash"
+        {
+            let mut state: TapirState<String, String, crate::mvcc::disk::memory_io::MemoryIo> =
+                open(&base_dir, flags).unwrap();
+
+            // Commit a key, then do a protected read at ts=20
+            state
+                .commit(
+                    test_txn_id(1, 1),
+                    &[],
+                    &[("k".to_string(), Some("v".to_string()))],
+                    &[],
+                    test_ts(5),
+                )
+                .unwrap();
+            let _ = state
+                .snapshot_get_protected(&"k".to_string(), test_ts(20))
+                .unwrap();
+
+            state.seal_current_view(0).unwrap();
+        }
+
+        // Phase 2: reopen — max_read_time=20 should block prepares at ts < 20
+        {
+            let mut state: TapirState<String, String, crate::mvcc::disk::memory_io::MemoryIo> =
+                open(&base_dir, flags).unwrap();
+
+            let txn = make_write_only_txn(vec![("any_key", Some("v2"))]);
+            let result = state.prepare(test_txn_id(2, 1), &txn, test_ts(15)).unwrap();
+            assert!(
+                result.is_retry(),
+                "prepare at ts=15 after recovered max_read_time=20 should Retry, got {result:?}"
+            );
+
+            // But prepare at ts=25 should succeed (above max_read_time)
+            let txn3 = make_write_only_txn(vec![("any_key", Some("v3"))]);
+            let result3 = state.prepare(test_txn_id(3, 1), &txn3, test_ts(25)).unwrap();
+            assert!(
+                result3.is_ok(),
+                "prepare at ts=25 above max_read_time=20 should Ok, got {result3:?}"
+            );
+        }
     }
 }
