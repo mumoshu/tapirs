@@ -2,7 +2,7 @@ use crate::mvcc::disk::error::StorageError;
 use crate::mvcc::disk::disk_io::{DiskIo, OpenFlags};
 use crate::mvcc::disk::memtable::{CompositeKey, MaxValue};
 use crate::occ::TransactionId as OccTransactionId;
-use crate::tapir::{Key, Timestamp, Value};
+use crate::tapir::{Key, ShardNumber, Timestamp, Value};
 use crate::unified::tapir::occ_cache::{MvccQueries, OccCache, OccCacheState, OccCachedTransaction};
 use crate::unified::tapir::Transaction;
 use crate::unified::tapir::{MvccIndexEntry, VlogSegment};
@@ -12,6 +12,17 @@ use crate::unified::wisckeylsm::types::VlogPtr;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+/// Entry stored in the prepared VlogLsm: commit timestamp + cross-shard transaction.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(bound(
+    serialize = "K: serde::Serialize, V: serde::Serialize",
+    deserialize = "K: serde::de::DeserializeOwned + Ord, V: serde::de::DeserializeOwned"
+))]
+pub(crate) struct PreparedEntry<K, V> {
+    pub(crate) commit_ts: Timestamp,
+    pub(crate) transaction: Arc<crate::occ::Transaction<K, V, Timestamp>>,
+}
 
 /// Borrow-splitting wrapper: holds only the MVCC VlogLsm reference,
 /// allowing occ_cache to be mutably/immutably borrowed independently.
@@ -135,10 +146,20 @@ pub(crate) struct TapirState<K: Ord, V, IO: DiskIo> {
     /// Committed transaction store: txn_id → serialized Transaction in vlog.
     /// On commit, the transaction is written here and MVCC entries point into it.
     committed: VlogLsm<OccTransactionId, Arc<Transaction<K, V>>, IO>,
-    /// Prepared transaction store: txn_id → Option<Transaction> in vlog.
+    /// Prepared transaction store: txn_id → Option<cross-shard Transaction> in vlog.
     /// Some(txn) = actively prepared, None = tombstone (committed/aborted).
     /// Tombstones flow through seal to SSTs for durable removal on reopen.
-    prepared: VlogLsm<OccTransactionId, Option<Arc<Transaction<K, V>>>, IO>,
+    ///
+    /// Stores the full cross-shard `occ::Transaction` (with `Sharded<K>` keys)
+    /// rather than shard-local data. The backup coordinator needs cross-shard
+    /// data to call `transaction.participants()` during `recover_coordination()`.
+    ///
+    // TODO: storing full cross-shard transactions duplicates data already in
+    // IrRecord's VlogLsm and means OccCache rebuilding on open() reads more
+    // data than necessary (it only needs shard-local read/write/scan sets).
+    // Future: compact prepared entries once processed by coordinator, or store
+    // shard-local data separately alongside the cross-shard vlog entries.
+    prepared: VlogLsm<OccTransactionId, Option<PreparedEntry<K, V>>, IO>,
     /// In-memory OCC conflict detection state for prepared transactions.
     occ_cache: OccCache<K>,
     /// Persisted metadata: view number, vlog segment positions, SST lists.
@@ -209,9 +230,20 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         V: Value + serde::Serialize + serde::de::DeserializeOwned,
     {
         // Look up the prepared transaction to get its read/write sets for cache cleanup.
-        if let Ok(Some(Some(txn))) = self.prepared.get(txn_id) {
+        let shard = ShardNumber(0);
+        if let Ok(Some(Some(entry))) = self.prepared.get(txn_id) {
+            let read_set: Vec<(K, Timestamp)> = entry
+                .transaction
+                .shard_read_set(shard)
+                .map(|(k, ts)| (k.clone(), ts))
+                .collect();
+            let write_set: Vec<(K, Option<V>)> = entry
+                .transaction
+                .shard_write_set(shard)
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
             self.occ_cache
-                .unregister_prepare(&txn.read_set, &txn.write_set, txn.commit_ts);
+                .unregister_prepare(&read_set, &write_set, entry.commit_ts);
         }
         self.prepared.put(*txn_id, None);
     }
@@ -293,17 +325,14 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
             return Ok(result);
         }
 
-        let prepare = Arc::new(Transaction {
-            transaction_id: txn_id,
-            commit_ts,
-            read_set,
-            write_set,
-            scan_set,
-        });
-
         self.occ_cache
-            .register_prepare(&prepare.read_set, &prepare.write_set, commit_ts);
-        self.prepared.put(txn_id, Some(prepare));
+            .register_prepare(&read_set, &write_set, commit_ts);
+        // TODO: compact prepared entries once processed by coordinator.
+        let entry = PreparedEntry {
+            commit_ts,
+            transaction: Arc::new(transaction.clone()),
+        };
+        self.prepared.put(txn_id, Some(entry));
         Ok(crate::occ::PrepareResult::Ok)
     }
 
@@ -507,18 +536,29 @@ pub(crate) fn open<K: Key, V: Value, IO: DiskIo>(
 
     // Rebuild OccCache from prepared VlogLsm + manifest's max_read_time.
     // Iterate index to find all txn_ids, get() each to filter active prepares.
+    let shard = ShardNumber(0);
     let mut recovered_txns = Vec::new();
     let index_keys: Vec<OccTransactionId> = prepared
         .index_range(..)
         .map(|(k, _)| *k)
         .collect();
     for txn_id in index_keys {
-        let entry: Option<Option<Arc<Transaction<K, V>>>> = prepared.get(&txn_id)?;
-        if let Some(Some(txn)) = entry {
+        let vlog_entry: Option<Option<PreparedEntry<K, V>>> = prepared.get(&txn_id)?;
+        if let Some(Some(entry)) = vlog_entry {
+            let read_set: Vec<(K, Timestamp)> = entry
+                .transaction
+                .shard_read_set(shard)
+                .map(|(k, ts)| (k.clone(), ts))
+                .collect();
+            let write_keys: Vec<K> = entry
+                .transaction
+                .shard_write_set(shard)
+                .map(|(k, _v)| k.clone())
+                .collect();
             recovered_txns.push(OccCachedTransaction {
-                read_set: txn.read_set.clone(),
-                write_set: txn.write_set.iter().map(|(k, _v)| k.clone()).collect(),
-                commit_ts: txn.commit_ts,
+                read_set,
+                write_set: write_keys,
+                commit_ts: entry.commit_ts,
             });
         }
     }
