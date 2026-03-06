@@ -22,7 +22,7 @@ pub(super) fn execute_tapir_command<W: std::io::Write>(
                 create: true,
                 direct: false,
             };
-            let store = tapir_store::open::<String, String, BufferedIo>(&path, io_flags)
+            let store = tapir_store::open::<String, String, BufferedIo>(&path, io_flags, crate::tapir::ShardNumber(0), true)
                 .map_err(|e| format!("open failed: {e}"))?;
             ctx.store = Some(store);
             Ok(())
@@ -39,7 +39,7 @@ pub(super) fn execute_tapir_command<W: std::io::Write>(
                 create: true,
                 direct: false,
             };
-            let store = tapir_store::open::<String, String, BufferedIo>(&path, io_flags)
+            let store = tapir_store::open::<String, String, BufferedIo>(&path, io_flags, crate::tapir::ShardNumber(0), true)
                 .map_err(|e| format!("open-with failed: {e}"))?;
             ctx.store = Some(store);
             ctx.min_view_vlog_size = min_size;

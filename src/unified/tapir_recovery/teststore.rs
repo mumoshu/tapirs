@@ -36,7 +36,7 @@ impl TestStore {
         };
         MemoryIo::create_dir_all(&base_dir)?;
         let ir_state = ir_store::open_store_state::<String, String, MemoryIo>(&base_dir, io_flags)?;
-        let tapir_state = tapir_store::open::<String, String, MemoryIo>(&base_dir.join("tapir"), io_flags)?;
+        let tapir_state = tapir_store::open::<String, String, MemoryIo>(&base_dir.join("tapir"), io_flags, crate::tapir::ShardNumber(0), true)?;
         Ok(Self {
             ir_state,
             tapir_state,

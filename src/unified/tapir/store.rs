@@ -140,6 +140,9 @@ impl<K: Key + serde::Serialize + serde::de::DeserializeOwned, IO: DiskIo> MvccQu
 }
 
 pub(crate) struct TapirState<K: Ord, V, IO: DiskIo> {
+    /// Which shard this store serves. Used to extract shard-local read/write/scan
+    /// sets from cross-shard transactions stored in the prepared VlogLsm.
+    pub(crate) shard: ShardNumber,
     /// MVCC index: maps (key, timestamp) → MvccIndexEntry for get/get_at/scan.
     /// Each MvccIndexEntry stores (txn_id, write_index) resolved via committed VlogLsm.
     mvcc: VlogLsm<CompositeKey<K, Timestamp>, MvccIndexEntry, IO>,
@@ -230,8 +233,8 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         V: Value + serde::Serialize + serde::de::DeserializeOwned,
     {
         // Look up the prepared transaction to get its read/write sets for cache cleanup.
-        let shard = ShardNumber(0);
         if let Ok(Some(Some(entry))) = self.prepared.get(txn_id) {
+            let shard = self.shard;
             let read_set: Vec<(K, Timestamp)> = entry
                 .transaction
                 .shard_read_set(shard)
@@ -299,20 +302,18 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         K: Key + serde::Serialize + serde::de::DeserializeOwned,
         V: Value + serde::Serialize + serde::de::DeserializeOwned,
     {
-        let shard = crate::tapir::ShardNumber(0);
-
         let read_set: Vec<(K, Timestamp)> = transaction
-            .shard_read_set(shard)
+            .shard_read_set(self.shard)
             .map(|(k, ts)| (k.clone(), ts))
             .collect();
 
         let write_set: Vec<(K, Option<V>)> = transaction
-            .shard_write_set(shard)
+            .shard_write_set(self.shard)
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
         let scan_set: Vec<(K, K, Timestamp)> = transaction
-            .shard_scan_set(shard)
+            .shard_scan_set(self.shard)
             .map(|entry| (entry.start_key.clone(), entry.end_key.clone(), entry.timestamp))
             .collect();
 
@@ -497,6 +498,8 @@ pub(crate) fn iter_committed_txn_entries<
 pub(crate) fn open<K: Key, V: Value, IO: DiskIo>(
     base_dir: &Path,
     io_flags: OpenFlags,
+    shard: ShardNumber,
+    _linearizable: bool,
 ) -> Result<TapirState<K, V, IO>, StorageError> {
     IO::create_dir_all(base_dir)?;
 
@@ -536,7 +539,6 @@ pub(crate) fn open<K: Key, V: Value, IO: DiskIo>(
 
     // Rebuild OccCache from prepared VlogLsm + manifest's max_read_time.
     // Iterate index to find all txn_ids, get() each to filter active prepares.
-    let shard = ShardNumber(0);
     let mut recovered_txns = Vec::new();
     let index_keys: Vec<OccTransactionId> = prepared
         .index_range(..)
@@ -580,6 +582,7 @@ pub(crate) fn open<K: Key, V: Value, IO: DiskIo>(
     let occ_cache = OccCache::new(true, occ_state);
 
     let state = TapirState {
+        shard,
         mvcc,
         committed,
         prepared,
@@ -660,9 +663,9 @@ impl<
 {
     /// Read a key with RO transaction protection.
     /// Returns PrepareConflict if a prepared write to this key at ts <= snapshot_ts
-    /// is in flight. On success, sets last_read_ts on the MVCC entry (for existing
-    /// keys) or records a degenerate range_read (for non-existent keys, preventing
-    /// phantom writes).
+    /// is in flight. On success, if linearizable is true, sets last_read_ts on the
+    /// MVCC entry (for existing keys) or records a degenerate range_read (for
+    /// non-existent keys, preventing phantom writes).
     pub(crate) fn snapshot_get_protected(
         &mut self,
         key: &K,
@@ -689,8 +692,8 @@ impl<
 
     /// Scan a range with RO transaction protection.
     /// Returns PrepareConflict if a prepared write in [start, end] at ts <= snapshot_ts
-    /// is in flight. On success, records a range_read to prevent future prepares from
-    /// writing into this range at ts < snapshot_ts.
+    /// is in flight. On success, if linearizable is true, records a range_read to
+    /// prevent future prepares from writing into this range at ts < snapshot_ts.
     pub(crate) fn snapshot_scan_protected(
         &mut self,
         start: &K,
@@ -723,7 +726,12 @@ pub(crate) struct TapirStateRunner {
 impl TapirStateRunner {
     pub(crate) fn open(base_dir: PathBuf, io_flags: OpenFlags) -> Result<Self, StorageError> {
         crate::mvcc::disk::memory_io::MemoryIo::create_dir_all(&base_dir)?;
-        let state = open::<String, String, crate::mvcc::disk::memory_io::MemoryIo>(&base_dir, io_flags)?;
+        let state = open::<String, String, crate::mvcc::disk::memory_io::MemoryIo>(
+            &base_dir,
+            io_flags,
+            ShardNumber(0),
+            true,
+        )?;
         Ok(Self {
             state,
             base_dir,
@@ -890,7 +898,7 @@ mod tests {
 
     fn open_test_state() -> TapirState<String, String, crate::mvcc::disk::memory_io::MemoryIo> {
         let base_dir = crate::mvcc::disk::memory_io::MemoryIo::temp_path();
-        open(&base_dir, OpenFlags { create: true, direct: false }).unwrap()
+        open(&base_dir, OpenFlags { create: true, direct: false }, ShardNumber(0), true).unwrap()
     }
 
     #[test]
@@ -1016,7 +1024,7 @@ mod tests {
         // Phase 1: prepare a transaction, seal, then "crash" (drop state)
         {
             let mut state: TapirState<String, String, crate::mvcc::disk::memory_io::MemoryIo> =
-                open(&base_dir, flags).unwrap();
+                open(&base_dir, flags, ShardNumber(0), true).unwrap();
 
             let txn = make_write_only_txn(vec![("x", Some("v1"))]);
             let result = state.prepare(test_txn_id(1, 1), &txn, test_ts(10)).unwrap();
@@ -1028,7 +1036,7 @@ mod tests {
         // Phase 2: reopen — OccCache should be rebuilt from prepared VlogLsm
         {
             let mut state: TapirState<String, String, crate::mvcc::disk::memory_io::MemoryIo> =
-                open(&base_dir, flags).unwrap();
+                open(&base_dir, flags, ShardNumber(0), true).unwrap();
 
             // Another prepare writing to the same key "x" should conflict
             // because the recovered OccCache has "x" registered as a prepared write
@@ -1049,7 +1057,7 @@ mod tests {
         // Phase 1: protected read (sets max_read_time), seal, "crash"
         {
             let mut state: TapirState<String, String, crate::mvcc::disk::memory_io::MemoryIo> =
-                open(&base_dir, flags).unwrap();
+                open(&base_dir, flags, ShardNumber(0), true).unwrap();
 
             // Commit a key, then do a protected read at ts=20
             state
@@ -1071,7 +1079,7 @@ mod tests {
         // Phase 2: reopen — max_read_time=20 should block prepares at ts < 20
         {
             let mut state: TapirState<String, String, crate::mvcc::disk::memory_io::MemoryIo> =
-                open(&base_dir, flags).unwrap();
+                open(&base_dir, flags, ShardNumber(0), true).unwrap();
 
             let txn = make_write_only_txn(vec![("any_key", Some("v2"))]);
             let result = state.prepare(test_txn_id(2, 1), &txn, test_ts(15)).unwrap();
