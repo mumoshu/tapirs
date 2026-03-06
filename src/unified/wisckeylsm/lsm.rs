@@ -199,19 +199,6 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
             .insert(key, ptr);
     }
 
-    /// Access the in-memory K→VlogPtr index.
-    /// Panics in `SstOnly` mode — callers must use `InMemory`.
-    pub(crate) fn index(&self) -> &BTreeMap<K, VlogPtr> {
-        self.index
-            .as_ref()
-            .expect("index() requires IndexMode::InMemory")
-    }
-
-    /// Iterate over all values in the memtable.
-    pub(crate) fn memtable_values(&self) -> std::collections::btree_map::Values<'_, K, V> {
-        self.memtable.values()
-    }
-
     /// Reference to the active vlog segment.
     pub(crate) fn active_vlog_ref(&self) -> &VlogSegment<IO> {
         &self.active_vlog
@@ -508,6 +495,16 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
             self.base_dir.join(format!("{}_sst_{id:04}.db", self.label))
         }
     }
+}
+
+#[cfg(test)]
+impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
+    pub(crate) fn index(&self) -> &BTreeMap<K, VlogPtr> {
+        self.index
+            .as_ref()
+            .expect("index() requires IndexMode::InMemory")
+    }
+
 }
 
 #[cfg(test)]

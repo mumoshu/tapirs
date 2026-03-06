@@ -95,7 +95,11 @@ impl TestStore {
             },
         );
 
-        self.tapir_state.prepare(txn_id, &txn, commit_ts).unwrap();
+        let result = self.tapir_state.prepare(txn_id, &txn, commit_ts).unwrap();
+        assert!(
+            result.is_ok(),
+            "prepare expected Ok, got {result:?}"
+        );
     }
 
     pub(crate) fn commit(

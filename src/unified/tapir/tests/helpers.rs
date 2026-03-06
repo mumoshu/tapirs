@@ -110,7 +110,11 @@ pub fn prepare_txn(
     finalized: bool,
 ) {
     let _ = (op_id, finalized);
-    store.prepare(txn_id, &txn, commit_ts).unwrap();
+    let result = store.prepare(txn_id, &txn, commit_ts).unwrap();
+    assert!(
+        result.is_ok(),
+        "prepare expected Ok, got {result:?}"
+    );
 }
 
 /// Process an IO::Commit: creates IrMemEntry in overlay + commits to MVCC.

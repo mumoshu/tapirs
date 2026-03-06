@@ -3,6 +3,7 @@ use crate::mvcc::disk::disk_io::{DiskIo, OpenFlags};
 use crate::mvcc::disk::memtable::{CompositeKey, MaxValue};
 use crate::occ::TransactionId as OccTransactionId;
 use crate::tapir::{Key, Timestamp, Value};
+use crate::unified::tapir::occ_cache::{MvccQueries, OccCache};
 use crate::unified::tapir::Transaction;
 use crate::unified::tapir::{MvccIndexEntry, VlogSegment};
 use crate::unified::wisckeylsm::lsm::{IndexMode, VlogLsm};
@@ -11,6 +12,121 @@ use crate::unified::wisckeylsm::types::VlogPtr;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+/// Borrow-splitting wrapper: holds only the MVCC VlogLsm reference,
+/// allowing occ_cache to be mutably/immutably borrowed independently.
+struct MvccView<'a, K: Ord, IO: DiskIo> {
+    mvcc: &'a VlogLsm<CompositeKey<K, Timestamp>, MvccIndexEntry, IO>,
+}
+
+impl<K: Key + serde::Serialize + serde::de::DeserializeOwned, IO: DiskIo> MvccQueries<K>
+    for MvccView<'_, K, IO>
+{
+    fn get_version_range(
+        &self,
+        key: &K,
+        read_ts: Timestamp,
+    ) -> Result<(Timestamp, Option<Timestamp>), StorageError> {
+        let search = CompositeKey::new(key.clone(), read_ts);
+        let at_ts = if let Some((ck, _)) = self.mvcc.range_get_first(&search)?
+            && ck.key == *key
+        {
+            ck.timestamp.0
+        } else {
+            return Ok((Timestamp::default(), None));
+        };
+
+        // Find the next version (higher timestamp) for this key.
+        // In BTreeMap order, higher timestamps come BEFORE lower ones
+        // due to Reverse<Timestamp>. So we search from max_value and
+        // iterate forward looking for a version with ts > at_ts.
+        let start = CompositeKey::new(key.clone(), Timestamp::max_value());
+        let mut next_ts = None;
+        for (ck, _) in self.mvcc.memtable_range(start.clone()..) {
+            if ck.key != *key { break; }
+            if ck.timestamp.0 > at_ts {
+                next_ts = Some(match next_ts {
+                    Some(existing) => std::cmp::min(existing, ck.timestamp.0),
+                    None => ck.timestamp.0,
+                });
+            }
+        }
+        for (ck, _) in self.mvcc.index_range(start..) {
+            if ck.key != *key { break; }
+            if ck.timestamp.0 > at_ts {
+                next_ts = Some(match next_ts {
+                    Some(existing) => std::cmp::min(existing, ck.timestamp.0),
+                    None => ck.timestamp.0,
+                });
+            }
+        }
+
+        Ok((at_ts, next_ts))
+    }
+
+    fn get_last_read_ts(&self, key: &K) -> Result<Option<Timestamp>, StorageError> {
+        let search = CompositeKey::new(key.clone(), Timestamp::max_value());
+        if let Some((ck, entry)) = self.mvcc.range_get_first(&search)?
+            && ck.key == *key
+        {
+            return Ok(entry
+                .last_read_ts
+                .map(|t| Timestamp { time: t, client_id: crate::IrClientId(0) }));
+        }
+        Ok(None)
+    }
+
+    fn get_last_read_ts_at(
+        &self,
+        key: &K,
+        at_ts: Timestamp,
+    ) -> Result<Option<Timestamp>, StorageError> {
+        let search = CompositeKey::new(key.clone(), at_ts);
+        if let Some((ck, entry)) = self.mvcc.range_get_first(&search)?
+            && ck.key == *key
+        {
+            return Ok(entry
+                .last_read_ts
+                .map(|t| Timestamp { time: t, client_id: crate::IrClientId(0) }));
+        }
+        Ok(None)
+    }
+
+    fn has_writes_in_range(
+        &self,
+        start: &K,
+        end: &K,
+        after_ts: Timestamp,
+        before_ts: Timestamp,
+    ) -> Result<bool, StorageError> {
+        let from_ck = CompositeKey::new(start.clone(), Timestamp::max_value());
+
+        for (ck, _) in self.mvcc.memtable_range(from_ck.clone()..) {
+            if ck.key > *end { break; }
+            if ck.timestamp.0 > after_ts && ck.timestamp.0 < before_ts {
+                return Ok(true);
+            }
+        }
+        for (ck, _) in self.mvcc.index_range(from_ck..) {
+            if ck.key > *end { break; }
+            if ck.timestamp.0 > after_ts && ck.timestamp.0 < before_ts {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
+    fn get_latest_version_ts(&self, key: &K) -> Result<Timestamp, StorageError> {
+        let search = CompositeKey::new(key.clone(), Timestamp::max_value());
+        if let Some((ck, _)) = self.mvcc.range_get_first(&search)?
+            && ck.key == *key
+        {
+            return Ok(ck.timestamp.0);
+        }
+        Ok(Timestamp::default())
+    }
+}
 
 pub(crate) struct TapirState<K: Ord, V, IO: DiskIo> {
     /// MVCC index: maps (key, timestamp) → MvccIndexEntry for get/get_at/scan.
@@ -23,6 +139,8 @@ pub(crate) struct TapirState<K: Ord, V, IO: DiskIo> {
     /// Some(txn) = actively prepared, None = tombstone (committed/aborted).
     /// Tombstones flow through seal to SSTs for durable removal on reopen.
     prepared: VlogLsm<OccTransactionId, Option<Arc<Transaction<K, V>>>, IO>,
+    /// In-memory OCC conflict detection state for prepared transactions.
+    occ_cache: OccCache<K>,
     /// Persisted metadata: view number, vlog segment positions, SST lists.
     manifest: UnifiedManifest,
     /// Root directory for all store files (vlogs, SSTs, manifest).
@@ -85,7 +203,16 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         }
     }
 
-    pub(crate) fn abort(&mut self, txn_id: &OccTransactionId) {
+    pub(crate) fn abort(&mut self, txn_id: &OccTransactionId)
+    where
+        K: Key + serde::Serialize + serde::de::DeserializeOwned,
+        V: Value + serde::Serialize + serde::de::DeserializeOwned,
+    {
+        // Look up the prepared transaction to get its read/write sets for cache cleanup.
+        if let Ok(Some(Some(txn))) = self.prepared.get(txn_id) {
+            self.occ_cache
+                .unregister_prepare(&txn.read_set, &txn.write_set, txn.commit_ts);
+        }
         self.prepared.put(*txn_id, None);
     }
 
@@ -105,6 +232,8 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         K: Key,
         V: Value,
     {
+        self.occ_cache
+            .unregister_prepare(read_set, write_set, commit);
         self.prepared.put(txn_id, None);
 
         let arc_txn = Arc::new(Transaction {
@@ -128,50 +257,12 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         Ok(())
     }
 
-    fn has_conflicting_prepare(
-        &self,
-        write_set: &[(K, Option<V>)],
-    ) -> Result<bool, StorageError>
-    where
-        K: Key + serde::Serialize + serde::de::DeserializeOwned,
-        V: Value + serde::Serialize + serde::de::DeserializeOwned,
-    {
-        if write_set.is_empty() {
-            return Ok(false);
-        }
-
-        let new_keys: std::collections::BTreeSet<&K> =
-            write_set.iter().map(|(k, _)| k).collect();
-
-        // Check memtable entries (current view's prepared txns, skip tombstones)
-        for txn in self.prepared.memtable_values().flatten() {
-            for (key, _) in &txn.write_set {
-                if new_keys.contains(key) {
-                    return Ok(true);
-                }
-            }
-        }
-
-        // Check index entries (sealed views' prepared txns, loaded from vlog)
-        for txn_id in self.prepared.index().keys() {
-            if let Some(Some(txn)) = self.prepared.get(txn_id)? {
-                for (key, _) in &txn.write_set {
-                    if new_keys.contains(key) {
-                        return Ok(true);
-                    }
-                }
-            }
-        }
-
-        Ok(false)
-    }
-
     pub(crate) fn prepare(
         &mut self,
         txn_id: OccTransactionId,
         transaction: &crate::occ::Transaction<K, V, Timestamp>,
         commit_ts: Timestamp,
-    ) -> Result<(), StorageError>
+    ) -> Result<crate::occ::PrepareResult<Timestamp>, StorageError>
     where
         K: Key + serde::Serialize + serde::de::DeserializeOwned,
         V: Value + serde::Serialize + serde::de::DeserializeOwned,
@@ -188,10 +279,18 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
-        if self.has_conflicting_prepare(&write_set)? {
-            return Err(StorageError::Codec(
-                format!("prepare conflict: transaction {txn_id:?} writes to keys already prepared"),
-            ));
+        let scan_set: Vec<(K, K, Timestamp)> = transaction
+            .shard_scan_set(shard)
+            .map(|entry| (entry.start_key.clone(), entry.end_key.clone(), entry.timestamp))
+            .collect();
+
+        let mvcc_view = MvccView { mvcc: &self.mvcc };
+        let result = self
+            .occ_cache
+            .occ_check(&mvcc_view, &read_set, &write_set, &scan_set, commit_ts)?;
+
+        if !result.is_ok() {
+            return Ok(result);
         }
 
         let prepare = Arc::new(Transaction {
@@ -199,11 +298,13 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
             commit_ts,
             read_set,
             write_set,
-            scan_set: Vec::new(),
+            scan_set,
         });
 
+        self.occ_cache
+            .register_prepare(&prepare.read_set, &prepare.write_set, commit_ts);
         self.prepared.put(txn_id, Some(prepare));
-        Ok(())
+        Ok(crate::occ::PrepareResult::Ok)
     }
 
     fn resolve_value(&self, entry: &MvccIndexEntry) -> Result<Option<V>, StorageError>
@@ -403,10 +504,13 @@ pub(crate) fn open<K: Key, V: Value, IO: DiskIo>(
         IndexMode::InMemory,
     )?;
 
+    let occ_cache = OccCache::new(true, None);
+
     let state = TapirState {
         mvcc,
         committed,
         prepared,
+        occ_cache,
         manifest,
         base_dir: base_dir.to_path_buf(),
     };
@@ -513,7 +617,11 @@ impl TapirStateRunner {
         transaction: &crate::occ::Transaction<String, String, Timestamp>,
         commit_ts: Timestamp,
     ) {
-        self.state.prepare(txn_id, transaction, commit_ts).unwrap();
+        let result = self.state.prepare(txn_id, transaction, commit_ts).unwrap();
+        assert!(
+            result.is_ok(),
+            "prepare expected Ok, got {result:?}"
+        );
     }
 
     pub(crate) fn commit(
@@ -561,7 +669,8 @@ impl TapirStateRunner {
         transaction: &crate::occ::Transaction<String, String, Timestamp>,
         commit_ts: Timestamp,
     ) -> bool {
-        self.state.prepare(txn_id, transaction, commit_ts).is_err()
+        let result = self.state.prepare(txn_id, transaction, commit_ts).unwrap();
+        !result.is_ok()
     }
 }
 
