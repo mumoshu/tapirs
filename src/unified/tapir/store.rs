@@ -229,26 +229,40 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         }
     }
 
+    /// Look up a prepared transaction by ID, returning its commit timestamp
+    /// and the full cross-shard transaction data. Pure persistence query —
+    /// finalization status is the wrapper's concern.
+    pub(crate) fn get_prepared_txn(
+        &self,
+        txn_id: &OccTransactionId,
+    ) -> Option<(Timestamp, Arc<crate::occ::Transaction<K, V, Timestamp>>)>
+    where
+        K: Key + serde::Serialize + serde::de::DeserializeOwned,
+        V: Value + serde::Serialize + serde::de::DeserializeOwned,
+    {
+        match self.prepared.get(txn_id) {
+            Ok(Some(Some(entry))) => Some((entry.commit_ts, entry.transaction)),
+            _ => None,
+        }
+    }
+
     pub(crate) fn abort(&mut self, txn_id: &OccTransactionId)
     where
         K: Key + serde::Serialize + serde::de::DeserializeOwned,
         V: Value + serde::Serialize + serde::de::DeserializeOwned,
     {
         // Look up the prepared transaction to get its read/write sets for cache cleanup.
-        if let Ok(Some(Some(entry))) = self.prepared.get(txn_id) {
-            let shard = self.shard;
-            let read_set: Vec<(K, Timestamp)> = entry
-                .transaction
-                .shard_read_set(shard)
+        if let Some((commit_ts, txn)) = self.get_prepared_txn(txn_id) {
+            let read_set: Vec<(K, Timestamp)> = txn
+                .shard_read_set(self.shard)
                 .map(|(k, ts)| (k.clone(), ts))
                 .collect();
-            let write_set: Vec<(K, Option<V>)> = entry
-                .transaction
-                .shard_write_set(shard)
+            let write_set: Vec<(K, Option<V>)> = txn
+                .shard_write_set(self.shard)
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
             self.occ_cache
-                .unregister_prepare(&read_set, &write_set, entry.commit_ts);
+                .unregister_prepare(&read_set, &write_set, commit_ts);
         }
         self.prepared.put(*txn_id, None);
     }
