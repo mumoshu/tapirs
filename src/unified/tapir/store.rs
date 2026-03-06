@@ -192,6 +192,7 @@ pub(crate) struct StatusSegment<K, V> {
 pub(crate) struct StatusReport<K, V> {
     pub(crate) view: u64,
     pub(crate) sealed_segments: usize,
+    pub(crate) prepared_count: usize,
     pub(crate) segments: Vec<StatusSegment<K, V>>,
 }
 
@@ -254,6 +255,33 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
 
     fn current_view(&self) -> u64 {
         self.manifest.current_view
+    }
+
+    /// Count active (non-tombstone) prepared transactions.
+    ///
+    /// Collects all unique keys from memtable and index, then checks each via
+    /// get() to determine if the entry is active (Some) or a tombstone (None).
+    /// This is O(n) with vlog reads for sealed entries but prepared counts are
+    /// typically small (bounded by active transaction count).
+    pub(crate) fn prepared_count(&self) -> usize
+    where
+        K: Key + serde::Serialize + serde::de::DeserializeOwned,
+        V: Value + serde::Serialize + serde::de::DeserializeOwned,
+    {
+        let min_key = OccTransactionId {
+            client_id: crate::IrClientId(0),
+            number: 0,
+        };
+        let mut keys: std::collections::BTreeSet<OccTransactionId> = self
+            .prepared
+            .memtable_range_from(&min_key)
+            .map(|(k, _)| *k)
+            .collect();
+        keys.extend(self.prepared.index_range(..).map(|(k, _)| *k));
+
+        keys.iter()
+            .filter(|k| matches!(self.prepared.get(k), Ok(Some(Some(_)))))
+            .count()
     }
 
     pub(crate) fn commit(
@@ -417,8 +445,8 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
 
     pub(crate) fn status(&self) -> Result<StatusReport<K, V>, StorageError>
     where
-        K: serde::de::DeserializeOwned + Clone,
-        V: serde::de::DeserializeOwned + Clone,
+        K: Key + serde::Serialize + serde::de::DeserializeOwned,
+        V: Value + serde::Serialize + serde::de::DeserializeOwned,
     {
         let mut segments = Vec::new();
 
@@ -450,6 +478,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         Ok(StatusReport {
             view: self.current_view(),
             sealed_segments: self.committed.sealed_segments_ref().len(),
+            prepared_count: self.prepared_count(),
             segments,
         })
     }
