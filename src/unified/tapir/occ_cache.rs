@@ -281,6 +281,47 @@ impl<K: Ord + Clone> OccCache<K> {
 
         Ok(PrepareResult::Ok)
     }
+
+}
+
+#[cfg(test)]
+impl<K: Ord + Clone> OccCache<K> {
+    /// Check if a point read conflicts with in-flight prepared writes.
+    /// Used by snapshot_get_protected for RO transaction protection.
+    pub(crate) fn check_get_conflict(&self, key: &K, snapshot_ts: Timestamp) -> bool {
+        if let Some(writes) = self.writes.get(key) {
+            for ts in writes.keys() {
+                if *ts <= snapshot_ts {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Check if a range scan conflicts with in-flight prepared writes.
+    /// Used by snapshot_scan_protected for RO transaction protection.
+    pub(crate) fn check_scan_conflict(
+        &self,
+        start: &K,
+        end: &K,
+        snapshot_ts: Timestamp,
+    ) -> bool {
+        for (_key, timestamps) in self.writes.range(start..=end) {
+            for ts in timestamps.keys() {
+                if *ts <= snapshot_ts {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Record a range-level read protection for RO transactions.
+    /// Prevents future prepares from writing into this range at ts < snapshot_ts.
+    pub(crate) fn record_range_read(&mut self, start: K, end: K, snapshot_ts: Timestamp) {
+        self.range_reads.push((start, end, snapshot_ts));
+    }
 }
 
 #[cfg(test)]

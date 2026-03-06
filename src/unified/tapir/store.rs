@@ -579,6 +579,66 @@ impl<
 }
 
 #[cfg(test)]
+impl<
+        K: Key + serde::Serialize + serde::de::DeserializeOwned,
+        V: Value + serde::Serialize + serde::de::DeserializeOwned,
+        IO: DiskIo,
+    > TapirState<K, V, IO>
+{
+    /// Read a key with RO transaction protection.
+    /// Returns PrepareConflict if a prepared write to this key at ts <= snapshot_ts
+    /// is in flight. On success, sets last_read_ts on the MVCC entry (for existing
+    /// keys) or records a degenerate range_read (for non-existent keys, preventing
+    /// phantom writes).
+    pub(crate) fn snapshot_get_protected(
+        &mut self,
+        key: &K,
+        snapshot_ts: Timestamp,
+    ) -> Result<(Option<V>, Timestamp), crate::occ::PrepareConflict> {
+        if self.occ_cache.check_get_conflict(key, snapshot_ts) {
+            return Err(crate::occ::PrepareConflict);
+        }
+
+        let (value, ts) = self
+            .snapshot_get_at(key, snapshot_ts)
+            .map_err(|_| crate::occ::PrepareConflict)?;
+
+        if value.is_some() {
+            self.update_mvcc_last_read_ts(key, snapshot_ts, snapshot_ts.time);
+        } else {
+            self.occ_cache
+                .record_range_read(key.clone(), key.clone(), snapshot_ts);
+        }
+
+        Ok((value, ts))
+    }
+
+    /// Scan a range with RO transaction protection.
+    /// Returns PrepareConflict if a prepared write in [start, end] at ts <= snapshot_ts
+    /// is in flight. On success, records a range_read to prevent future prepares from
+    /// writing into this range at ts < snapshot_ts.
+    pub(crate) fn snapshot_scan_protected(
+        &mut self,
+        start: &K,
+        end: &K,
+        snapshot_ts: Timestamp,
+    ) -> Result<Vec<(K, Option<V>, Timestamp)>, crate::occ::PrepareConflict> {
+        if self.occ_cache.check_scan_conflict(start, end, snapshot_ts) {
+            return Err(crate::occ::PrepareConflict);
+        }
+
+        let results = self
+            .snapshot_scan(start, end, snapshot_ts)
+            .map_err(|_| crate::occ::PrepareConflict)?;
+
+        self.occ_cache
+            .record_range_read(start.clone(), end.clone(), snapshot_ts);
+
+        Ok(results)
+    }
+}
+
+#[cfg(test)]
 pub(crate) struct TapirStateRunner {
     state: TapirState<String, String, crate::mvcc::disk::memory_io::MemoryIo>,
     base_dir: PathBuf,
@@ -721,5 +781,155 @@ mod tests {
         let (value2, _) = runner.state.snapshot_get(&"k".to_string())
             .expect("get after seal should succeed");
         assert_eq!(value2.as_deref(), Some("v"));
+    }
+
+    fn test_ts(time: u64) -> Timestamp {
+        Timestamp {
+            time,
+            client_id: IrClientId(1),
+        }
+    }
+
+    fn test_txn_id(client: u64, num: u64) -> OccTransactionId {
+        OccTransactionId {
+            client_id: IrClientId(client),
+            number: num,
+        }
+    }
+
+    fn make_write_only_txn(
+        writes: Vec<(&str, Option<&str>)>,
+    ) -> crate::occ::Transaction<String, String, Timestamp> {
+        let mut txn = crate::occ::Transaction::<String, String, Timestamp>::default();
+        for (key, value) in writes {
+            txn.add_write(
+                crate::tapir::Sharded {
+                    shard: crate::tapir::ShardNumber(0),
+                    key: key.to_string(),
+                },
+                value.map(|v| v.to_string()),
+            );
+        }
+        txn
+    }
+
+    fn open_test_state() -> TapirState<String, String, crate::mvcc::disk::memory_io::MemoryIo> {
+        let base_dir = crate::mvcc::disk::memory_io::MemoryIo::temp_path();
+        open(&base_dir, OpenFlags { create: true, direct: false }).unwrap()
+    }
+
+    #[test]
+    fn snapshot_get_protected_sets_last_read_ts() {
+        let mut state = open_test_state();
+
+        // Commit a key
+        state
+            .commit(
+                test_txn_id(1, 1),
+                &[],
+                &[("x".to_string(), Some("v1".to_string()))],
+                &[],
+                test_ts(5),
+            )
+            .unwrap();
+
+        // Protected read at ts=10
+        let (value, ts) = state
+            .snapshot_get_protected(&"x".to_string(), test_ts(10))
+            .unwrap();
+        assert_eq!(value.as_deref(), Some("v1"));
+        assert_eq!(ts, test_ts(5));
+
+        // Now prepare a write to "x" at ts=8 → should be rejected (Retry)
+        // because last_read_ts=10 > commit_ts=8
+        let txn = make_write_only_txn(vec![("x", Some("v2"))]);
+        let result = state.prepare(test_txn_id(2, 1), &txn, test_ts(8)).unwrap();
+        assert!(
+            result.is_retry(),
+            "prepare at ts=8 after protected read at ts=10 should Retry, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn snapshot_scan_protected_prevents_write_in_range() {
+        let mut state = open_test_state();
+
+        // Commit a key in range
+        state
+            .commit(
+                test_txn_id(1, 1),
+                &[],
+                &[("m".to_string(), Some("v1".to_string()))],
+                &[],
+                test_ts(5),
+            )
+            .unwrap();
+
+        // Protected scan ["a", "z"] at ts=10
+        let results = state
+            .snapshot_scan_protected(
+                &"a".to_string(),
+                &"z".to_string(),
+                test_ts(10),
+            )
+            .unwrap();
+        assert_eq!(results.len(), 1);
+
+        // Prepare a write to "n" (in range) at ts=8 → should Retry
+        // because range_reads has ("a", "z", ts=10) and ts=10 > ts=8
+        let txn = make_write_only_txn(vec![("n", Some("v2"))]);
+        let result = state.prepare(test_txn_id(2, 1), &txn, test_ts(8)).unwrap();
+        assert!(
+            result.is_retry(),
+            "prepare at ts=8 in protected range should Retry, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn snapshot_get_protected_phantom_prevention() {
+        let mut state = open_test_state();
+
+        // Protected read of non-existent key records degenerate range_read
+        let (value, _) = state
+            .snapshot_get_protected(&"phantom".to_string(), test_ts(10))
+            .unwrap();
+        assert!(value.is_none());
+
+        // Prepare a write to "phantom" at ts=8 → should Retry
+        let txn = make_write_only_txn(vec![("phantom", Some("v1"))]);
+        let result = state.prepare(test_txn_id(1, 1), &txn, test_ts(8)).unwrap();
+        assert!(
+            result.is_retry(),
+            "prepare at ts=8 after phantom read at ts=10 should Retry, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn snapshot_get_protected_conflict_with_prepared_write() {
+        let mut state = open_test_state();
+
+        // Commit a key
+        state
+            .commit(
+                test_txn_id(1, 1),
+                &[],
+                &[("x".to_string(), Some("v1".to_string()))],
+                &[],
+                test_ts(5),
+            )
+            .unwrap();
+
+        // Prepare a write to "x" at ts=8
+        let txn = make_write_only_txn(vec![("x", Some("v2"))]);
+        let result = state.prepare(test_txn_id(2, 1), &txn, test_ts(8)).unwrap();
+        assert!(result.is_ok());
+
+        // Protected read of "x" at ts=10 → should fail (PrepareConflict)
+        // because prepared write at ts=8 <= snapshot_ts=10
+        let read_result = state.snapshot_get_protected(&"x".to_string(), test_ts(10));
+        assert!(
+            read_result.is_err(),
+            "protected read should fail when prepared write exists at ts <= snapshot_ts"
+        );
     }
 }
