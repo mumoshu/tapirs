@@ -454,7 +454,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                         );
                         self.store
                             .get_prepared_txn(transaction_id)
-                            .map(|(ts, _, _)| *ts == commit)
+                            .map(|(ts, _, _)| ts == commit)
                             .unwrap_or(true)
                     })
                     .unwrap_or_else(|| {
@@ -635,7 +635,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                         if self
                             .store
                             .get_prepared_txn(transaction_id)
-                            .map(|(ts, _, _)| ts == commit)
+                            .map(|(ts, _, _)| ts == *commit)
                             .unwrap_or(true)
                             && !self.store.txn_log_contains(transaction_id)
                         {
@@ -655,7 +655,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                     } else if self
                         .store
                         .get_prepared_txn(transaction_id)
-                        .map(|(ts, _, _)| ts == commit)
+                        .map(|(ts, _, _)| ts == *commit)
                         .unwrap_or(false)
                     {
                         trace!(

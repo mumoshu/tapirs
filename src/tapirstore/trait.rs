@@ -193,7 +193,7 @@ pub trait TapirStore<K: Key, V: Value>: Send + 'static {
     fn get_prepared_txn(
         &self,
         id: &TransactionId,
-    ) -> Option<(&Timestamp, &SharedTransaction<K, V, Timestamp>, bool)>;
+    ) -> Option<(Timestamp, SharedTransaction<K, V, Timestamp>, bool)>;
 
     /// Check the current status of a transaction for prepare/check-prepare decisions.
     ///

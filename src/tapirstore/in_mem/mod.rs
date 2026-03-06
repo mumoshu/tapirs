@@ -161,8 +161,11 @@ where
     fn get_prepared_txn(
         &self,
         id: &TransactionId,
-    ) -> Option<(&Timestamp, &SharedTransaction<K, V, Timestamp>, bool)> {
-        self.occ.prepared_txns.get(id)
+    ) -> Option<(Timestamp, SharedTransaction<K, V, Timestamp>, bool)> {
+        self.occ
+            .prepared_txns
+            .get(id)
+            .map(|(ts, txn, fin)| (*ts, txn.clone(), fin))
     }
 
     fn check_prepare_status(&self, id: &TransactionId, commit: &Timestamp) -> CheckPrepareStatus {

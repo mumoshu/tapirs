@@ -267,7 +267,7 @@ pub(crate) fn test_prepared_get(store: &mut impl TapirStore<String, String>) {
     let entry = store.get_prepared_txn(&txn_id(1, 1));
     assert!(entry.is_some());
     let (commit_ts, _txn, finalized) = entry.unwrap();
-    assert_eq!(*commit_ts, ts(5, 1));
+    assert_eq!(commit_ts, ts(5, 1));
     assert!(!finalized);
 
     // Non-existent txn returns None.
