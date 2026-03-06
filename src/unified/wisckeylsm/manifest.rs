@@ -56,6 +56,9 @@ pub struct UnifiedManifest {
     /// Used as a conservative global watermark on recovery: any prepare with
     /// commit_ts < max_read_time → Retry. Subsumes all lost range_reads.
     pub max_read_time: Option<u64>,
+    /// Number of entries in committed VlogLsm (commits + aborts).
+    /// Persisted so PersistentTapirStore can recover txn_log_len after restart.
+    pub txn_log_count: u64,
     /// Reserved for future use (recovery replay).
     pub replay_start_offset: u64,
     /// CRC32 checksum.
@@ -74,6 +77,7 @@ impl UnifiedManifest {
             mvcc_l1_sstables: Vec::new(),
             next_sst_id: 0,
             max_read_time: None,
+            txn_log_count: 0,
             replay_start_offset: 0,
             checksum: 0,
         }

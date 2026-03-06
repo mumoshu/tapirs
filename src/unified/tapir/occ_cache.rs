@@ -306,10 +306,13 @@ impl<K: Ord + Clone> OccCache<K> {
         Ok(PrepareResult::Ok)
     }
 
-}
+    /// Check if any recorded range_read covers [start, end] at ts.
+    pub(crate) fn has_covering_range_read(&self, start: &K, end: &K, ts: Timestamp) -> bool {
+        self.range_reads
+            .iter()
+            .any(|(s, e, read_ts)| s <= start && e >= end && *read_ts >= ts)
+    }
 
-#[cfg(test)]
-impl<K: Ord + Clone> OccCache<K> {
     /// Update max_read_time to track the highest read timestamp.
     pub(crate) fn update_max_read_time(&mut self, ts: Timestamp) {
         self.max_read_time = Some(match self.max_read_time {

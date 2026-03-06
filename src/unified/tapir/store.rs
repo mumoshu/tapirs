@@ -5,6 +5,7 @@ use crate::occ::TransactionId as OccTransactionId;
 use crate::tapir::{Key, ShardNumber, Timestamp, Value};
 use crate::unified::tapir::occ_cache::{MvccQueries, OccCache, OccCacheState, OccCachedTransaction};
 use crate::unified::tapir::Transaction;
+use crate::unified::tapir::types::TxnLogEntry;
 use crate::unified::tapir::{MvccIndexEntry, VlogSegment};
 use crate::unified::wisckeylsm::lsm::{IndexMode, VlogLsm};
 use crate::unified::wisckeylsm::manifest::UnifiedManifest;
@@ -82,7 +83,7 @@ impl<K: Key + serde::Serialize + serde::de::DeserializeOwned, IO: DiskIo> MvccQu
         {
             return Ok(entry
                 .last_read_ts
-                .map(|t| Timestamp { time: t, client_id: crate::IrClientId(0) }));
+                .map(|t| Timestamp { time: t, client_id: crate::IrClientId(u64::MAX) }));
         }
         Ok(None)
     }
@@ -98,7 +99,7 @@ impl<K: Key + serde::Serialize + serde::de::DeserializeOwned, IO: DiskIo> MvccQu
         {
             return Ok(entry
                 .last_read_ts
-                .map(|t| Timestamp { time: t, client_id: crate::IrClientId(0) }));
+                .map(|t| Timestamp { time: t, client_id: crate::IrClientId(u64::MAX) }));
         }
         Ok(None)
     }
@@ -143,13 +144,16 @@ pub(crate) struct TapirState<K: Ord, V, IO: DiskIo> {
     /// Which shard this store serves. Used to extract shard-local read/write/scan
     /// sets from cross-shard transactions stored in the prepared VlogLsm.
     pub(crate) shard: ShardNumber,
+    /// Whether linearizable reads are enabled. Controls whether
+    /// snapshot_get_protected/snapshot_scan_protected track read-protection.
+    linearizable: bool,
     /// MVCC index: maps (key, timestamp) → MvccIndexEntry for get/get_at/scan.
     /// Each MvccIndexEntry stores (txn_id, write_index) resolved via committed VlogLsm.
     mvcc: VlogLsm<CompositeKey<K, Timestamp>, MvccIndexEntry, IO>,
-    /// Committed transaction store: txn_id → Option<Transaction> in vlog.
-    /// Some(txn) = committed at txn.commit_ts, None = aborted tombstone.
+    /// Committed transaction store: txn_id → TxnLogEntry in vlog.
+    /// Committed(txn) = committed at txn.commit_ts, Aborted(ts) = aborted at ts.
     /// On commit, the transaction is written here and MVCC entries point into it.
-    committed: VlogLsm<OccTransactionId, Option<Arc<Transaction<K, V>>>, IO>,
+    committed: VlogLsm<OccTransactionId, TxnLogEntry<K, V>, IO>,
     /// Prepared transaction store: txn_id → Option<cross-shard Transaction> in vlog.
     /// Some(txn) = actively prepared, None = tombstone (committed/aborted).
     /// Tombstones flow through seal to SSTs for durable removal on reopen.
@@ -298,6 +302,80 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
             .count()
     }
 
+    // === Accessors for PersistentTapirStore ===
+
+    /// Iterate prepared VlogLsm memtable keys from `from` onward.
+    pub(crate) fn prepared_memtable_keys<'a>(
+        &'a self,
+        from: &'a OccTransactionId,
+    ) -> impl Iterator<Item = OccTransactionId> + 'a {
+        self.prepared.memtable_range_from(from).map(|(k, _)| *k)
+    }
+
+    /// Iterate prepared VlogLsm index keys.
+    pub(crate) fn prepared_index_keys(&self) -> impl Iterator<Item = OccTransactionId> + '_ {
+        self.prepared.index_range(..).map(|(k, _)| *k)
+    }
+
+    /// Look up a committed VlogLsm entry by transaction ID.
+    pub(crate) fn committed_get(
+        &self,
+        id: &OccTransactionId,
+    ) -> Result<Option<TxnLogEntry<K, V>>, StorageError>
+    where
+        K: Key + serde::Serialize + serde::de::DeserializeOwned,
+        V: Value + serde::Serialize + serde::de::DeserializeOwned,
+    {
+        self.committed.get(id)
+    }
+
+    /// Put an entry into the committed VlogLsm.
+    pub(crate) fn committed_put(
+        &mut self,
+        id: OccTransactionId,
+        value: TxnLogEntry<K, V>,
+    ) {
+        self.committed.put(id, value);
+    }
+
+    /// Iterate committed VlogLsm memtable keys from `from` onward.
+    pub(crate) fn committed_memtable_keys<'a>(
+        &'a self,
+        from: &'a OccTransactionId,
+    ) -> impl Iterator<Item = OccTransactionId> + 'a {
+        self.committed.memtable_range_from(from).map(|(k, _)| *k)
+    }
+
+    /// Get the persisted txn_log_count from the manifest.
+    pub(crate) fn manifest_txn_log_count(&self) -> u64 {
+        self.manifest.txn_log_count
+    }
+
+    /// Returns max_read_time from the OCC cache.
+    pub(crate) fn max_read_time(&self) -> Option<Timestamp> {
+        self.occ_cache.max_read_time()
+    }
+
+    /// Check if last_read_ts >= ts for the MVCC version at the given timestamp.
+    /// Returns the last_read_ts if one exists.
+    pub(crate) fn get_last_read_ts_at(&self, key: &K, ts: Timestamp) -> Option<Timestamp>
+    where
+        K: Key + serde::Serialize + serde::de::DeserializeOwned,
+    {
+        let mvcc_view = MvccView { mvcc: &self.mvcc };
+        mvcc_view.get_last_read_ts_at(key, ts).ok().flatten()
+    }
+
+    /// Check if any recorded range_read covers [start, end] at ts.
+    pub(crate) fn has_covering_range_read(&self, start: &K, end: &K, ts: Timestamp) -> bool {
+        self.occ_cache.has_covering_range_read(start, end, ts)
+    }
+
+    /// Set the txn_log_count in the manifest for persistence on next seal.
+    pub(crate) fn set_manifest_txn_log_count(&mut self, count: u64) {
+        self.manifest.txn_log_count = count;
+    }
+
     pub(crate) fn commit(
         &mut self,
         txn_id: OccTransactionId,
@@ -322,7 +400,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
             scan_set: scan_set.to_vec(),
         });
 
-        self.committed.put(txn_id, Some(arc_txn));
+        self.committed.put(txn_id, TxnLogEntry::Committed(arc_txn));
 
         for (i, (key, _value)) in write_set.iter().enumerate() {
             self.insert_mvcc_entry(key.clone(), commit, txn_id, i as u16);
@@ -385,7 +463,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         K: Key + serde::Serialize + serde::de::DeserializeOwned,
         V: Value + serde::Serialize + serde::de::DeserializeOwned,
     {
-        if let Some(Some(txn)) = self.committed.get(&entry.txn_id)? {
+        if let Some(TxnLogEntry::Committed(txn)) = self.committed.get(&entry.txn_id)? {
             Ok(txn.write_set.get(entry.write_index as usize).and_then(|(_, v)| v.clone()))
         } else {
             Ok(None)
@@ -434,6 +512,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         }
 
         self.manifest.max_read_time = self.occ_cache.max_read_time().map(|ts| ts.time);
+        // txn_log_count is updated by PersistentTapirStore via set_manifest_txn_log_count.
         self.manifest.current_view += 1;
         self.manifest.committed.active_segment_id = self.committed.active_vlog_id();
         self.manifest.committed.active_write_offset = self.committed.active_write_offset();
@@ -505,7 +584,7 @@ fn read_committed_entry_from_segment<
 >(
     segment: &VlogSegment<IO>,
     txn_ptr: &VlogPtr,
-) -> Result<Option<Arc<Transaction<K, V>>>, StorageError> {
+) -> Result<TxnLogEntry<K, V>, StorageError> {
     let raw = segment.read_raw_entry(txn_ptr)?;
     if raw.entry_type != TAPIR_COMMITTED_TXN_ENTRY_TYPE {
         return Err(StorageError::Codec(format!(
@@ -533,7 +612,8 @@ pub(crate) fn iter_committed_txn_entries<
             offset,
             length: RAW_ENTRY_OVERHEAD + raw.payload.len() as u32,
         };
-        if let Some(txn_arc) = read_committed_entry_from_segment::<K, V, IO>(segment, &ptr)? {
+        let entry = read_committed_entry_from_segment::<K, V, IO>(segment, &ptr)?;
+        if let TxnLogEntry::Committed(txn_arc) = entry {
             // Arc is freshly deserialized — refcount is always 1.
             let txn = Arc::try_unwrap(txn_arc).ok().expect("freshly deserialized Arc has refcount 1");
             out.push((offset, txn));
@@ -546,7 +626,7 @@ pub(crate) fn open<K: Key, V: Value, IO: DiskIo>(
     base_dir: &Path,
     io_flags: OpenFlags,
     shard: ShardNumber,
-    _linearizable: bool,
+    linearizable: bool,
 ) -> Result<TapirState<K, V, IO>, StorageError> {
     IO::create_dir_all(base_dir)?;
 
@@ -630,6 +710,7 @@ pub(crate) fn open<K: Key, V: Value, IO: DiskIo>(
 
     let state = TapirState {
         shard,
+        linearizable,
         mvcc,
         committed,
         prepared,
@@ -699,15 +780,7 @@ impl<
         }
         Ok(out)
     }
-}
 
-#[cfg(test)]
-impl<
-        K: Key + serde::Serialize + serde::de::DeserializeOwned,
-        V: Value + serde::Serialize + serde::de::DeserializeOwned,
-        IO: DiskIo,
-    > TapirState<K, V, IO>
-{
     /// Read a key with RO transaction protection.
     /// Returns PrepareConflict if a prepared write to this key at ts <= snapshot_ts
     /// is in flight. On success, if linearizable is true, sets last_read_ts on the
@@ -726,13 +799,15 @@ impl<
             .snapshot_get_at(key, snapshot_ts)
             .map_err(|_| crate::occ::PrepareConflict)?;
 
-        if value.is_some() {
-            self.update_mvcc_last_read_ts(key, snapshot_ts, snapshot_ts.time);
-        } else {
-            self.occ_cache
-                .record_range_read(key.clone(), key.clone(), snapshot_ts);
+        if self.linearizable {
+            if value.is_some() {
+                self.update_mvcc_last_read_ts(key, snapshot_ts, snapshot_ts.time);
+            } else {
+                self.occ_cache
+                    .record_range_read(key.clone(), key.clone(), snapshot_ts);
+            }
+            self.occ_cache.update_max_read_time(snapshot_ts);
         }
-        self.occ_cache.update_max_read_time(snapshot_ts);
 
         Ok((value, ts))
     }
@@ -755,9 +830,11 @@ impl<
             .snapshot_scan(start, end, snapshot_ts)
             .map_err(|_| crate::occ::PrepareConflict)?;
 
-        self.occ_cache
-            .record_range_read(start.clone(), end.clone(), snapshot_ts);
-        self.occ_cache.update_max_read_time(snapshot_ts);
+        if self.linearizable {
+            self.occ_cache
+                .record_range_read(start.clone(), end.clone(), snapshot_ts);
+            self.occ_cache.update_max_read_time(snapshot_ts);
+        }
 
         Ok(results)
     }

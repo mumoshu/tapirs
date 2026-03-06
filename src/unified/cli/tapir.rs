@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use crate::mvcc::disk::disk_io::{BufferedIo, OpenFlags};
+use crate::unified::tapir::persistent_store::PersistentTapirStore;
 use crate::unified::tapir::store as tapir_store;
 
 use super::{
@@ -22,9 +23,9 @@ pub(super) fn execute_tapir_command<W: std::io::Write>(
                 create: true,
                 direct: false,
             };
-            let store = tapir_store::open::<String, String, BufferedIo>(&path, io_flags, crate::tapir::ShardNumber(0), true)
+            let state = tapir_store::open::<String, String, BufferedIo>(&path, io_flags, crate::tapir::ShardNumber(0), true)
                 .map_err(|e| format!("open failed: {e}"))?;
-            ctx.store = Some(store);
+            ctx.store = Some(PersistentTapirStore::new(state));
             Ok(())
         }
         "open-with" => {
@@ -39,9 +40,9 @@ pub(super) fn execute_tapir_command<W: std::io::Write>(
                 create: true,
                 direct: false,
             };
-            let store = tapir_store::open::<String, String, BufferedIo>(&path, io_flags, crate::tapir::ShardNumber(0), true)
+            let state = tapir_store::open::<String, String, BufferedIo>(&path, io_flags, crate::tapir::ShardNumber(0), true)
                 .map_err(|e| format!("open-with failed: {e}"))?;
-            ctx.store = Some(store);
+            ctx.store = Some(PersistentTapirStore::new(state));
             ctx.min_view_vlog_size = min_size;
             Ok(())
         }
@@ -53,7 +54,7 @@ pub(super) fn execute_tapir_command<W: std::io::Write>(
             let commit_ts = parse_ts(parts[2])?;
             let txn = parse_tapir_transaction(&parts[3..])?;
             let store = ctx.store_mut()?;
-            let result = store
+            let result = store.state
                 .prepare(txn_id, &txn, commit_ts)
                 .map_err(|e| format!("prepare failed: {e}"))?;
             if !result.is_ok() {
@@ -67,7 +68,7 @@ pub(super) fn execute_tapir_command<W: std::io::Write>(
             }
             let txn_id = parse_txn_id(parts[1])?;
             let store = ctx.store_mut()?;
-            store.abort(&txn_id);
+            store.state.abort(&txn_id);
             Ok(())
         }
         "commit" => {
@@ -91,7 +92,7 @@ pub(super) fn execute_tapir_command<W: std::io::Write>(
                 .map(|entry| (entry.start_key.clone(), entry.end_key.clone(), entry.timestamp))
                 .collect();
             let store = ctx.store_mut()?;
-            store
+            store.state
                 .commit(txn_id, &read_set, &write_set, &scan_set, commit_ts)
                 .map_err(|e| format!("commit failed: {e}"))
         }
@@ -101,7 +102,7 @@ pub(super) fn execute_tapir_command<W: std::io::Write>(
             }
             let key = parts[1].to_string();
             let store = ctx.store()?;
-            let (value, ts) = store
+            let (value, ts) = store.state
                 .snapshot_get(&key)
                 .map_err(|e| format!("get failed: {e}"))?;
             write_kv_result(stdout, &key, value.as_deref(), ts)
@@ -113,7 +114,7 @@ pub(super) fn execute_tapir_command<W: std::io::Write>(
             let key = parts[1].to_string();
             let ts = parse_ts(parts[2])?;
             let store = ctx.store()?;
-            let (value, actual_ts) = store
+            let (value, actual_ts) = store.state
                 .snapshot_get_at(&key, ts)
                 .map_err(|e| format!("get-at failed: {e}"))?;
             write_kv_result(stdout, &key, value.as_deref(), actual_ts)
@@ -126,7 +127,7 @@ pub(super) fn execute_tapir_command<W: std::io::Write>(
             let end = parts[2].to_string();
             let ts = parse_ts(parts[3])?;
             let store = ctx.store()?;
-            let results = store
+            let results = store.state
                 .snapshot_scan(&start, &end, ts)
                 .map_err(|e| format!("scan failed: {e}"))?;
             for (key, value, entry_ts) in &results {
@@ -137,13 +138,13 @@ pub(super) fn execute_tapir_command<W: std::io::Write>(
         "seal" => {
             let min_view_vlog_size = ctx.min_view_vlog_size;
             let store = ctx.store_mut()?;
-            store
+            store.state
                 .seal_current_view(min_view_vlog_size)
                 .map_err(|e| format!("seal failed: {e}"))
         }
         "status" => {
             let store = ctx.store()?;
-            let report = store.status().map_err(|e| format!("status failed: {e}"))?;
+            let report = store.state.status().map_err(|e| format!("status failed: {e}"))?;
             writeln!(stdout, "view={} sealed_segments={}", report.view, report.sealed_segments)
                 .map_err(|e| format!("write failed: {e}"))?;
             for seg in &report.segments {

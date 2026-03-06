@@ -1,6 +1,20 @@
 use crate::occ::TransactionId as OccTransactionId;
 use crate::tapir::Timestamp;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+
+/// Entry in the committed VlogLsm transaction log.
+/// Committed entries contain the full transaction; aborted entries only
+/// preserve the timestamp (for idempotent abort responses).
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "K: Serialize, V: Serialize",
+    deserialize = "K: serde::de::DeserializeOwned, V: serde::de::DeserializeOwned"
+))]
+pub(crate) enum TxnLogEntry<K, V> {
+    Committed(Arc<Transaction<K, V>>),
+    Aborted(Timestamp),
+}
 
 /// Deserialized transaction payload with typed keys and values.
 ///

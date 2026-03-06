@@ -7,7 +7,7 @@ use crate::occ::{SharedTransaction, Transaction};
 use crate::occ::TransactionId as OccTransactionId;
 use crate::tapir::{ShardNumber, Sharded, Timestamp};
 use crate::unified::ir::record::IrRecord;
-use crate::unified::tapir::store::TapirState;
+use crate::unified::tapir::persistent_store::PersistentTapirStore;
 use crate::IrClientId;
 use std::sync::Arc;
 
@@ -16,7 +16,7 @@ mod tapir;
 
 const DEFAULT_MIN_VIEW_VLOG_SIZE: u64 = 256 * 1024;
 
-type Tapir = TapirState<String, String, BufferedIo>;
+type Tapir = PersistentTapirStore<String, String, BufferedIo>;
 type Ir = IrRecord<String, String, BufferedIo>;
 
 pub fn run<I, R, W, E>(args: I, mut stdin: R, mut stdout: W, mut stderr: E) -> i32
