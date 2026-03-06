@@ -42,7 +42,7 @@ impl<K: Key + serde::Serialize + serde::de::DeserializeOwned, IO: DiskIo> MvccQu
         // iterate forward looking for a version with ts > at_ts.
         let start = CompositeKey::new(key.clone(), Timestamp::max_value());
         let mut next_ts = None;
-        for (ck, _) in self.mvcc.memtable_range(start.clone()..) {
+        for (ck, _) in self.mvcc.memtable_range_from(&start) {
             if ck.key != *key { break; }
             if ck.timestamp.0 > at_ts {
                 next_ts = Some(match next_ts {
@@ -101,7 +101,7 @@ impl<K: Key + serde::Serialize + serde::de::DeserializeOwned, IO: DiskIo> MvccQu
     ) -> Result<bool, StorageError> {
         let from_ck = CompositeKey::new(start.clone(), Timestamp::max_value());
 
-        for (ck, _) in self.mvcc.memtable_range(from_ck.clone()..) {
+        for (ck, _) in self.mvcc.memtable_range_from(&from_ck) {
             if ck.key > *end { break; }
             if ck.timestamp.0 > after_ts && ck.timestamp.0 < before_ts {
                 return Ok(true);
@@ -592,7 +592,7 @@ impl<
             let entry: MvccIndexEntry = self.mvcc.read_value_from_vlog(ptr)?;
             merged.insert(ck.clone(), entry);
         }
-        for (ck, entry) in self.mvcc.memtable_range(from_ck..) {
+        for (ck, entry) in self.mvcc.memtable_range_from(&from_ck) {
             if ck.key > *end { break; }
             merged.insert(ck.clone(), entry.clone());
         }

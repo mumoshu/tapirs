@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
 use serde::de::DeserializeOwned;
@@ -10,6 +11,39 @@ use crate::unified::wisckeylsm::manifest::LsmManifestData;
 use crate::unified::wisckeylsm::sst::{SstMeta, SSTableReader, SSTableWriter};
 use crate::unified::wisckeylsm::types::{VlogPtr, VlogSegmentMeta};
 use crate::unified::wisckeylsm::vlog::VlogSegment;
+
+/// Abstraction over the in-memory buffer used by VlogLsm for the current view.
+///
+/// `K` is the key type, `V` is the value type returned by reads.
+/// `Source` is the type accepted by `mem_insert` — for BTreeMap this equals `V`,
+/// but custom implementations can accept a different type and convert internally.
+pub(crate) trait Memtable<K, V> {
+    type Source;
+    fn mem_insert(&mut self, key: K, source: Self::Source);
+    fn mem_get(&self, key: &K) -> Option<&V>;
+    fn mem_iter<'a>(&'a self) -> impl Iterator<Item = (&'a K, &'a V)> where K: 'a, V: 'a;
+    fn mem_range_from<'a>(&'a self, from: &K) -> impl Iterator<Item = (&'a K, &'a V)> where K: 'a, V: 'a;
+    fn mem_clear(&mut self);
+}
+
+impl<K: Ord, V> Memtable<K, V> for BTreeMap<K, V> {
+    type Source = V;
+    fn mem_insert(&mut self, key: K, value: V) {
+        self.insert(key, value);
+    }
+    fn mem_get(&self, key: &K) -> Option<&V> {
+        self.get(key)
+    }
+    fn mem_iter<'a>(&'a self) -> impl Iterator<Item = (&'a K, &'a V)> where K: 'a, V: 'a {
+        self.iter()
+    }
+    fn mem_range_from<'a>(&'a self, from: &K) -> impl Iterator<Item = (&'a K, &'a V)> where K: 'a, V: 'a {
+        self.range(from..)
+    }
+    fn mem_clear(&mut self) {
+        self.clear();
+    }
+}
 
 /// Controls whether VlogLsm maintains an in-memory K→VlogPtr index.
 #[derive(Debug, Clone, Copy)]
@@ -28,12 +62,17 @@ pub(crate) enum IndexMode {
 ///
 /// Read path: memtable (fast clone) → index (VlogPtr → vlog). SSTs are only
 /// used to rebuild the index on open.
-pub(crate) struct VlogLsm<K: Ord, V, IO: DiskIo> {
+pub(crate) struct VlogLsm<K: Ord, V, IO: DiskIo, M: Memtable<K, V> = BTreeMap<K, V>> {
     /// Current-view raw values. Written by `put()`, read first by `get()`.
     /// Cleared on `seal_view()` after flushing to `active_vlog` + `index`.
     /// Keys here may also appear in `index` (recovery case — index wins for
     /// already-persisted entries; memtable wins for reads in `get()`).
-    memtable: BTreeMap<K, V>,
+    memtable: M,
+
+    /// V is used in method signatures but not in struct fields (only via M's
+    /// Memtable<K, V> bound). PhantomData<fn() -> V> marks V as used without
+    /// implying ownership.
+    _phantom_v: PhantomData<fn() -> V>,
 
     /// Accumulated K→VlogPtr across all sealed views. Each VlogPtr references
     /// a (segment_id, offset) in either `active_vlog` or `sealed_segments`.
@@ -87,7 +126,7 @@ pub(crate) struct VlogLsm<K: Ord, V, IO: DiskIo> {
     label: String,
 }
 
-impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
+impl<K: Ord, V, IO: DiskIo, M: Memtable<K, V>> VlogLsm<K, V, IO, M> {
     /// Construct a VlogLsm from pre-opened parts.
     ///
     /// Opens each SST from `sst_metas`, loads all (K, VlogPtr) entries into the
@@ -106,6 +145,7 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
     ) -> Result<Self, StorageError>
     where
         K: Serialize + DeserializeOwned + Clone,
+        M: Default,
     {
         let mut sst_readers = Vec::with_capacity(sst_metas.len());
         let mut index = match index_mode {
@@ -123,7 +163,8 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
             sst_readers.push(reader);
         }
         Ok(Self {
-            memtable: BTreeMap::new(),
+            memtable: M::default(),
+            _phantom_v: PhantomData,
             index,
             sst_readers,
             sst_metas,
@@ -153,6 +194,7 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
     ) -> Result<Self, StorageError>
     where
         K: Serialize + DeserializeOwned + Clone,
+        M: Default,
     {
         let mut sealed_segments = BTreeMap::new();
         for seg_meta in &manifest_data.sealed_vlog_segments {
@@ -236,8 +278,8 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
 
     /// Insert a key-value pair into the memtable. No vlog/index write —
     /// those happen at `seal_view()` time via the caller-provided closure.
-    pub fn put(&mut self, key: K, value: V) {
-        self.memtable.insert(key, value);
+    pub fn put(&mut self, key: K, source: M::Source) {
+        self.memtable.mem_insert(key, source);
     }
 
     /// Full read path: memtable (clone V) → index (VlogPtr → vlog) → SSTs
@@ -247,7 +289,7 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
         K: Serialize + DeserializeOwned + Clone,
         V: Clone + DeserializeOwned,
     {
-        if let Some(v) = self.memtable.get(key) {
+        if let Some(v) = self.memtable.mem_get(key) {
             return Ok(Some(v.clone()));
         }
 
@@ -280,7 +322,7 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
         K: Serialize + DeserializeOwned + Clone,
         V: Clone + DeserializeOwned,
     {
-        let mem_entry = self.memtable.range(from..).next();
+        let mem_entry = self.memtable.mem_range_from(from).next();
 
         // Persistent-store candidate: index (InMemory) or SSTs (SstOnly).
         let store_candidate: Option<(K, VlogPtr)> = match &self.index {
@@ -323,12 +365,9 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
         Ok(best)
     }
 
-    /// Range accessor over the memtable.
-    pub(crate) fn memtable_range<R: std::ops::RangeBounds<K>>(
-        &self,
-        range: R,
-    ) -> std::collections::btree_map::Range<'_, K, V> {
-        self.memtable.range(range)
+    /// Range accessor over the memtable (from `from` key onward).
+    pub(crate) fn memtable_range_from(&self, from: &K) -> impl Iterator<Item = (&K, &V)> {
+        self.memtable.mem_range_from(from)
     }
 
     /// Range accessor over the index.
@@ -363,7 +402,7 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
         // Batch-flush memtable entries to vlog.
         let mut batch_keys: Vec<K> = Vec::new();
         let mut batch_raw: Vec<(u8, u64, u64, Vec<u8>)> = Vec::new();
-        for (key, value) in &self.memtable {
+        for (key, value) in self.memtable.mem_iter() {
             if let Some((entry_type, client_id, number)) = header_fn(key, value) {
                 let payload = bitcode::serialize(value)
                     .map_err(|e| StorageError::Codec(e.to_string()))?;
@@ -390,7 +429,7 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
         self.active_vlog.sync()?;
         self.active_vlog.finish_view(self.entry_count);
 
-        self.memtable.clear();
+        self.memtable.mem_clear();
 
         self.write_sst(&new_entries)?;
 
@@ -498,7 +537,7 @@ impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
 }
 
 #[cfg(test)]
-impl<K: Ord, V, IO: DiskIo> VlogLsm<K, V, IO> {
+impl<K: Ord, V, IO: DiskIo, M: Memtable<K, V>> VlogLsm<K, V, IO, M> {
     pub(crate) fn index(&self) -> &BTreeMap<K, VlogPtr> {
         self.index
             .as_ref()
@@ -673,11 +712,11 @@ mod tests {
         assert_eq!(lsm.sst_metas.len(), 0);
         assert_eq!(lsm.next_sst_id, 0);
         let k_a: String = "k_a".into();
-        assert!(!lsm.memtable.contains_key(&k_a));
+        assert!(lsm.memtable.mem_get(&k_a).is_none());
         assert!(!lsm.index().contains_key(&k_a));
 
         lsm.put("k_a".into(), "val_a".into());
-        assert!(lsm.memtable.contains_key(&k_a));
+        assert!(lsm.memtable.mem_get(&k_a).is_some());
 
         lsm.seal_view(u64::MAX, test_header_fn).unwrap();
         lsm.start_view(1);
