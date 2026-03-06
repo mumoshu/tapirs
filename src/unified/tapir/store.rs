@@ -146,9 +146,10 @@ pub(crate) struct TapirState<K: Ord, V, IO: DiskIo> {
     /// MVCC index: maps (key, timestamp) → MvccIndexEntry for get/get_at/scan.
     /// Each MvccIndexEntry stores (txn_id, write_index) resolved via committed VlogLsm.
     mvcc: VlogLsm<CompositeKey<K, Timestamp>, MvccIndexEntry, IO>,
-    /// Committed transaction store: txn_id → serialized Transaction in vlog.
+    /// Committed transaction store: txn_id → Option<Transaction> in vlog.
+    /// Some(txn) = committed at txn.commit_ts, None = aborted tombstone.
     /// On commit, the transaction is written here and MVCC entries point into it.
-    committed: VlogLsm<OccTransactionId, Arc<Transaction<K, V>>, IO>,
+    committed: VlogLsm<OccTransactionId, Option<Arc<Transaction<K, V>>>, IO>,
     /// Prepared transaction store: txn_id → Option<cross-shard Transaction> in vlog.
     /// Some(txn) = actively prepared, None = tombstone (committed/aborted).
     /// Tombstones flow through seal to SSTs for durable removal on reopen.
@@ -279,7 +280,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
             scan_set: scan_set.to_vec(),
         });
 
-        self.committed.put(txn_id, arc_txn);
+        self.committed.put(txn_id, Some(arc_txn));
 
         for (i, (key, _value)) in write_set.iter().enumerate() {
             self.insert_mvcc_entry(key.clone(), commit, txn_id, i as u16);
@@ -342,7 +343,7 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         K: Key + serde::Serialize + serde::de::DeserializeOwned,
         V: Value + serde::Serialize + serde::de::DeserializeOwned,
     {
-        if let Some(txn) = self.committed.get(&entry.txn_id)? {
+        if let Some(Some(txn)) = self.committed.get(&entry.txn_id)? {
             Ok(txn.write_set.get(entry.write_index as usize).and_then(|(_, v)| v.clone()))
         } else {
             Ok(None)
@@ -454,14 +455,14 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
     }
 }
 
-fn read_committed_txn_from_segment<
+fn read_committed_entry_from_segment<
     K: serde::de::DeserializeOwned,
     V: serde::de::DeserializeOwned,
     IO: DiskIo,
 >(
     segment: &VlogSegment<IO>,
     txn_ptr: &VlogPtr,
-) -> Result<Transaction<K, V>, StorageError> {
+) -> Result<Option<Arc<Transaction<K, V>>>, StorageError> {
     let raw = segment.read_raw_entry(txn_ptr)?;
     if raw.entry_type != TAPIR_COMMITTED_TXN_ENTRY_TYPE {
         return Err(StorageError::Codec(format!(
@@ -489,8 +490,11 @@ pub(crate) fn iter_committed_txn_entries<
             offset,
             length: RAW_ENTRY_OVERHEAD + raw.payload.len() as u32,
         };
-        let txn = read_committed_txn_from_segment(segment, &ptr)?;
-        out.push((offset, txn));
+        if let Some(txn_arc) = read_committed_entry_from_segment::<K, V, IO>(segment, &ptr)? {
+            // Arc is freshly deserialized — refcount is always 1.
+            let txn = Arc::try_unwrap(txn_arc).ok().expect("freshly deserialized Arc has refcount 1");
+            out.push((offset, txn));
+        }
     }
     Ok(out)
 }
