@@ -1,7 +1,7 @@
 use crate::{
     discovery::InMemoryShardDirectory,
     ChannelRegistry, ChannelTransport, IrClient, IrClientId, IrMembership, IrMembershipSize,
-    IrOpId, IrRecord, IrReplica, IrReplicaUpcalls, IrVersionedRecord, Transport,
+    IrOpId, IrRecord, IrRecordView, IrReplica, IrReplicaUpcalls, IrVersionedRecord, Transport,
 };
 use rand::{seq::IteratorRandom, Rng, SeedableRng};
 use rand::rngs::StdRng;
@@ -96,6 +96,7 @@ async fn lock_server(num_replicas: usize) {
         type IR = ();
         type CO = Lock;
         type CR = LockResult;
+        type Record = IrRecord<Self>;
 
         fn exec_unlogged(&self, _op: Self::UO) -> Self::UR {
             unreachable!();
@@ -117,15 +118,15 @@ async fn lock_server(num_replicas: usize) {
             }
         }
 
-        fn sync(&mut self, _: &IrRecord<Self>, record: &IrRecord<Self>) {
+        fn sync(&mut self, _: &Self::Record, record: &Self::Record) {
             self.locked = None;
 
             let mut locked = BTreeSet::<IrClientId>::new();
             let mut unlocked = BTreeSet::<IrClientId>::new();
-            for entry in record.inconsistent.values() {
+            for (_, entry) in record.inconsistent_entries() {
                 unlocked.insert(entry.op.0);
             }
-            for entry in record.consensus.values() {
+            for (_, entry) in record.consensus_entries() {
                 if matches!(entry.result, LockResult::Ok) {
                     locked.insert(entry.op.0);
                 }

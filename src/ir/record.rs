@@ -99,6 +99,41 @@ pub struct RecordImpl<IO, CO, CR> {
     pub consensus: BTreeMap<OpId, ConsensusEntry<CO, CR>>,
 }
 
+/// Read-only view over IR record entries.
+///
+/// Abstracts away the concrete record storage structure so that
+/// consumers (like [`super::replica::Upcalls`]) can iterate and
+/// look up entries without depending on `RecordImpl`'s BTreeMap fields.
+pub trait RecordView {
+    type IO;
+    type CO;
+    type CR;
+
+    fn consensus_entries(&self) -> impl Iterator<Item = (&OpId, &ConsensusEntry<Self::CO, Self::CR>)>;
+    fn inconsistent_entries(&self) -> impl Iterator<Item = (&OpId, &InconsistentEntry<Self::IO>)>;
+    fn get_consensus(&self, op_id: &OpId) -> Option<&ConsensusEntry<Self::CO, Self::CR>>;
+    fn get_inconsistent(&self, op_id: &OpId) -> Option<&InconsistentEntry<Self::IO>>;
+}
+
+impl<IO, CO, CR> RecordView for RecordImpl<IO, CO, CR> {
+    type IO = IO;
+    type CO = CO;
+    type CR = CR;
+
+    fn consensus_entries(&self) -> impl Iterator<Item = (&OpId, &ConsensusEntry<CO, CR>)> {
+        self.consensus.iter()
+    }
+    fn inconsistent_entries(&self) -> impl Iterator<Item = (&OpId, &InconsistentEntry<IO>)> {
+        self.inconsistent.iter()
+    }
+    fn get_consensus(&self, op_id: &OpId) -> Option<&ConsensusEntry<CO, CR>> {
+        self.consensus.get(op_id)
+    }
+    fn get_inconsistent(&self, op_id: &OpId) -> Option<&InconsistentEntry<IO>> {
+        self.inconsistent.get(op_id)
+    }
+}
+
 impl<IO, CO, CR> Default for RecordImpl<IO, CO, CR> {
     fn default() -> Self {
         Self {

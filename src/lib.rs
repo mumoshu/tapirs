@@ -29,7 +29,7 @@ pub use rng::Rng;
 pub use ir::{
     Client as IrClient, ClientId as IrClientId, Membership as IrMembership,
     MembershipSize as IrMembershipSize, Message as IrMessage, OpId as IrOpId, Record as IrRecord,
-    IrRecordStore,
+    IrRecordStore, RecordView as IrRecordView,
     RecordConsensusEntry as IrRecordConsensusEntry, Replica as IrReplica,
     ReplicaMetrics as IrReplicaMetrics, ReplicaUpcalls as IrReplicaUpcalls,
     VersionedRecord as IrVersionedRecord,

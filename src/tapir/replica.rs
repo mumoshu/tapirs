@@ -4,7 +4,8 @@ use crate::ir::ReplyUnlogged;
 use crate::tapir::ShardClient;
 use crate::tapirstore::TapirStore;
 use crate::{
-    DefaultDiskIo, IrClientId, IrMembership, IrMembershipSize, IrOpId, IrRecord, IrReplicaUpcalls,
+    DefaultDiskIo, IrClientId, IrMembership, IrMembershipSize, IrOpId, IrRecord, IrRecordView,
+    IrReplicaUpcalls,
     MvccBackend, MvccDiskStore,
     OccPrepareResult, OccSharedTransaction, OccTransactionId, TapirTransport,
 };
@@ -273,6 +274,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
     type IR = IR<K, V>;
     type CO = CO<K, V>;
     type CR = CR;
+    type Record = IrRecord<Self>;
 
     fn exec_unlogged(&self, op: Self::UO) -> Self::UR {
         match op {
@@ -612,11 +614,10 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
         }
     }
 
-    fn sync(&mut self, local: &IrRecord<Self>, leader: &IrRecord<Self>) {
-        for (op_id, entry) in &leader.consensus {
+    fn sync(&mut self, local: &Self::Record, leader: &Self::Record) {
+        for (op_id, entry) in leader.consensus_entries() {
             if local
-                .consensus
-                .get(op_id)
+                .get_consensus(op_id)
                 .map(|local| local.state.is_finalized() && local.result == entry.result)
                 .unwrap_or(false)
             {
@@ -675,10 +676,9 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                 }
             }
         }
-        for (op_id, entry) in &leader.inconsistent {
+        for (op_id, entry) in leader.inconsistent_entries() {
             if local
-                .inconsistent
-                .get(op_id)
+                .get_inconsistent(op_id)
                 .map(|e| e.state.is_finalized())
                 .unwrap_or(false)
             {
@@ -780,12 +780,12 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
         &mut self,
         base_view: u64,
         new_view: u64,
-        delta: &IrRecord<Self>,
+        delta: &Self::Record,
     ) {
         let shard = self.store.shard();
         let mut changes = Vec::new();
 
-        for entry in delta.inconsistent.values() {
+        for (_, entry) in delta.inconsistent_entries() {
             if let IO::Commit {
                 transaction_id,
                 transaction,

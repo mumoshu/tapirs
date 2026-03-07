@@ -5,7 +5,7 @@ use super::{
     FinalizeConsensus, FinalizeInconsistent, Membership, Message, OpId, ProposeConsensus,
     ProposeInconsistent, Record, RecordConsensusEntry, RecordEntryState, RecordInconsistentEntry,
     RemoveMember, ReplyConsensus, ReplyInconsistent, ReplyUnlogged, RequestUnlogged, StartView,
-    IrRecordStore, VersionedEntry, View, ViewNumber,
+    IrRecordStore, RecordView, VersionedEntry, View, ViewNumber,
 };
 use crate::{Transport, TransportMessage};
 use std::{
@@ -46,6 +46,8 @@ pub trait Upcalls: Sized + Send + 'static {
     type CO: TransportMessage + Eq;
     /// Consensus result.
     type CR: TransportMessage + Eq + Ord + Hash;
+    /// The record snapshot type used by sync and view-change callbacks.
+    type Record: RecordView<IO = Self::IO, CO = Self::CO, CR = Self::CR>;
 
     fn exec_unlogged(&self, op: Self::UO) -> Self::UR;
     fn exec_inconsistent(&mut self, op_id: &OpId, op: &Self::IO) -> Option<Self::IR>;
@@ -61,7 +63,7 @@ pub trait Upcalls: Sized + Send + 'static {
     /// In addition to the IR spec, this must not rely on the existence
     /// of any ancient records (from before the last view change) in the
     /// leader's record.
-    fn sync(&mut self, local: &Record<Self>, leader: &Record<Self>);
+    fn sync(&mut self, local: &Self::Record, leader: &Self::Record);
     fn merge(
         &mut self,
         d: BTreeMap<OpId, (Self::CO, Self::CR)>,
@@ -80,7 +82,7 @@ pub trait Upcalls: Sized + Send + 'static {
         &mut self,
         _base_view: u64,
         _new_view: u64,
-        _delta: &Record<Self>,
+        _delta: &Self::Record,
     ) {
     }
 
@@ -144,7 +146,7 @@ struct SyncInner<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::
     peer_normal_views: BTreeMap<T::Address, ViewNumber>,
 }
 
-impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR>> Replica<U, T, R> {
+impl<U: Upcalls<Record = Record<U>>, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR>> Replica<U, T, R> {
     const VIEW_CHANGE_INTERVAL: Duration = Duration::from_secs(2);
 
     pub fn new(
