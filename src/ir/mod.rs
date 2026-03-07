@@ -21,7 +21,7 @@ pub use message::{
 pub use op::Id as OpId;
 pub use record::{
     ConsensusEntry as RecordConsensusEntry,
-    InconsistentEntry as RecordInconsistentEntry, Record, State as RecordEntryState,
+    InconsistentEntry as RecordInconsistentEntry, IrRecordStore, Record, State as RecordEntryState,
     VersionedEntry, VersionedRecord,
 };
 pub use replica::{Replica, ReplicaMetrics, Upcalls as ReplicaUpcalls};

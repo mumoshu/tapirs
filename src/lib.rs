@@ -29,8 +29,10 @@ pub use rng::Rng;
 pub use ir::{
     Client as IrClient, ClientId as IrClientId, Membership as IrMembership,
     MembershipSize as IrMembershipSize, Message as IrMessage, OpId as IrOpId, Record as IrRecord,
+    IrRecordStore,
     RecordConsensusEntry as IrRecordConsensusEntry, Replica as IrReplica,
     ReplicaMetrics as IrReplicaMetrics, ReplicaUpcalls as IrReplicaUpcalls,
+    VersionedRecord as IrVersionedRecord,
     SharedView as IrSharedView, View as IrView, ViewNumber as IrViewNumber,
 };
 pub use mvcc::MvccBackend;
