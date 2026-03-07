@@ -5,7 +5,7 @@ use super::{
     FinalizeConsensus, FinalizeInconsistent, Membership, Message, OpId, ProposeConsensus,
     ProposeInconsistent, Record, RecordConsensusEntry, RecordEntryState, RecordInconsistentEntry,
     RemoveMember, ReplyConsensus, ReplyInconsistent, ReplyUnlogged, RequestUnlogged, StartView,
-    IrRecordStore, VersionedEntry, VersionedRecord, View, ViewNumber,
+    IrRecordStore, VersionedEntry, View, ViewNumber,
 };
 use crate::{Transport, TransportMessage};
 use std::{
@@ -46,6 +46,9 @@ pub trait Upcalls: Sized + Send + 'static {
     type CO: TransportMessage + Eq;
     /// Consensus result.
     type CR: TransportMessage + Eq + Ord + Hash;
+
+    /// The record store backend used by the IR replica.
+    type RecordStore: IrRecordStore<Self::IO, Self::CO, Self::CR>;
 
     fn exec_unlogged(&self, op: Self::UO) -> Self::UR;
     fn exec_inconsistent(&mut self, op: &Self::IO) -> Option<Self::IR>;
@@ -136,7 +139,7 @@ struct SyncInner<U: Upcalls, T: Transport<U>> {
     record_base_view: Option<SharedView<T::Address>>,
     changed_view_recently: bool,
     upcalls: U,
-    record: VersionedRecord<U::IO, U::CO, U::CR>,
+    record: U::RecordStore,
     outstanding_do_view_changes: BTreeMap<T::Address, DoViewChange<U::IO, U::CO, U::CR, T::Address>>,
     /// Last time received message from each peer replica.
     peer_liveness: BTreeMap<T::Address, Instant>,
@@ -184,7 +187,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                     view,
                     changed_view_recently: true,
                     upcalls,
-                    record: VersionedRecord::default(),
+                    record: U::RecordStore::default(),
                     record_base_view: None,
                     outstanding_do_view_changes: BTreeMap::new(),
                     peer_liveness: BTreeMap::new(),
@@ -745,7 +748,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                                 }
 
                                 // Store R as new base with empty overlay.
-                                sync.record = VersionedRecord::install(R, msg_view_number.0);
+                                sync.record = U::RecordStore::install(R, msg_view_number.0);
                                 (old_base_view, delta_entries)
                             };
                             sync.record_base_view = Some(sync.view.clone());
@@ -893,7 +896,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                         let old_record = sync.record.full_record();
                         sync.upcalls.sync(&old_record, &new_record);
                     }
-                    sync.record = VersionedRecord::install(new_record, view.number.0);
+                    sync.record = U::RecordStore::install(new_record, view.number.0);
                     sync.record_base_view = Some(view.clone());
                     sync.status = Status::Normal;
                     self.inner.view_change_count.fetch_add(1, Ordering::Relaxed);
