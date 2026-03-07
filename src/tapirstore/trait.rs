@@ -1,3 +1,4 @@
+use crate::ir::OpId;
 use crate::mvcc::disk::error::StorageError;
 use crate::occ::{PrepareConflict, PrepareResult, SharedTransaction, Transaction, TransactionId};
 use crate::tapir::{Key, LeaderRecordDelta, ShardNumber, Timestamp, Value};
@@ -138,6 +139,7 @@ pub trait TapirStore<K: Key, V: Value>: Send + 'static {
 
     fn try_prepare_txn(
         &mut self,
+        op_id: OpId,
         id: TransactionId,
         txn: SharedTransaction<K, V, Timestamp>,
         commit: Timestamp,
@@ -156,6 +158,7 @@ pub trait TapirStore<K: Key, V: Value>: Send + 'static {
     /// or committed at a different timestamp.
     fn commit_txn(
         &mut self,
+        op_id: OpId,
         id: TransactionId,
         txn: &Transaction<K, V, Timestamp>,
         commit: Timestamp,
@@ -181,6 +184,7 @@ pub trait TapirStore<K: Key, V: Value>: Send + 'static {
     /// mutates the caches differently each time.
     fn add_or_replace_or_finalize_prepared_txn(
         &mut self,
+        op_id: OpId,
         id: TransactionId,
         txn: SharedTransaction<K, V, Timestamp>,
         commit: Timestamp,

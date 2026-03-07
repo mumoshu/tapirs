@@ -1,3 +1,4 @@
+use crate::ir::OpId;
 use crate::mvcc::disk::disk_io::DiskIo;
 use crate::mvcc::disk::error::StorageError;
 use crate::occ::{
@@ -126,6 +127,7 @@ impl<
 
     fn try_prepare_txn(
         &mut self,
+        _op_id: OpId,
         id: TransactionId,
         txn: SharedTransaction<K, V, Timestamp>,
         commit: Timestamp,
@@ -138,6 +140,7 @@ impl<
 
     fn commit_txn(
         &mut self,
+        _op_id: OpId,
         id: TransactionId,
         txn: &OccTransaction<K, V, Timestamp>,
         commit: Timestamp,
@@ -180,6 +183,7 @@ impl<
 
     fn add_or_replace_or_finalize_prepared_txn(
         &mut self,
+        _op_id: OpId,
         id: TransactionId,
         txn: SharedTransaction<K, V, Timestamp>,
         commit: Timestamp,

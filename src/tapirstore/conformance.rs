@@ -4,10 +4,13 @@
 //! Each implementation invokes the `tapir_store_conformance_tests!` macro
 //! to generate `#[test]` wrappers from a factory function.
 
+use crate::ir::OpId;
 use crate::occ::{PrepareResult, ScanEntry, SharedTransaction, Transaction, TransactionId};
 use crate::tapir::{LeaderRecordDelta, ShardNumber, Sharded, Timestamp};
 use crate::tapirstore::{CheckPrepareStatus, TapirStore};
 use crate::IrClientId;
+
+const DUMMY_OP_ID: OpId = OpId { client_id: IrClientId(0), number: 0 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -66,13 +69,13 @@ pub(crate) fn seed_value(
     let num = SEED_COUNTER.fetch_add(1, Ordering::Relaxed);
     let id = txn_id(SEED_CLIENT_ID, num);
     let txn = make_txn(vec![], vec![(key, Some(value))], vec![]);
-    let result = store.try_prepare_txn(id, txn.clone(), at);
+    let result = store.try_prepare_txn(DUMMY_OP_ID,id, txn.clone(), at);
     assert_eq!(
         result,
         PrepareResult::Ok,
         "seed_value prepare failed for {key}"
     );
-    store.commit_txn(id, &txn, at);
+    store.commit_txn(DUMMY_OP_ID,id, &txn, at);
 }
 
 // ---------------------------------------------------------------------------
@@ -176,7 +179,7 @@ pub(crate) fn test_prepare_abort_removes_from_prepared(
     seed_value(store, "x", "v1", ts(1, 1));
 
     let txn = make_txn(vec![], vec![("x", Some("v2"))], vec![]);
-    let result = store.try_prepare_txn(txn_id(1, 1), txn, ts(5, 1));
+    let result = store.try_prepare_txn(DUMMY_OP_ID,txn_id(1, 1), txn, ts(5, 1));
     assert_eq!(result, PrepareResult::Ok);
     assert_eq!(store.prepared_count(), 1);
 
@@ -196,7 +199,7 @@ pub(crate) fn test_abort_does_not_affect_txn_log(
     store: &mut impl TapirStore<String, String>,
 ) {
     let txn = make_txn(vec![], vec![("x", Some("v2"))], vec![]);
-    store.try_prepare_txn(txn_id(1, 1), txn, ts(5, 1));
+    store.try_prepare_txn(DUMMY_OP_ID,txn_id(1, 1), txn, ts(5, 1));
 
     // Record abort in txn_log.
     store.txn_log_insert(txn_id(1, 1), Timestamp::default(), false);
@@ -218,11 +221,11 @@ pub(crate) fn test_prepare_commit_read(
 
     // Prepare a write transaction.
     let txn = make_txn(vec![("x", ts(1, 1))], vec![("x", Some("v2"))], vec![]);
-    let result = store.try_prepare_txn(txn_id(1, 1), txn.clone(), ts(5, 1));
+    let result = store.try_prepare_txn(DUMMY_OP_ID,txn_id(1, 1), txn.clone(), ts(5, 1));
     assert_eq!(result, PrepareResult::Ok);
 
     // Commit via trait method.
-    store.commit_txn(txn_id(1, 1), &txn, ts(5, 1));
+    store.commit_txn(DUMMY_OP_ID,txn_id(1, 1), &txn, ts(5, 1));
 
     // MVCC read should return committed value.
     let (val, write_ts) = store.do_uncommitted_get_at(&"x".to_string(), ts(10, 1)).unwrap();
@@ -236,10 +239,10 @@ pub(crate) fn test_commit_txn_writes_both(
     seed_value(store, "x", "v1", ts(1, 1));
 
     let txn = make_txn(vec![("x", ts(1, 1))], vec![("x", Some("v2"))], vec![]);
-    store.try_prepare_txn(txn_id(1, 1), txn.clone(), ts(5, 1));
+    store.try_prepare_txn(DUMMY_OP_ID,txn_id(1, 1), txn.clone(), ts(5, 1));
 
     // commit_txn should record in txn_log and apply writes.
-    store.commit_txn(txn_id(1, 1), &txn, ts(5, 1));
+    store.commit_txn(DUMMY_OP_ID,txn_id(1, 1), &txn, ts(5, 1));
 
     // txn_log should have the entry.
     let (log_ts, committed) = store.txn_log_get(&txn_id(1, 1)).unwrap();
@@ -252,7 +255,7 @@ pub(crate) fn test_commit_txn_writes_both(
     assert_eq!(write_ts, ts(5, 1));
 
     // Idempotent: calling again should not panic.
-    store.commit_txn(txn_id(1, 1), &txn, ts(5, 1));
+    store.commit_txn(DUMMY_OP_ID,txn_id(1, 1), &txn, ts(5, 1));
 }
 
 // ---------------------------------------------------------------------------
@@ -261,7 +264,7 @@ pub(crate) fn test_commit_txn_writes_both(
 
 pub(crate) fn test_prepared_get(store: &mut impl TapirStore<String, String>) {
     let txn = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
-    store.try_prepare_txn(txn_id(1, 1), txn, ts(5, 1));
+    store.try_prepare_txn(DUMMY_OP_ID,txn_id(1, 1), txn, ts(5, 1));
 
     // prepared_get returns the entry.
     let entry = store.get_prepared_txn(&txn_id(1, 1));
@@ -278,7 +281,7 @@ pub(crate) fn test_finalize_prepared_txn(
     store: &mut impl TapirStore<String, String>,
 ) {
     let txn = make_txn(vec![], vec![("x", Some("v1"))], vec![]);
-    store.try_prepare_txn(txn_id(1, 1), txn, ts(5, 1));
+    store.try_prepare_txn(DUMMY_OP_ID,txn_id(1, 1), txn, ts(5, 1));
 
     // Mark as finalized.
     assert!(store.finalize_prepared_txn(&txn_id(1, 1), &ts(5, 1)));
@@ -298,8 +301,8 @@ pub(crate) fn test_oldest_prepared_returns_min_timestamp(
 
     let txn1 = make_txn(vec![], vec![("a", Some("v1"))], vec![]);
     let txn2 = make_txn(vec![], vec![("b", Some("v2"))], vec![]);
-    store.try_prepare_txn(txn_id(1, 1), txn1, ts(20, 1));
-    store.try_prepare_txn(txn_id(2, 1), txn2, ts(10, 1));
+    store.try_prepare_txn(DUMMY_OP_ID,txn_id(1, 1), txn1, ts(20, 1));
+    store.try_prepare_txn(DUMMY_OP_ID,txn_id(2, 1), txn2, ts(10, 1));
 
     let (id, commit_ts, _txn) = store.get_oldest_prepared_txn().unwrap();
     assert_eq!(id, txn_id(2, 1));
@@ -311,8 +314,8 @@ pub(crate) fn test_remove_unfinalized_prepared(
 ) {
     let txn1 = make_txn(vec![], vec![("a", Some("v1"))], vec![]);
     let txn2 = make_txn(vec![], vec![("b", Some("v2"))], vec![]);
-    store.try_prepare_txn(txn_id(1, 1), txn1, ts(5, 1));
-    store.try_prepare_txn(txn_id(2, 1), txn2, ts(10, 1));
+    store.try_prepare_txn(DUMMY_OP_ID,txn_id(1, 1), txn1, ts(5, 1));
+    store.try_prepare_txn(DUMMY_OP_ID,txn_id(2, 1), txn2, ts(10, 1));
 
     // Finalize only txn 1.
     store.finalize_prepared_txn(&txn_id(1, 1), &ts(5, 1));
@@ -345,7 +348,7 @@ pub(crate) fn test_check_prepare_status_prepared(
 ) {
     let commit = ts(5, 1);
     let txn = make_txn(vec![], vec![("a", Some("v1"))], vec![]);
-    store.try_prepare_txn(txn_id(1, 1), txn, commit);
+    store.try_prepare_txn(DUMMY_OP_ID,txn_id(1, 1), txn, commit);
 
     // Not finalized yet.
     assert_eq!(
@@ -366,8 +369,8 @@ pub(crate) fn test_check_prepare_status_committed(
 ) {
     let commit = ts(5, 1);
     let txn = make_txn(vec![], vec![("a", Some("v1"))], vec![]);
-    store.try_prepare_txn(txn_id(1, 1), txn.clone(), commit);
-    store.commit_txn(txn_id(1, 1), &txn, commit);
+    store.try_prepare_txn(DUMMY_OP_ID,txn_id(1, 1), txn.clone(), commit);
+    store.commit_txn(DUMMY_OP_ID,txn_id(1, 1), &txn, commit);
 
     // Same timestamp → CommittedAtTimestamp.
     assert_eq!(
@@ -416,7 +419,7 @@ pub(crate) fn test_check_prepare_status_too_late_via_prepared(
 ) {
     // Prepare at ts(3,1).
     let txn = make_txn(vec![], vec![("b", Some("v2"))], vec![]);
-    store.try_prepare_txn(txn_id(4, 1), txn, ts(3, 1));
+    store.try_prepare_txn(DUMMY_OP_ID,txn_id(4, 1), txn, ts(3, 1));
 
     // Raise min_prepare_time above the prepared commit time.
     // finalize_min_prepare_time bypasses the min_prepared_ts cap.
@@ -443,8 +446,8 @@ pub(crate) fn test_quorum_read_returns_committed_value(
 
     // Prepare + commit a write via trait method.
     let txn = make_txn(vec![("x", ts(1, 1))], vec![("x", Some("v2"))], vec![]);
-    store.try_prepare_txn(txn_id(1, 1), txn.clone(), ts(5, 1));
-    store.commit_txn(txn_id(1, 1), &txn, ts(5, 1));
+    store.try_prepare_txn(DUMMY_OP_ID,txn_id(1, 1), txn.clone(), ts(5, 1));
+    store.commit_txn(DUMMY_OP_ID,txn_id(1, 1), &txn, ts(5, 1));
 
     // Quorum read should return v2 at snapshot_ts >= 5.
     let (val, write_ts) = store.do_committed_get("x".into(), ts(10, 1)).unwrap();
@@ -475,7 +478,7 @@ pub(crate) fn test_quorum_read_conflicts_with_prepared_write(
 
     // Prepare a write at ts(5,1).
     let txn = make_txn(vec![], vec![("x", Some("v2"))], vec![]);
-    store.try_prepare_txn(txn_id(1, 1), txn, ts(5, 1));
+    store.try_prepare_txn(DUMMY_OP_ID,txn_id(1, 1), txn, ts(5, 1));
 
     // Quorum read at snapshot_ts >= 5 should conflict.
     assert!(store.do_committed_get("x".into(), ts(10, 1)).is_err());
@@ -586,8 +589,8 @@ pub(crate) fn test_oldest_prepared_is_min_prepared_timestamp(
     // Prepare two transactions at different timestamps.
     let txn1 = make_txn(vec![], vec![("a", Some("v1"))], vec![]);
     let txn2 = make_txn(vec![], vec![("b", Some("v2"))], vec![]);
-    store.try_prepare_txn(txn_id(1, 1), txn1, ts(20, 1));
-    store.try_prepare_txn(txn_id(2, 1), txn2, ts(10, 1));
+    store.try_prepare_txn(DUMMY_OP_ID,txn_id(1, 1), txn1, ts(20, 1));
+    store.try_prepare_txn(DUMMY_OP_ID,txn_id(2, 1), txn2, ts(10, 1));
 
     let (_, oldest_ts, _) = store.get_oldest_prepared_txn().unwrap();
     assert_eq!(oldest_ts.time, 10);
@@ -604,7 +607,7 @@ pub(crate) fn test_raise_min_prepare_time_caps_at_min_prepared(
 
     // Prepare a transaction at time=50.
     let txn = make_txn(vec![], vec![("a", Some("v1"))], vec![]);
-    store.try_prepare_txn(txn_id(1, 1), txn, ts(50, 1));
+    store.try_prepare_txn(DUMMY_OP_ID,txn_id(1, 1), txn, ts(50, 1));
 
     // Raising to 200 should cap at min_prepared_ts=50: max(100, min(200, 50)) = 100.
     let result = store.raise_min_prepare_time(200);

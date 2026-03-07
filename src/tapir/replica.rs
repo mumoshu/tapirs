@@ -427,14 +427,14 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
         }
     }
 
-    fn exec_inconsistent(&mut self, _op_id: IrOpId, op: &Self::IO) -> Option<Self::IR> {
+    fn exec_inconsistent(&mut self, op_id: IrOpId, op: &Self::IO) -> Option<Self::IR> {
         match op {
             IO::Commit {
                 transaction_id,
                 transaction,
                 commit,
             } => {
-                self.store.commit_txn(*transaction_id, transaction, *commit);
+                self.store.commit_txn(op_id, *transaction_id, transaction, *commit);
                 self.counters.commit_count.fetch_add(1, Ordering::Relaxed);
                 None
             }
@@ -528,7 +528,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
         }
     }
 
-    fn exec_consensus(&mut self, _op_id: IrOpId, op: &Self::CO) -> Self::CR {
+    fn exec_consensus(&mut self, op_id: IrOpId, op: &Self::CO) -> Self::CR {
         match op {
             CO::Prepare {
                 transaction_id,
@@ -574,7 +574,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                         OccPrepareResult::TooLate
                     }
                     CheckPrepareStatus::Unknown => {
-                        self.store.try_prepare_txn(*transaction_id, transaction.clone(), *commit)
+                        self.store.try_prepare_txn(op_id, *transaction_id, transaction.clone(), *commit)
                     }
                 };
                 match &result {
@@ -647,6 +647,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                             // from the leader's record.
                             trace!("syncing successful {op_id:?} prepare for {transaction_id:?} at {commit:?} (had {:?})", self.store.get_prepared_txn(transaction_id));
                             self.store.add_or_replace_or_finalize_prepared_txn(
+                                *op_id,
                                 *transaction_id,
                                 transaction.clone(),
                                 *commit,

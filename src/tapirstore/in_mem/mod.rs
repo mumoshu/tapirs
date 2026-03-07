@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests;
 
+use crate::ir::OpId;
 use crate::mvcc::backend::MvccBackend;
 use crate::mvcc::disk::error::StorageError;
 use crate::occ::{PrepareConflict, PrepareResult, SharedTransaction, Store as OccStore, Transaction, TransactionId};
@@ -120,6 +121,7 @@ where
 
     fn try_prepare_txn(
         &mut self,
+        _op_id: OpId,
         id: TransactionId,
         txn: SharedTransaction<K, V, Timestamp>,
         commit: Timestamp,
@@ -129,6 +131,7 @@ where
 
     fn commit_txn(
         &mut self,
+        _op_id: OpId,
         id: TransactionId,
         txn: &Transaction<K, V, Timestamp>,
         commit: Timestamp,
@@ -147,6 +150,7 @@ where
 
     fn add_or_replace_or_finalize_prepared_txn(
         &mut self,
+        _op_id: OpId,
         id: TransactionId,
         txn: SharedTransaction<K, V, Timestamp>,
         commit: Timestamp,

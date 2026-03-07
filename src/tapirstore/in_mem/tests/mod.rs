@@ -1,8 +1,11 @@
+use crate::ir::OpId;
 use crate::mvcc::disk::{DiskStore, disk_io::BufferedIo};
 use crate::occ::{ScanEntry, SharedTransaction, Transaction, TransactionId};
 use crate::tapir::{ShardNumber, Sharded, Timestamp};
 use crate::tapirstore::InMemTapirStore;
 use crate::IrClientId;
+
+const DUMMY_OP_ID: OpId = OpId { client_id: IrClientId(0), number: 0 };
 use std::sync::Arc;
 use tempfile::TempDir;
 
@@ -100,7 +103,7 @@ fn commit_records_in_txn_log() {
         vec![("x", Some("v2"))],
         vec![],
     );
-    store.try_prepare_txn(txn_id(1, 1), txn.clone(), ts(5, 1));
+    store.try_prepare_txn(DUMMY_OP_ID, txn_id(1, 1), txn.clone(), ts(5, 1));
 
     // Before commit, txn_log should be empty.
     assert!(store.txn_log_get(&txn_id(1, 1)).is_none());
