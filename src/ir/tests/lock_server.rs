@@ -102,14 +102,14 @@ async fn lock_server(num_replicas: usize) {
             unreachable!();
         }
 
-        fn exec_inconsistent(&mut self, _op_id: IrOpId, op: &Self::IO) -> Option<Self::IR> {
+        fn exec_inconsistent(&mut self, _op_id: &IrOpId, op: &Self::IO) -> Option<Self::IR> {
             if Some(op.0) == self.locked {
                 self.locked = None;
             }
             None
         }
 
-        fn exec_consensus(&mut self, _op_id: IrOpId, op: &Self::CO) -> Self::CR {
+        fn exec_consensus(&mut self, _op_id: &IrOpId, op: &Self::CO) -> Self::CR {
             if self.locked.is_none() || self.locked == Some(op.0) {
                 self.locked = Some(op.0);
                 LockResult::Ok
@@ -164,7 +164,7 @@ async fn lock_server(num_replicas: usize) {
             }
 
             for (op_id, op, _) in &u {
-                results.insert(*op_id, self.exec_consensus(*op_id, op));
+                results.insert(*op_id, self.exec_consensus(op_id, op));
             }
 
             results
