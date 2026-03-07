@@ -427,7 +427,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
         }
     }
 
-    fn exec_inconsistent(&mut self, op: &Self::IO) -> Option<Self::IR> {
+    fn exec_inconsistent(&mut self, _op_id: IrOpId, op: &Self::IO) -> Option<Self::IR> {
         match op {
             IO::Commit {
                 transaction_id,
@@ -528,7 +528,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
         }
     }
 
-    fn exec_consensus(&mut self, op: &Self::CO) -> Self::CR {
+    fn exec_consensus(&mut self, _op_id: IrOpId, op: &Self::CO) -> Self::CR {
         match op {
             CO::Prepare {
                 transaction_id,
@@ -594,7 +594,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
         }
     }
 
-    fn finalize_consensus(&mut self, op: &Self::CO, res: &Self::CR) {
+    fn finalize_consensus(&mut self, _op_id: IrOpId, op: &Self::CO, res: &Self::CR) {
         match op {
             CO::Prepare {
                 transaction_id,
@@ -688,7 +688,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
 
             trace!("syncing inconsistent {op_id:?} {:?}", entry.op);
 
-            self.exec_inconsistent(&entry.op);
+            self.exec_inconsistent(*op_id, &entry.op);
         }
         self.gc_stale_state();
     }
@@ -714,7 +714,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                 } => {
                     let result = if matches!(reply, CR::Prepare(OccPrepareResult::Ok)) {
                         // Possibly successful fast quorum.
-                        self.exec_consensus(request)
+                        self.exec_consensus(*op_id, request)
                     } else {
                         reply.clone()
                     };
@@ -725,7 +725,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                         trace!("merge changed {op_id:?} {transaction_id:?} at {commit:?} from {reply:?} to {result:?}");
                     }
 
-                    self.finalize_consensus(request, &result);
+                    self.finalize_consensus(*op_id, request, &result);
                     result
                 }
                 CO::RaiseMinPrepareTime { time } => {
@@ -738,7 +738,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
 
                     if received >= *time {
                         // Possibly successful fast quorum.
-                        let mut result = self.exec_consensus(request);
+                        let mut result = self.exec_consensus(*op_id, request);
                         if let CR::RaiseMinPrepareTime { time: new_time } = &mut result {
                             // Don't grant time in excess of the requested time,
                             // which should preserve semantics better if reordered.
@@ -757,7 +757,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
         // Leader is consistent with a quorum so can decide consensus
         // results.
         for (op_id, request, _) in &u {
-            let result = self.exec_consensus(request);
+            let result = self.exec_consensus(*op_id, request);
             trace!("merge choosing {result:?} for {op_id:?}");
             ret.insert(*op_id, result);
         }
@@ -907,6 +907,10 @@ mod tests {
         Replica::new_with_backend(shard, linearizable, backend)
     }
 
+    fn dummy_op_id() -> IrOpId {
+        IrOpId { client_id: IrClientId(0), number: 0 }
+    }
+
     #[test]
     fn abort_none_does_not_overwrite_committed() {
         let mut replica = new_replica(ShardNumber(0), false);
@@ -915,7 +919,7 @@ mod tests {
         let txn = empty_txn();
 
         // Commit the transaction.
-        replica.exec_inconsistent(&IO::Commit {
+        replica.exec_inconsistent(dummy_op_id(), &IO::Commit {
             transaction_id: txn_id,
             transaction: txn,
             commit: ts,
@@ -923,7 +927,7 @@ mod tests {
         assert_eq!(replica.store.txn_log_get(&txn_id), Some((ts, true)));
 
         // Abort with commit: None should NOT overwrite the committed entry.
-        replica.exec_inconsistent(&IO::Abort {
+        replica.exec_inconsistent(dummy_op_id(), &IO::Abort {
             transaction_id: txn_id,
             commit: None,
         });
@@ -943,7 +947,7 @@ mod tests {
         let txn = empty_txn();
 
         // Prepare at ts1.
-        let result = replica.exec_consensus(&CO::Prepare {
+        let result = replica.exec_consensus(dummy_op_id(), &CO::Prepare {
             transaction_id: txn_id,
             transaction: txn,
             commit: ts1,
@@ -955,7 +959,7 @@ mod tests {
         assert!(replica.store.get_prepared_txn(&txn_id).is_some());
 
         // Abort at ts2 (different timestamp) should NOT remove the prepare at ts1.
-        replica.exec_inconsistent(&IO::Abort {
+        replica.exec_inconsistent(dummy_op_id(), &IO::Abort {
             transaction_id: txn_id,
             commit: Some(ts2),
         });
@@ -973,7 +977,7 @@ mod tests {
         let txn = empty_txn();
 
         // Prepare at ts1.
-        let result = replica.exec_consensus(&CO::Prepare {
+        let result = replica.exec_consensus(dummy_op_id(), &CO::Prepare {
             transaction_id: txn_id,
             transaction: txn,
             commit: ts1,
@@ -985,7 +989,7 @@ mod tests {
         assert!(replica.store.get_prepared_txn(&txn_id).is_some());
 
         // Abort at ts1 (matching timestamp) should remove the prepare.
-        replica.exec_inconsistent(&IO::Abort {
+        replica.exec_inconsistent(dummy_op_id(), &IO::Abort {
             transaction_id: txn_id,
             commit: Some(ts1),
         });
@@ -1003,7 +1007,7 @@ mod tests {
         let txn = empty_txn();
 
         // Prepare at time=5.
-        let result = replica.exec_consensus(&CO::Prepare {
+        let result = replica.exec_consensus(dummy_op_id(), &CO::Prepare {
             transaction_id: txn_id,
             transaction: txn,
             commit: ts,

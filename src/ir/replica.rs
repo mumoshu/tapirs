@@ -51,13 +51,13 @@ pub trait Upcalls: Sized + Send + 'static {
     type RecordStore: IrRecordStore<Self::IO, Self::CO, Self::CR>;
 
     fn exec_unlogged(&self, op: Self::UO) -> Self::UR;
-    fn exec_inconsistent(&mut self, op: &Self::IO) -> Option<Self::IR>;
-    fn exec_consensus(&mut self, op: &Self::CO) -> Self::CR;
+    fn exec_inconsistent(&mut self, op_id: OpId, op: &Self::IO) -> Option<Self::IR>;
+    fn exec_consensus(&mut self, op_id: OpId, op: &Self::CO) -> Self::CR;
     /// Extension to TAPIR: Called when an entry becomes finalized. This
     /// addresses a potential issue with `merge` rolling back finalized
     /// operations. The application assumes responsibility for calling
     /// this during `sync` and, if necessary, `merge`.
-    fn finalize_consensus(&mut self, op: &Self::CO, res: &Self::CR) {
+    fn finalize_consensus(&mut self, _op_id: OpId, op: &Self::CO, res: &Self::CR) {
         // No-op.
         let _ = (op, res);
     }
@@ -401,7 +401,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                         }
                         VersionedEntry::Vacant(vacant) => {
                             let entry = vacant.insert(RecordConsensusEntry {
-                                result: sync.upcalls.exec_consensus(&op),
+                                result: sync.upcalls.exec_consensus(op_id, &op),
                                 op,
                                 state: RecordEntryState::Tentative,
                                 modified_view: sync.view.number.0,
@@ -430,7 +430,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                     // view-change merge). Re-execution is safe: QuorumRead's
                     // commit_get is idempotent, and Commit/Abort return None
                     // (no reply sent either way).
-                    let result = sync.upcalls.exec_inconsistent(&entry.op);
+                    let result = sync.upcalls.exec_inconsistent(op_id, &entry.op);
                     if let Some(result) = result {
                         return Some(Message::<U, T>::FinalizeInconsistentReply(FinalizeInconsistentReply {
                             op_id,
@@ -449,7 +449,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                             entry.state = RecordEntryState::Finalized(sync.view.number);
                             entry.result = result;
                             entry.modified_view = sync.view.number.0;
-                            sync.upcalls.finalize_consensus(&entry.op, &entry.result);
+                            sync.upcalls.finalize_consensus(op_id, &entry.op, &entry.result);
                         } else if cfg!(debug_assertions) && entry.result != result {
                             // For diagnostic purposes.
                             warn!("tried to finalize consensus with {result:?} when {:?} was already finalized", entry.result);
@@ -631,12 +631,12 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                                             RecordEntryState::Finalized(_) => {
                                                 match R.consensus.entry(op_id) {
                                                     Entry::Vacant(vacant) => {
-                                                        sync.upcalls.finalize_consensus(&entry.op, &entry.result);
+                                                        sync.upcalls.finalize_consensus(op_id, &entry.op, &entry.result);
                                                         vacant.insert(entry);
                                                     }
                                                     Entry::Occupied(mut occupied) => {
                                                         if occupied.get().state.is_tentative() {
-                                                            sync.upcalls.finalize_consensus(&entry.op, &entry.result);
+                                                            sync.upcalls.finalize_consensus(op_id, &entry.op, &entry.result);
                                                             occupied.insert(entry);
                                                         } else {
                                                             debug_assert_eq!(occupied.get().result, entry.result);
@@ -708,7 +708,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                                 for (op_id, result) in results_by_opid {
                                     let entries = entries_by_opid.get(&op_id).unwrap();
                                     let entry = &entries[0];
-                                    sync.upcalls.finalize_consensus(&entry.op, &result);
+                                    sync.upcalls.finalize_consensus(op_id, &entry.op, &result);
                                     R.consensus.insert(
                                         op_id,
                                         RecordConsensusEntry {
