@@ -273,7 +273,6 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
     type IR = IR<K, V>;
     type CO = CO<K, V>;
     type CR = CR;
-    type RecordStore = crate::IrVersionedRecord<Self::IO, Self::CO, Self::CR>;
 
     fn exec_unlogged(&self, op: Self::UO) -> Self::UR {
         match op {

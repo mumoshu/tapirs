@@ -47,9 +47,6 @@ pub trait Upcalls: Sized + Send + 'static {
     /// Consensus result.
     type CR: TransportMessage + Eq + Ord + Hash;
 
-    /// The record store backend used by the IR replica.
-    type RecordStore: IrRecordStore<Self::IO, Self::CO, Self::CR>;
-
     fn exec_unlogged(&self, op: Self::UO) -> Self::UR;
     fn exec_inconsistent(&mut self, op_id: &OpId, op: &Self::IO) -> Option<Self::IR>;
     fn exec_consensus(&mut self, op_id: &OpId, op: &Self::CO) -> Self::CR;
