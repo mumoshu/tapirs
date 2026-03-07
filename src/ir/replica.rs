@@ -5,7 +5,7 @@ use super::{
     FinalizeConsensus, FinalizeInconsistent, Membership, Message, OpId, ProposeConsensus,
     ProposeInconsistent, Record, RecordConsensusEntry, RecordEntryState, RecordInconsistentEntry,
     RemoveMember, ReplyConsensus, ReplyInconsistent, ReplyUnlogged, RequestUnlogged, StartView,
-    IrRecordStore, VersionedEntry, View, ViewNumber,
+    IrRecordStore, VersionedEntry, VersionedRecord, View, ViewNumber,
 };
 use crate::{Transport, TransportMessage};
 use std::{
@@ -94,11 +94,11 @@ pub trait Upcalls: Sized + Send + 'static {
     }
 }
 
-pub struct Replica<U: Upcalls, T: Transport<U>> {
-    inner: Arc<Inner<U, T>>,
+pub struct Replica<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR> = VersionedRecord<<U as Upcalls>::IO, <U as Upcalls>::CO, <U as Upcalls>::CR>> {
+    inner: Arc<Inner<U, T, R>>,
 }
 
-impl<U: Upcalls, T: Transport<U>> Debug for Replica<U, T> {
+impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR>> Debug for Replica<U, T, R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = f.debug_struct("Replica");
         if let Ok(sync) = self.inner.sync.try_lock() {
@@ -112,7 +112,7 @@ impl<U: Upcalls, T: Transport<U>> Debug for Replica<U, T> {
     }
 }
 
-struct Inner<U: Upcalls, T: Transport<U>> {
+struct Inner<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR>> {
     transport: T,
     app_tick: Option<fn(&U, &T, &Membership<T::Address>, &mut crate::Rng)>,
     view_change_interval: Duration,
@@ -128,10 +128,10 @@ struct Inner<U: Upcalls, T: Transport<U>> {
     // other — Gets are fast (BTreeMap lookup) and with thread-per-core the Mutex
     // is uncontended. Deemed unnecessary complexity; reconsider only if profiling
     // shows contention.
-    sync: Mutex<SyncInner<U, T>>,
+    sync: Mutex<SyncInner<U, T, R>>,
 }
 
-struct SyncInner<U: Upcalls, T: Transport<U>> {
+struct SyncInner<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR>> {
     status: Status,
     view: SharedView<T::Address>,
     latest_normal_view: SharedView<T::Address>,
@@ -139,7 +139,7 @@ struct SyncInner<U: Upcalls, T: Transport<U>> {
     record_base_view: Option<SharedView<T::Address>>,
     changed_view_recently: bool,
     upcalls: U,
-    record: U::RecordStore,
+    record: R,
     outstanding_do_view_changes: BTreeMap<T::Address, DoViewChange<U::IO, U::CO, U::CR, T::Address>>,
     /// Last time received message from each peer replica.
     peer_liveness: BTreeMap<T::Address, Instant>,
@@ -147,7 +147,7 @@ struct SyncInner<U: Upcalls, T: Transport<U>> {
     peer_normal_views: BTreeMap<T::Address, ViewNumber>,
 }
 
-impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
+impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR>> Replica<U, T, R> {
     const VIEW_CHANGE_INTERVAL: Duration = Duration::from_secs(2);
 
     pub fn new(
@@ -187,7 +187,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                     view,
                     changed_view_recently: true,
                     upcalls,
-                    record: U::RecordStore::default(),
+                    record: R::default(),
                     record_base_view: None,
                     outstanding_do_view_changes: BTreeMap::new(),
                     peer_liveness: BTreeMap::new(),
@@ -287,7 +287,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
         });
     }
 
-    fn broadcast_do_view_change(transport: &T, sync: &mut SyncInner<U, T>) {
+    fn broadcast_do_view_change(transport: &T, sync: &mut SyncInner<U, T, R>) {
         sync.changed_view_recently = true;
         let destinations = sync
             .view
@@ -748,7 +748,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                                 }
 
                                 // Store R as new base with empty overlay.
-                                sync.record = U::RecordStore::install(R, msg_view_number.0);
+                                sync.record = R::install(R, msg_view_number.0);
                                 (old_base_view, delta_entries)
                             };
                             sync.record_base_view = Some(sync.view.clone());
@@ -896,7 +896,7 @@ impl<U: Upcalls, T: Transport<U>> Replica<U, T> {
                         let old_record = sync.record.full_record();
                         sync.upcalls.sync(&old_record, &new_record);
                     }
-                    sync.record = U::RecordStore::install(new_record, view.number.0);
+                    sync.record = R::install(new_record, view.number.0);
                     sync.record_base_view = Some(view.clone());
                     sync.status = Status::Normal;
                     self.inner.view_change_count.fetch_add(1, Ordering::Relaxed);
