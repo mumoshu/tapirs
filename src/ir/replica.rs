@@ -5,7 +5,7 @@ use super::{
     FinalizeConsensus, FinalizeInconsistent, Membership, Message, OpId, ProposeConsensus,
     ProposeInconsistent, Record, RecordConsensusEntry, RecordEntryState, RecordInconsistentEntry,
     RemoveMember, ReplyConsensus, ReplyInconsistent, ReplyUnlogged, RequestUnlogged, StartView,
-    IrRecordStore, VersionedEntry, VersionedRecord, View, ViewNumber,
+    IrRecordStore, VersionedEntry, View, ViewNumber,
 };
 use crate::{Transport, TransportMessage};
 use std::{
@@ -91,7 +91,7 @@ pub trait Upcalls: Sized + Send + 'static {
     }
 }
 
-pub struct Replica<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR> = VersionedRecord<<U as Upcalls>::IO, <U as Upcalls>::CO, <U as Upcalls>::CR>> {
+pub struct Replica<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR>> {
     inner: Arc<Inner<U, T, R>>,
 }
 

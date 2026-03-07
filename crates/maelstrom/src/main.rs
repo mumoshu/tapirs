@@ -16,8 +16,8 @@ use std::sync::atomic::Ordering::SeqCst;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tapirs::{
-    IrMembership, IrMessage, IrReplica, MvccDiskStore, TapirClient, TapirReplica,
-    TapirTransport, Transport,
+    IrMembership, IrMessage, IrReplica, IrVersionedRecord, MvccDiskStore, TapirCO, TapirCR,
+    TapirClient, TapirIO, TapirReplica, TapirTransport, Transport,
 };
 use tokio::spawn;
 use tracing::{info, trace, warn};
@@ -25,6 +25,7 @@ use tracing::{info, trace, warn};
 type K = String;
 type V = String;
 type Message = IrMessage<TapirReplica<K, V>, Maelstrom>;
+type MaelstromIrReplica = IrReplica<TapirReplica<K, V>, Maelstrom, IrVersionedRecord<TapirIO<K, V>, TapirCO<K, V>, TapirCR>>;
 
 #[derive(Default)]
 struct KvNode {
@@ -33,7 +34,7 @@ struct KvNode {
 
 #[derive(Clone)]
 enum KvNodeInner {
-    Replica(Arc<IrReplica<TapirReplica<K, V>, Maelstrom>>),
+    Replica(Arc<MaelstromIrReplica>),
     App {
         client: Arc<TapirClient<K, V, Maelstrom>>,
         ro_clock_skew_uncertainty_bound: Duration,

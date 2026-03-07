@@ -39,7 +39,7 @@ async fn test_join_with_preload() {
     let new_address = registry.len();
     let new_replica = Arc::new_cyclic(
         |weak: &std::sync::Weak<
-            IrReplica<TapirReplica<K, V>, ChannelTransport<TapirReplica<K, V>>>,
+            IrReplica<TapirReplica<K, V>, ChannelTransport<TapirReplica<K, V>>, TapirIrRecord>,
         >| {
             let weak = weak.clone();
             let channel =

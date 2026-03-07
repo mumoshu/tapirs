@@ -56,6 +56,7 @@ pub use tapir::{
     RoutingClient, RoutingReadOnlyTransaction, RoutingTimeTravelTransaction, RoutingTransaction,
     ScanChangesResult, Sharded, ShardNumber, Timestamp as TapirTimestamp, TimeTravelTransaction,
     TransactionError,
+    CO as TapirCO, CR as TapirCR, IO as TapirIO,
 };
 pub use nodecluster::{CloneError, SoloClusterManager};
 pub use tapir::dns_shard_client::DnsRefreshingShardClient;

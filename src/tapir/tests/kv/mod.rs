@@ -27,8 +27,9 @@ use crate::{
     tapir::Timestamp,
     testing::{self, cluster},
     transport::{FaultyChannelTransport, LatencyConfig, NetworkFaultConfig},
-    ChannelRegistry, ChannelTransport, IrMembership, IrReplica, RoutingClient, ShardNumber,
-    TapirClient, TapirReplica, TapirTimestamp, TransactionError, Transport as _,
+    ChannelRegistry, ChannelTransport, IrMembership, IrReplica, IrVersionedRecord,
+    RoutingClient, ShardNumber, TapirClient, TapirReplica, TapirTimestamp, TransactionError,
+    Transport as _,
 };
 use futures::future::join_all;
 use rand::{rngs::StdRng, seq::SliceRandom, Rng, SeedableRng};
@@ -46,6 +47,7 @@ type K = i64;
 type V = i64;
 type Transport = ChannelTransport<TapirReplica<K, V>>;
 type FaultyTransport = FaultyChannelTransport<TapirReplica<K, V>>;
+type TapirIrRecord = IrVersionedRecord<crate::tapir::IO<K, V>, crate::tapir::CO<K, V>, crate::tapir::CR>;
 
 use testing::test_rng;
 
@@ -60,7 +62,7 @@ fn build_shard(
     num_replicas: usize,
     registry: &ChannelRegistry<TapirReplica<K, V>>,
     directory: &Arc<InMemoryShardDirectory<usize>>,
-) -> Vec<Arc<IrReplica<TapirReplica<K, V>, ChannelTransport<TapirReplica<K, V>>>>> {
+) -> Vec<Arc<IrReplica<TapirReplica<K, V>, ChannelTransport<TapirReplica<K, V>>, TapirIrRecord>>> {
     cluster::build_shard(rng, shard, linearizable, num_replicas, registry, directory)
 }
 
@@ -78,7 +80,7 @@ fn build_kv(
     num_replicas: usize,
     num_clients: usize,
 ) -> (
-    Vec<Arc<IrReplica<TapirReplica<K, V>, ChannelTransport<TapirReplica<K, V>>>>>,
+    Vec<Arc<IrReplica<TapirReplica<K, V>, ChannelTransport<TapirReplica<K, V>>, TapirIrRecord>>>,
     Vec<Arc<TapirClient<K, V, ChannelTransport<TapirReplica<K, V>>>>>,
 ) {
     let (mut shards, clients) = build_sharded_kv(linearizable, 1, num_replicas, num_clients);
@@ -91,7 +93,7 @@ fn build_sharded_kv(
     num_replicas: usize,
     num_clients: usize,
 ) -> (
-    Vec<Vec<Arc<IrReplica<TapirReplica<K, V>, ChannelTransport<TapirReplica<K, V>>>>>>,
+    Vec<Vec<Arc<IrReplica<TapirReplica<K, V>, ChannelTransport<TapirReplica<K, V>>, TapirIrRecord>>>>,
     Vec<Arc<TapirClient<K, V, ChannelTransport<TapirReplica<K, V>>>>>,
 ) {
     init_tracing();

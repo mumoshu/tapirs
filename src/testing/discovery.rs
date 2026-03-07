@@ -1,6 +1,8 @@
 use crate::{
     discovery::{tapir::TapirRemoteShardDirectory, InMemoryShardDirectory},
-    ChannelRegistry, ChannelTransport, IrMembership, IrReplica, ShardNumber, TapirReplica,
+    tapir::{IO, CO, CR},
+    ChannelRegistry, ChannelTransport, IrMembership, IrReplica, IrVersionedRecord, ShardNumber,
+    TapirReplica,
 };
 use std::sync::Arc;
 
@@ -13,6 +15,7 @@ pub struct TestDiscoveryCluster {
             IrReplica<
                 TapirReplica<String, String>,
                 ChannelTransport<TapirReplica<String, String>>,
+                IrVersionedRecord<IO<String, String>, CO<String, String>, CR>,
             >,
         >,
     >,

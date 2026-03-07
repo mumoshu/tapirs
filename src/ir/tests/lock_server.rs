@@ -1,7 +1,7 @@
 use crate::{
     discovery::InMemoryShardDirectory,
     ChannelRegistry, ChannelTransport, IrClient, IrClientId, IrMembership, IrMembershipSize,
-    IrOpId, IrRecord, IrReplica, IrReplicaUpcalls, Transport,
+    IrOpId, IrRecord, IrReplica, IrReplicaUpcalls, IrVersionedRecord, Transport,
 };
 use rand::{seq::IteratorRandom, Rng, SeedableRng};
 use rand::rngs::StdRng;
@@ -180,9 +180,9 @@ async fn lock_server(num_replicas: usize) {
         registry: &ChannelRegistry<Upcalls>,
         dir: &Arc<InMemoryShardDirectory<usize>>,
         membership: &IrMembership<usize>,
-    ) -> Arc<IrReplica<Upcalls, ChannelTransport<Upcalls>>> {
+    ) -> Arc<IrReplica<Upcalls, ChannelTransport<Upcalls>, IrVersionedRecord<Unlock, Lock, LockResult>>> {
         Arc::new_cyclic(
-            |weak: &std::sync::Weak<IrReplica<Upcalls, ChannelTransport<Upcalls>>>| {
+            |weak: &std::sync::Weak<IrReplica<Upcalls, ChannelTransport<Upcalls>, IrVersionedRecord<Unlock, Lock, LockResult>>>| {
                 let weak = weak.clone();
                 let channel =
                     registry.channel(move |from, message| weak.upgrade()?.receive(from, message), Arc::clone(dir));
@@ -221,7 +221,7 @@ async fn lock_server(num_replicas: usize) {
 
     fn add_replica(
         rng: &mut crate::Rng,
-        replicas: &mut Vec<Arc<IrReplica<Upcalls, ChannelTransport<Upcalls>>>>,
+        replicas: &mut Vec<Arc<IrReplica<Upcalls, ChannelTransport<Upcalls>, IrVersionedRecord<Unlock, Lock, LockResult>>>>,
         registry: &ChannelRegistry<Upcalls>,
         dir: &Arc<InMemoryShardDirectory<usize>>,
         membership: &IrMembership<usize>,

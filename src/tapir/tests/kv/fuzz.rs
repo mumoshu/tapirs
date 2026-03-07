@@ -12,7 +12,7 @@ fn build_shard_faulty(
     config: &NetworkFaultConfig,
     seed: u64,
     per_replica_locals: &[Arc<InMemoryShardDirectory<usize>>],
-) -> Vec<Arc<IrReplica<TapirReplica<K, V>, FaultyTransport>>> {
+) -> Vec<Arc<IrReplica<TapirReplica<K, V>, FaultyTransport, TapirIrRecord>>> {
     let initial_address = registry.len();
     let membership = IrMembership::new(
         (0..num_replicas)
@@ -34,7 +34,7 @@ fn build_shard_faulty(
             let dir = Arc::clone(&per_replica_locals[i]);
 
             Arc::new_cyclic(
-                |weak: &std::sync::Weak<IrReplica<TapirReplica<K, V>, FaultyTransport>>| {
+                |weak: &std::sync::Weak<IrReplica<TapirReplica<K, V>, FaultyTransport, TapirIrRecord>>| {
                     let weak = weak.clone();
                     let channel = registry
                         .channel(move |from, message| weak.upgrade()?.receive(from, message), dir);
@@ -85,7 +85,7 @@ fn build_sharded_kv_faulty(
     node_locals: &[Arc<InMemoryShardDirectory<usize>>],
     client_locals: &[Arc<InMemoryShardDirectory<usize>>],
 ) -> (
-    Vec<Vec<Arc<IrReplica<TapirReplica<K, V>, FaultyTransport>>>>,
+    Vec<Vec<Arc<IrReplica<TapirReplica<K, V>, FaultyTransport, TapirIrRecord>>>>,
     Vec<Arc<TapirClient<K, V, FaultyTransport>>>,
     Vec<FaultyTransport>,
     ChannelRegistry<TapirReplica<K, V>>,

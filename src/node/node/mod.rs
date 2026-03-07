@@ -7,13 +7,15 @@ mod shard_manager_http;
 use crate::discovery::backend::DiscoveryBackend;
 use crate::discovery::{CachingShardDirectory, InMemoryShardDirectory};
 use crate::{
-    IrReplica, IrReplicaMetrics, ShardNumber, TapirReplica, TcpAddress, TcpTransport,
+    IrReplica, IrReplicaMetrics, IrVersionedRecord, ShardNumber, TapirReplica, TcpAddress,
+    TcpTransport,
 };
+use crate::tapir::{IO, CO, CR};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
-pub type TapirIrReplica = IrReplica<TapirReplica<String, String>, TcpTransport<TapirReplica<String, String>>>;
+pub type TapirIrReplica = IrReplica<TapirReplica<String, String>, TcpTransport<TapirReplica<String, String>>, IrVersionedRecord<IO<String, String>, CO<String, String>, CR>>;
 
 pub struct ReplicaHandle {
     pub replica: Arc<TapirIrReplica>,

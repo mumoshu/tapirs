@@ -1,9 +1,9 @@
 use crate::mvcc::disk::{DiskStore, memory_io::MemoryIo};
-use crate::tapir::{Key, Timestamp, Value};
+use crate::tapir::{Key, Timestamp, Value, IO, CO, CR};
 use crate::{
     discovery::{InMemoryShardDirectory, ShardDirectory as _},
-    ChannelRegistry, ChannelTransport, IrMembership, IrReplica, ShardNumber, TapirClient,
-    TapirReplica,
+    ChannelRegistry, ChannelTransport, IrMembership, IrReplica, IrVersionedRecord, ShardNumber,
+    TapirClient, TapirReplica,
 };
 use std::sync::Arc;
 
@@ -14,7 +14,7 @@ pub fn build_shard<K: Key, V: Value>(
     num_replicas: usize,
     registry: &ChannelRegistry<TapirReplica<K, V>>,
     directory: &Arc<InMemoryShardDirectory<usize>>,
-) -> Vec<Arc<IrReplica<TapirReplica<K, V>, ChannelTransport<TapirReplica<K, V>>>>> {
+) -> Vec<Arc<IrReplica<TapirReplica<K, V>, ChannelTransport<TapirReplica<K, V>>, IrVersionedRecord<IO<K, V>, CO<K, V>, CR>>>> {
     let initial_address = registry.len();
     let membership = IrMembership::new(
         (0..num_replicas)
@@ -29,7 +29,7 @@ pub fn build_shard<K: Key, V: Value>(
             let m = membership.clone();
             Arc::new_cyclic(
                 |weak: &std::sync::Weak<
-                    IrReplica<TapirReplica<K, V>, ChannelTransport<TapirReplica<K, V>>>,
+                    IrReplica<TapirReplica<K, V>, ChannelTransport<TapirReplica<K, V>>, IrVersionedRecord<IO<K, V>, CO<K, V>, CR>>,
                 >| {
                     let weak = weak.clone();
                     let channel = registry.channel(
