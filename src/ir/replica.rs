@@ -2,6 +2,7 @@
 use super::{
     inmem::record_payload::RecordPayload,
     message::{BootstrapRecord, FinalizeInconsistentReply, LeaderRecordReply, Reconfigure, StatusBroadcast, ViewChangeAddendum},
+    payload::IrPayload,
     shared_view::SharedView, AddMember, Confirm, DoViewChange,
     FinalizeConsensus, FinalizeInconsistent, Membership, Message, OpId, ProposeConsensus,
     ProposeInconsistent, Record, RecordConsensusEntry, RecordEntryState, RecordInconsistentEntry,

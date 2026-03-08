@@ -1,6 +1,7 @@
 mod client;
 mod inmem;
 mod ir_record_store;
+mod payload;
 mod membership;
 pub(crate) mod message;
 mod op;
@@ -14,6 +15,7 @@ mod tests;
 
 pub use client::{Client, Id as ClientId};
 pub use ir_record_store::IrRecordStore;
+pub use payload::IrPayload;
 pub use membership::{Membership, Size as MembershipSize};
 pub use message::{
     AddMember, Confirm, DoViewChange, FinalizeConsensus, FinalizeInconsistent,
