@@ -6,18 +6,21 @@ use crate::mvcc::disk::disk_io::BufferedIo;
 use crate::occ::{SharedTransaction, Transaction};
 use crate::occ::TransactionId as OccTransactionId;
 use crate::tapir::{ShardNumber, Sharded, Timestamp};
+use crate::unified::ir::ir_record_store::PersistentIrRecordStore;
 use crate::unified::ir::record::IrRecord;
 use crate::unified::tapir::persistent_store::PersistentTapirStore;
 use crate::IrClientId;
 use std::sync::Arc;
 
 mod ir;
+mod ir2;
 mod tapir;
 
 const DEFAULT_MIN_VIEW_VLOG_SIZE: u64 = 256 * 1024;
 
 type Tapir = PersistentTapirStore<String, String, BufferedIo>;
 type Ir = IrRecord<String, String, BufferedIo>;
+type Ir2 = PersistentIrRecordStore<String, String, String, BufferedIo>;
 
 pub fn run<I, R, W, E>(args: I, mut stdin: R, mut stdout: W, mut stderr: E) -> i32
 where
@@ -28,16 +31,17 @@ where
 {
     let args: Vec<String> = args.into_iter().collect();
     if args.len() < 2 {
-        let _ = writeln!(stderr, "usage: tapirstore <tapir|ir> <script | stdin>");
+        let _ = writeln!(stderr, "usage: tapirstore <tapir|ir|ir2> <script | stdin>");
         return 1;
     }
 
     let mode = match args[1].as_str() {
         "tapir" => Mode::Tapir,
         "ir" => Mode::Ir,
+        "ir2" => Mode::Ir2,
         other => {
             let _ = writeln!(stderr, "error: unknown mode: {other}");
-            let _ = writeln!(stderr, "usage: tapirstore <tapir|ir> <script | stdin>");
+            let _ = writeln!(stderr, "usage: tapirstore <tapir|ir|ir2> <script | stdin>");
             return 1;
         }
     };
@@ -97,6 +101,23 @@ where
                 }
             }
         }
+        Mode::Ir2 => {
+            let mut ctx = Ir2Context { store: None };
+            for line in script.split([';', '\n']) {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let parts: Vec<&str> = trimmed.split_whitespace().collect();
+                if parts.is_empty() {
+                    continue;
+                }
+                if let Err(e) = ir2::execute_ir2_command(&mut ctx, &parts, &mut stdout) {
+                    let _ = writeln!(stderr, "error: {e}");
+                    had_error = true;
+                }
+            }
+        }
     }
 
     if had_error { 1 } else { 0 }
@@ -142,9 +163,24 @@ impl IrContext {
     }
 }
 
+struct Ir2Context {
+    store: Option<Ir2>,
+}
+
+impl Ir2Context {
+    fn store(&self) -> Result<&Ir2, String> {
+        self.store.as_ref().ok_or_else(|| "no store open".to_string())
+    }
+
+    fn store_mut(&mut self) -> Result<&mut Ir2, String> {
+        self.store.as_mut().ok_or_else(|| "no store open".to_string())
+    }
+}
+
 enum Mode {
     Tapir,
     Ir,
+    Ir2,
 }
 
 fn parse_ts(s: &str) -> Result<Timestamp, String> {

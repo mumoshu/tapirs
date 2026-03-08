@@ -61,6 +61,12 @@ pub struct UnifiedManifest {
     pub txn_log_count: u64,
     /// Reserved for future use (recovery replay).
     pub replay_start_offset: u64,
+    /// IR inconsistent entries VlogLsm metadata (PersistentIrRecordStore).
+    #[serde(default = "LsmManifestData::new")]
+    pub ir_inc: LsmManifestData,
+    /// IR consensus entries VlogLsm metadata (PersistentIrRecordStore).
+    #[serde(default = "LsmManifestData::new")]
+    pub ir_con: LsmManifestData,
     /// CRC32 checksum.
     pub checksum: u32,
 }
@@ -79,6 +85,8 @@ impl UnifiedManifest {
             max_read_time: None,
             txn_log_count: 0,
             replay_start_offset: 0,
+            ir_inc: LsmManifestData::new(),
+            ir_con: LsmManifestData::new(),
             checksum: 0,
         }
     }

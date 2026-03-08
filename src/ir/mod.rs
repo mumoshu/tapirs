@@ -14,7 +14,7 @@ mod view;
 mod tests;
 
 pub use client::{Client, ClientConfig, Id as ClientId};
-pub use ir_record_store::IrRecordStore;
+pub use ir_record_store::{IrRecordStore, MergeInstallResult, ViewInstallResult};
 pub use payload::IrPayload;
 pub use membership::{Membership, Size as MembershipSize};
 pub use message::{
@@ -29,7 +29,7 @@ pub use inmem::VersionedRecord;
 pub use record::{
     ConsensusEntry as RecordConsensusEntry,
     InconsistentEntry as RecordInconsistentEntry, Record, RecordBuilder, RecordView,
-    State as RecordEntryState, VersionedEntry,
+    State as RecordEntryState, VersionedEntry, VersionedVacantEntry,
 };
 pub use replica::{Replica, ReplicaMetrics, Upcalls as ReplicaUpcalls};
 pub use shared_view::SharedView;

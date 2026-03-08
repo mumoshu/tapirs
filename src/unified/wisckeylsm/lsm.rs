@@ -10,7 +10,8 @@ use crate::mvcc::disk::error::StorageError;
 use crate::unified::wisckeylsm::manifest::LsmManifestData;
 use crate::unified::wisckeylsm::sst::{SstMeta, SSTableReader, SSTableWriter};
 use crate::unified::wisckeylsm::types::{VlogPtr, VlogSegmentMeta};
-use crate::unified::wisckeylsm::vlog::VlogSegment;
+use crate::mvcc::disk::aligned_buf::AlignedBuf;
+use crate::unified::wisckeylsm::vlog::{RawVlogEntry, VlogSegment};
 
 /// Abstraction over the in-memory buffer used by VlogLsm for the current view.
 ///
@@ -23,6 +24,8 @@ pub(crate) trait Memtable<K, V> {
     fn mem_get(&self, key: &K) -> Option<&V>;
     fn mem_iter<'a>(&'a self) -> impl Iterator<Item = (&'a K, &'a V)> where K: 'a, V: 'a;
     fn mem_range_from<'a>(&'a self, from: &K) -> impl Iterator<Item = (&'a K, &'a V)> where K: 'a, V: 'a;
+    fn mem_get_mut(&mut self, key: &K) -> Option<&mut V>;
+    fn mem_len(&self) -> usize;
     fn mem_clear(&mut self);
 }
 
@@ -33,6 +36,12 @@ impl<K: Ord, V> Memtable<K, V> for BTreeMap<K, V> {
     }
     fn mem_get(&self, key: &K) -> Option<&V> {
         self.get(key)
+    }
+    fn mem_get_mut(&mut self, key: &K) -> Option<&mut V> {
+        self.get_mut(key)
+    }
+    fn mem_len(&self) -> usize {
+        self.len()
     }
     fn mem_iter<'a>(&'a self) -> impl Iterator<Item = (&'a K, &'a V)> where K: 'a, V: 'a {
         self.iter()
@@ -533,6 +542,125 @@ impl<K: Ord, V, IO: DiskIo, M: Memtable<K, V>> VlogLsm<K, V, IO, M> {
         } else {
             self.base_dir.join(format!("{}_sst_{id:04}.db", self.label))
         }
+    }
+
+    /// Mutable reference to a memtable entry.
+    pub(crate) fn mem_get_mut(&mut self, key: &K) -> Option<&mut V> {
+        self.memtable.mem_get_mut(key)
+    }
+
+    /// Direct mutable access to the memtable (for VersionedVacantEntry construction).
+    pub(crate) fn memtable_mut(&mut self) -> &mut M {
+        &mut self.memtable
+    }
+
+    /// Number of entries in the memtable.
+    pub(crate) fn memtable_len(&self) -> usize {
+        self.memtable.mem_len()
+    }
+
+    /// Read raw bytes from all sealed + active vlog segments.
+    pub(crate) fn export_segment_bytes(&self) -> Result<Vec<Vec<u8>>, StorageError> {
+        let mut result = Vec::new();
+        for seg in self.sealed_segments.values() {
+            let bytes = seg.read_all_bytes()?;
+            if !bytes.is_empty() {
+                result.push(bytes);
+            }
+        }
+        let active_bytes = self.active_vlog.read_all_bytes()?;
+        if !active_bytes.is_empty() {
+            result.push(active_bytes);
+        }
+        Ok(result)
+    }
+
+    /// Serialize current memtable entries into vlog binary format.
+    ///
+    /// `header_fn` returns `Some((entry_type, client_id, number))` to include
+    /// an entry, or `None` to skip it. Same interface as `seal_view`.
+    pub(crate) fn encode_memtable_as_segment<F>(
+        &self,
+        header_fn: F,
+    ) -> Result<Vec<u8>, StorageError>
+    where
+        K: Serialize,
+        V: Serialize,
+        F: Fn(&K, &V) -> Option<(u8, u64, u64)>,
+    {
+        let mut all_bytes = Vec::new();
+        for (key, value) in self.memtable.mem_iter() {
+            if let Some((entry_type, client_id, number)) = header_fn(key, value) {
+                let payload = bitcode::serialize(value)
+                    .map_err(|e| StorageError::Codec(e.to_string()))?;
+                let raw = VlogSegment::<IO>::encode_raw_entry(
+                    entry_type, client_id, number, &payload,
+                );
+                all_bytes.extend_from_slice(&raw);
+            }
+        }
+        Ok(all_bytes)
+    }
+
+    /// Write raw segment bytes as a new sealed vlog file and rebuild index entries.
+    ///
+    /// `key_fn` reconstructs `K` from a raw vlog entry's header fields.
+    /// Returns `None` to skip entries (e.g., wrong entry type).
+    pub(crate) fn import_raw_segment<F>(
+        &mut self,
+        bytes: &[u8],
+        key_fn: F,
+    ) -> Result<(), StorageError>
+    where
+        K: Clone,
+        F: Fn(&RawVlogEntry) -> Option<K>,
+    {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        let id = self.next_segment_id;
+        self.next_segment_id += 1;
+        let path = self.vlog_path(id);
+        // Write raw bytes to a new segment file
+        let io = IO::open(&path, self.io_flags)?;
+        let mut buf = AlignedBuf::new(bytes.len());
+        buf.as_full_slice_mut()[..bytes.len()].copy_from_slice(bytes);
+        buf.set_len(bytes.len());
+        IO::block_on(io.pwrite(&buf, 0))?;
+        IO::block_on(io.fsync())?;
+        io.close();
+        // Open as sealed segment
+        let seg = VlogSegment::<IO>::open_at(
+            id, path, bytes.len() as u64, Vec::new(), self.io_flags,
+        )?;
+        // Scan entries and rebuild index
+        if let Some(ref mut idx) = self.index {
+            for (offset, raw) in seg.iter_raw_entries()? {
+                if let Some(key) = key_fn(&raw) {
+                    let ptr = VlogPtr {
+                        segment_id: id,
+                        offset,
+                        length: raw.payload.len() as u32
+                            + super::vlog::VLOG_RAW_ENTRY_OVERHEAD as u32,
+                    };
+                    idx.insert(key, ptr);
+                }
+            }
+        }
+        self.sealed_segments.insert(id, seg);
+        Ok(())
+    }
+
+    /// Clear the in-memory index (for Full payload installs).
+    pub(crate) fn clear_index(&mut self) {
+        if let Some(ref mut idx) = self.index {
+            idx.clear();
+        }
+    }
+
+    /// Clear the memtable.
+    pub(crate) fn clear_memtable(&mut self) {
+        self.memtable.mem_clear();
     }
 }
 

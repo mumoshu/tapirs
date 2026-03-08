@@ -13,6 +13,10 @@ const CRC_SIZE: usize = 4;
 /// Minimum entry size: header + crc (no payload).
 const MIN_ENTRY_SIZE: usize = HEADER_SIZE + CRC_SIZE;
 
+/// Per-entry overhead in bytes: header (21) + CRC (4) = 25.
+/// Used by callers to compute VlogPtr.length = OVERHEAD + payload_len.
+pub(crate) const VLOG_RAW_ENTRY_OVERHEAD: usize = MIN_ENTRY_SIZE;
+
 /// Protocol-agnostic decoded VLog entry.
 ///
 /// `entry_type` and the `(id_client, id_number)` header fields are opaque to
@@ -45,7 +49,7 @@ pub(crate) struct VlogSegment<IO: DiskIo> {
 }
 
 impl<IO: DiskIo> VlogSegment<IO> {
-    fn encode_raw_entry(
+    pub(crate) fn encode_raw_entry(
         entry_type: u8,
         id_client: u64,
         id_number: u64,
@@ -231,6 +235,18 @@ impl<IO: DiskIo> VlogSegment<IO> {
 
     pub fn path(&self) -> &PathBuf {
         &self.path
+    }
+
+    /// Read all valid bytes from this segment (0..write_offset).
+    pub(crate) fn read_all_bytes(&self) -> Result<Vec<u8>, StorageError> {
+        let len = self.write_offset as usize;
+        if len == 0 {
+            return Ok(Vec::new());
+        }
+        let read_size = round_up(len);
+        let mut buf = AlignedBuf::new(read_size);
+        IO::block_on(self.io.as_ref().unwrap().pread(&mut buf, 0))?;
+        Ok(buf.as_full_slice()[..len].to_vec())
     }
 
     /// Fsync the segment.
