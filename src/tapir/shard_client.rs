@@ -2,6 +2,7 @@ use super::{Key, LeaderRecordDelta, Replica, ShardNumber, Timestamp, Transaction
 use tracing::debug;
 use super::message::MinPrepareBaselineResult;
 use crate::{
+    ir::ClientConfig as IrClientConfig,
     transport::Transport, IrClient, IrClientId, IrMembership, IrRecord, IrSharedView,
     OccPrepareResult, OccSharedTransaction, OccTransaction, OccTransactionId,
 };
@@ -34,7 +35,18 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
         membership: IrMembership<T::Address>,
         transport: T,
     ) -> Self {
-        let mut inner = IrClient::new(rng, membership, transport);
+        Self::with_ir_config(rng, id, shard, membership, transport, IrClientConfig::default())
+    }
+
+    pub fn with_ir_config(
+        rng: crate::Rng,
+        id: IrClientId,
+        shard: ShardNumber,
+        membership: IrMembership<T::Address>,
+        transport: T,
+        ir_config: IrClientConfig,
+    ) -> Self {
+        let mut inner = IrClient::with_config(rng, membership, transport, ir_config);
 
         // Id of all shard clients must match for the timestamps to match during recovery.
         inner.set_id(id);

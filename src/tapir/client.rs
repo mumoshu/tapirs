@@ -1,6 +1,7 @@
 
 use super::{Key, ShardClient, ShardNumber, Sharded, Timestamp, TransactionError, Value};
 use crate::{
+    ir::ClientConfig as IrClientConfig,
     util::join, IrClientId, OccPrepareResult, OccScanEntry, OccTransaction, OccTransactionId,
     TapirTransport,
 };
@@ -29,6 +30,7 @@ pub struct Inner<K: Key, V: Value, T: TapirTransport<K, V>> {
     rng: crate::Rng,
     ro_fast_path_delay: Option<Duration>,
     read_timeout: Duration,
+    ir_config: IrClientConfig,
 }
 
 impl<K: Key, V: Value, T: TapirTransport<K, V>> Inner<K, V, T> {
@@ -59,7 +61,7 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Inner<K, V, T> {
                         membership_size = membership.len(),
                         "Creating new ShardClient (cache miss)"
                     );
-                    ShardClient::new(lock.rng.fork(), lock.id, shard, membership, lock.transport.clone())
+                    ShardClient::with_ir_config(lock.rng.fork(), lock.id, shard, membership, lock.transport.clone(), lock.ir_config)
                 })
                 .clone()
         }
@@ -91,7 +93,11 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Client<K, V, T> {
         }
     }
 
-    pub fn new(mut rng: crate::Rng, transport: T) -> Self {
+    pub fn new(rng: crate::Rng, transport: T) -> Self {
+        Self::with_ir_config(rng, transport, IrClientConfig::default())
+    }
+
+    pub fn with_ir_config(mut rng: crate::Rng, transport: T, ir_config: IrClientConfig) -> Self {
         let id = IrClientId::new(&mut rng);
         let txn_number = rng.random_u64();
         Self {
@@ -102,6 +108,7 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> Client<K, V, T> {
                 rng,
                 ro_fast_path_delay: None,
                 read_timeout: Duration::from_secs(2),
+                ir_config,
             })),
             next_transaction_number: AtomicU64::new(txn_number),
         }

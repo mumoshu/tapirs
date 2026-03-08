@@ -22,6 +22,24 @@ use std::{
     task::Context,
     time::Duration,
 };
+
+/// Configuration for an IR client.
+#[derive(Clone, Copy)]
+pub struct ClientConfig {
+    /// Maximum total time `invoke_inconsistent_with_result` may run before
+    /// returning whatever results are available. Bounds both Phase 1
+    /// (propose) and Phase 2 (finalize) hard timeouts, and exits the
+    /// retry loop when elapsed.
+    pub inconsistent_result_deadline: Duration,
+}
+
+impl Default for ClientConfig {
+    fn default() -> Self {
+        Self {
+            inconsistent_result_deadline: Duration::from_secs(5),
+        }
+    }
+}
 use futures::future::Either;
 
 /// Randomly chosen id, unique to each IR client.
@@ -44,6 +62,7 @@ impl Debug for Id {
 pub struct Client<U: ReplicaUpcalls, T: Transport<U>> {
     id: Id,
     inner: Arc<Inner<U, T>>,
+    inconsistent_result_deadline: Duration,
     _spooky: PhantomData<U>,
 }
 
@@ -52,6 +71,7 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Clone for Client<U, T> {
         Self {
             id: self.id,
             inner: Arc::clone(&self.inner),
+            inconsistent_result_deadline: self.inconsistent_result_deadline,
             _spooky: PhantomData,
         }
     }
@@ -81,7 +101,11 @@ impl<U: ReplicaUpcalls, T: Transport<U>> SyncInner<U, T> {
 }
 
 impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
-    pub fn new(mut rng: crate::Rng, membership: Membership<T::Address>, transport: T) -> Self {
+    pub fn new(rng: crate::Rng, membership: Membership<T::Address>, transport: T) -> Self {
+        Self::with_config(rng, membership, transport, ClientConfig::default())
+    }
+
+    pub fn with_config(mut rng: crate::Rng, membership: Membership<T::Address>, transport: T, config: ClientConfig) -> Self {
         let id = Id::new(&mut rng);
         Self {
             id,
@@ -97,6 +121,7 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
                     rng,
                 }),
             }),
+            inconsistent_result_deadline: config.inconsistent_result_deadline,
             _spooky: PhantomData,
         }
     }
@@ -444,6 +469,7 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
     pub fn invoke_inconsistent_with_result(&self, op: U::IO) -> impl Future<Output = Vec<U::IR>> + Send + use<U, T> {
         let inner = Arc::clone(&self.inner);
         let client_id = self.id;
+        let deadline_duration = self.inconsistent_result_deadline;
 
         fn has_ancient<A>(results: &BTreeMap<A, ReplyInconsistent<A>>) -> bool {
             results.values().any(|v| v.state.is_none())
@@ -471,9 +497,16 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
         }
 
         async move {
+            let deadline = std::time::Instant::now() + deadline_duration;
             let mut retry_backoff = Duration::from_millis(50);
             let mut phase1_attempt = 0u32;
             loop {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    debug!("iir: deadline expired before phase1, returning empty");
+                    return Vec::new();
+                }
+
                 phase1_attempt += 1;
                 // Phase 1: Propose (same as invoke_inconsistent)
                 //
@@ -504,8 +537,9 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
                     (membership_size, op_id, future)
                 };
 
+                let phase1_hard = remaining.min(Duration::from_millis(5000));
                 let mut soft_timeout = std::pin::pin!(T::sleep(Duration::from_millis(250)));
-                let mut hard_timeout = std::pin::pin!(T::sleep(Duration::from_millis(5000)));
+                let mut hard_timeout = std::pin::pin!(T::sleep(phase1_hard));
 
                 let results = future
                     .until(
@@ -574,7 +608,9 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
                 };
                 debug!("iir: phase2 start f_plus_one={}", finalize_membership_size.f_plus_one());
 
-                let mut finalize_timeout = std::pin::pin!(T::sleep(Duration::from_millis(5000)));
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                let phase2_hard = remaining.min(Duration::from_millis(5000));
+                let mut finalize_timeout = std::pin::pin!(T::sleep(phase2_hard));
 
                 let finalize_results = finalize_future
                     .until(

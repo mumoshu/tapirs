@@ -83,7 +83,7 @@ maelstrom-skewed-ro-txn-get-fail:
 		|| echo "Good: maelstrom failed as expected (RO reads not linearizable under clock skew)"
 
 maelstrom-sync-ro-fast-path:
-	TAPIR_CLOCK_SKEW_MAX=0 TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get TAPIR_RO_FAST_PATH_DELAY_MS=200 TAPIR_READ_TIMEOUT_MS=200 TAPIR_VIEW_CHANGE_INTERVAL_MS=200 $(MAKE) maelstrom-run
+	TAPIR_CLOCK_SKEW_MAX=0 TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get TAPIR_RO_FAST_PATH_DELAY_MS=200 TAPIR_READ_TIMEOUT_MS=200 TAPIR_VIEW_CHANGE_INTERVAL_MS=200 TAPIR_INCONSISTENT_RESULT_DEADLINE_MS=500 $(MAKE) maelstrom-run
 
 # Expect frequent failure: 1ms delay is too short for replicas to sync via view change
 # (view change interval is 200ms), so read_validated may return stale data.

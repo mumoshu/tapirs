@@ -27,7 +27,7 @@ mod bench;
 pub use rng::Rng;
 
 pub use ir::{
-    Client as IrClient, ClientId as IrClientId, Membership as IrMembership,
+    Client as IrClient, ClientConfig as IrClientConfig, ClientId as IrClientId, Membership as IrMembership,
     MembershipSize as IrMembershipSize, Message as IrMessage, OpId as IrOpId, Record as IrRecord,
     IrPayload, IrRecordStore, RecordPayload as IrRecordPayload, RecordView as IrRecordView,
     RecordConsensusEntry as IrRecordConsensusEntry, Replica as IrReplica,

@@ -13,7 +13,7 @@ mod view;
 #[cfg(test)]
 mod tests;
 
-pub use client::{Client, Id as ClientId};
+pub use client::{Client, ClientConfig, Id as ClientId};
 pub use ir_record_store::IrRecordStore;
 pub use payload::IrPayload;
 pub use membership::{Membership, Size as MembershipSize};

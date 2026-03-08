@@ -268,6 +268,10 @@ impl Process<LinKv, Wrapper> for KvNode {
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
             .map(Duration::from_millis);
+        let inconsistent_result_deadline = std::env::var("TAPIR_INCONSISTENT_RESULT_DEADLINE_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(Duration::from_millis);
         let view_change_interval = std::env::var("TAPIR_VIEW_CHANGE_INTERVAL_MS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
@@ -299,7 +303,11 @@ impl Process<LinKv, Wrapper> for KvNode {
                     )))
                 }
                 IdEnum::App(_) => {
-                    let client = Arc::new(TapirClient::new(tapirs::Rng::from_seed(thread_rng().r#gen()), transport));
+                    let mut ir_config = tapirs::IrClientConfig::default();
+                    if let Some(deadline) = inconsistent_result_deadline {
+                        ir_config.inconsistent_result_deadline = deadline;
+                    }
+                    let client = Arc::new(TapirClient::with_ir_config(tapirs::Rng::from_seed(thread_rng().r#gen()), transport, ir_config));
                     if let Some(delay) = ro_fast_path_delay {
                         client.set_ro_fast_path_delay(Some(delay));
                     }
