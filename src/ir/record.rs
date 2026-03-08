@@ -89,10 +89,19 @@ pub trait RecordView {
     type CO;
     type CR;
 
-    fn consensus_entries(&self) -> impl Iterator<Item = (&OpId, &ConsensusEntry<Self::CO, Self::CR>)>;
-    fn inconsistent_entries(&self) -> impl Iterator<Item = (&OpId, &InconsistentEntry<Self::IO>)>;
-    fn get_consensus(&self, op_id: &OpId) -> Option<&ConsensusEntry<Self::CO, Self::CR>>;
-    fn get_inconsistent(&self, op_id: &OpId) -> Option<&InconsistentEntry<Self::IO>>;
+    fn consensus_entries(&self) -> impl Iterator<Item = (OpId, ConsensusEntry<Self::CO, Self::CR>)>;
+    fn inconsistent_entries(&self) -> impl Iterator<Item = (OpId, InconsistentEntry<Self::IO>)>;
+    fn get_consensus(&self, op_id: &OpId) -> Option<ConsensusEntry<Self::CO, Self::CR>>;
+    fn get_inconsistent(&self, op_id: &OpId) -> Option<InconsistentEntry<Self::IO>>;
+}
+
+/// Trait for building a record by inserting entries.
+///
+/// Used by the leader during merge to construct the merged record.
+/// No `get_mut` — use `get` (owned) → modify → `insert` (overwrite).
+pub trait RecordBuilder: RecordView {
+    fn insert_inconsistent(&mut self, op_id: OpId, entry: InconsistentEntry<Self::IO>);
+    fn insert_consensus(&mut self, op_id: OpId, entry: ConsensusEntry<Self::CO, Self::CR>);
 }
 
 pub enum VersionedEntry<'a, V> {

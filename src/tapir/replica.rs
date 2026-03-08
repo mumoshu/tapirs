@@ -618,7 +618,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
     fn sync(&mut self, local: &Self::Record, leader: &Self::Record) {
         for (op_id, entry) in leader.consensus_entries() {
             if local
-                .get_consensus(op_id)
+                .get_consensus(&op_id)
                 .map(|local| local.state.is_finalized() && local.result == entry.result)
                 .unwrap_or(false)
             {
@@ -648,7 +648,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                             // from the leader's record.
                             trace!("syncing successful {op_id:?} prepare for {transaction_id:?} at {commit:?} (had {:?})", self.store.get_prepared_txn(transaction_id));
                             self.store.add_or_replace_or_finalize_prepared_txn(
-                                *op_id,
+                                op_id,
                                 *transaction_id,
                                 transaction.clone(),
                                 *commit,
@@ -679,7 +679,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
         }
         for (op_id, entry) in leader.inconsistent_entries() {
             if local
-                .get_inconsistent(op_id)
+                .get_inconsistent(&op_id)
                 .map(|e| e.state.is_finalized())
                 .unwrap_or(false)
             {
@@ -689,7 +689,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
 
             trace!("syncing inconsistent {op_id:?} {:?}", entry.op);
 
-            self.exec_inconsistent(op_id, &entry.op);
+            self.exec_inconsistent(&op_id, &entry.op);
         }
         self.gc_stale_state();
     }

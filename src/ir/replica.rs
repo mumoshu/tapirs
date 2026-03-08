@@ -6,7 +6,7 @@ use super::{
     FinalizeConsensus, FinalizeInconsistent, Membership, Message, OpId, ProposeConsensus,
     ProposeInconsistent, Record, RecordConsensusEntry, RecordEntryState, RecordInconsistentEntry,
     RemoveMember, ReplyConsensus, ReplyInconsistent, ReplyUnlogged, RequestUnlogged, StartView,
-    IrRecordStore, RecordView, VersionedEntry, View, ViewNumber,
+    IrRecordStore, RecordBuilder, RecordView, VersionedEntry, View, ViewNumber,
 };
 use crate::{Transport, TransportMessage};
 use std::{
@@ -581,39 +581,34 @@ impl<U: Upcalls<Record = Record<U>>, T: Transport<U>, R: IrRecordStore<U::IO, U:
                                     BTreeMap::<OpId, Vec<RecordConsensusEntry<U::CO, U::CR>>>::new();
                                 let mut finalized = HashSet::new();
                                 for r in latest_records {
-                                    for (op_id, entry) in r.inconsistent.clone() {
-                                        match R.inconsistent.entry(op_id) {
-                                            Entry::Vacant(vacant) => {
-                                                // Mark as finalized as `sync` will execute it.
-                                                let e = vacant.insert(entry);
-                                                e.state = RecordEntryState::Finalized(sync.view.number);
-                                                e.modified_view = sync.view.number.0;
+                                    for (op_id, entry) in r.inconsistent_entries() {
+                                        if let Some(mut existing) = R.get_inconsistent(&op_id) {
+                                            if let RecordEntryState::Finalized(view) = entry.state {
+                                                existing.state = RecordEntryState::Finalized(view);
+                                                existing.modified_view = view.0;
+                                                R.insert_inconsistent(op_id, existing);
                                             }
-                                            Entry::Occupied(mut occupied) => {
-                                                if let RecordEntryState::Finalized(view) = entry.state {
-                                                    let e = occupied.get_mut();
-                                                    e.state = RecordEntryState::Finalized(view);
-                                                    e.modified_view = view.0;
-                                                }
-                                            }
+                                        } else {
+                                            // Mark as finalized as `sync` will execute it.
+                                            let mut e = entry;
+                                            e.state = RecordEntryState::Finalized(sync.view.number);
+                                            e.modified_view = sync.view.number.0;
+                                            R.insert_inconsistent(op_id, e);
                                         }
                                     }
-                                    for (op_id, entry) in r.consensus.clone() {
+                                    for (op_id, entry) in r.consensus_entries() {
                                         match entry.state {
                                             RecordEntryState::Finalized(_) => {
-                                                match R.consensus.entry(op_id) {
-                                                    Entry::Vacant(vacant) => {
+                                                if let Some(existing) = R.get_consensus(&op_id) {
+                                                    if existing.state.is_tentative() {
                                                         sync.upcalls.finalize_consensus(&op_id, &entry.op, &entry.result);
-                                                        vacant.insert(entry);
+                                                        R.insert_consensus(op_id, entry);
+                                                    } else {
+                                                        debug_assert_eq!(existing.result, entry.result);
                                                     }
-                                                    Entry::Occupied(mut occupied) => {
-                                                        if occupied.get().state.is_tentative() {
-                                                            sync.upcalls.finalize_consensus(&op_id, &entry.op, &entry.result);
-                                                            occupied.insert(entry);
-                                                        } else {
-                                                            debug_assert_eq!(occupied.get().result, entry.result);
-                                                        }
-                                                    }
+                                                } else {
+                                                    sync.upcalls.finalize_consensus(&op_id, &entry.op, &entry.result);
+                                                    R.insert_consensus(op_id, entry);
                                                 }
                                                 finalized.insert(op_id);
                                                 entries_by_opid.remove(&op_id);
@@ -681,7 +676,7 @@ impl<U: Upcalls<Record = Record<U>>, T: Transport<U>, R: IrRecordStore<U::IO, U:
                                     let entries = entries_by_opid.get(&op_id).unwrap();
                                     let entry = &entries[0];
                                     sync.upcalls.finalize_consensus(&op_id, &entry.op, &result);
-                                    R.consensus.insert(
+                                    R.insert_consensus(
                                         op_id,
                                         RecordConsensusEntry {
                                             op: entry.op.clone(),

@@ -1,4 +1,4 @@
-use super::super::record::{ConsensusEntry, InconsistentEntry, RecordView};
+use super::super::record::{ConsensusEntry, InconsistentEntry, RecordBuilder, RecordView};
 use super::super::OpId;
 use crate::util::vectorize_btree;
 use serde::{Deserialize, Serialize};
@@ -25,22 +25,31 @@ pub struct RecordImpl<IO, CO, CR> {
     pub consensus: BTreeMap<OpId, ConsensusEntry<CO, CR>>,
 }
 
-impl<IO, CO, CR> RecordView for RecordImpl<IO, CO, CR> {
+impl<IO: Clone, CO: Clone, CR: Clone> RecordView for RecordImpl<IO, CO, CR> {
     type IO = IO;
     type CO = CO;
     type CR = CR;
 
-    fn consensus_entries(&self) -> impl Iterator<Item = (&OpId, &ConsensusEntry<CO, CR>)> {
-        self.consensus.iter()
+    fn consensus_entries(&self) -> impl Iterator<Item = (OpId, ConsensusEntry<CO, CR>)> {
+        self.consensus.iter().map(|(k, v)| (*k, v.clone()))
     }
-    fn inconsistent_entries(&self) -> impl Iterator<Item = (&OpId, &InconsistentEntry<IO>)> {
-        self.inconsistent.iter()
+    fn inconsistent_entries(&self) -> impl Iterator<Item = (OpId, InconsistentEntry<IO>)> {
+        self.inconsistent.iter().map(|(k, v)| (*k, v.clone()))
     }
-    fn get_consensus(&self, op_id: &OpId) -> Option<&ConsensusEntry<CO, CR>> {
-        self.consensus.get(op_id)
+    fn get_consensus(&self, op_id: &OpId) -> Option<ConsensusEntry<CO, CR>> {
+        self.consensus.get(op_id).cloned()
     }
-    fn get_inconsistent(&self, op_id: &OpId) -> Option<&InconsistentEntry<IO>> {
-        self.inconsistent.get(op_id)
+    fn get_inconsistent(&self, op_id: &OpId) -> Option<InconsistentEntry<IO>> {
+        self.inconsistent.get(op_id).cloned()
+    }
+}
+
+impl<IO: Clone, CO: Clone, CR: Clone> RecordBuilder for RecordImpl<IO, CO, CR> {
+    fn insert_inconsistent(&mut self, op_id: OpId, entry: InconsistentEntry<Self::IO>) {
+        self.inconsistent.insert(op_id, entry);
+    }
+    fn insert_consensus(&mut self, op_id: OpId, entry: ConsensusEntry<Self::CO, Self::CR>) {
+        self.consensus.insert(op_id, entry);
     }
 }
 

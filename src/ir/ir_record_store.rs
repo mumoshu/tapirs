@@ -1,5 +1,5 @@
 use super::payload::IrPayload;
-use super::record::{ConsensusEntry, InconsistentEntry, RecordView, VersionedEntry};
+use super::record::{ConsensusEntry, InconsistentEntry, RecordBuilder, RecordView, VersionedEntry};
 use super::{OpId, ViewNumber};
 use std::fmt::Debug;
 
@@ -38,7 +38,7 @@ where
     CO: Clone,
     CR: Clone,
 {
-    type Record: RecordView<IO = IO, CO = CO, CR = CR> + Clone + Debug + Default + Send + 'static;
+    type Record: RecordView<IO = IO, CO = CO, CR = CR> + RecordBuilder + Debug + Default + Send + 'static;
     type Payload: IrPayload<Record = Self::Record>;
 
     /// Look up or insert an inconsistent entry by OpId.

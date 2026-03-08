@@ -28,7 +28,7 @@ pub use inmem::record_payload::RecordPayload;
 pub use inmem::VersionedRecord;
 pub use record::{
     ConsensusEntry as RecordConsensusEntry,
-    InconsistentEntry as RecordInconsistentEntry, Record, RecordView,
+    InconsistentEntry as RecordInconsistentEntry, Record, RecordBuilder, RecordView,
     State as RecordEntryState, VersionedEntry,
 };
 pub use replica::{Replica, ReplicaMetrics, Upcalls as ReplicaUpcalls};
