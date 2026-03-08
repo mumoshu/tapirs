@@ -36,8 +36,8 @@ EXEMPT_STRUCTS = {
 
 ALLOWED_UNUSED_ATTRS = {
     "src/bin/tapi/node/mod.rs:58",
-    "src/ir/record.rs:50",
-    "src/ir/record.rs:55",
+    "src/ir/record.rs:51",
+    "src/ir/record.rs:56",
 }
 
 # Detects `#[cfg(test)]` followed by a public function declaration (`pub fn`,

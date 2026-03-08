@@ -1,6 +1,7 @@
 use super::super::ir_record_store::IrRecordStore;
-use super::super::record::{ConsensusEntry, InconsistentEntry, RecordImpl, VersionedEntry, VersionedVacantEntry};
+use super::super::record::{ConsensusEntry, InconsistentEntry, VersionedEntry, VersionedVacantEntry};
 use super::super::OpId;
+use super::record::RecordImpl;
 use std::fmt::Debug;
 
 /// A two-layer record structure with base/overlay semantics.
