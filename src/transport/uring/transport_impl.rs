@@ -27,6 +27,7 @@ where
     U::IR: Serialize + DeserializeOwned,
     U::CO: Serialize + DeserializeOwned,
     U::CR: Serialize + DeserializeOwned,
+    U::Payload: Serialize + DeserializeOwned,
 {
     type Address = UringAddress;
     type Sleep = UringSleep;

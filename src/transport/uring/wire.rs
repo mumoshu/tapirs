@@ -12,6 +12,7 @@ pub(crate) type UringIrMessage<U> = MessageImpl<
     <U as ReplicaUpcalls>::CO,
     <U as ReplicaUpcalls>::CR,
     UringAddress,
+    <U as ReplicaUpcalls>::Payload,
 >;
 
 /// Wire-level message envelope for the io_uring transport.
@@ -21,24 +22,24 @@ pub(crate) enum WireMessage<U: ReplicaUpcalls> {
         from: UringAddress,
         request_id: u64,
         #[serde(bound(
-            serialize = "<U as ReplicaUpcalls>::UO: Serialize, <U as ReplicaUpcalls>::UR: Serialize, <U as ReplicaUpcalls>::IO: Serialize, <U as ReplicaUpcalls>::IR: Serialize, <U as ReplicaUpcalls>::CO: Serialize, <U as ReplicaUpcalls>::CR: Serialize",
-            deserialize = "<U as ReplicaUpcalls>::UO: Deserialize<'de>, <U as ReplicaUpcalls>::UR: Deserialize<'de>, <U as ReplicaUpcalls>::IO: Deserialize<'de>, <U as ReplicaUpcalls>::IR: Deserialize<'de>, <U as ReplicaUpcalls>::CO: Deserialize<'de>, <U as ReplicaUpcalls>::CR: Deserialize<'de>"
+            serialize = "<U as ReplicaUpcalls>::UO: Serialize, <U as ReplicaUpcalls>::UR: Serialize, <U as ReplicaUpcalls>::IO: Serialize, <U as ReplicaUpcalls>::IR: Serialize, <U as ReplicaUpcalls>::CO: Serialize, <U as ReplicaUpcalls>::CR: Serialize, <U as ReplicaUpcalls>::Payload: Serialize",
+            deserialize = "<U as ReplicaUpcalls>::UO: Deserialize<'de>, <U as ReplicaUpcalls>::UR: Deserialize<'de>, <U as ReplicaUpcalls>::IO: Deserialize<'de>, <U as ReplicaUpcalls>::IR: Deserialize<'de>, <U as ReplicaUpcalls>::CO: Deserialize<'de>, <U as ReplicaUpcalls>::CR: Deserialize<'de>, <U as ReplicaUpcalls>::Payload: Deserialize<'de>"
         ))]
         payload: UringIrMessage<U>,
     },
     Reply {
         request_id: u64,
         #[serde(bound(
-            serialize = "<U as ReplicaUpcalls>::UO: Serialize, <U as ReplicaUpcalls>::UR: Serialize, <U as ReplicaUpcalls>::IO: Serialize, <U as ReplicaUpcalls>::IR: Serialize, <U as ReplicaUpcalls>::CO: Serialize, <U as ReplicaUpcalls>::CR: Serialize",
-            deserialize = "<U as ReplicaUpcalls>::UO: Deserialize<'de>, <U as ReplicaUpcalls>::UR: Deserialize<'de>, <U as ReplicaUpcalls>::IO: Deserialize<'de>, <U as ReplicaUpcalls>::IR: Deserialize<'de>, <U as ReplicaUpcalls>::CO: Deserialize<'de>, <U as ReplicaUpcalls>::CR: Deserialize<'de>"
+            serialize = "<U as ReplicaUpcalls>::UO: Serialize, <U as ReplicaUpcalls>::UR: Serialize, <U as ReplicaUpcalls>::IO: Serialize, <U as ReplicaUpcalls>::IR: Serialize, <U as ReplicaUpcalls>::CO: Serialize, <U as ReplicaUpcalls>::CR: Serialize, <U as ReplicaUpcalls>::Payload: Serialize",
+            deserialize = "<U as ReplicaUpcalls>::UO: Deserialize<'de>, <U as ReplicaUpcalls>::UR: Deserialize<'de>, <U as ReplicaUpcalls>::IO: Deserialize<'de>, <U as ReplicaUpcalls>::IR: Deserialize<'de>, <U as ReplicaUpcalls>::CO: Deserialize<'de>, <U as ReplicaUpcalls>::CR: Deserialize<'de>, <U as ReplicaUpcalls>::Payload: Deserialize<'de>"
         ))]
         payload: UringIrMessage<U>,
     },
     FireAndForget {
         from: UringAddress,
         #[serde(bound(
-            serialize = "<U as ReplicaUpcalls>::UO: Serialize, <U as ReplicaUpcalls>::UR: Serialize, <U as ReplicaUpcalls>::IO: Serialize, <U as ReplicaUpcalls>::IR: Serialize, <U as ReplicaUpcalls>::CO: Serialize, <U as ReplicaUpcalls>::CR: Serialize",
-            deserialize = "<U as ReplicaUpcalls>::UO: Deserialize<'de>, <U as ReplicaUpcalls>::UR: Deserialize<'de>, <U as ReplicaUpcalls>::IO: Deserialize<'de>, <U as ReplicaUpcalls>::IR: Deserialize<'de>, <U as ReplicaUpcalls>::CO: Deserialize<'de>, <U as ReplicaUpcalls>::CR: Deserialize<'de>"
+            serialize = "<U as ReplicaUpcalls>::UO: Serialize, <U as ReplicaUpcalls>::UR: Serialize, <U as ReplicaUpcalls>::IO: Serialize, <U as ReplicaUpcalls>::IR: Serialize, <U as ReplicaUpcalls>::CO: Serialize, <U as ReplicaUpcalls>::CR: Serialize, <U as ReplicaUpcalls>::Payload: Serialize",
+            deserialize = "<U as ReplicaUpcalls>::UO: Deserialize<'de>, <U as ReplicaUpcalls>::UR: Deserialize<'de>, <U as ReplicaUpcalls>::IO: Deserialize<'de>, <U as ReplicaUpcalls>::IR: Deserialize<'de>, <U as ReplicaUpcalls>::CO: Deserialize<'de>, <U as ReplicaUpcalls>::CR: Deserialize<'de>, <U as ReplicaUpcalls>::Payload: Deserialize<'de>"
         ))]
         payload: UringIrMessage<U>,
     },

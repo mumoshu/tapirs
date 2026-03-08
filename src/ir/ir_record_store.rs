@@ -1,6 +1,27 @@
+use super::payload::IrPayload;
 use super::record::{ConsensusEntry, InconsistentEntry, RecordView, VersionedEntry};
-use super::OpId;
+use super::{OpId, ViewNumber};
 use std::fmt::Debug;
+
+/// Result of install_start_view_payload — data the replica needs for upcalls.
+#[derive(Clone)]
+pub struct ViewInstallResult<R> {
+    /// Full record before the install (for upcalls.sync).
+    pub previous_record: R,
+    /// CDC: (from_view, changes). The replica adds new_view from context.
+    pub transition: (u64, R),
+}
+
+/// Result of install_merged_record.
+#[derive(Clone)]
+pub struct MergeInstallResult<R, P> {
+    /// CDC: (from_view, changes).
+    pub transition: (u64, R),
+    /// Optional delta payload for wire-efficient StartView messages.
+    pub start_view_delta: Option<P>,
+    /// Sealed view number before this install — for StartView recipient selection.
+    pub previous_base_view: Option<ViewNumber>,
+}
 
 /// Abstracts the IR record store, allowing alternative backends
 /// (e.g., LSM-backed, unified store spanning IR and TAPIR).
@@ -18,6 +39,7 @@ where
     CR: Clone,
 {
     type Record: RecordView<IO = IO, CO = CO, CR = CR> + Clone + Debug + Default + Send + 'static;
+    type Payload: IrPayload<Record = Self::Record>;
 
     /// Look up or insert an inconsistent entry by OpId.
     fn entry_inconsistent(&mut self, op_id: OpId) -> VersionedEntry<'_, InconsistentEntry<IO>>;
@@ -33,29 +55,41 @@ where
     /// to the current view's writable layer if needed.
     fn get_mut_consensus(&mut self, op_id: &OpId) -> Option<&mut ConsensusEntry<CO, CR>>;
 
-    /// Returns entries modified during the current view (since the last seal).
-    fn current_view_delta(&self) -> Self::Record;
-
     /// Returns all entries (sealed + current view) merged into a single record.
     fn full_record(&self) -> Self::Record;
-
-    /// Whether a sealed checkpoint exists (at least one view change has completed).
-    fn has_sealed_view(&self) -> bool;
-
-    /// The view number of the last sealed checkpoint.
-    fn sealed_view_number(&self) -> u64;
-
-    /// The record as of the last sealed view. Only meaningful when
-    /// `has_sealed_view()` returns true.
-    fn sealed_record(&self) -> &Self::Record;
-
-    /// Create from a full record after view change resolution.
-    /// The record becomes the sealed checkpoint with an empty current view.
-    fn install(record: Self::Record, view: u64) -> Self;
 
     /// Total number of unique inconsistent entries.
     fn inconsistent_len(&self) -> usize;
 
     /// Total number of unique consensus entries.
     fn consensus_len(&self) -> usize;
+
+    /// Build a view-change addendum payload (full vs delta decided internally).
+    fn build_view_change_payload(&self, next_view: u64) -> Self::Payload;
+
+    /// Build a StartView payload. If delta is Some, clones it; else builds full.
+    fn build_start_view_payload(&self, delta: Option<&Self::Payload>) -> Self::Payload;
+
+    /// Wrap an external record as a full payload (bootstrap).
+    fn make_full_payload(record: Self::Record) -> Self::Payload;
+
+    /// Resolve a received StartView payload, validate delta base, install in place.
+    /// Returns None if delta validation fails (bad base_view).
+    /// Returns ViewInstallResult with previous_record (for sync) and CDC transition.
+    fn install_start_view_payload(
+        &mut self, payload: Self::Payload, new_view: u64,
+    ) -> Option<ViewInstallResult<Self::Record>>;
+
+    /// Install a merged record (leader path) in place.
+    /// Returns MergeInstallResult with CDC data, delta payload, and previous base view.
+    fn install_merged_record(
+        &mut self, merged: Self::Record, new_view: u64,
+    ) -> MergeInstallResult<Self::Record, Self::Payload>;
+
+    /// Resolve a DoViewChange addendum payload. Validates delta base internally
+    /// (panics on mismatch). Returns the resolved full record for merging.
+    fn resolve_do_view_change_payload(&self, payload: &Self::Payload) -> Self::Record;
+
+    /// Return a clone of the sealed record, if any (for FetchLeaderRecord).
+    fn checkpoint_record(&self) -> Option<Self::Record>;
 }

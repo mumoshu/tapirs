@@ -25,6 +25,7 @@ where
     U::IR: Serialize + DeserializeOwned,
     U::CO: Serialize + DeserializeOwned,
     U::CR: Serialize + DeserializeOwned,
+    U::Payload: Serialize + DeserializeOwned,
 {
     // Check for existing open connection (short lock).
     {
@@ -119,6 +120,7 @@ pub(super) async fn read_loop_outbound<R, U>(
     U::IR: Serialize + DeserializeOwned,
     U::CO: Serialize + DeserializeOwned,
     U::CR: Serialize + DeserializeOwned,
+    U::Payload: Serialize + DeserializeOwned,
 {
     let mut frame_reader = FrameReader::new();
     loop {

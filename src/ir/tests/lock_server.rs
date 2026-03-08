@@ -97,6 +97,7 @@ async fn lock_server(num_replicas: usize) {
         type CO = Lock;
         type CR = LockResult;
         type Record = IrRecord<Self>;
+        type Payload = crate::ir::RecordPayload<Self::IO, Self::CO, Self::CR>;
 
         fn exec_unlogged(&self, _op: Self::UO) -> Self::UR {
             unreachable!();

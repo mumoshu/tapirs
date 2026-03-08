@@ -1,7 +1,9 @@
-use super::super::ir_record_store::IrRecordStore;
+use super::super::ir_record_store::{IrRecordStore, MergeInstallResult, ViewInstallResult};
+use super::super::payload::IrPayload;
 use super::super::record::{ConsensusEntry, InconsistentEntry, VersionedEntry, VersionedVacantEntry};
-use super::super::OpId;
+use super::super::{OpId, ViewNumber};
 use super::record::RecordImpl;
+use super::record_payload::RecordPayload;
 use std::fmt::Debug;
 
 /// A two-layer record structure with base/overlay semantics.
@@ -158,11 +160,12 @@ impl<IO: Clone, CO: Clone, CR: Clone> VersionedRecord<IO, CO, CR> {
 
 impl<IO: Clone, CO: Clone, CR: Clone> IrRecordStore<IO, CO, CR> for VersionedRecord<IO, CO, CR>
 where
-    IO: Debug + Send + 'static,
-    CO: Debug + Send + 'static,
-    CR: Debug + Send + 'static,
+    IO: Debug + PartialEq + Send + 'static,
+    CO: Debug + PartialEq + Send + 'static,
+    CR: Debug + PartialEq + Send + 'static,
 {
     type Record = RecordImpl<IO, CO, CR>;
+    type Payload = RecordPayload<IO, CO, CR>;
 
     fn entry_inconsistent(&mut self, op_id: OpId) -> VersionedEntry<'_, InconsistentEntry<IO>> {
         self.entry_inconsistent(op_id)
@@ -180,28 +183,8 @@ where
         self.get_mut_consensus(op_id)
     }
 
-    fn current_view_delta(&self) -> RecordImpl<IO, CO, CR> {
-        self.overlay_clone()
-    }
-
     fn full_record(&self) -> RecordImpl<IO, CO, CR> {
         self.full()
-    }
-
-    fn has_sealed_view(&self) -> bool {
-        self.has_base()
-    }
-
-    fn sealed_view_number(&self) -> u64 {
-        self.base_view()
-    }
-
-    fn sealed_record(&self) -> &RecordImpl<IO, CO, CR> {
-        self.base()
-    }
-
-    fn install(record: RecordImpl<IO, CO, CR>, view: u64) -> Self {
-        Self::from_full(record, view)
     }
 
     fn inconsistent_len(&self) -> usize {
@@ -210,6 +193,80 @@ where
 
     fn consensus_len(&self) -> usize {
         self.consensus_len()
+    }
+
+    fn build_view_change_payload(&self, next_view: u64) -> Self::Payload {
+        if self.has_base() && self.base_view() + 1 == next_view {
+            RecordPayload::Delta {
+                base_view: ViewNumber(self.base_view()),
+                entries: self.overlay_clone(),
+            }
+        } else {
+            RecordPayload::Full(self.full())
+        }
+    }
+
+    fn build_start_view_payload(&self, delta: Option<&Self::Payload>) -> Self::Payload {
+        delta.cloned().unwrap_or_else(|| RecordPayload::Full(self.base().clone()))
+    }
+
+    fn make_full_payload(record: Self::Record) -> Self::Payload {
+        RecordPayload::Full(record)
+    }
+
+    fn install_start_view_payload(
+        &mut self, payload: Self::Payload, new_view: u64,
+    ) -> Option<ViewInstallResult<Self::Record>> {
+        // Validate delta base
+        if let Some(bv) = payload.base_view()
+            && (!self.has_base() || ViewNumber(self.base_view()) != bv)
+        {
+            return None;
+        }
+        let previous_record = self.full();
+        let base = if self.has_base() { Some(self.base()) } else { None };
+        let new_record = payload.resolve_inner(base);
+        let transition = if self.has_base() {
+            (self.base_view(), new_record.delta_from(self.base()))
+        } else {
+            (0, new_record.clone())
+        };
+        *self = Self::from_full(new_record, new_view);
+        Some(ViewInstallResult { previous_record, transition })
+    }
+
+    fn install_merged_record(
+        &mut self, merged: Self::Record, new_view: u64,
+    ) -> MergeInstallResult<Self::Record, Self::Payload> {
+        let (transition, start_view_delta, previous_base_view) = if self.has_base() {
+            let delta = merged.delta_from(self.base());
+            let prev_bv = ViewNumber(self.base_view());
+            (
+                (self.base_view(), delta.clone()),
+                Some(RecordPayload::Delta { base_view: prev_bv, entries: delta }),
+                Some(prev_bv),
+            )
+        } else {
+            ((0, merged.clone()), None, None)
+        };
+        *self = Self::from_full(merged, new_view);
+        MergeInstallResult { transition, start_view_delta, previous_base_view }
+    }
+
+    fn resolve_do_view_change_payload(&self, payload: &Self::Payload) -> Self::Record {
+        if let Some(bv) = payload.base_view() {
+            assert!(
+                self.has_base() && ViewNumber(self.base_view()) == bv,
+                "Delta addendum base_view={bv:?} mismatches coordinator base={:?}",
+                self.has_base().then(|| ViewNumber(self.base_view())),
+            );
+        }
+        let base = if self.has_base() { Some(self.base()) } else { None };
+        payload.clone().resolve_inner(base)
+    }
+
+    fn checkpoint_record(&self) -> Option<Self::Record> {
+        if self.has_base() { Some(self.base().clone()) } else { None }
     }
 }
 

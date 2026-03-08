@@ -103,6 +103,7 @@ impl<U: ReplicaUpcalls> UringTransport<U> {
         U::IR: Serialize + DeserializeOwned,
         U::CO: Serialize + DeserializeOwned,
         U::CR: Serialize + DeserializeOwned,
+        U::Payload: Serialize + DeserializeOwned,
     {
         let listener = TcpListener::bind(addr).expect("bind failed");
         let t = self.clone();
@@ -120,6 +121,7 @@ impl<U: ReplicaUpcalls> UringTransport<U> {
         U::IR: Serialize + DeserializeOwned,
         U::CO: Serialize + DeserializeOwned,
         U::CR: Serialize + DeserializeOwned,
+        U::Payload: Serialize + DeserializeOwned,
     {
         let state = self.state.borrow();
         match wire {
@@ -180,6 +182,7 @@ where
     U::IR: Serialize + DeserializeOwned,
     U::CO: Serialize + DeserializeOwned,
     U::CR: Serialize + DeserializeOwned,
+    U::Payload: Serialize + DeserializeOwned,
 {
     loop {
         match listener.accept().await {
@@ -207,6 +210,7 @@ where
     U::IR: Serialize + DeserializeOwned,
     U::CO: Serialize + DeserializeOwned,
     U::CR: Serialize + DeserializeOwned,
+    U::Payload: Serialize + DeserializeOwned,
 {
     let mut reader = FrameReader::new();
     loop {
@@ -250,6 +254,7 @@ where
     U::IR: Serialize + DeserializeOwned,
     U::CO: Serialize + DeserializeOwned,
     U::CR: Serialize + DeserializeOwned,
+    U::Payload: Serialize + DeserializeOwned,
 {
     let mut reader = FrameReader::new();
     loop {
@@ -284,6 +289,7 @@ where
     U::IR: Serialize + DeserializeOwned,
     U::CO: Serialize + DeserializeOwned,
     U::CR: Serialize + DeserializeOwned,
+    U::Payload: Serialize + DeserializeOwned,
 {
     use std::time::Duration;
 

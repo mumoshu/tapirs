@@ -21,6 +21,7 @@ where
     U::IR: Serialize + DeserializeOwned,
     U::CO: Serialize + DeserializeOwned,
     U::CR: Serialize + DeserializeOwned,
+    U::Payload: Serialize + DeserializeOwned,
 {
     let listener = TcpListener::bind(addr).await?;
     tokio::spawn(accept_loop(listener, inner));
@@ -43,6 +44,7 @@ where
     U::IR: Serialize + DeserializeOwned,
     U::CO: Serialize + DeserializeOwned,
     U::CR: Serialize + DeserializeOwned,
+    U::Payload: Serialize + DeserializeOwned,
 {
     listener.set_nonblocking(true)?;
     let listener = TcpListener::from_std(listener)?;
@@ -61,6 +63,7 @@ async fn accept_loop<U: ReplicaUpcalls>(
     U::IR: Serialize + DeserializeOwned,
     U::CO: Serialize + DeserializeOwned,
     U::CR: Serialize + DeserializeOwned,
+    U::Payload: Serialize + DeserializeOwned,
 {
     loop {
         match listener.accept().await {
@@ -88,6 +91,7 @@ async fn accept_connection<U: ReplicaUpcalls>(
     U::IR: Serialize + DeserializeOwned,
     U::CO: Serialize + DeserializeOwned,
     U::CR: Serialize + DeserializeOwned,
+    U::Payload: Serialize + DeserializeOwned,
 {
     #[cfg(feature = "tls")]
     if let Some(ref acceptor) = inner.tls_acceptor {
@@ -132,6 +136,7 @@ pub(super) async fn read_loop_inbound<R, W, U>(
     U::IR: Serialize + DeserializeOwned,
     U::CO: Serialize + DeserializeOwned,
     U::CR: Serialize + DeserializeOwned,
+    U::Payload: Serialize + DeserializeOwned,
 {
     let mut frame_reader = FrameReader::new();
     loop {

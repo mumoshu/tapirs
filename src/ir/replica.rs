@@ -1,8 +1,7 @@
 
 use super::{
-    inmem::record_payload::RecordPayload,
+    ir_record_store::MergeInstallResult,
     message::{BootstrapRecord, FinalizeInconsistentReply, LeaderRecordReply, Reconfigure, StatusBroadcast, ViewChangeAddendum},
-    payload::IrPayload,
     shared_view::SharedView, AddMember, Confirm, DoViewChange,
     FinalizeConsensus, FinalizeInconsistent, Membership, Message, OpId, ProposeConsensus,
     ProposeInconsistent, Record, RecordConsensusEntry, RecordEntryState, RecordInconsistentEntry,
@@ -50,6 +49,8 @@ pub trait Upcalls: Sized + Send + 'static {
     type CR: TransportMessage + Eq + Ord + Hash;
     /// The record snapshot type used by sync and view-change callbacks.
     type Record: RecordView<IO = Self::IO, CO = Self::CO, CR = Self::CR>;
+    /// The payload type used for view-change messages (StartView, DoViewChange).
+    type Payload: TransportMessage;
 
     fn exec_unlogged(&self, op: Self::UO) -> Self::UR;
     fn exec_inconsistent(&mut self, op_id: &OpId, op: &Self::IO) -> Option<Self::IR>;
@@ -95,11 +96,11 @@ pub trait Upcalls: Sized + Send + 'static {
     }
 }
 
-pub struct Replica<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Record = Record<U>>> {
+pub struct Replica<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Record = Record<U>, Payload = U::Payload>> {
     inner: Arc<Inner<U, T, R>>,
 }
 
-impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Record = Record<U>>> Debug for Replica<U, T, R> {
+impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Record = Record<U>, Payload = U::Payload>> Debug for Replica<U, T, R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = f.debug_struct("Replica");
         if let Ok(sync) = self.inner.sync.try_lock() {
@@ -113,7 +114,7 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Record =
     }
 }
 
-struct Inner<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Record = Record<U>>> {
+struct Inner<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Record = Record<U>, Payload = U::Payload>> {
     transport: T,
     app_tick: Option<fn(&U, &T, &Membership<T::Address>, &mut crate::Rng)>,
     view_change_interval: Duration,
@@ -132,7 +133,7 @@ struct Inner<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, 
     sync: Mutex<SyncInner<U, T, R>>,
 }
 
-struct SyncInner<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Record = Record<U>>> {
+struct SyncInner<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Record = Record<U>, Payload = U::Payload>> {
     status: Status,
     view: SharedView<T::Address>,
     latest_normal_view: SharedView<T::Address>,
@@ -141,14 +142,14 @@ struct SyncInner<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::
     changed_view_recently: bool,
     upcalls: U,
     record: R,
-    outstanding_do_view_changes: BTreeMap<T::Address, DoViewChange<U::IO, U::CO, U::CR, T::Address>>,
+    outstanding_do_view_changes: BTreeMap<T::Address, DoViewChange<U::IO, U::CO, U::CR, T::Address, U::Payload>>,
     /// Last time received message from each peer replica.
     peer_liveness: BTreeMap<T::Address, Instant>,
     /// Latest normal-view number confirmed by each peer via periodic status broadcasts.
     peer_normal_views: BTreeMap<T::Address, ViewNumber>,
 }
 
-impl<U: Upcalls<Record = Record<U>>, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Record = Record<U>>> Replica<U, T, R> {
+impl<U: Upcalls<Record = Record<U>>, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Record = Record<U>, Payload = U::Payload>> Replica<U, T, R> {
     const VIEW_CHANGE_INTERVAL: Duration = Duration::from_secs(2);
 
     pub fn new(
@@ -307,26 +308,22 @@ impl<U: Upcalls<Record = Record<U>>, T: Transport<U>, R: IrRecordStore<U::IO, U:
                     view: sync.view.clone(),
                     from_client: false,
                     addendum: (address == sync.view.leader()).then(|| {
-                        let can_delta = sync.record.has_sealed_view()
-                            && sync.latest_normal_view.number.0 + 1 == sync.view.number.0
+                        let peers_confirmed = sync.latest_normal_view.number.0 + 1 == sync.view.number.0
                             && sync.latest_normal_view.membership.iter()
                                 .filter(|a| *a != transport.address())
                                 .all(|a| {
                                     sync.peer_normal_views.get(&a)
                                         .is_some_and(|v| *v >= sync.latest_normal_view.number)
                                 });
-                        let payload = if can_delta {
-                            RecordPayload::Delta {
-                                base_view: ViewNumber(sync.record.sealed_view_number()),
-                                entries: sync.record.current_view_delta(),
-                            }
+                        let payload = if peers_confirmed {
+                            sync.record.build_view_change_payload(sync.view.number.0)
                         } else {
-                            RecordPayload::Full(sync.record.full_record())
+                            R::make_full_payload(sync.record.full_record())
                         };
-                        ViewChangeAddendum {
+                        ViewChangeAddendum::new(
                             payload,
-                            latest_normal_view: sync.latest_normal_view.clone(),
-                        }
+                            sync.latest_normal_view.clone(),
+                        )
                     }),
                 }),
             )
@@ -519,17 +516,10 @@ impl<U: Upcalls<Record = Record<U>>, T: Transport<U>, R: IrRecordStore<U::IO, U:
                         let synthetic = DoViewChange {
                             view: sync.view.clone(),
                             from_client: false,
-                            addendum: Some(ViewChangeAddendum {
-                                payload: if sync.record.has_sealed_view() {
-                                    RecordPayload::Delta {
-                                        base_view: ViewNumber(sync.record.sealed_view_number()),
-                                        entries: sync.record.current_view_delta(),
-                                    }
-                                } else {
-                                    RecordPayload::Full(sync.record.full_record())
-                                },
-                                latest_normal_view: sync.latest_normal_view.clone(),
-                            }),
+                            addendum: Some(ViewChangeAddendum::new(
+                                sync.record.build_view_change_payload(sync.view.number.0),
+                                sync.latest_normal_view.clone(),
+                            )),
                         };
                         let matching = sync
                             .outstanding_do_view_changes
@@ -542,7 +532,7 @@ impl<U: Upcalls<Record = Record<U>>, T: Transport<U>, R: IrRecordStore<U::IO, U:
 
                         if matching.clone().count() >= sync.latest_normal_view.membership.size().f_plus_one() {
                             info!("changing to {:?}", msg_view_number);
-                            let (old_base_view, delta_entries) = {
+                            let merge_result = {
                                 let latest_normal_view =
                                     matching
                                         .clone()
@@ -561,28 +551,7 @@ impl<U: Upcalls<Record = Record<U>>, T: Transport<U>, R: IrRecordStore<U::IO, U:
                                     })
                                     .map(|(_, r)| {
                                         let addendum = r.addendum.as_ref().unwrap();
-                                        match &addendum.payload {
-                                            RecordPayload::Delta { base_view, .. } => {
-                                                let base_ok = sync.record.has_sealed_view()
-                                                    && ViewNumber(sync.record.sealed_view_number()) == *base_view;
-                                                assert!(
-                                                    base_ok,
-                                                    "Delta addendum base_view={base_view:?} does not match \
-                                                     coordinator record base={:?}; gossip confirmed all \
-                                                     members but coordinator lacks base",
-                                                    sync.record.has_sealed_view().then(|| ViewNumber(sync.record.sealed_view_number())),
-                                                );
-                                                let base = if sync.record.has_sealed_view() {
-                                                    Some(sync.record.sealed_record())
-                                                } else {
-                                                    None
-                                                };
-                                                addendum.payload.clone().resolve(base)
-                                            }
-                                            RecordPayload::Full(_) => {
-                                                addendum.payload.clone().resolve(None)
-                                            }
-                                        }
+                                        sync.record.resolve_do_view_change_payload(&addendum.payload)
                                     })
                                     .collect::<Vec<_>>();
 
@@ -721,36 +690,13 @@ impl<U: Upcalls<Record = Record<U>>, T: Transport<U>, R: IrRecordStore<U::IO, U:
                                     );
                                 }
 
-                                // Compute CDC delta and base_view BEFORE storing R.
-                                let old_base_view = if sync.record.has_sealed_view() {
-                                    Some(ViewNumber(sync.record.sealed_view_number()))
-                                } else {
-                                    None
-                                };
-                                let delta_entries = if sync.record.has_sealed_view() {
-                                    Some(R.delta_from(sync.record.sealed_record()))
-                                } else {
-                                    None
-                                };
+                                // Install merged record — computes CDC and delta payload internally.
+                                let merge_result: MergeInstallResult<Record<U>, U::Payload> =
+                                    sync.record.install_merged_record(R, msg_view_number.0);
+                                let (from_view, ref changes) = merge_result.transition;
+                                sync.upcalls.on_install_leader_record_delta(from_view, msg_view_number.0, changes);
 
-                                // CDC: notify upcalls of the delta record for this view transition.
-                                {
-                                    let base_view_num = old_base_view.map(|bv| bv.0).unwrap_or(0);
-                                    if let Some(ref delta) = delta_entries {
-                                        sync.upcalls.on_install_leader_record_delta(
-                                            base_view_num, msg_view_number.0, delta,
-                                        );
-                                    } else {
-                                        // First view: entire record is the delta.
-                                        sync.upcalls.on_install_leader_record_delta(
-                                            0, msg_view_number.0, &R,
-                                        );
-                                    }
-                                }
-
-                                // Store R as new base with empty overlay.
-                                sync.record = R::install(R, msg_view_number.0);
-                                (old_base_view, delta_entries)
+                                merge_result
                             };
                             sync.record_base_view = Some(sync.view.clone());
                             sync.changed_view_recently = true;
@@ -770,15 +716,14 @@ impl<U: Upcalls<Record = Record<U>>, T: Transport<U>, R: IrRecordStore<U::IO, U:
 
                             sync.latest_normal_view.make_mut().number = msg_view_number;
                             sync.latest_normal_view.make_mut().membership = sync.view.membership.clone();
-    
 
-                            let full_payload = RecordPayload::Full(sync.record.sealed_record().clone());
+                            let full_payload = sync.record.build_start_view_payload(None);
 
                             for address in destinations {
                                 if address == self.inner.transport.address() {
                                     continue;
                                 }
-                                let recipient_same_base = old_base_view
+                                let recipient_same_base = merge_result.previous_base_view
                                     .map(|bv| {
                                         sync.outstanding_do_view_changes
                                             .get(&address)
@@ -790,21 +735,14 @@ impl<U: Upcalls<Record = Record<U>>, T: Transport<U>, R: IrRecordStore<U::IO, U:
                                     .unwrap_or(false);
 
                                 let payload = if recipient_same_base {
-                                    if let Some(delta) = delta_entries.as_ref() {
-                                        RecordPayload::Delta {
-                                            base_view: old_base_view.unwrap(),
-                                            entries: delta.clone(),
-                                        }
-                                    } else {
-                                        full_payload.clone()
-                                    }
+                                    sync.record.build_start_view_payload(merge_result.start_view_delta.as_ref())
                                 } else {
                                     full_payload.clone()
                                 };
-                                let sv = StartView {
+                                let sv = StartView::new(
                                     payload,
-                                    view: sync.view.clone(),
-                                };
+                                    sync.view.clone(),
+                                );
                                 self.inner.transport.do_send(address, Message::<U, T>::StartView(sv));
                             }
                             self.inner.transport.on_membership_changed(&sync.view.membership, sync.view.number.0);
@@ -815,89 +753,27 @@ impl<U: Upcalls<Record = Record<U>>, T: Transport<U>, R: IrRecordStore<U::IO, U:
                     && base_view.number >= msg.view.number
                 {
                     warn!("{:?} sending leader record to help catch up {address:?}", self.address());
-                    let sv = StartView {
-                        payload: RecordPayload::Full(sync.record.sealed_record().clone()),
-                        view: base_view.clone(),
-                    };
+                    let sv = StartView::new(
+                        sync.record.build_start_view_payload(None),
+                        base_view.clone(),
+                    );
                     self.inner.transport.do_send(address, Message::<U, T>::StartView(sv));
                 }
             }
-            Message::<U, T>::StartView(StartView { payload, view }) => {
+            Message::<U, T>::StartView(StartView { payload, view, .. }) => {
                 if view.number > sync.view.number
                     || (view.number == sync.view.number && !sync.status.is_normal())
                 {
                     info!("starting view {:?} (was {:?} in {:?})", view.number, sync.status, sync.view.number);
-                    let base = if sync.record.has_sealed_view() {
-                        Some(sync.record.sealed_record())
-                    } else {
-                        None
+                    let Some(result) = sync.record.install_start_view_payload(payload, view.number.0) else {
+                        debug_assert!(false, "StartView payload validation failed (delta base mismatch)");
+                        warn!("ignoring StartView: payload validation failed (delta base mismatch)");
+                        return None;
                     };
-                    // Validate Delta base before resolving — the leader-side
-                    // view filter should prevent this, but defend against it.
-                    if let RecordPayload::Delta { base_view, .. } = &payload {
-                        let base_ok = sync.record.has_sealed_view()
-                            && ViewNumber(sync.record.sealed_view_number()) == *base_view;
-                        // Should never fire after the leader-side fix. If it does,
-                        // it indicates a new bug in the Delta optimization.
-                        debug_assert!(base_ok,
-                            "Delta StartView with mismatched base: expected base_view={base_view:?}, \
-                             record base={:?}",
-                            sync.record.has_sealed_view().then(|| ViewNumber(sync.record.sealed_view_number())));
-                        if !base_ok {
-                            warn!(
-                                ?base_view,
-                                record_base_view = ?sync.record.has_sealed_view().then(|| ViewNumber(sync.record.sealed_view_number())),
-                                "ignoring Delta StartView: base mismatch or missing"
-                            );
-                            // TODO: Send a NAK back to the leader so it can retry with
-                            // Full payload, rather than silently dropping the StartView.
-                            // For now, the replica will stay in ViewChanging and the next
-                            // tick-driven view change will recover.
-                            return None;
-                        }
-                    }
-                    // CDC: record delta so scan_changes quorum reads can find it
-                    // regardless of which f+1 replicas respond.
-                    //
-                    // When this replica receives a Full payload (because its base view
-                    // didn't match the leader's Delta base), it computes a **spanning
-                    // delta** from its own stale base to the full record. For example,
-                    // if this replica was at view 1 and receives the full record at
-                    // view 3, it records delta(1→3) covering both view transitions.
-                    //
-                    // Spanning deltas may overlap with fine-grained deltas on other
-                    // replicas (e.g., the view-2 leader has delta(1→2)). The
-                    // merge_responses() algorithm in shard_client.rs handles this by
-                    // preferring fine-grained deltas when available and falling back to
-                    // spanning deltas to fill gaps. Duplicate changes from overlap are
-                    // benign — ship_changes creates fresh transaction IDs and the MVCC
-                    // store handles idempotent writes at the same timestamp.
-                    match &payload {
-                        RecordPayload::Delta { base_view, entries } => {
-                            sync.upcalls.on_install_leader_record_delta(
-                                base_view.0, view.number.0, entries,
-                            );
-                        }
-                        RecordPayload::Full(record) if !sync.record.has_sealed_view() => {
-                            // First view: entire record is the delta.
-                            sync.upcalls.on_install_leader_record_delta(
-                                0, view.number.0, record,
-                            );
-                        }
-                        RecordPayload::Full(record) => {
-                            // Spanning delta: base is stale, compute diff to full record.
-                            let delta = record.delta_from(sync.record.sealed_record());
-                            sync.upcalls.on_install_leader_record_delta(
-                                sync.record.sealed_view_number(), view.number.0, &delta,
-                            );
-                        }
-                    }
-                    let new_record = payload.resolve(base);
-                    {
-                        let old_record = sync.record.full_record();
-                        sync.upcalls.sync(&old_record, &new_record);
-                    }
-                    sync.record = R::install(new_record, view.number.0);
+                    let (from_view, ref changes) = result.transition;
+                    sync.upcalls.on_install_leader_record_delta(from_view, view.number.0, changes);
+                    let new_record = sync.record.full_record();
+                    sync.upcalls.sync(&result.previous_record, &new_record);
                     sync.record_base_view = Some(view.clone());
                     sync.status = Status::Normal;
                     self.inner.view_change_count.fetch_add(1, Ordering::Relaxed);
@@ -983,20 +859,19 @@ impl<U: Upcalls<Record = Record<U>>, T: Transport<U>, R: IrRecordStore<U::IO, U:
                 }
             }
             Message::<U, T>::FetchLeaderRecord(_) => {
-                let (record, view) = if sync.record.has_sealed_view() {
-                    (Some(Arc::new(sync.record.sealed_record().clone())), sync.record_base_view.clone())
-                } else {
-                    (None, None)
+                let (record, view) = match sync.record.checkpoint_record() {
+                    Some(r) => (Some(Arc::new(r)), sync.record_base_view.clone()),
+                    None => (None, None),
                 };
                 return Some(Message::<U, T>::LeaderRecordReply(LeaderRecordReply { record, view }));
             }
             Message::<U, T>::BootstrapRecord(BootstrapRecord { record, view }) => {
                 self.inner.transport.do_send(
                     self.inner.transport.address(),
-                    Message::<U, T>::StartView(StartView {
-                        payload: RecordPayload::Full(record),
+                    Message::<U, T>::StartView(StartView::new(
+                        R::make_full_payload(record),
                         view,
-                    }),
+                    )),
                 );
             }
             Message::<U, T>::StatusBroadcast(StatusBroadcast { latest_normal_view }) => {

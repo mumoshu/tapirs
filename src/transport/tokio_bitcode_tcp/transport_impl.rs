@@ -23,6 +23,7 @@ where
     U::IR: Serialize + DeserializeOwned,
     U::CO: Serialize + DeserializeOwned,
     U::CR: Serialize + DeserializeOwned,
+    U::Payload: Serialize + DeserializeOwned,
 {
     type Address = TcpAddress;
     type Sleep = tokio::time::Sleep;
@@ -182,6 +183,7 @@ where
     U::IR: Serialize + DeserializeOwned,
     U::CO: Serialize + DeserializeOwned,
     U::CR: Serialize + DeserializeOwned,
+    U::Payload: Serialize + DeserializeOwned,
 {
     /// Bind a TCP listener and start accepting inbound connections.
     pub async fn listen(&self, addr: std::net::SocketAddr) -> tokio::io::Result<()> {

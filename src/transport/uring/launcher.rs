@@ -57,6 +57,7 @@ impl CoreLauncher {
         U::IR: Serialize + DeserializeOwned,
         U::CO: Serialize + DeserializeOwned,
         U::CR: Serialize + DeserializeOwned,
+        U::Payload: Serialize + DeserializeOwned,
     {
         self.configs
             .into_iter()

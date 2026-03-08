@@ -1,5 +1,5 @@
 use super::{
-    inmem::record_payload::RecordPayload, record::RecordImpl, shared_view::SharedView, OpId,
+    record::RecordImpl, shared_view::SharedView, OpId,
     RecordEntryState, ReplicaUpcalls, ViewNumber,
 };
 use crate::Transport;
@@ -14,10 +14,11 @@ pub type Message<U, T> = MessageImpl<
     <U as ReplicaUpcalls>::CO,
     <U as ReplicaUpcalls>::CR,
     <T as Transport<U>>::Address,
+    <U as ReplicaUpcalls>::Payload,
 >;
 
 #[derive(Clone, derive_more::From, derive_more::TryInto, Serialize, Deserialize)]
-pub enum MessageImpl<UO, UR, IO, IR, CO, CR, A> {
+pub enum MessageImpl<UO, UR, IO, IR, CO, CR, A, P> {
     RequestUnlogged(RequestUnlogged<UO>),
     ReplyUnlogged(ReplyUnlogged<UR, A>),
     ProposeInconsistent(ProposeInconsistent<IO>),
@@ -28,8 +29,8 @@ pub enum MessageImpl<UO, UR, IO, IR, CO, CR, A> {
     FinalizeInconsistentReply(FinalizeInconsistentReply<IR, A>),
     FinalizeConsensus(FinalizeConsensus<CR>),
     Confirm(Confirm<A>),
-    DoViewChange(DoViewChange<IO, CO, CR, A>),
-    StartView(StartView<IO, CO, CR, A>),
+    DoViewChange(DoViewChange<IO, CO, CR, A, P>),
+    StartView(StartView<IO, CO, CR, A, P>),
     AddMember(AddMember<A>),
     RemoveMember(RemoveMember<A>),
     Reconfigure(Reconfigure),
@@ -39,8 +40,8 @@ pub enum MessageImpl<UO, UR, IO, IR, CO, CR, A> {
     StatusBroadcast(StatusBroadcast),
 }
 
-impl<UO: Debug, UR: Debug, IO: Debug, IR: Debug, CO: Debug, CR: Debug, A: Debug> Debug
-    for MessageImpl<UO, UR, IO, IR, CO, CR, A>
+impl<UO: Debug, UR: Debug, IO: Debug, IR: Debug, CO: Debug, CR: Debug, A: Debug, P: Debug> Debug
+    for MessageImpl<UO, UR, IO, IR, CO, CR, A, P>
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -142,24 +143,33 @@ pub struct Confirm<A> {
 
 /// Informs a replica about a new view.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DoViewChange<IO, CO, CR, A> {
+pub struct DoViewChange<IO, CO, CR, A, P> {
     /// View to change to.
     pub view: SharedView<A>,
     /// From client (don't send cached leader record).
     pub from_client: bool,
     /// Is `Some` when sent from replica to new leader.
-    pub addendum: Option<ViewChangeAddendum<IO, CO, CR, A>>,
+    pub addendum: Option<ViewChangeAddendum<IO, CO, CR, A, P>>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-pub struct ViewChangeAddendum<IO, CO, CR, A> {
+pub struct ViewChangeAddendum<IO, CO, CR, A, P> {
     /// Sender replica's record (full or delta).
-    pub payload: RecordPayload<IO, CO, CR>,
+    #[serde(bound(serialize = "P: Serialize", deserialize = "P: Deserialize<'de>"))]
+    pub payload: P,
     /// Latest view in which sender replica had a normal state.
     pub latest_normal_view: SharedView<A>,
+    #[serde(skip)]
+    _marker: std::marker::PhantomData<(IO, CO, CR)>,
 }
 
-impl<IO, CO, CR, A: Debug> Debug for ViewChangeAddendum<IO, CO, CR, A> {
+impl<IO, CO, CR, A, P> ViewChangeAddendum<IO, CO, CR, A, P> {
+    pub fn new(payload: P, latest_normal_view: SharedView<A>) -> Self {
+        Self { payload, latest_normal_view, _marker: std::marker::PhantomData }
+    }
+}
+
+impl<IO, CO, CR, A: Debug, P> Debug for ViewChangeAddendum<IO, CO, CR, A, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Addendum")
             .field("latest_normal_view", &self.latest_normal_view)
@@ -169,14 +179,23 @@ impl<IO, CO, CR, A: Debug> Debug for ViewChangeAddendum<IO, CO, CR, A> {
 
 /// From leader to inform a replica that a new view has begun.
 #[derive(Clone, Serialize, Deserialize)]
-pub struct StartView<IO, CO, CR, A> {
+pub struct StartView<IO, CO, CR, A, P> {
     /// Leader's merged record (full or delta).
-    pub payload: RecordPayload<IO, CO, CR>,
+    #[serde(bound(serialize = "P: Serialize", deserialize = "P: Deserialize<'de>"))]
+    pub payload: P,
     /// New view.
     pub view: SharedView<A>,
+    #[serde(skip)]
+    _marker: std::marker::PhantomData<(IO, CO, CR)>,
 }
 
-impl<IO, CO, CR, A: Debug> Debug for StartView<IO, CO, CR, A> {
+impl<IO, CO, CR, A, P> StartView<IO, CO, CR, A, P> {
+    pub fn new(payload: P, view: SharedView<A>) -> Self {
+        Self { payload, view, _marker: std::marker::PhantomData }
+    }
+}
+
+impl<IO, CO, CR, A: Debug, P> Debug for StartView<IO, CO, CR, A, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StartView")
             .field("view", &self.view)
