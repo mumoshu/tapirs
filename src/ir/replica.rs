@@ -95,11 +95,11 @@ pub trait Upcalls: Sized + Send + 'static {
     }
 }
 
-pub struct Replica<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR>> {
+pub struct Replica<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Record = Record<U>>> {
     inner: Arc<Inner<U, T, R>>,
 }
 
-impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR>> Debug for Replica<U, T, R> {
+impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Record = Record<U>>> Debug for Replica<U, T, R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = f.debug_struct("Replica");
         if let Ok(sync) = self.inner.sync.try_lock() {
@@ -113,7 +113,7 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR>> Debug f
     }
 }
 
-struct Inner<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR>> {
+struct Inner<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Record = Record<U>>> {
     transport: T,
     app_tick: Option<fn(&U, &T, &Membership<T::Address>, &mut crate::Rng)>,
     view_change_interval: Duration,
@@ -132,7 +132,7 @@ struct Inner<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR>>
     sync: Mutex<SyncInner<U, T, R>>,
 }
 
-struct SyncInner<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR>> {
+struct SyncInner<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Record = Record<U>>> {
     status: Status,
     view: SharedView<T::Address>,
     latest_normal_view: SharedView<T::Address>,
@@ -148,7 +148,7 @@ struct SyncInner<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::
     peer_normal_views: BTreeMap<T::Address, ViewNumber>,
 }
 
-impl<U: Upcalls<Record = Record<U>>, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR>> Replica<U, T, R> {
+impl<U: Upcalls<Record = Record<U>>, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Record = Record<U>>> Replica<U, T, R> {
     const VIEW_CHANGE_INTERVAL: Duration = Duration::from_secs(2);
 
     pub fn new(

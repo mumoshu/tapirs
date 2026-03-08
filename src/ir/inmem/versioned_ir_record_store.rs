@@ -162,6 +162,8 @@ where
     CO: Debug + Send + 'static,
     CR: Debug + Send + 'static,
 {
+    type Record = RecordImpl<IO, CO, CR>;
+
     fn entry_inconsistent(&mut self, op_id: OpId) -> VersionedEntry<'_, InconsistentEntry<IO>> {
         self.entry_inconsistent(op_id)
     }

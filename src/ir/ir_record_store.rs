@@ -1,4 +1,4 @@
-use super::record::{ConsensusEntry, InconsistentEntry, RecordImpl, VersionedEntry};
+use super::record::{ConsensusEntry, InconsistentEntry, RecordView, VersionedEntry};
 use super::OpId;
 use std::fmt::Debug;
 
@@ -17,6 +17,8 @@ where
     CO: Clone,
     CR: Clone,
 {
+    type Record: RecordView<IO = IO, CO = CO, CR = CR> + Clone + Debug + Default + Send + 'static;
+
     /// Look up or insert an inconsistent entry by OpId.
     fn entry_inconsistent(&mut self, op_id: OpId) -> VersionedEntry<'_, InconsistentEntry<IO>>;
 
@@ -32,10 +34,10 @@ where
     fn get_mut_consensus(&mut self, op_id: &OpId) -> Option<&mut ConsensusEntry<CO, CR>>;
 
     /// Returns entries modified during the current view (since the last seal).
-    fn current_view_delta(&self) -> RecordImpl<IO, CO, CR>;
+    fn current_view_delta(&self) -> Self::Record;
 
     /// Returns all entries (sealed + current view) merged into a single record.
-    fn full_record(&self) -> RecordImpl<IO, CO, CR>;
+    fn full_record(&self) -> Self::Record;
 
     /// Whether a sealed checkpoint exists (at least one view change has completed).
     fn has_sealed_view(&self) -> bool;
@@ -45,11 +47,11 @@ where
 
     /// The record as of the last sealed view. Only meaningful when
     /// `has_sealed_view()` returns true.
-    fn sealed_record(&self) -> &RecordImpl<IO, CO, CR>;
+    fn sealed_record(&self) -> &Self::Record;
 
     /// Create from a full record after view change resolution.
     /// The record becomes the sealed checkpoint with an empty current view.
-    fn install(record: RecordImpl<IO, CO, CR>, view: u64) -> Self;
+    fn install(record: Self::Record, view: u64) -> Self;
 
     /// Total number of unique inconsistent entries.
     fn inconsistent_len(&self) -> usize;
