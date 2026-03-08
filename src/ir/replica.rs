@@ -158,8 +158,9 @@ impl<U: Upcalls<Record = Record<U>>, T: Transport<U>, R: IrRecordStore<U::IO, U:
         upcalls: U,
         transport: T,
         app_tick: Option<fn(&U, &T, &Membership<T::Address>, &mut crate::Rng)>,
+        record: R,
     ) -> Self {
-        Self::with_view_change_interval(rng, membership, upcalls, transport, app_tick, None)
+        Self::with_view_change_interval(rng, membership, upcalls, transport, app_tick, None, record)
     }
 
     pub fn with_view_change_interval(
@@ -169,6 +170,7 @@ impl<U: Upcalls<Record = Record<U>>, T: Transport<U>, R: IrRecordStore<U::IO, U:
         transport: T,
         app_tick: Option<fn(&U, &T, &Membership<T::Address>, &mut crate::Rng)>,
         view_change_interval: Option<Duration>,
+        record: R,
     ) -> Self {
         let interval = view_change_interval.unwrap_or(Self::VIEW_CHANGE_INTERVAL);
         let view = SharedView::new(View {
@@ -189,7 +191,7 @@ impl<U: Upcalls<Record = Record<U>>, T: Transport<U>, R: IrRecordStore<U::IO, U:
                     view,
                     changed_view_recently: true,
                     upcalls,
-                    record: R::default(),
+                    record,
                     record_base_view: None,
                     outstanding_do_view_changes: BTreeMap::new(),
                     peer_liveness: BTreeMap::new(),

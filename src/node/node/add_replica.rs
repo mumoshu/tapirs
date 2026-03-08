@@ -95,6 +95,7 @@ impl Node {
                 transport_for_replica.clone(),
                 Some(TapirReplica::tick),
                 Some(Duration::from_secs(10)),
+                Default::default(),
             )
         });
 

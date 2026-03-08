@@ -57,6 +57,7 @@ async fn test_join_with_preload() {
                 upcalls,
                 channel,
                 Some(TapirReplica::tick),
+                Default::default(),
             )
         },
     );

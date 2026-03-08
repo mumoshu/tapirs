@@ -300,6 +300,7 @@ impl Process<LinKv, Wrapper> for KvNode {
                         transport,
                         Some(TapirReplica::tick),
                         Some(view_change_interval),
+                        Default::default(),
                     )))
                 }
                 IdEnum::App(_) => {

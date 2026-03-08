@@ -47,6 +47,7 @@ pub fn build_shard<K: Key, V: Value>(
                         upcalls,
                         channel,
                         Some(TapirReplica::tick),
+                        Default::default(),
                     )
                 },
             )

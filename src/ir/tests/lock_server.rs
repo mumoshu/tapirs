@@ -189,7 +189,7 @@ async fn lock_server(num_replicas: usize) {
                 let channel =
                     registry.channel(move |from, message| weak.upgrade()?.receive(from, message), Arc::clone(dir));
                 let upcalls = Upcalls { locked: None };
-                IrReplica::new(rng.fork(), membership.clone(), upcalls, channel, None)
+                IrReplica::new(rng.fork(), membership.clone(), upcalls, channel, None, Default::default())
             },
         )
     }

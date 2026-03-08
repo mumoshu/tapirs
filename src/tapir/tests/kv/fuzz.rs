@@ -45,7 +45,7 @@ fn build_shard_faulty(
                             MemoryIo::temp_path(),
                         ).unwrap(),
                     );
-                    IrReplica::new(replica_rng, membership, upcalls, transport, Some(TapirReplica::tick))
+                    IrReplica::new(replica_rng, membership, upcalls, transport, Some(TapirReplica::tick), Default::default())
                 },
             )
         })

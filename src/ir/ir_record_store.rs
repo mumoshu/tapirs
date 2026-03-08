@@ -32,7 +32,7 @@ pub struct MergeInstallResult<R, P> {
 ///
 /// The default implementation is [`super::VersionedRecord`], which uses
 /// in-memory BTreeMaps with base/overlay semantics.
-pub trait IrRecordStore<IO, CO, CR>: Default + Debug + Send + 'static
+pub trait IrRecordStore<IO, CO, CR>: Debug + Send + 'static
 where
     IO: Clone,
     CO: Clone,
