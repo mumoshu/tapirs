@@ -1,4 +1,5 @@
 mod client;
+mod ir_record_store;
 mod membership;
 pub(crate) mod message;
 mod op;
@@ -11,6 +12,7 @@ mod view;
 mod tests;
 
 pub use client::{Client, Id as ClientId};
+pub use ir_record_store::IrRecordStore;
 pub use membership::{Membership, Size as MembershipSize};
 pub use message::{
     AddMember, Confirm, DoViewChange, FinalizeConsensus, FinalizeInconsistent,
@@ -21,7 +23,7 @@ pub use message::{
 pub use op::Id as OpId;
 pub use record::{
     ConsensusEntry as RecordConsensusEntry,
-    InconsistentEntry as RecordInconsistentEntry, IrRecordStore, Record, RecordView,
+    InconsistentEntry as RecordInconsistentEntry, Record, RecordView,
     State as RecordEntryState, VersionedEntry, VersionedRecord,
 };
 pub use replica::{Replica, ReplicaMetrics, Upcalls as ReplicaUpcalls};
