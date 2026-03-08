@@ -4,7 +4,7 @@ use super::{
     message::{BootstrapRecord, FinalizeInconsistentReply, LeaderRecordReply, Reconfigure, StatusBroadcast, ViewChangeAddendum},
     shared_view::SharedView, AddMember, Confirm, DoViewChange,
     FinalizeConsensus, FinalizeInconsistent, Membership, Message, OpId, ProposeConsensus,
-    ProposeInconsistent, Record, RecordConsensusEntry, RecordEntryState, RecordInconsistentEntry,
+    ProposeInconsistent, RecordConsensusEntry, RecordEntryState, RecordInconsistentEntry,
     RemoveMember, ReplyConsensus, ReplyInconsistent, ReplyUnlogged, RequestUnlogged, StartView,
     IrRecordStore, RecordBuilder, RecordView, VersionedEntry, View, ViewNumber,
 };
@@ -47,8 +47,6 @@ pub trait Upcalls: Sized + Send + 'static {
     type CO: TransportMessage + Eq;
     /// Consensus result.
     type CR: TransportMessage + Eq + Ord + Hash;
-    /// The record snapshot type used by sync and view-change callbacks.
-    type Record: RecordView<IO = Self::IO, CO = Self::CO, CR = Self::CR>;
     /// The payload type used for view-change messages (StartView, DoViewChange).
     type Payload: TransportMessage;
 
@@ -66,7 +64,11 @@ pub trait Upcalls: Sized + Send + 'static {
     /// In addition to the IR spec, this must not rely on the existence
     /// of any ancient records (from before the last view change) in the
     /// leader's record.
-    fn sync(&mut self, local: &Self::Record, leader: &Self::Record);
+    fn sync<Rec: RecordView<IO = Self::IO, CO = Self::CO, CR = Self::CR>>(
+        &mut self,
+        local: &Rec,
+        leader: &Rec,
+    );
     fn merge(
         &mut self,
         d: BTreeMap<OpId, (Self::CO, Self::CR)>,
@@ -81,11 +83,11 @@ pub trait Upcalls: Sized + Send + 'static {
     /// changed during `base_view` (the view preceding the new view).
     /// `new_view` is the view the shard is transitioning to.
     /// Default: no-op.
-    fn on_install_leader_record_delta(
+    fn on_install_leader_record_delta<Rec: RecordView<IO = Self::IO, CO = Self::CO, CR = Self::CR>>(
         &mut self,
         _base_view: u64,
         _new_view: u64,
-        _delta: &Self::Record,
+        _delta: &Rec,
     ) {
     }
 
@@ -96,11 +98,11 @@ pub trait Upcalls: Sized + Send + 'static {
     }
 }
 
-pub struct Replica<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Record = Record<U>, Payload = U::Payload>> {
+pub struct Replica<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload = U::Payload>> {
     inner: Arc<Inner<U, T, R>>,
 }
 
-impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Record = Record<U>, Payload = U::Payload>> Debug for Replica<U, T, R> {
+impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload = U::Payload>> Debug for Replica<U, T, R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = f.debug_struct("Replica");
         if let Ok(sync) = self.inner.sync.try_lock() {
@@ -114,7 +116,7 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Record =
     }
 }
 
-struct Inner<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Record = Record<U>, Payload = U::Payload>> {
+struct Inner<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload = U::Payload>> {
     transport: T,
     app_tick: Option<fn(&U, &T, &Membership<T::Address>, &mut crate::Rng)>,
     view_change_interval: Duration,
@@ -133,7 +135,7 @@ struct Inner<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, 
     sync: Mutex<SyncInner<U, T, R>>,
 }
 
-struct SyncInner<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Record = Record<U>, Payload = U::Payload>> {
+struct SyncInner<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload = U::Payload>> {
     status: Status,
     view: SharedView<T::Address>,
     latest_normal_view: SharedView<T::Address>,
@@ -149,7 +151,7 @@ struct SyncInner<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::
     peer_normal_views: BTreeMap<T::Address, ViewNumber>,
 }
 
-impl<U: Upcalls<Record = Record<U>>, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Record = Record<U>, Payload = U::Payload>> Replica<U, T, R> {
+impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload = U::Payload>> Replica<U, T, R> {
     const VIEW_CHANGE_INTERVAL: Duration = Duration::from_secs(2);
 
     pub fn new(
@@ -576,7 +578,7 @@ impl<U: Upcalls<Record = Record<U>>, T: Transport<U>, R: IrRecordStore<U::IO, U:
                                 }
 
                                 #[allow(non_snake_case)]
-                                let mut R = Record::<U>::default();
+                                let mut R = R::Record::default();
                                 let mut entries_by_opid =
                                     BTreeMap::<OpId, Vec<RecordConsensusEntry<U::CO, U::CR>>>::new();
                                 let mut finalized = HashSet::new();
@@ -688,7 +690,7 @@ impl<U: Upcalls<Record = Record<U>>, T: Transport<U>, R: IrRecordStore<U::IO, U:
                                 }
 
                                 // Install merged record — computes CDC and delta payload internally.
-                                let merge_result: MergeInstallResult<Record<U>, U::Payload> =
+                                let merge_result: MergeInstallResult<R::Record, U::Payload> =
                                     sync.record.install_merged_record(R, msg_view_number.0);
                                 let (from_view, ref changes) = merge_result.transition;
                                 sync.upcalls.on_install_leader_record_delta(from_view, msg_view_number.0, changes);
@@ -856,17 +858,17 @@ impl<U: Upcalls<Record = Record<U>>, T: Transport<U>, R: IrRecordStore<U::IO, U:
                 }
             }
             Message::<U, T>::FetchLeaderRecord(_) => {
-                let (record, view) = match sync.record.checkpoint_record() {
-                    Some(r) => (Some(Arc::new(r)), sync.record_base_view.clone()),
+                let (payload, view) = match sync.record.checkpoint_record() {
+                    Some(r) => (Some(R::make_full_payload(r)), sync.record_base_view.clone()),
                     None => (None, None),
                 };
-                return Some(Message::<U, T>::LeaderRecordReply(LeaderRecordReply { record, view }));
+                return Some(Message::<U, T>::LeaderRecordReply(LeaderRecordReply { payload, view }));
             }
-            Message::<U, T>::BootstrapRecord(BootstrapRecord { record, view }) => {
+            Message::<U, T>::BootstrapRecord(BootstrapRecord { payload, view }) => {
                 self.inner.transport.do_send(
                     self.inner.transport.address(),
                     Message::<U, T>::StartView(StartView::new(
-                        R::make_full_payload(record),
+                        payload,
                         view,
                     )),
                 );

@@ -3,7 +3,7 @@ use tracing::debug;
 use super::message::MinPrepareBaselineResult;
 use crate::{
     ir::ClientConfig as IrClientConfig,
-    transport::Transport, IrClient, IrClientId, IrMembership, IrRecord, IrSharedView,
+    transport::Transport, IrClient, IrClientId, IrMembership, IrReplicaUpcalls, IrSharedView,
     OccPrepareResult, OccSharedTransaction, OccTransaction, OccTransactionId,
 };
 use serde::{Deserialize, Serialize};
@@ -506,7 +506,7 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
 
     pub fn fetch_leader_record(
         &self,
-    ) -> impl Future<Output = Option<(IrSharedView<T::Address>, Arc<IrRecord<Replica<K, V>>>)>>
+    ) -> impl Future<Output = Option<(IrSharedView<T::Address>, <Replica<K, V> as IrReplicaUpcalls>::Payload)>>
            + Send
            + use<K, V, T>
     {
@@ -515,10 +515,10 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
 
     pub fn bootstrap_record(
         &self,
-        record: IrRecord<Replica<K, V>>,
+        payload: <Replica<K, V> as IrReplicaUpcalls>::Payload,
         view: IrSharedView<T::Address>,
     ) {
-        self.inner.bootstrap_record(record, view);
+        self.inner.bootstrap_record(payload, view);
     }
 
     pub fn add_member(&self, address: T::Address) {

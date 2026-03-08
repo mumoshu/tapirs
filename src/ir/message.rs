@@ -1,10 +1,10 @@
 use super::{
-    record::RecordImpl, shared_view::SharedView, OpId,
+    shared_view::SharedView, OpId,
     RecordEntryState, ReplicaUpcalls, ViewNumber,
 };
 use crate::Transport;
 use serde::{Deserialize, Serialize};
-use std::{fmt::Debug, sync::Arc};
+use std::fmt::Debug;
 
 pub type Message<U, T> = MessageImpl<
     <U as ReplicaUpcalls>::UO,
@@ -35,8 +35,8 @@ pub enum MessageImpl<UO, UR, IO, IR, CO, CR, A, P> {
     RemoveMember(RemoveMember<A>),
     Reconfigure(Reconfigure),
     FetchLeaderRecord(FetchLeaderRecord),
-    LeaderRecordReply(LeaderRecordReply<IO, CO, CR, A>),
-    BootstrapRecord(BootstrapRecord<IO, CO, CR, A>),
+    LeaderRecordReply(LeaderRecordReply<P, A>),
+    BootstrapRecord(BootstrapRecord<P, A>),
     StatusBroadcast(StatusBroadcast),
 }
 
@@ -224,16 +224,16 @@ pub struct Reconfigure {
 pub struct FetchLeaderRecord;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LeaderRecordReply<IO, CO, CR, A> {
-    pub record: Option<Arc<RecordImpl<IO, CO, CR>>>,
+pub struct LeaderRecordReply<P, A> {
+    pub payload: Option<P>,
     pub view: Option<SharedView<A>>,
 }
 
 /// Administrative message: client sends to a fresh replica to pre-load it
 /// with a record. The replica converts this to a self-directed StartView.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct BootstrapRecord<IO, CO, CR, A> {
-    pub record: RecordImpl<IO, CO, CR>,
+pub struct BootstrapRecord<P, A> {
+    pub payload: P,
     pub view: SharedView<A>,
 }
 

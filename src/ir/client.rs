@@ -3,7 +3,7 @@ use super::{
     shared_view::SharedView, AddMember, Confirm, DoViewChange, FinalizeConsensus,
     RemoveMember,
     FinalizeInconsistent, Membership, MembershipSize, Message, OpId, ProposeConsensus,
-    ProposeInconsistent, Record, ReplicaUpcalls, ReplyConsensus, ReplyInconsistent, ReplyUnlogged,
+    ProposeInconsistent, ReplicaUpcalls, ReplyConsensus, ReplyInconsistent, ReplyUnlogged,
     RequestUnlogged, View, ViewNumber,
 };
 use crate::{
@@ -902,7 +902,7 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
     /// Fetch the stable leader_record from a random replica.
     pub fn fetch_leader_record(
         &self,
-    ) -> impl Future<Output = Option<(SharedView<T::Address>, Arc<Record<U>>)>> + Send + use<U, T>
+    ) -> impl Future<Output = Option<(SharedView<T::Address>, U::Payload)>> + Send + use<U, T>
     {
         let inner = Arc::clone(&self.inner);
         async move {
@@ -914,12 +914,12 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
             };
             let reply = inner
                 .transport
-                .send::<LeaderRecordReply<U::IO, U::CO, U::CR, T::Address>>(
+                .send::<LeaderRecordReply<U::Payload, T::Address>>(
                     address,
                     FetchLeaderRecord,
                 )
                 .await;
-            reply.view.zip(reply.record)
+            reply.view.zip(reply.payload)
         }
     }
 
@@ -927,13 +927,13 @@ impl<U: ReplicaUpcalls, T: Transport<U>> Client<U, T> {
     ///
     /// Used with a standalone client (membership=[R4]) to pre-load a fresh
     /// replica with a record before it joins the group.
-    pub fn bootstrap_record(&self, record: Record<U>, view: SharedView<T::Address>) {
+    pub fn bootstrap_record(&self, payload: U::Payload, view: SharedView<T::Address>) {
         let sync = self.inner.sync.lock().unwrap();
         for address in &sync.view.membership {
             self.inner.transport.do_send(
                 address,
                 BootstrapRecord {
-                    record: record.clone(),
+                    payload: payload.clone(),
                     view: view.clone(),
                 },
             );

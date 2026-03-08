@@ -1,7 +1,7 @@
 use crate::{
     discovery::InMemoryShardDirectory,
     ChannelRegistry, ChannelTransport, IrClient, IrClientId, IrMembership, IrMembershipSize,
-    IrOpId, IrRecord, IrRecordView, IrReplica, IrReplicaUpcalls, IrVersionedRecord, Transport,
+    IrOpId, IrRecordView, IrReplica, IrReplicaUpcalls, IrVersionedRecord, Transport,
 };
 use rand::{seq::IteratorRandom, Rng, SeedableRng};
 use rand::rngs::StdRng;
@@ -96,7 +96,6 @@ async fn lock_server(num_replicas: usize) {
         type IR = ();
         type CO = Lock;
         type CR = LockResult;
-        type Record = IrRecord<Self>;
         type Payload = crate::ir::RecordPayload<Self::IO, Self::CO, Self::CR>;
 
         fn exec_unlogged(&self, _op: Self::UO) -> Self::UR {
@@ -119,7 +118,7 @@ async fn lock_server(num_replicas: usize) {
             }
         }
 
-        fn sync(&mut self, _: &Self::Record, record: &Self::Record) {
+        fn sync<Rec: IrRecordView<IO = Self::IO, CO = Self::CO, CR = Self::CR>>(&mut self, _: &Rec, record: &Rec) {
             self.locked = None;
 
             let mut locked = BTreeSet::<IrClientId>::new();

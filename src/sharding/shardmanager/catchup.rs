@@ -69,7 +69,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
                 T::sleep(Duration::from_secs(1)).await;
             }
             match existing_client.fetch_leader_record().await {
-                Some((view, record)) => {
+                Some((view, payload)) => {
                     let new_client = ShardClient::<K, V, T>::new(
                         self.rng.fork(),
                         IrClientId::new(&mut self.rng),
@@ -77,7 +77,7 @@ impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteSh
                         IrMembership::new(vec![new_address]),
                         self.transport.clone(),
                     );
-                    new_client.bootstrap_record((*record).clone(), view);
+                    new_client.bootstrap_record(payload, view);
                     existing_client.add_member(new_address);
                     return Ok(());
                 }

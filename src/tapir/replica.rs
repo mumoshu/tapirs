@@ -4,7 +4,7 @@ use crate::ir::ReplyUnlogged;
 use crate::tapir::ShardClient;
 use crate::tapirstore::TapirStore;
 use crate::{
-    DefaultDiskIo, IrClientId, IrMembership, IrMembershipSize, IrOpId, IrRecord, IrRecordView,
+    DefaultDiskIo, IrClientId, IrMembership, IrMembershipSize, IrOpId, IrRecordView,
     IrReplicaUpcalls,
     MvccBackend, MvccDiskStore,
     OccPrepareResult, OccSharedTransaction, OccTransactionId, TapirTransport,
@@ -274,7 +274,6 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
     type IR = IR<K, V>;
     type CO = CO<K, V>;
     type CR = CR;
-    type Record = IrRecord<Self>;
     type Payload = crate::ir::RecordPayload<Self::IO, Self::CO, Self::CR>;
 
     fn exec_unlogged(&self, op: Self::UO) -> Self::UR {
@@ -615,7 +614,11 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
         }
     }
 
-    fn sync(&mut self, local: &Self::Record, leader: &Self::Record) {
+    fn sync<Rec: IrRecordView<IO = Self::IO, CO = Self::CO, CR = Self::CR>>(
+        &mut self,
+        local: &Rec,
+        leader: &Rec,
+    ) {
         for (op_id, entry) in leader.consensus_entries() {
             if local
                 .get_consensus(&op_id)
@@ -777,11 +780,11 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
         }
     }
 
-    fn on_install_leader_record_delta(
+    fn on_install_leader_record_delta<Rec: IrRecordView<IO = Self::IO, CO = Self::CO, CR = Self::CR>>(
         &mut self,
         base_view: u64,
         new_view: u64,
-        delta: &Self::Record,
+        delta: &Rec,
     ) {
         let shard = self.store.shard();
         let mut changes = Vec::new();
@@ -791,13 +794,13 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                 transaction_id,
                 transaction,
                 commit,
-            } = &entry.op
+            } = entry.op
             {
-                changes.extend(transaction.shard_write_set(shard).map(|(key, value)| Change {
-                    transaction_id: *transaction_id,
+                changes.extend(transaction.shard_write_set(shard).map(|(key, value): (&K, &Option<V>)| Change {
+                    transaction_id,
                     key: key.clone(),
                     value: value.clone(),
-                    timestamp: *commit,
+                    timestamp: commit,
                 }));
             }
         }
