@@ -97,7 +97,7 @@ pub trait RecordView {
 
 pub enum VersionedEntry<'a, V> {
     Vacant(VersionedVacantEntry<'a, V>),
-    Occupied(&'a V),
+    Occupied(V),
 }
 
 pub struct VersionedVacantEntry<'a, V> {

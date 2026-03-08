@@ -59,9 +59,9 @@ impl<IO: Clone, CO: Clone, CR: Clone> VersionedRecord<IO, CO, CR> {
 
     pub fn entry_inconsistent(&mut self, op_id: OpId) -> VersionedEntry<'_, InconsistentEntry<IO>> {
         if self.overlay.inconsistent.contains_key(&op_id) {
-            VersionedEntry::Occupied(self.overlay.inconsistent.get(&op_id).unwrap())
+            VersionedEntry::Occupied(self.overlay.inconsistent.get(&op_id).unwrap().clone())
         } else if self.base.inconsistent.contains_key(&op_id) {
-            VersionedEntry::Occupied(self.base.inconsistent.get(&op_id).unwrap())
+            VersionedEntry::Occupied(self.base.inconsistent.get(&op_id).unwrap().clone())
         } else {
             VersionedEntry::Vacant(VersionedVacantEntry {
                 map: &mut self.overlay.inconsistent,
@@ -72,9 +72,9 @@ impl<IO: Clone, CO: Clone, CR: Clone> VersionedRecord<IO, CO, CR> {
 
     pub fn entry_consensus(&mut self, op_id: OpId) -> VersionedEntry<'_, ConsensusEntry<CO, CR>> {
         if self.overlay.consensus.contains_key(&op_id) {
-            VersionedEntry::Occupied(self.overlay.consensus.get(&op_id).unwrap())
+            VersionedEntry::Occupied(self.overlay.consensus.get(&op_id).unwrap().clone())
         } else if self.base.consensus.contains_key(&op_id) {
-            VersionedEntry::Occupied(self.base.consensus.get(&op_id).unwrap())
+            VersionedEntry::Occupied(self.base.consensus.get(&op_id).unwrap().clone())
         } else {
             VersionedEntry::Vacant(VersionedVacantEntry {
                 map: &mut self.overlay.consensus,
