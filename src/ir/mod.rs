@@ -1,4 +1,5 @@
 mod client;
+mod inmem_versioned_ir_record_store;
 mod ir_record_store;
 mod membership;
 pub(crate) mod message;
@@ -21,10 +22,11 @@ pub use message::{
     StartView,
 };
 pub use op::Id as OpId;
+pub use inmem_versioned_ir_record_store::VersionedRecord;
 pub use record::{
     ConsensusEntry as RecordConsensusEntry,
     InconsistentEntry as RecordInconsistentEntry, Record, RecordView,
-    State as RecordEntryState, VersionedEntry, VersionedRecord,
+    State as RecordEntryState, VersionedEntry,
 };
 pub use replica::{Replica, ReplicaMetrics, Upcalls as ReplicaUpcalls};
 pub use shared_view::SharedView;
