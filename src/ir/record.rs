@@ -101,8 +101,8 @@ pub enum VersionedEntry<'a, V> {
 }
 
 pub struct VersionedVacantEntry<'a, V> {
-    pub(super) map: &'a mut BTreeMap<OpId, V>,
-    pub(super) op_id: OpId,
+    pub(crate) map: &'a mut BTreeMap<OpId, V>,
+    pub(crate) op_id: OpId,
 }
 
 impl<'a, V> VersionedVacantEntry<'a, V> {
