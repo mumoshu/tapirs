@@ -1,5 +1,5 @@
 mod client;
-mod inmem_versioned_ir_record_store;
+mod inmem;
 mod ir_record_store;
 mod membership;
 pub(crate) mod message;
@@ -22,7 +22,7 @@ pub use message::{
     StartView,
 };
 pub use op::Id as OpId;
-pub use inmem_versioned_ir_record_store::VersionedRecord;
+pub use inmem::VersionedRecord;
 pub use record::{
     ConsensusEntry as RecordConsensusEntry,
     InconsistentEntry as RecordInconsistentEntry, Record, RecordView,
