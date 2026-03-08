@@ -1,6 +1,7 @@
 
 use super::{
-    message::{BootstrapRecord, FinalizeInconsistentReply, LeaderRecordReply, RecordPayload, Reconfigure, StatusBroadcast, ViewChangeAddendum},
+    inmem::record_payload::RecordPayload,
+    message::{BootstrapRecord, FinalizeInconsistentReply, LeaderRecordReply, Reconfigure, StatusBroadcast, ViewChangeAddendum},
     shared_view::SharedView, AddMember, Confirm, DoViewChange,
     FinalizeConsensus, FinalizeInconsistent, Membership, Message, OpId, ProposeConsensus,
     ProposeInconsistent, Record, RecordConsensusEntry, RecordEntryState, RecordInconsistentEntry,
