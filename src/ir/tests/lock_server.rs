@@ -142,6 +142,9 @@ async fn lock_server(num_replicas: usize) {
             }
         }
 
+        // Lock server is in-memory only: no durable storage to flush.
+        fn flush(&mut self) {}
+
         fn merge(
             &mut self,
             d: BTreeMap<IrOpId, (Self::CO, Self::CR)>,

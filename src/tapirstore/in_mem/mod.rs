@@ -300,4 +300,12 @@ where
     fn min_prepare_baseline(&self) -> Option<Timestamp> {
         self.occ.min_prepare_baseline()
     }
+
+    // In-memory backend: no durable storage to flush.
+    fn flush(&mut self) {}
+
+    // In-memory backend: no VlogLsm segments.
+    fn stored_bytes(&self) -> Option<u64> {
+        None
+    }
 }

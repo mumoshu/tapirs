@@ -846,6 +846,12 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
         }
     }
 
+    fn flush(&mut self) {
+        // Delegates to TapirStore::flush which seals VlogLsm memtables
+        // and saves the manifest.
+        self.store.flush();
+    }
+
     fn metrics(&self) -> Vec<(&'static str, f64)> {
         vec![
             ("tapirs_prepared_transactions", self.store.prepared_count() as f64),
@@ -856,6 +862,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
             ("tapirs_prepare_fail_total", self.counters.prepare_fail_count.load(Ordering::Relaxed) as f64),
             ("tapirs_prepare_retry_total", self.counters.prepare_retry_count.load(Ordering::Relaxed) as f64),
             ("tapirs_prepare_too_late_total", self.counters.prepare_too_late_count.load(Ordering::Relaxed) as f64),
+            ("tapirs_stored_bytes", self.store.stored_bytes().unwrap_or(0) as f64),
         ]
     }
 }

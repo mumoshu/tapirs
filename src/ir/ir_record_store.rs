@@ -90,4 +90,10 @@ where
 
     /// Return a clone of the sealed record, if any (for FetchLeaderRecord).
     fn checkpoint_record(&self) -> Option<Self::Record>;
+
+    /// Seal VlogLsm memtables to durable storage and save manifest.
+    fn flush(&mut self);
+
+    /// Total bytes across all VlogLsm segments. None for in-memory backends.
+    fn stored_bytes(&self) -> Option<u64>;
 }

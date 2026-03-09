@@ -933,4 +933,10 @@ pub trait TapirStore<K: Key, V: Value>: Send + Sync + 'static {
     ///   min_prepare_baseline() → Some(ts(9,1))
     /// ```
     fn min_prepare_baseline(&self) -> Option<Timestamp>;
+
+    /// Seal VlogLsm memtables to durable storage and save manifest.
+    fn flush(&mut self);
+
+    /// Total bytes across all VlogLsm segments. None for in-memory backends.
+    fn stored_bytes(&self) -> Option<u64>;
 }

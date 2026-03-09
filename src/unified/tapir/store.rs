@@ -356,6 +356,37 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         self.occ_cache.max_read_time()
     }
 
+    /// Total bytes across all VlogLsm segments (committed + prepared + mvcc).
+    pub(crate) fn stored_bytes(&self) -> u64 {
+        let committed_sealed: u64 = self
+            .manifest
+            .committed
+            .sealed_vlog_segments
+            .iter()
+            .map(|seg| seg.total_size)
+            .sum();
+        let prepared_sealed: u64 = self
+            .manifest
+            .prepared
+            .sealed_vlog_segments
+            .iter()
+            .map(|seg| seg.total_size)
+            .sum();
+        let mvcc_sealed: u64 = self
+            .manifest
+            .mvcc
+            .sealed_vlog_segments
+            .iter()
+            .map(|seg| seg.total_size)
+            .sum();
+        committed_sealed
+            + prepared_sealed
+            + mvcc_sealed
+            + self.committed.active_write_offset()
+            + self.prepared.active_write_offset()
+            + self.mvcc.active_write_offset()
+    }
+
     /// Check if last_read_ts >= ts for the MVCC version at the given timestamp.
     /// Returns the last_read_ts if one exists.
     pub(crate) fn get_last_read_ts_at(&self, key: &K, ts: Timestamp) -> Option<Timestamp>

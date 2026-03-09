@@ -44,6 +44,11 @@ pub(crate) const IR_METRICS: &[MetricDesc] = &[
         help: "Total completed view changes since process start",
         mtype: "counter",
     },
+    MetricDesc {
+        name: "tapirs_ir_record_stored_bytes",
+        help: "Total bytes across IR record VlogLsm segments",
+        mtype: "gauge",
+    },
 ];
 
 pub(crate) const APP_METRICS: &[MetricDesc] = &[

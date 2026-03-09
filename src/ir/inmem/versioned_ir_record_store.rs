@@ -276,6 +276,14 @@ where
     fn checkpoint_record(&self) -> Option<Self::Record> {
         if self.has_base() { Some(self.base().clone()) } else { None }
     }
+
+    // In-memory backend: no durable storage to flush.
+    fn flush(&mut self) {}
+
+    // In-memory backend: no VlogLsm segments.
+    fn stored_bytes(&self) -> Option<u64> {
+        None
+    }
 }
 
 #[cfg(test)]

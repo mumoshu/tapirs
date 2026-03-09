@@ -91,6 +91,9 @@ pub trait Upcalls: Sized + Send + 'static {
     ) {
     }
 
+    /// Flush durable storage (seal VlogLsm memtables + save manifest).
+    fn flush(&mut self);
+
     /// Returns application-level metrics as key-value pairs for Prometheus
     /// exposition. Default: empty (no app metrics).
     fn metrics(&self) -> Vec<(&'static str, f64)> {
@@ -705,6 +708,10 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
 
                                 merge_result
                             };
+                            // Persist resolved state before transitioning to Normal.
+                            sync.record.flush();
+                            sync.upcalls.flush();
+
                             sync.record_base_view = Some(sync.view.clone());
                             sync.changed_view_recently = true;
                             sync.status = Status::Normal;
@@ -781,6 +788,10 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                     sync.upcalls.on_install_leader_record_delta(from_view, view.number.0, changes);
                     let new_record = sync.record.full_record();
                     sync.upcalls.sync(&result.previous_record, &new_record);
+                    // Persist resolved state before transitioning to Normal.
+                    sync.record.flush();
+                    sync.upcalls.flush();
+
                     sync.record_base_view = Some(view.clone());
                     sync.status = Status::Normal;
                     self.inner.view_change_count.fetch_add(1, Ordering::Relaxed);
@@ -950,6 +961,7 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
             record_consensus_len: sync.record.consensus_len(),
             membership_size: sync.view.membership.len(),
             view_change_count: self.inner.view_change_count.load(Ordering::Relaxed),
+            record_stored_bytes: sync.record.stored_bytes(),
             app_metrics,
         })
     }
@@ -970,6 +982,8 @@ pub struct ReplicaMetrics {
     pub membership_size: usize,
     /// Total completed view changes since process start.
     pub view_change_count: u64,
+    /// Total bytes across IR record VlogLsm segments. None for in-memory backends.
+    pub record_stored_bytes: Option<u64>,
     /// Application-level metrics from `Upcalls::metrics()`.
     pub app_metrics: Vec<(&'static str, f64)>,
 }

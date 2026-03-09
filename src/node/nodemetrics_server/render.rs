@@ -26,6 +26,7 @@ pub fn render_metrics(shard_metrics: &[(ShardNumber, IrReplicaMetrics)]) -> Stri
                 "tapirs_ir_record_consensus_entries" => m.record_consensus_len as f64,
                 "tapirs_membership_size" => m.membership_size as f64,
                 "tapirs_view_changes_total" => m.view_change_count as f64,
+                "tapirs_ir_record_stored_bytes" => m.record_stored_bytes.unwrap_or(0) as f64,
                 _ => continue,
             };
             let _ = writeln!(

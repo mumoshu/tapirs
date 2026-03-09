@@ -460,6 +460,18 @@ impl<
     fn min_prepare_baseline(&self) -> Option<Timestamp> {
         self.state.max_read_time()
     }
+
+    fn flush(&mut self) {
+        // Delegates to TapirState::seal_current_view which seals all 3 VlogLsms
+        // (committed, prepared, mvcc) and saves the manifest.
+        self.state
+            .seal_current_view(0)
+            .expect("PersistentTapirStore::flush: seal failed");
+    }
+
+    fn stored_bytes(&self) -> Option<u64> {
+        Some(self.state.stored_bytes())
+    }
 }
 
 #[cfg(test)]

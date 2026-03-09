@@ -7,12 +7,13 @@ use crate::ir::{
 use crate::mvcc::disk::disk_io::{DiskIo, OpenFlags};
 use crate::mvcc::disk::error::StorageError;
 use crate::unified::wisckeylsm::lsm::{IndexMode, VlogLsm};
+use crate::unified::wisckeylsm::manifest::UnifiedManifest;
 use crate::unified::wisckeylsm::vlog::{RawVlogEntry, VlogSegment, VLOG_RAW_ENTRY_OVERHEAD};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt::Debug;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// Entry type markers for the two VlogLsm instances.
@@ -367,6 +368,8 @@ pub struct PersistentIrRecordStore<IO, CO, CR, DIO: DiskIo> {
     inc_lsm: VlogLsm<OpId, InconsistentEntry<IO>, DIO>,
     con_lsm: VlogLsm<OpId, ConsensusEntry<CO, CR>, DIO>,
     base_view: u64,
+    manifest: UnifiedManifest,
+    base_dir: PathBuf,
 }
 
 impl<IO: Debug, CO: Debug, CR: Debug, DIO: DiskIo> Debug
@@ -433,27 +436,49 @@ where
             inc_lsm,
             con_lsm,
             base_view: 0,
+            manifest: UnifiedManifest::new(),
+            base_dir: base_dir.to_path_buf(),
         })
     }
 
-    /// Seal both VlogLsms (flush memtable to vlog, clear memtable).
+    /// Seal both VlogLsms (flush memtable to vlog, clear memtable) and save manifest.
     /// Only finalized entries are persisted; tentative entries are discarded.
     pub(crate) fn seal(&mut self, new_view: u64) -> Result<(), StorageError> {
-        self.inc_lsm.seal_view(u64::MAX, |_op_id, entry| {
+        let inc_sealed = self.inc_lsm.seal_view(u64::MAX, |_op_id, entry| {
             if entry.state.is_finalized() {
                 Some((ENTRY_TYPE_INCONSISTENT, _op_id.client_id.0, _op_id.number))
             } else {
                 None
             }
         })?;
-        self.con_lsm.seal_view(u64::MAX, |_op_id, entry| {
+        if let Some(meta) = inc_sealed {
+            self.manifest.ir_inc.sealed_vlog_segments.push(meta);
+        }
+        let con_sealed = self.con_lsm.seal_view(u64::MAX, |_op_id, entry| {
             if entry.state.is_finalized() {
                 Some((ENTRY_TYPE_CONSENSUS, _op_id.client_id.0, _op_id.number))
             } else {
                 None
             }
         })?;
+        if let Some(meta) = con_sealed {
+            self.manifest.ir_con.sealed_vlog_segments.push(meta);
+        }
         self.base_view = new_view;
+
+        // Persist manifest with updated segment metadata.
+        self.manifest.ir_inc.active_segment_id = self.inc_lsm.active_vlog_id();
+        self.manifest.ir_inc.active_write_offset = self.inc_lsm.active_write_offset();
+        self.manifest.ir_inc.next_segment_id = self.inc_lsm.next_segment_id();
+        self.manifest.ir_inc.sst_metas = self.inc_lsm.sst_metas().to_vec();
+        self.manifest.ir_inc.next_sst_id = self.inc_lsm.next_sst_id();
+        self.manifest.ir_con.active_segment_id = self.con_lsm.active_vlog_id();
+        self.manifest.ir_con.active_write_offset = self.con_lsm.active_write_offset();
+        self.manifest.ir_con.next_segment_id = self.con_lsm.next_segment_id();
+        self.manifest.ir_con.sst_metas = self.con_lsm.sst_metas().to_vec();
+        self.manifest.ir_con.next_sst_id = self.con_lsm.next_sst_id();
+        self.manifest.save::<DIO>(&self.base_dir)?;
+
         self.inc_lsm.start_view(new_view);
         self.con_lsm.start_view(new_view);
         Ok(())
@@ -855,6 +880,32 @@ where
         } else {
             None
         }
+    }
+
+    fn flush(&mut self) {
+        // seal() flushes both VlogLsm memtables and saves the manifest.
+        self.seal(self.base_view + 1)
+            .expect("PersistentIrRecordStore::flush: seal failed");
+    }
+
+    fn stored_bytes(&self) -> Option<u64> {
+        let inc_sealed: u64 = self
+            .manifest
+            .ir_inc
+            .sealed_vlog_segments
+            .iter()
+            .map(|seg| seg.total_size)
+            .sum();
+        let con_sealed: u64 = self
+            .manifest
+            .ir_con
+            .sealed_vlog_segments
+            .iter()
+            .map(|seg| seg.total_size)
+            .sum();
+        let inc_active = self.inc_lsm.active_write_offset();
+        let con_active = self.con_lsm.active_write_offset();
+        Some(inc_sealed + con_sealed + inc_active + con_active)
     }
 }
 
