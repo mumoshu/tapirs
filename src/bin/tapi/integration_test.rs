@@ -536,7 +536,7 @@ async fn test_rolling_membership_replacement() {
 
         let new_addr = loop {
             let candidate = alloc_addr();
-            match new_node.add_replica_join(shard, candidate, "memory").await {
+            match new_node.add_replica_join(shard, candidate).await {
                 Ok(()) => break candidate,
                 Err(e) if e.contains("already in use") => continue,
                 Err(e) => panic!("add_replica_join failed in round {i}: {e}"),

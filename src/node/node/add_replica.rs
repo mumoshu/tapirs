@@ -1,6 +1,6 @@
 use super::*;
 use crate::node::types::ReplicaConfig;
-use crate::{IrMembership, MvccDiskStore, TapirReplica, TcpTransport};
+use crate::{IrMembership, TcpTransport};
 use std::time::Duration;
 
 impl Node {
@@ -69,33 +69,21 @@ impl Node {
         }
 
         let transport_for_replica = transport.clone();
-        let mvcc_dir = format!("{}/shard_{}/mvcc", self.persist_dir, cfg.shard);
-        #[cfg(all(target_os = "linux", feature = "io-uring"))]
-        let backend = MvccDiskStore::open_with_flags(
-            std::path::PathBuf::from(&mvcc_dir),
-            crate::DiskOpenFlags { create: true, direct: true },
-        )
-        .map_err(|e| format!("failed to open DiskStore at {mvcc_dir}: {e}"))?;
-
-        #[cfg(not(all(target_os = "linux", feature = "io-uring")))]
-        let backend = MvccDiskStore::open(
-            std::path::PathBuf::from(&mvcc_dir),
-        )
-        .map_err(|e| format!("failed to open DiskStore at {mvcc_dir}: {e}"))?;
+        let (upcalls, ir_store) =
+            crate::store_defaults::open_production_stores(shard, &self.persist_dir, cfg.shard)?;
         let replica = Arc::new_cyclic(|weak: &std::sync::Weak<TapirIrReplica>| {
             let weak = weak.clone();
             transport_for_replica.set_receive_callback(move |from, message| {
                 weak.upgrade()?.receive(from, message)
             });
-            let upcalls = TapirReplica::new_with_backend(shard, false, backend);
             crate::IrReplica::with_view_change_interval(
                 (self.new_rng)(),
                 membership,
                 upcalls,
                 transport_for_replica.clone(),
-                Some(TapirReplica::tick),
+                crate::store_defaults::production_app_tick(),
                 Some(Duration::from_secs(10)),
-                Default::default(),
+                ir_store,
             )
         });
 

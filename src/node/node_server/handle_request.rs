@@ -77,8 +77,7 @@ pub async fn handle_request(node: &Node, line: &str) -> AdminResponse {
                 }
             } else {
                 // Dynamic add via shard-manager.
-                let storage_str = req.storage.as_deref().unwrap_or("memory");
-                match node.add_replica_join(ShardNumber(shard_id), listen_addr, storage_str).await {
+                match node.add_replica_join(ShardNumber(shard_id), listen_addr).await {
                     Ok(()) => AdminResponse {
                         ok: true,
                         message: Some(format!("replica for shard {shard_id} created")),

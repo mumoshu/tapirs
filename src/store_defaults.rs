@@ -41,6 +41,21 @@ pub type ProductionIrReplica = crate::ir::Replica<
     ProductionIrRecordStore,
 >;
 
+// ── App tick ────────────────────────────────────────────────────────────────
+
+type TcpT = crate::transport::tokio_bitcode_tcp::TcpTransport<ProductionTapirReplica>;
+type AppTickFn = fn(
+    &ProductionTapirReplica,
+    &TcpT,
+    &crate::ir::Membership<crate::TcpAddress>,
+    &mut crate::Rng,
+);
+
+/// Returns the app_tick callback for the production replica.
+pub fn production_app_tick() -> Option<AppTickFn> {
+    Some(ProductionTapirReplica::tick)
+}
+
 // ── Factory ─────────────────────────────────────────────────────────────────
 
 /// Open production stores for a given shard.
@@ -56,7 +71,7 @@ pub type ProductionIrReplica = crate::ir::Replica<
 pub fn open_production_stores(
     shard: ShardNumber,
     persist_dir: &str,
-    shard_id: u64,
+    shard_id: u32,
 ) -> Result<(ProductionTapirReplica, ProductionIrRecordStore), String> {
     let mvcc_dir = format!("{}/shard_{}/mvcc", persist_dir, shard_id);
 
@@ -83,7 +98,7 @@ pub fn open_production_stores(
 pub fn open_production_stores(
     shard: ShardNumber,
     persist_dir: &str,
-    shard_id: u64,
+    shard_id: u32,
 ) -> Result<(ProductionTapirReplica, ProductionIrRecordStore), String> {
     use crate::mvcc::disk::disk_io::OpenFlags;
     use crate::unified::tapir::persistent_store::PersistentTapirStore;

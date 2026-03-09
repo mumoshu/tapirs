@@ -11,15 +11,7 @@ impl Node {
         &self,
         shard: ShardNumber,
         listen_addr: SocketAddr,
-        storage: &str,
     ) -> Result<(), String> {
-        if storage == "disk" {
-            return Err(
-                "disk storage backend is not yet available; use --storage memory (default)"
-                    .to_string(),
-            );
-        }
-
         let cfg = ReplicaConfig {
             shard: shard.0,
             listen_addr: listen_addr.to_string(),
