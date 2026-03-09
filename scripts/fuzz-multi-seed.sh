@@ -13,6 +13,7 @@
 #   FUZZ_KEEP_PASS   - If set to 1, keep logs for passing seeds (default: 0)
 #   FUZZ_BASE_SEED   - Starting seed for sequential seeds (default: random independent seeds)
 #   FUZZ_VERBOSE     - Passed through to test (default: 0)
+#   FUZZ_CARGO_FLAGS - Extra cargo flags (e.g. "--features combined-store")
 
 set -euo pipefail
 
@@ -22,11 +23,15 @@ TEST_NAME="${FUZZ_TEST_NAME:-fuzz_tapir_transactions}"
 KEEP_PASS="${FUZZ_KEEP_PASS:-0}"
 BASE_SEED="${FUZZ_BASE_SEED:-}"
 VERBOSE="${FUZZ_VERBOSE:-0}"
+CARGO_FLAGS="${FUZZ_CARGO_FLAGS:-}"
 
 echo "=== Multi-Seed Fuzz Runner ==="
 echo "Iterations: ${ITERATIONS}"
 echo "Parallel:   ${PARALLEL}"
 echo "Test:       ${TEST_NAME}"
+if [[ -n "${CARGO_FLAGS}" ]]; then
+    echo "Cargo flags: ${CARGO_FLAGS}"
+fi
 echo ""
 
 # --- Create output directory ---
@@ -36,7 +41,7 @@ echo ""
 
 # --- Pre-compile ---
 echo "Pre-compiling test binary..."
-if ! cargo test --lib --no-run 2>"${LOGDIR}/build.log"; then
+if ! cargo test --lib ${CARGO_FLAGS} --no-run 2>"${LOGDIR}/build.log"; then
     echo "ERROR: Build failed. See ${LOGDIR}/build.log"
     exit 1
 fi
@@ -119,7 +124,7 @@ for (( i=0; i<ITERATIONS; i++ )); do
     # Launch in background.
     (
         TAPI_TEST_SEED="${seed}" TAPI_WATCHDOG_SECS=8 FUZZ_VERBOSE="${VERBOSE}" \
-            cargo test --lib "${TEST_NAME}" -- --nocapture \
+            cargo test --lib ${CARGO_FLAGS} "${TEST_NAME}" -- --nocapture \
             >"${log}" 2>&1
     ) &
     local_pid=$!
@@ -154,7 +159,7 @@ if (( failed > 0 )); then
     done
     echo ""
     echo "Reproduce a failure:"
-    echo "  TAPI_TEST_SEED=<seed> FUZZ_VERBOSE=1 cargo test --lib ${TEST_NAME} -- --nocapture"
+    echo "  TAPI_TEST_SEED=<seed> FUZZ_VERBOSE=1 cargo test --lib ${CARGO_FLAGS} ${TEST_NAME} -- --nocapture"
     echo ""
     echo "Logs preserved in: ${LOGDIR}"
     exit 1
