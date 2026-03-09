@@ -1,5 +1,6 @@
 pub mod cluster;
 pub mod discovery;
+pub mod ir_replica_conformance;
 
 pub fn test_rng(seed: u64) -> crate::Rng {
     crate::Rng::from_seed(seed)

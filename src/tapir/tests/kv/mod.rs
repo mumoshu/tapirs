@@ -1,3 +1,4 @@
+mod conformance;
 mod join;
 mod cdc;
 mod clone_shard;

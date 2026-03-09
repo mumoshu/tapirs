@@ -495,4 +495,54 @@ mod tests {
     }
 
     crate::tapir_store_conformance_tests!(new_store());
+
+    mod ir_conformance {
+        use crate::discovery::InMemoryShardDirectory;
+        use crate::mvcc::disk::disk_io::OpenFlags;
+        use crate::mvcc::disk::memory_io::MemoryIo;
+        use crate::tapir;
+        use crate::unified::ir::ir_record_store::PersistentIrRecordStore;
+        use crate::unified::tapir::persistent_store::PersistentTapirStore;
+        use crate::unified::tapir::store;
+        use crate::{ChannelRegistry, ShardNumber};
+        use std::sync::Arc;
+
+        type S = PersistentTapirStore<String, String, MemoryIo>;
+        type U = tapir::Replica<String, String, S>;
+        type R = PersistentIrRecordStore<
+            tapir::IO<String, String>,
+            tapir::CO<String, String>,
+            tapir::CR,
+            MemoryIo,
+        >;
+
+        fn persistent_factory() -> (
+            ChannelRegistry<U>,
+            Arc<InMemoryShardDirectory<usize>>,
+            impl FnMut() -> (U, R),
+        ) {
+            let registry = ChannelRegistry::default();
+            let directory = Arc::new(InMemoryShardDirectory::new());
+            let factory = || {
+                let base_dir = MemoryIo::temp_path();
+                let flags = OpenFlags {
+                    create: true,
+                    direct: false,
+                };
+                let state = store::open::<String, String, MemoryIo>(
+                    &base_dir,
+                    flags,
+                    ShardNumber(0),
+                    true,
+                )
+                .unwrap();
+                let upcalls = tapir::Replica::new_with_store(PersistentTapirStore::new(state));
+                let record = PersistentIrRecordStore::open(&base_dir, flags).unwrap();
+                (upcalls, record)
+            };
+            (registry, directory, factory)
+        }
+
+        crate::ir_replica_conformance_tests!(persistent_factory);
+    }
 }
