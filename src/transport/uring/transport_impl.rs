@@ -9,7 +9,7 @@ use crate::ir::ReplicaUpcalls;
 use crate::{IrMembership, IrMessage, ShardNumber};
 use crate::transport::{TapirTransport, Transport};
 use crate::tapir::{Key, Value};
-use crate::TapirReplica;
+use crate::tapirstore::TapirStore;
 use serde::{Serialize, de::DeserializeOwned};
 use std::cell::RefCell;
 use std::fmt::Debug;
@@ -194,14 +194,14 @@ impl<F: Future> Future for UnsafeSendFuture<F> {
     }
 }
 
-impl<K: Key, V: Value> TapirTransport<K, V> for UringTransport<TapirReplica<K, V>>
+impl<K: Key, V: Value, S: TapirStore<K, V>> TapirTransport<K, V, S> for UringTransport<crate::tapir::Replica<K, V, S>>
 where
-    <TapirReplica<K, V> as ReplicaUpcalls>::UO: Serialize + DeserializeOwned,
-    <TapirReplica<K, V> as ReplicaUpcalls>::UR: Serialize + DeserializeOwned,
-    <TapirReplica<K, V> as ReplicaUpcalls>::IO: Serialize + DeserializeOwned,
-    <TapirReplica<K, V> as ReplicaUpcalls>::IR: Serialize + DeserializeOwned,
-    <TapirReplica<K, V> as ReplicaUpcalls>::CO: Serialize + DeserializeOwned,
-    <TapirReplica<K, V> as ReplicaUpcalls>::CR: Serialize + DeserializeOwned,
+    <crate::tapir::Replica<K, V, S> as ReplicaUpcalls>::UO: Serialize + DeserializeOwned,
+    <crate::tapir::Replica<K, V, S> as ReplicaUpcalls>::UR: Serialize + DeserializeOwned,
+    <crate::tapir::Replica<K, V, S> as ReplicaUpcalls>::IO: Serialize + DeserializeOwned,
+    <crate::tapir::Replica<K, V, S> as ReplicaUpcalls>::IR: Serialize + DeserializeOwned,
+    <crate::tapir::Replica<K, V, S> as ReplicaUpcalls>::CO: Serialize + DeserializeOwned,
+    <crate::tapir::Replica<K, V, S> as ReplicaUpcalls>::CR: Serialize + DeserializeOwned,
 {
     fn shard_addresses(
         &self,

@@ -1,10 +1,9 @@
 use super::{Change, Key, KeyRange, LeaderRecordDelta, ShardNumber, Timestamp, Value, CO, CR, IO, IR, UO, UR};
 use super::message::MinPrepareBaselineResult;
 use crate::ir::ReplyUnlogged;
-use crate::tapir::ShardClient;
 use crate::tapirstore::TapirStore;
 use crate::{
-    DefaultDiskIo, IrClientId, IrMembership, IrMembershipSize, IrOpId, IrRecordView,
+    DefaultDiskIo, IrClient, IrClientId, IrMembership, IrMembershipSize, IrOpId, IrRecordView,
     IrReplicaUpcalls,
     MvccBackend, MvccDiskStore,
     OccPrepareResult, OccSharedTransaction, OccTransactionId, TapirTransport,
@@ -119,7 +118,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> Replica<K, V, S> {
     ///    each shard's prepare status via f+1 quorum.
     /// 3. Commit if all shards report Ok; abort otherwise. The final decision is
     ///    sent as `IO::Commit` or `IO::Abort` (inconsistent) to all participants.
-    fn recover_coordination<T: TapirTransport<K, V>>(
+    fn recover_coordination<T: TapirTransport<K, V, S>>(
         transaction_id: OccTransactionId,
         transaction: OccSharedTransaction<K, V, Timestamp>,
         commit: Timestamp,
@@ -131,20 +130,61 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> Replica<K, V, S> {
         warn!("trying to recover {transaction_id:?}");
 
         async move {
-            let mut participants = BTreeMap::new();
+            let mut participants: BTreeMap<ShardNumber, IrClient<Self, T>> = BTreeMap::new();
             let client_id = IrClientId::new(&mut rng);
             for shard in transaction.participants() {
                 let membership = transport.shard_addresses(shard).await;
-                participants.insert(
-                    shard,
-                    ShardClient::new(rng.fork(), client_id, shard, membership, transport.clone()),
-                );
+                let mut client = IrClient::new(rng.fork(), membership, transport.clone());
+                client.set_id(client_id);
+                participants.insert(shard, client);
             }
 
             let min_prepares = join_all(
                 participants
                     .values()
-                    .map(|client| client.raise_min_prepare_time(commit.time + 1)),
+                    .map(|client| {
+                        let future = client.invoke_consensus(
+                            CO::RaiseMinPrepareTime { time: commit.time + 1 },
+                            |results, size| {
+                                #[allow(clippy::disallowed_methods)]
+                                let times = results.iter().filter_map(|(r, c)| {
+                                    if let CR::RaiseMinPrepareTime { time } = r {
+                                        Some((*time, *c))
+                                    } else {
+                                        debug_assert!(false);
+                                        None
+                                    }
+                                });
+                                CR::RaiseMinPrepareTime {
+                                    time: times
+                                        .clone()
+                                        .filter(|&(time, _)| {
+                                            times
+                                                .clone()
+                                                .filter(|&(t, _)| t >= time)
+                                                .map(|(_, c)| c)
+                                                .sum::<usize>()
+                                                >= size.f_plus_one()
+                                        })
+                                        .map(|(t, _)| t)
+                                        .max()
+                                        .unwrap_or_else(|| {
+                                            debug_assert!(false);
+                                            0
+                                        }),
+                                }
+                            },
+                        );
+                        async move {
+                            match future.await {
+                                CR::RaiseMinPrepareTime { time } => time,
+                                _ => {
+                                    debug_assert!(false);
+                                    0
+                                }
+                            }
+                        }
+                    }),
             )
             .await;
 
@@ -197,7 +237,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> Replica<K, V, S> {
             }
 
             let results = join_all(participants.values().map(|client| {
-                let (future, membership) = client.inner.invoke_unlogged_joined(UO::CheckPrepare {
+                let (future, membership) = client.invoke_unlogged_joined(UO::CheckPrepare {
                     transaction_id,
                     commit,
                 });
@@ -235,7 +275,6 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> Replica<K, V, S> {
                 async move {
                     if ok {
                         client
-                            .inner
                             .invoke_inconsistent(IO::Commit {
                                 transaction_id,
                                 transaction,
@@ -244,7 +283,6 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> Replica<K, V, S> {
                             .await
                     } else {
                         client
-                            .inner
                             .invoke_inconsistent(IO::Abort {
                                 transaction_id,
                                 commit: Some(commit),
@@ -828,7 +866,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> Replica<K, V, S> {
         // transaction_log trimming) using finalized_min_prepare_time.
     }
 
-    pub fn tick<T: TapirTransport<K, V>>(
+    pub fn tick<T: TapirTransport<K, V, S>>(
         &self,
         transport: &T,
         membership: &IrMembership<T::Address>,

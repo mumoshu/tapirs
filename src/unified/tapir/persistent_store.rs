@@ -93,7 +93,7 @@ impl<
 impl<
         K: Key + serde::Serialize + serde::de::DeserializeOwned,
         V: Value + serde::Serialize + serde::de::DeserializeOwned,
-        IO: DiskIo,
+        IO: DiskIo + Sync,
     > TapirStore<K, V> for PersistentTapirStore<K, V, IO>
 {
     type Payload = crate::unified::ir::ir_record_store::PersistentPayload<

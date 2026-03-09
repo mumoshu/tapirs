@@ -5,9 +5,10 @@ use super::state::TcpTransport;
 use super::wire::{TcpIrMessage, WireMessage};
 use crate::ir::ReplicaUpcalls;
 use crate::tapir::{Key, Value};
+use crate::tapirstore::TapirStore;
 use crate::transport::{TapirTransport, Transport};
 use crate::discovery::ShardDirectory as _;
-use crate::{IrMembership, IrMessage, ShardNumber, TapirReplica};
+use crate::{IrMembership, IrMessage, ShardNumber};
 use serde::{de::DeserializeOwned, Serialize};
 use std::fmt::Debug;
 use std::future::Future;
@@ -150,14 +151,14 @@ where
     }
 }
 
-impl<K: Key, V: Value> TapirTransport<K, V> for TcpTransport<TapirReplica<K, V>>
+impl<K: Key, V: Value, S: TapirStore<K, V>> TapirTransport<K, V, S> for TcpTransport<crate::tapir::Replica<K, V, S>>
 where
-    <TapirReplica<K, V> as ReplicaUpcalls>::UO: Serialize + DeserializeOwned,
-    <TapirReplica<K, V> as ReplicaUpcalls>::UR: Serialize + DeserializeOwned,
-    <TapirReplica<K, V> as ReplicaUpcalls>::IO: Serialize + DeserializeOwned,
-    <TapirReplica<K, V> as ReplicaUpcalls>::IR: Serialize + DeserializeOwned,
-    <TapirReplica<K, V> as ReplicaUpcalls>::CO: Serialize + DeserializeOwned,
-    <TapirReplica<K, V> as ReplicaUpcalls>::CR: Serialize + DeserializeOwned,
+    <crate::tapir::Replica<K, V, S> as ReplicaUpcalls>::UO: Serialize + DeserializeOwned,
+    <crate::tapir::Replica<K, V, S> as ReplicaUpcalls>::UR: Serialize + DeserializeOwned,
+    <crate::tapir::Replica<K, V, S> as ReplicaUpcalls>::IO: Serialize + DeserializeOwned,
+    <crate::tapir::Replica<K, V, S> as ReplicaUpcalls>::IR: Serialize + DeserializeOwned,
+    <crate::tapir::Replica<K, V, S> as ReplicaUpcalls>::CO: Serialize + DeserializeOwned,
+    <crate::tapir::Replica<K, V, S> as ReplicaUpcalls>::CR: Serialize + DeserializeOwned,
 {
     fn shard_addresses(
         &self,

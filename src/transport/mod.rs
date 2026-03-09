@@ -1,6 +1,7 @@
 use crate::{
     tapir::{Key, Value},
-    IrMembership, IrMessage, IrReplicaUpcalls, ShardNumber, TapirReplica,
+    tapirstore::TapirStore,
+    IrMembership, IrMessage, IrReplicaUpcalls, ShardNumber,
 };
 pub use channel::{Channel, Registry as ChannelRegistry};
 pub use message::Message;
@@ -66,7 +67,7 @@ pub trait Transport<U: IrReplicaUpcalls>: Clone + Send + Sync + 'static {
     fn on_membership_changed(&self, _membership: &IrMembership<Self::Address>, _view: u64) {}
 }
 
-pub trait TapirTransport<K: Key, V: Value>: Transport<TapirReplica<K, V>> {
+pub trait TapirTransport<K: Key, V: Value, S: TapirStore<K, V> = crate::tapirstore::InMemTapirStore<K, V, crate::MvccDiskStore<K, V, crate::tapir::Timestamp, crate::DefaultDiskIo>>>: Transport<crate::tapir::Replica<K, V, S>> {
     /// Look up the addresses of replicas in a shard, on a best-effort basis; results
     /// may be arbitrarily out of date.
     fn shard_addresses(

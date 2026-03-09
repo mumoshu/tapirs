@@ -97,7 +97,7 @@ impl<K, V, M> TapirStore<K, V> for InMemTapirStore<K, V, M>
 where
     K: Key,
     V: Value,
-    M: MvccBackend<K, V, Timestamp> + Serialize + DeserializeOwned + 'static,
+    M: MvccBackend<K, V, Timestamp> + Serialize + DeserializeOwned + Sync + 'static,
 {
     type Payload = crate::ir::RecordPayload<
         crate::tapir::IO<K, V>,
