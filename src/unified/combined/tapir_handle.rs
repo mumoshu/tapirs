@@ -27,7 +27,7 @@ use super::{CombinedStoreInner, PreparedRef, TxnLogRef};
 /// TAPIR VlogLsms — prepared transactions resolve lazily from con_lsm
 /// (PreparedRef.op_id → CO::Prepare → transaction), committed transactions
 /// resolve lazily from inc_lsm (TxnLogRef.op_id → IO::Commit → transaction).
-pub(crate) struct CombinedTapirHandle<K: Ord, V, DIO: DiskIo> {
+pub struct CombinedTapirHandle<K: Ord, V, DIO: DiskIo> {
     pub(crate) inner: Arc<Mutex<CombinedStoreInner<K, V, DIO>>>,
 }
 

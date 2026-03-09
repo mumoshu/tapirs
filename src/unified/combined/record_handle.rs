@@ -19,7 +19,7 @@ use super::CombinedStoreInner;
 ///
 /// A companion [`CombinedTapirHandle`](super::CombinedTapirHandle) (Commit 3)
 /// clones the same Arc, giving both handles shared ownership of the inner.
-pub(crate) struct CombinedRecordHandle<K: Ord, V, DIO: DiskIo> {
+pub struct CombinedRecordHandle<K: Ord, V, DIO: DiskIo> {
     pub(crate) inner: Arc<Mutex<CombinedStoreInner<K, V, DIO>>>,
 }
 

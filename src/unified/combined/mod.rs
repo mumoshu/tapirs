@@ -31,8 +31,8 @@
 //! Each side seals independently; crash gaps recovered by replaying IR ops to
 //! rebuild TAPIR state.
 
-pub(crate) mod record_handle;
-pub(crate) mod tapir_handle;
+pub mod record_handle;
+pub mod tapir_handle;
 
 use crate::ir::OpId;
 use crate::mvcc::disk::disk_io::{DiskIo, OpenFlags};

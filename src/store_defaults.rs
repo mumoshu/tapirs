@@ -1,9 +1,12 @@
 //! Centralized production store type aliases and factory.
 //!
-//! This is the **only** file with `cfg(feature = "persistent-store")` gates.
+//! This is the **only** file with `cfg(feature = "persistent-store")`
+//! and `cfg(feature = "combined-store")` gates.
 //! Node code uses these aliases and the factory function with no cfg of its own.
 
-use crate::tapir::{ShardNumber, CO, CR, IO};
+use crate::tapir::ShardNumber;
+#[cfg(not(feature = "combined-store"))]
+use crate::tapir::{CO, CR, IO};
 use crate::DefaultDiskIo;
 
 // ── Non-persistent (default) ────────────────────────────────────────────────
@@ -33,10 +36,9 @@ pub type ProductionIrRecordStore =
 
 // ── Combined (deduplicated IR+TAPIR) ────────────────────────────────────────
 
-// Placeholder: TapirStore handle will be CombinedTapirHandle once implemented.
 #[cfg(feature = "combined-store")]
 pub type ProductionTapirStore =
-    crate::unified::tapir::persistent_store::PersistentTapirStore<String, String, DefaultDiskIo>;
+    crate::unified::combined::tapir_handle::CombinedTapirHandle<String, String, DefaultDiskIo>;
 
 #[cfg(feature = "combined-store")]
 pub type ProductionIrRecordStore =
@@ -138,4 +140,34 @@ pub fn open_production_stores(
     .map_err(|e| format!("failed to open PersistentIrRecordStore at {base_dir}: {e}"))?;
 
     Ok((upcalls, ir_store))
+}
+
+#[cfg(feature = "combined-store")]
+pub fn open_production_stores(
+    shard: ShardNumber,
+    persist_dir: &str,
+    shard_id: u32,
+) -> Result<(ProductionTapirReplica, ProductionIrRecordStore), String> {
+    use crate::mvcc::disk::disk_io::OpenFlags;
+    use crate::unified::combined::CombinedStoreInner;
+
+    let base_dir = format!("{}/shard_{}", persist_dir, shard_id);
+    let io_flags = OpenFlags {
+        create: true,
+        direct: false,
+    };
+
+    let inner = CombinedStoreInner::<String, String, DefaultDiskIo>::open(
+        std::path::Path::new(&base_dir),
+        io_flags,
+        shard,
+        true,
+    )
+    .map_err(|e| format!("failed to open CombinedStore at {base_dir}: {e}"))?;
+
+    let record_handle = inner.into_record_handle();
+    let tapir_handle = record_handle.tapir_handle();
+    let upcalls = crate::tapir::Replica::new_with_store(tapir_handle);
+
+    Ok((upcalls, record_handle))
 }
