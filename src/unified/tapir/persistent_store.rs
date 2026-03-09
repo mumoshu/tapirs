@@ -21,7 +21,7 @@ use std::sync::Arc;
 /// Neither runtime field is persisted — both are rebuilt during view
 /// change sync/merge. On recovery, all persisted prepared entries are
 /// treated as finalized.
-pub(crate) struct PersistentTapirStore<K: Ord, V, IO: DiskIo> {
+pub struct PersistentTapirStore<K: Ord, V, IO: DiskIo> {
     pub(crate) state: TapirState<K, V, IO>,
     finalized_prepares: BTreeSet<TransactionId>,
     min_prepare_times: MinPrepareTimes,

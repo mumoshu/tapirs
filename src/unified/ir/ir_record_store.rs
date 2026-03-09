@@ -363,7 +363,7 @@ where
 /// The VlogLsm memtable serves as the current-view overlay; the sealed vlog+index
 /// as the base. This is a drop-in alternative to `VersionedRecord` that provides
 /// durable persistence via WiscKey vlog segments.
-pub(crate) struct PersistentIrRecordStore<IO, CO, CR, DIO: DiskIo> {
+pub struct PersistentIrRecordStore<IO, CO, CR, DIO: DiskIo> {
     inc_lsm: VlogLsm<OpId, InconsistentEntry<IO>, DIO>,
     con_lsm: VlogLsm<OpId, ConsensusEntry<CO, CR>, DIO>,
     base_view: u64,
