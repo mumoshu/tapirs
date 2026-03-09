@@ -24,7 +24,6 @@ pub(crate) trait Memtable<K, V> {
     fn mem_get(&self, key: &K) -> Option<&V>;
     fn mem_iter<'a>(&'a self) -> impl Iterator<Item = (&'a K, &'a V)> where K: 'a, V: 'a;
     fn mem_range_from<'a>(&'a self, from: &K) -> impl Iterator<Item = (&'a K, &'a V)> where K: 'a, V: 'a;
-    fn mem_get_mut(&mut self, key: &K) -> Option<&mut V>;
     fn mem_len(&self) -> usize;
     fn mem_clear(&mut self);
 }
@@ -36,9 +35,6 @@ impl<K: Ord, V> Memtable<K, V> for BTreeMap<K, V> {
     }
     fn mem_get(&self, key: &K) -> Option<&V> {
         self.get(key)
-    }
-    fn mem_get_mut(&mut self, key: &K) -> Option<&mut V> {
-        self.get_mut(key)
     }
     fn mem_len(&self) -> usize {
         self.len()
@@ -542,16 +538,6 @@ impl<K: Ord, V, IO: DiskIo, M: Memtable<K, V>> VlogLsm<K, V, IO, M> {
         } else {
             self.base_dir.join(format!("{}_sst_{id:04}.db", self.label))
         }
-    }
-
-    /// Mutable reference to a memtable entry.
-    pub(crate) fn mem_get_mut(&mut self, key: &K) -> Option<&mut V> {
-        self.memtable.mem_get_mut(key)
-    }
-
-    /// Direct mutable access to the memtable (for VersionedVacantEntry construction).
-    pub(crate) fn memtable_mut(&mut self) -> &mut M {
-        &mut self.memtable
     }
 
     /// Number of entries in the memtable.

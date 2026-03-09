@@ -2,7 +2,7 @@ use crate::ir::{
     ClientId, IrPayload, IrRecordStore, MergeInstallResult, OpId,
     RecordBuilder, RecordConsensusEntry as ConsensusEntry,
     RecordInconsistentEntry as InconsistentEntry,
-    RecordView, VersionedEntry, VersionedVacantEntry, ViewInstallResult, ViewNumber,
+    RecordView, ViewInstallResult, ViewNumber,
 };
 use crate::mvcc::disk::disk_io::{DiskIo, OpenFlags};
 use crate::mvcc::disk::error::StorageError;
@@ -540,34 +540,21 @@ where
     type Record = PersistentRecord<IO, CO, CR>;
     type Payload = PersistentPayload<IO, CO, CR>;
 
-    fn entry_inconsistent(&mut self, op_id: OpId) -> VersionedEntry<'_, InconsistentEntry<IO>> {
+    fn get_inconsistent_entry(&self, op_id: &OpId) -> Option<InconsistentEntry<IO>> {
         // Check memtable first, then sealed data (index → vlog)
-        if let Ok(Some(entry)) = self.inc_lsm.get(&op_id) {
-            return VersionedEntry::Occupied(entry);
-        }
-        VersionedEntry::Vacant(VersionedVacantEntry {
-            map: self.inc_lsm.memtable_mut(),
-            op_id,
-        })
+        self.inc_lsm.get(op_id).ok().flatten()
     }
 
-    fn entry_consensus(&mut self, op_id: OpId) -> VersionedEntry<'_, ConsensusEntry<CO, CR>> {
-        if let Ok(Some(entry)) = self.con_lsm.get(&op_id) {
-            return VersionedEntry::Occupied(entry);
-        }
-        VersionedEntry::Vacant(VersionedVacantEntry {
-            map: self.con_lsm.memtable_mut(),
-            op_id,
-        })
+    fn get_consensus_entry(&self, op_id: &OpId) -> Option<ConsensusEntry<CO, CR>> {
+        self.con_lsm.get(op_id).ok().flatten()
     }
 
-    fn get_mut_inconsistent(&mut self, op_id: &OpId) -> Option<&mut InconsistentEntry<IO>> {
-        // Memtable only — tentative entries are always in the current view's memtable.
-        self.inc_lsm.mem_get_mut(op_id)
+    fn insert_inconsistent_entry(&mut self, op_id: OpId, entry: InconsistentEntry<IO>) {
+        self.inc_lsm.put(op_id, entry);
     }
 
-    fn get_mut_consensus(&mut self, op_id: &OpId) -> Option<&mut ConsensusEntry<CO, CR>> {
-        self.con_lsm.mem_get_mut(op_id)
+    fn insert_consensus_entry(&mut self, op_id: OpId, entry: ConsensusEntry<CO, CR>) {
+        self.con_lsm.put(op_id, entry);
     }
 
     fn full_record(&self) -> Self::Record {
@@ -967,12 +954,8 @@ mod tests {
     #[test]
     fn entry_insert_into_empty() {
         let mut store = make_store();
-        match store.entry_inconsistent(op_id(1, 1)) {
-            VersionedEntry::Vacant(v) => {
-                v.insert(inc_entry("op1", 0));
-            }
-            VersionedEntry::Occupied(_) => panic!("expected vacant"),
-        }
+        assert!(store.get_inconsistent_entry(&op_id(1, 1)).is_none());
+        store.insert_inconsistent_entry(op_id(1, 1), inc_entry("op1", 0));
         assert_eq!(store.inconsistent_len(), 1);
     }
 
@@ -980,64 +963,39 @@ mod tests {
     fn entry_occupied_from_sealed() {
         let mut store = make_store();
         // Insert and finalize an entry
-        match store.entry_inconsistent(op_id(1, 1)) {
-            VersionedEntry::Vacant(v) => {
-                v.insert(fin_inc_entry("op1", 0));
-            }
-            _ => panic!("expected vacant"),
-        }
+        store.insert_inconsistent_entry(op_id(1, 1), fin_inc_entry("op1", 0));
         // Seal to move to vlog
         store.seal(1).unwrap();
 
-        // Entry should be found as Occupied from sealed data
-        match store.entry_inconsistent(op_id(1, 1)) {
-            VersionedEntry::Occupied(e) => assert_eq!(e.op, "op1"),
-            VersionedEntry::Vacant(_) => panic!("expected occupied from sealed"),
-        }
+        // Entry should be found from sealed data
+        let e = store.get_inconsistent_entry(&op_id(1, 1)).expect("expected from sealed");
+        assert_eq!(e.op, "op1");
     }
 
     #[test]
-    fn get_mut_memtable_only() {
+    fn get_modify_insert_memtable() {
         let mut store = make_store();
         // No entry → None
-        assert!(store.get_mut_inconsistent(&op_id(1, 1)).is_none());
+        assert!(store.get_inconsistent_entry(&op_id(1, 1)).is_none());
 
         // Insert to memtable
-        match store.entry_inconsistent(op_id(1, 1)) {
-            VersionedEntry::Vacant(v) => {
-                v.insert(inc_entry("op1", 0));
-            }
-            _ => panic!(),
-        }
-        // Can mutate
-        let entry = store.get_mut_inconsistent(&op_id(1, 1)).unwrap();
+        store.insert_inconsistent_entry(op_id(1, 1), inc_entry("op1", 0));
+        // Get, modify, insert back
+        let mut entry = store.get_inconsistent_entry(&op_id(1, 1)).unwrap();
         entry.state = State::Finalized(ViewNumber(1));
-        assert!(store
-            .get_mut_inconsistent(&op_id(1, 1))
-            .unwrap()
-            .state
-            .is_finalized());
+        store.insert_inconsistent_entry(op_id(1, 1), entry);
+        assert!(store.get_inconsistent_entry(&op_id(1, 1)).unwrap().state.is_finalized());
     }
 
     #[test]
     fn full_record_merges_memtable_and_sealed() {
         let mut store = make_store();
         // Insert and finalize an entry, then seal
-        match store.entry_inconsistent(op_id(1, 1)) {
-            VersionedEntry::Vacant(v) => {
-                v.insert(fin_inc_entry("op1", 0));
-            }
-            _ => panic!(),
-        }
+        store.insert_inconsistent_entry(op_id(1, 1), fin_inc_entry("op1", 0));
         store.seal(1).unwrap();
 
         // Add another entry to memtable (current view)
-        match store.entry_inconsistent(op_id(2, 1)) {
-            VersionedEntry::Vacant(v) => {
-                v.insert(inc_entry("op2", 1));
-            }
-            _ => panic!(),
-        }
+        store.insert_inconsistent_entry(op_id(2, 1), inc_entry("op2", 1));
 
         let record = store.full_record();
         let entries: Vec<_> = record.inconsistent_entries().collect();
@@ -1048,19 +1006,9 @@ mod tests {
     fn seal_discards_tentative() {
         let mut store = make_store();
         // Insert tentative entry
-        match store.entry_inconsistent(op_id(1, 1)) {
-            VersionedEntry::Vacant(v) => {
-                v.insert(inc_entry("tentative", 0));
-            }
-            _ => panic!(),
-        }
+        store.insert_inconsistent_entry(op_id(1, 1), inc_entry("tentative", 0));
         // Insert finalized entry
-        match store.entry_inconsistent(op_id(2, 1)) {
-            VersionedEntry::Vacant(v) => {
-                v.insert(fin_inc_entry("finalized", 0));
-            }
-            _ => panic!(),
-        }
+        store.insert_inconsistent_entry(op_id(2, 1), fin_inc_entry("finalized", 0));
         store.seal(1).unwrap();
 
         // Only finalized entry should survive in sealed data
@@ -1108,21 +1056,11 @@ mod tests {
     fn build_view_change_payload_delta_vs_full() {
         let mut store = make_store();
         // Insert and seal to establish base
-        match store.entry_inconsistent(op_id(1, 1)) {
-            VersionedEntry::Vacant(v) => {
-                v.insert(fin_inc_entry("op1", 0));
-            }
-            _ => panic!(),
-        }
+        store.insert_inconsistent_entry(op_id(1, 1), fin_inc_entry("op1", 0));
         store.seal(1).unwrap();
 
         // Add overlay entry
-        match store.entry_inconsistent(op_id(2, 1)) {
-            VersionedEntry::Vacant(v) => {
-                v.insert(inc_entry("op2", 1));
-            }
-            _ => panic!(),
-        }
+        store.insert_inconsistent_entry(op_id(2, 1), inc_entry("op2", 1));
 
         // Delta: base_view=1, next_view=2
         let delta = store.build_view_change_payload(2);
@@ -1137,19 +1075,9 @@ mod tests {
     #[test]
     fn install_start_view_roundtrip() {
         let mut store = make_store();
-        // Insert entries and seal
-        match store.entry_inconsistent(op_id(1, 1)) {
-            VersionedEntry::Vacant(v) => {
-                v.insert(fin_inc_entry("op1", 0));
-            }
-            _ => panic!(),
-        }
-        match store.entry_consensus(op_id(1, 2)) {
-            VersionedEntry::Vacant(v) => {
-                v.insert(fin_con_entry("cop1", "r1", 0));
-            }
-            _ => panic!(),
-        }
+        // Insert entries
+        store.insert_inconsistent_entry(op_id(1, 1), fin_inc_entry("op1", 0));
+        store.insert_consensus_entry(op_id(1, 2), fin_con_entry("cop1", "r1", 0));
 
         // Build full payload
         let payload = store.build_view_change_payload(1);
@@ -1160,14 +1088,10 @@ mod tests {
         assert!(result.is_some());
 
         // Verify entries survive
-        match store2.entry_inconsistent(op_id(1, 1)) {
-            VersionedEntry::Occupied(e) => assert_eq!(e.op, "op1"),
-            _ => panic!("expected occupied after install"),
-        }
-        match store2.entry_consensus(op_id(1, 2)) {
-            VersionedEntry::Occupied(e) => assert_eq!(e.op, "cop1"),
-            _ => panic!("expected occupied after install"),
-        }
+        let e = store2.get_inconsistent_entry(&op_id(1, 1)).expect("expected after install");
+        assert_eq!(e.op, "op1");
+        let e = store2.get_consensus_entry(&op_id(1, 2)).expect("expected after install");
+        assert_eq!(e.op, "cop1");
     }
 
     #[test]
@@ -1183,10 +1107,8 @@ mod tests {
         assert_eq!(store.base_view, 1);
 
         // Verify entries accessible
-        match store.entry_inconsistent(op_id(1, 1)) {
-            VersionedEntry::Occupied(e) => assert_eq!(e.op, "op1"),
-            _ => panic!("expected occupied"),
-        }
+        let e = store.get_inconsistent_entry(&op_id(1, 1)).expect("expected occupied");
+        assert_eq!(e.op, "op1");
     }
 
     #[test]

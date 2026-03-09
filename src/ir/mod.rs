@@ -29,7 +29,7 @@ pub use inmem::VersionedRecord;
 pub use record::{
     ConsensusEntry as RecordConsensusEntry,
     InconsistentEntry as RecordInconsistentEntry, Record, RecordBuilder, RecordView,
-    State as RecordEntryState, VersionedEntry, VersionedVacantEntry,
+    State as RecordEntryState,
 };
 pub use replica::{Replica, ReplicaMetrics, Upcalls as ReplicaUpcalls};
 pub use shared_view::SharedView;

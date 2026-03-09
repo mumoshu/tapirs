@@ -1,5 +1,5 @@
 use super::payload::IrPayload;
-use super::record::{ConsensusEntry, InconsistentEntry, RecordBuilder, RecordView, VersionedEntry};
+use super::record::{ConsensusEntry, InconsistentEntry, RecordBuilder, RecordView};
 use super::{OpId, ViewNumber};
 use std::fmt::Debug;
 
@@ -41,19 +41,17 @@ where
     type Record: RecordView<IO = IO, CO = CO, CR = CR> + RecordBuilder + Debug + Default + Send + 'static;
     type Payload: IrPayload<Record = Self::Record>;
 
-    /// Look up or insert an inconsistent entry by OpId.
-    fn entry_inconsistent(&mut self, op_id: OpId) -> VersionedEntry<'_, InconsistentEntry<IO>>;
+    /// Look up an inconsistent entry by OpId (owned return).
+    fn get_inconsistent_entry(&self, op_id: &OpId) -> Option<InconsistentEntry<IO>>;
 
-    /// Look up or insert a consensus entry by OpId.
-    fn entry_consensus(&mut self, op_id: OpId) -> VersionedEntry<'_, ConsensusEntry<CO, CR>>;
+    /// Look up a consensus entry by OpId (owned return).
+    fn get_consensus_entry(&self, op_id: &OpId) -> Option<ConsensusEntry<CO, CR>>;
 
-    /// Get a mutable reference to an inconsistent entry, promoting it
-    /// to the current view's writable layer if needed.
-    fn get_mut_inconsistent(&mut self, op_id: &OpId) -> Option<&mut InconsistentEntry<IO>>;
+    /// Insert or overwrite an inconsistent entry.
+    fn insert_inconsistent_entry(&mut self, op_id: OpId, entry: InconsistentEntry<IO>);
 
-    /// Get a mutable reference to a consensus entry, promoting it
-    /// to the current view's writable layer if needed.
-    fn get_mut_consensus(&mut self, op_id: &OpId) -> Option<&mut ConsensusEntry<CO, CR>>;
+    /// Insert or overwrite a consensus entry.
+    fn insert_consensus_entry(&mut self, op_id: OpId, entry: ConsensusEntry<CO, CR>);
 
     /// Returns all entries (sealed + current view) merged into a single record.
     fn full_record(&self) -> Self::Record;

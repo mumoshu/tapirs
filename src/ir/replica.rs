@@ -6,7 +6,7 @@ use super::{
     FinalizeConsensus, FinalizeInconsistent, Membership, Message, OpId, ProposeConsensus,
     ProposeInconsistent, RecordConsensusEntry, RecordEntryState, RecordInconsistentEntry,
     RemoveMember, ReplyConsensus, ReplyInconsistent, ReplyUnlogged, RequestUnlogged, StartView,
-    IrRecordStore, RecordBuilder, RecordView, VersionedEntry, View, ViewNumber,
+    IrRecordStore, RecordBuilder, RecordView, View, ViewNumber,
 };
 use crate::{Transport, TransportMessage};
 use std::{
@@ -365,17 +365,20 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                         }));
                     }
 
-                    let state = match sync.record.entry_inconsistent(op_id) {
-                        VersionedEntry::Vacant(vacant) => {
-                            vacant.insert(RecordInconsistentEntry {
+                    let state = match sync.record.get_inconsistent_entry(&op_id) {
+                        Some(existing) => {
+                            debug_assert_eq!(existing.op, op);
+                            existing.state
+                        }
+                        None => {
+                            let entry = RecordInconsistentEntry {
                                 op,
                                 state: RecordEntryState::Tentative,
                                 modified_view: sync.view.number.0,
-                            }).state
-                        }
-                        VersionedEntry::Occupied(occupied) => {
-                            debug_assert_eq!(occupied.op, op);
-                            occupied.state
+                            };
+                            let state = entry.state;
+                            sync.record.insert_inconsistent_entry(op_id, entry);
+                            state
                         }
                     };
 
@@ -396,19 +399,22 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                             result_state: None,
                         }));
                     }
-                    let (result, state) = match sync.record.entry_consensus(op_id) {
-                        VersionedEntry::Occupied(entry) => {
-                            debug_assert_eq!(entry.op, op);
-                            (entry.result.clone(), entry.state)
+                    let (result, state) = match sync.record.get_consensus_entry(&op_id) {
+                        Some(existing) => {
+                            debug_assert_eq!(existing.op, op);
+                            (existing.result.clone(), existing.state)
                         }
-                        VersionedEntry::Vacant(vacant) => {
-                            let entry = vacant.insert(RecordConsensusEntry {
+                        None => {
+                            let entry = RecordConsensusEntry {
                                 result: sync.upcalls.exec_consensus(&op_id, &op),
                                 op,
                                 state: RecordEntryState::Tentative,
                                 modified_view: sync.view.number.0,
-                            });
-                            (entry.result.clone(), entry.state)
+                            };
+                            let result = entry.result.clone();
+                            let state = entry.state;
+                            sync.record.insert_consensus_entry(op_id, entry);
+                            (result, state)
                         }
                     };
 
@@ -421,11 +427,12 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
             }
             Message::<U, T>::FinalizeInconsistent(FinalizeInconsistent { op_id }) => {
                 if sync.status.is_normal()
-                    && let Some(entry) = sync.record.get_mut_inconsistent(&op_id)
+                    && let Some(mut entry) = sync.record.get_inconsistent_entry(&op_id)
                 {
                     if entry.state.is_tentative() {
                         entry.state = RecordEntryState::Finalized(sync.view.number);
                         entry.modified_view = sync.view.number.0;
+                        sync.record.insert_inconsistent_entry(op_id, entry.clone());
                     }
                     // Execute and reply regardless of whether the entry was
                     // just finalized or was already finalized (e.g. from a
@@ -444,7 +451,7 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
             }
             Message::<U, T>::FinalizeConsensus(FinalizeConsensus { op_id, result }) => {
                 if sync.status.is_normal()
-                    && let Some(entry) = sync.record.get_mut_consensus(&op_id) {
+                    && let Some(mut entry) = sync.record.get_consensus_entry(&op_id) {
                         // Don't allow a late `FinalizeConsensus` to overwrite
                         // a view change decision.
                         if entry.state.is_tentative() {
@@ -452,6 +459,7 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                             entry.result = result;
                             entry.modified_view = sync.view.number.0;
                             sync.upcalls.finalize_consensus(&op_id, &entry.op, &entry.result);
+                            sync.record.insert_consensus_entry(op_id, entry);
                         } else if cfg!(debug_assertions) && entry.result != result {
                             // For diagnostic purposes.
                             warn!("tried to finalize consensus with {result:?} when {:?} was already finalized", entry.result);

@@ -167,20 +167,28 @@ where
     type Record = RecordImpl<IO, CO, CR>;
     type Payload = RecordPayload<IO, CO, CR>;
 
-    fn entry_inconsistent(&mut self, op_id: OpId) -> VersionedEntry<'_, InconsistentEntry<IO>> {
-        self.entry_inconsistent(op_id)
+    fn get_inconsistent_entry(&self, op_id: &OpId) -> Option<InconsistentEntry<IO>> {
+        if let Some(e) = self.overlay.inconsistent.get(op_id) {
+            Some(e.clone())
+        } else {
+            self.base.inconsistent.get(op_id).cloned()
+        }
     }
 
-    fn entry_consensus(&mut self, op_id: OpId) -> VersionedEntry<'_, ConsensusEntry<CO, CR>> {
-        self.entry_consensus(op_id)
+    fn get_consensus_entry(&self, op_id: &OpId) -> Option<ConsensusEntry<CO, CR>> {
+        if let Some(e) = self.overlay.consensus.get(op_id) {
+            Some(e.clone())
+        } else {
+            self.base.consensus.get(op_id).cloned()
+        }
     }
 
-    fn get_mut_inconsistent(&mut self, op_id: &OpId) -> Option<&mut InconsistentEntry<IO>> {
-        self.get_mut_inconsistent(op_id)
+    fn insert_inconsistent_entry(&mut self, op_id: OpId, entry: InconsistentEntry<IO>) {
+        self.overlay.inconsistent.insert(op_id, entry);
     }
 
-    fn get_mut_consensus(&mut self, op_id: &OpId) -> Option<&mut ConsensusEntry<CO, CR>> {
-        self.get_mut_consensus(op_id)
+    fn insert_consensus_entry(&mut self, op_id: OpId, entry: ConsensusEntry<CO, CR>) {
+        self.overlay.consensus.insert(op_id, entry);
     }
 
     fn full_record(&self) -> RecordImpl<IO, CO, CR> {
