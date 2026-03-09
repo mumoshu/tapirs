@@ -47,7 +47,6 @@ use tokio::time::timeout;
 type K = i64;
 type V = i64;
 type Transport = ChannelTransport<TapirReplica<K, V>>;
-type FaultyTransport = FaultyChannelTransport<TapirReplica<K, V>>;
 type TapirIrRecord = IrVersionedRecord<crate::tapir::IO<K, V>, crate::tapir::CO<K, V>, crate::tapir::CR>;
 
 use testing::test_rng;

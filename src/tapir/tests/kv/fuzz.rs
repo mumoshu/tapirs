@@ -1,18 +1,27 @@
 use super::*;
+use crate::ir::IrRecordStore;
+use crate::tapirstore::TapirStore;
 
 // --- Faulty transport helpers ---
 
+type FaultyXport<S> = FaultyChannelTransport<TapirReplica<K, V, S>>;
+
 #[allow(clippy::too_many_arguments)]
-fn build_shard_faulty(
+fn build_shard_faulty<S, R>(
     rng: &mut crate::Rng,
     shard: ShardNumber,
     linearizable: bool,
     num_replicas: usize,
-    registry: &ChannelRegistry<TapirReplica<K, V>>,
+    registry: &ChannelRegistry<TapirReplica<K, V, S>>,
     config: &NetworkFaultConfig,
     seed: u64,
     per_replica_locals: &[Arc<InMemoryShardDirectory<usize>>],
-) -> Vec<Arc<IrReplica<TapirReplica<K, V>, FaultyTransport, TapirIrRecord>>> {
+    store_factory: &mut impl FnMut(ShardNumber, bool) -> (TapirReplica<K, V, S>, R),
+) -> Vec<Arc<IrReplica<TapirReplica<K, V, S>, FaultyXport<S>, R>>>
+where
+    S: TapirStore<K, V>,
+    R: IrRecordStore<crate::tapir::IO<K, V>, crate::tapir::CO<K, V>, crate::tapir::CR, Payload = S::Payload>,
+{
     let initial_address = registry.len();
     let membership = IrMembership::new(
         (0..num_replicas)
@@ -25,41 +34,37 @@ fn build_shard_faulty(
         local.put(shard, membership.clone(), 0);
     }
 
-    (0..num_replicas)
-        .map(|i| {
-            let node_seed = seed.wrapping_add(initial_address as u64 + i as u64);
-            let config = config.clone();
-            let membership = membership.clone();
-            let replica_rng = rng.fork();
-            let dir = Arc::clone(&per_replica_locals[i]);
+    let mut replicas = Vec::with_capacity(num_replicas);
+    for (i, local) in per_replica_locals.iter().enumerate().take(num_replicas) {
+        let node_seed = seed.wrapping_add(initial_address as u64 + i as u64);
+        let config = config.clone();
+        let membership = membership.clone();
+        let replica_rng = rng.fork();
+        let dir = Arc::clone(local);
+        let (upcalls, record) = store_factory(shard, linearizable);
 
-            Arc::new_cyclic(
-                |weak: &std::sync::Weak<IrReplica<TapirReplica<K, V>, FaultyTransport, TapirIrRecord>>| {
-                    let weak = weak.clone();
-                    let channel = registry
-                        .channel(move |from, message| weak.upgrade()?.receive(from, message), dir);
-                    let transport = FaultyChannelTransport::new(channel, config, node_seed);
-                    transport.set_shard(shard);
-                    let upcalls = TapirReplica::new_with_backend(shard, linearizable,
-                        DiskStore::<K, V, Timestamp, MemoryIo>::open(
-                            MemoryIo::temp_path(),
-                        ).unwrap(),
-                    );
-                    IrReplica::new(replica_rng, membership, upcalls, transport, Some(TapirReplica::tick), Default::default())
-                },
-            )
-        })
-        .collect::<Vec<_>>()
+        replicas.push(Arc::new_cyclic(
+            |weak: &std::sync::Weak<IrReplica<TapirReplica<K, V, S>, FaultyXport<S>, R>>| {
+                let weak = weak.clone();
+                let channel = registry
+                    .channel(move |from, message| weak.upgrade()?.receive(from, message), dir);
+                let transport = FaultyChannelTransport::new(channel, config, node_seed);
+                transport.set_shard(shard);
+                IrReplica::new(replica_rng, membership, upcalls, transport, Some(TapirReplica::tick), record)
+            },
+        ));
+    }
+    replicas
 }
 
-fn build_clients_faulty(
+fn build_clients_faulty<S: TapirStore<K, V>>(
     rng: &mut crate::Rng,
     num_clients: usize,
-    registry: &ChannelRegistry<TapirReplica<K, V>>,
+    registry: &ChannelRegistry<TapirReplica<K, V, S>>,
     config: &NetworkFaultConfig,
     seed: u64,
     directories: &[Arc<InMemoryShardDirectory<usize>>],
-) -> (Vec<Arc<TapirClient<K, V, FaultyTransport>>>, Vec<FaultyTransport>) {
+) -> (Vec<Arc<TapirClient<K, V, FaultyXport<S>>>>, Vec<FaultyXport<S>>) {
     let mut clients = Vec::new();
     let mut transports = Vec::new();
     for (i, dir) in directories.iter().enumerate().take(num_clients) {
@@ -75,7 +80,7 @@ fn build_clients_faulty(
 /// Returns (shards, clients, client_transports, registry, node_shard_sets).
 /// `node_shard_sets[node_idx]` = set of ShardNumbers assigned to that node.
 #[allow(clippy::too_many_arguments)]
-fn build_sharded_kv_faulty(
+fn build_sharded_kv_faulty<S, R>(
     rng: &mut crate::Rng,
     linearizable: bool,
     replica_counts: &[usize],
@@ -84,13 +89,18 @@ fn build_sharded_kv_faulty(
     seed: u64,
     node_locals: &[Arc<InMemoryShardDirectory<usize>>],
     client_locals: &[Arc<InMemoryShardDirectory<usize>>],
+    store_factory: &mut impl FnMut(ShardNumber, bool) -> (TapirReplica<K, V, S>, R),
 ) -> (
-    Vec<Vec<Arc<IrReplica<TapirReplica<K, V>, FaultyTransport, TapirIrRecord>>>>,
-    Vec<Arc<TapirClient<K, V, FaultyTransport>>>,
-    Vec<FaultyTransport>,
-    ChannelRegistry<TapirReplica<K, V>>,
+    Vec<Vec<Arc<IrReplica<TapirReplica<K, V, S>, FaultyXport<S>, R>>>>,
+    Vec<Arc<TapirClient<K, V, FaultyXport<S>>>>,
+    Vec<FaultyXport<S>>,
+    ChannelRegistry<TapirReplica<K, V, S>>,
     Vec<std::collections::BTreeSet<ShardNumber>>,
-) {
+)
+where
+    S: TapirStore<K, V>,
+    R: IrRecordStore<crate::tapir::IO<K, V>, crate::tapir::CO<K, V>, crate::tapir::CR, Payload = S::Payload>,
+{
     let num_shards = replica_counts.len();
     let num_nodes = node_locals.len();
 
@@ -134,6 +144,7 @@ fn build_sharded_kv_faulty(
             config,
             shard_seed,
             &per_replica_locals,
+            store_factory,
         );
         shards.push(replicas);
     }
@@ -227,10 +238,24 @@ fn fuzz_tapir_transactions() {
         .build()
         .unwrap();
 
-    rt.block_on(fuzz_tapir_transactions_inner(seed));
+    rt.block_on(fuzz_tapir_transactions_inner(seed, |shard, linearizable| {
+        let backend = DiskStore::<K, V, Timestamp, MemoryIo>::open(
+            MemoryIo::temp_path(),
+        ).unwrap();
+        let upcalls = TapirReplica::new_with_backend(shard, linearizable, backend);
+        let record: IrVersionedRecord<crate::tapir::IO<K, V>, crate::tapir::CO<K, V>, crate::tapir::CR> = Default::default();
+        (upcalls, record)
+    }));
 }
 
-async fn fuzz_tapir_transactions_inner(seed: u64) {
+async fn fuzz_tapir_transactions_inner<S, R>(
+    seed: u64,
+    mut store_factory: impl FnMut(ShardNumber, bool) -> (TapirReplica<K, V, S>, R),
+)
+where
+    S: TapirStore<K, V>,
+    R: IrRecordStore<crate::tapir::IO<K, V>, crate::tapir::CO<K, V>, crate::tapir::CR, Payload = S::Payload>,
+{
     eprintln!("fuzz_tapir_transactions seed={seed}");
     let _ = std::fs::write("/tmp/tapi-fuzz-seed.txt", seed.to_string());
 
@@ -337,6 +362,7 @@ async fn fuzz_tapir_transactions_inner(seed: u64) {
         seed,
         &node_locals,
         &client_locals,
+        &mut store_factory,
     );
 
     // Register own_shards on each node's CachingShardDirectory for PUSH filtering.
@@ -426,6 +452,7 @@ async fn fuzz_tapir_transactions_inner(seed: u64) {
             &config,
             new_seed,
             &per_replica_locals,
+            &mut store_factory,
         );
         let membership = IrMembership::new(
             (address_offset..address_offset + count).collect(),
@@ -475,7 +502,7 @@ async fn fuzz_tapir_transactions_inner(seed: u64) {
 
         for round in 0..num_fault_rounds {
             // Wait before injecting faults (let some transactions complete).
-            FaultyTransport::sleep(Duration::from_millis(rng.gen_range(50..=200))).await;
+            tokio::time::sleep(Duration::from_millis(rng.gen_range(50..=200))).await;
 
             let event: u8 = rng.gen_range(0..100);
 
@@ -520,7 +547,7 @@ async fn fuzz_tapir_transactions_inner(seed: u64) {
                 // when ViewChanging (no hot loop in send()), and the remaining
                 // 2 of 3 can still form a quorum for view change completion.
                 let hold_ms = rng.gen_range(200..=1000u64);
-                FaultyTransport::sleep(Duration::from_millis(hold_ms)).await;
+                tokio::time::sleep(Duration::from_millis(hold_ms)).await;
 
                 // Heal partition.
                 fault_event_log.record(FuzzEvent::FaultHeal {
@@ -546,7 +573,7 @@ async fn fuzz_tapir_transactions_inner(seed: u64) {
             // Let view change propagate (replicas exchange DoViewChange,
             // coordinator collects quorum, runs sync/merge, broadcasts
             // StartView).
-            FaultyTransport::sleep(Duration::from_millis(rng.gen_range(100..=500))).await;
+            tokio::time::sleep(Duration::from_millis(rng.gen_range(100..=500))).await;
         }
     });
 
@@ -856,7 +883,7 @@ async fn fuzz_tapir_transactions_inner(seed: u64) {
                     }
 
                     // Inter-transaction delay — spread across resharding duration.
-                    FaultyTransport::sleep(Duration::from_millis(rng.gen_range(100..=2000))).await;
+                    tokio::time::sleep(Duration::from_millis(rng.gen_range(100..=2000))).await;
                     iteration += 1;
                 }
             })
@@ -1121,7 +1148,7 @@ async fn fuzz_tapir_transactions_inner(seed: u64) {
     eprintln!("fuzz: starting drain sleep (seed={seed})");
 
     // Let replicas drain pending operations after all view changes settle.
-    FaultyTransport::sleep(Duration::from_secs(5)).await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
 
     let drain_ms = drain_start.elapsed().as_millis();
     eprintln!("fuzz: drain sleep done in {drain_ms}ms (seed={seed})");
