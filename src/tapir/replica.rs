@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::marker::PhantomData;
 use std::task::Context;
 use std::time::Duration;
-use std::{future::Future, hash::Hash};
+use std::future::Future;
 use tracing::{trace, warn};
 
 fn none<T>() -> Option<T> {
@@ -53,23 +53,14 @@ pub(crate) struct ShardConfig<K> {
 /// Diverge from TAPIR and don't maintain a no-vote list. Instead, wait for a
 /// view change to syncronize each participant shard's prepare result and then
 /// let one or more of many possible backup coordinators take them at face-value.
-#[derive(Serialize, Deserialize)]
 pub struct Replica<K, V, S = InMemTapirStore<K, V, MvccDiskStore<K, V, Timestamp, DefaultDiskIo>>> {
-    #[serde(bound(
-        serialize = "K: Serialize + Ord + Hash, V: Serialize, S: Serialize",
-        deserialize = "K: Deserialize<'de> + Ord + Hash + Eq, V: Deserialize<'de>, S: Deserialize<'de>"
-    ))]
     store: S,
-    #[serde(skip, default)]
     _phantom: PhantomData<V>,
     /// If set, reject operations for keys outside this range.
     /// Not persisted: re-applied from view.app_config via apply_config after each view change.
-    #[serde(skip_serializing, skip_deserializing, default = "none", bound(deserialize = ""))]
     key_range: Option<KeyRange<K>>,
-    #[serde(skip_serializing, skip_deserializing, default, bound(deserialize = ""))]
     phase: ShardPhase,
     /// Runtime metrics counters (not persisted).
-    #[serde(skip_serializing, skip_deserializing, default, bound(deserialize = ""))]
     counters: ReplicaCounters,
 }
 
