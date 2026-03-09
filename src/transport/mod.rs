@@ -67,12 +67,14 @@ pub trait Transport<U: IrReplicaUpcalls>: Clone + Send + Sync + 'static {
     fn on_membership_changed(&self, _membership: &IrMembership<Self::Address>, _view: u64) {}
 }
 
-pub trait TapirTransport<K: Key, V: Value, S: TapirStore<K, V> = crate::tapirstore::InMemTapirStore<K, V, crate::MvccDiskStore<K, V, crate::tapir::Timestamp, crate::DefaultDiskIo>>>: Transport<crate::tapir::Replica<K, V, S>> {
+pub trait TapirTransport<K: Key, V: Value>: Transport<crate::tapir::Replica<K, V, Self::Store>> {
+    /// The TapirStore backend wired to the replica this transport connects to.
+    type Store: TapirStore<K, V>;
+
     /// Look up the addresses of replicas in a shard, on a best-effort basis; results
     /// may be arbitrarily out of date.
     fn shard_addresses(
         &self,
         shard: ShardNumber,
     ) -> impl Future<Output = IrMembership<Self::Address>> + Send + 'static;
-
 }

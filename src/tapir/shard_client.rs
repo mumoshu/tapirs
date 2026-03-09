@@ -3,8 +3,9 @@ use tracing::debug;
 use super::message::MinPrepareBaselineResult;
 use crate::{
     ir::ClientConfig as IrClientConfig,
-    transport::Transport, IrClient, IrClientId, IrMembership, IrReplicaUpcalls, IrSharedView,
+    IrClient, IrClientId, IrMembership, IrReplicaUpcalls, IrSharedView,
     OccPrepareResult, OccSharedTransaction, OccTransaction, OccTransactionId,
+    TapirTransport,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -13,12 +14,12 @@ use std::sync::Arc;
 use std::time::Duration;
 use super::quorum_read::{merge_quorum_read_results, merge_quorum_scan_results};
 
-pub struct ShardClient<K: Key, V: Value, T: Transport<Replica<K, V>>> {
+pub struct ShardClient<K: Key, V: Value, T: TapirTransport<K, V>> {
     shard: ShardNumber,
-    pub(crate) inner: IrClient<Replica<K, V>, T>,
+    pub(crate) inner: IrClient<Replica<K, V, T::Store>, T>,
 }
 
-impl<K: Key, V: Value, T: Transport<Replica<K, V>>> Clone for ShardClient<K, V, T> {
+impl<K: Key, V: Value, T: TapirTransport<K, V>> Clone for ShardClient<K, V, T> {
     fn clone(&self) -> Self {
         Self {
             shard: self.shard,
@@ -27,7 +28,7 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> Clone for ShardClient<K, V, 
     }
 }
 
-impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
+impl<K: Key, V: Value, T: TapirTransport<K, V>> ShardClient<K, V, T> {
     pub fn new(
         rng: crate::Rng,
         id: IrClientId,
@@ -506,7 +507,7 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
 
     pub fn fetch_leader_record(
         &self,
-    ) -> impl Future<Output = Option<(IrSharedView<T::Address>, <Replica<K, V> as IrReplicaUpcalls>::Payload)>>
+    ) -> impl Future<Output = Option<(IrSharedView<T::Address>, <Replica<K, V, T::Store> as IrReplicaUpcalls>::Payload)>>
            + Send
            + use<K, V, T>
     {
@@ -515,7 +516,7 @@ impl<K: Key, V: Value, T: Transport<Replica<K, V>>> ShardClient<K, V, T> {
 
     pub fn bootstrap_record(
         &self,
-        payload: <Replica<K, V> as IrReplicaUpcalls>::Payload,
+        payload: <Replica<K, V, T::Store> as IrReplicaUpcalls>::Payload,
         view: IrSharedView<T::Address>,
     ) {
         self.inner.bootstrap_record(payload, view);

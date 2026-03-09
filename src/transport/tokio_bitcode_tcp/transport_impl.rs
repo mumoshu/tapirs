@@ -151,7 +151,7 @@ where
     }
 }
 
-impl<K: Key, V: Value, S: TapirStore<K, V>> TapirTransport<K, V, S> for TcpTransport<crate::tapir::Replica<K, V, S>>
+impl<K: Key, V: Value, S: TapirStore<K, V>> TapirTransport<K, V> for TcpTransport<crate::tapir::Replica<K, V, S>>
 where
     <crate::tapir::Replica<K, V, S> as ReplicaUpcalls>::UO: Serialize + DeserializeOwned,
     <crate::tapir::Replica<K, V, S> as ReplicaUpcalls>::UR: Serialize + DeserializeOwned,
@@ -160,6 +160,8 @@ where
     <crate::tapir::Replica<K, V, S> as ReplicaUpcalls>::CO: Serialize + DeserializeOwned,
     <crate::tapir::Replica<K, V, S> as ReplicaUpcalls>::CR: Serialize + DeserializeOwned,
 {
+    type Store = S;
+
     fn shard_addresses(
         &self,
         shard: ShardNumber,

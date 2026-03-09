@@ -6,7 +6,7 @@ use crate::{
     DefaultDiskIo, IrClient, IrClientId, IrMembership, IrMembershipSize, IrOpId, IrRecordView,
     IrReplicaUpcalls,
     MvccBackend, MvccDiskStore,
-    OccPrepareResult, OccSharedTransaction, OccTransactionId, TapirTransport,
+    OccPrepareResult, OccSharedTransaction, OccTransactionId, TapirTransport, Transport,
 };
 use crate::tapirstore::InMemTapirStore;
 use futures::future::join_all;
@@ -118,7 +118,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> Replica<K, V, S> {
     ///    each shard's prepare status via f+1 quorum.
     /// 3. Commit if all shards report Ok; abort otherwise. The final decision is
     ///    sent as `IO::Commit` or `IO::Abort` (inconsistent) to all participants.
-    fn recover_coordination<T: TapirTransport<K, V, S>>(
+    fn recover_coordination<T: TapirTransport<K, V, Store = S>>(
         transaction_id: OccTransactionId,
         transaction: OccSharedTransaction<K, V, Timestamp>,
         commit: Timestamp,
@@ -247,7 +247,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> Replica<K, V, S> {
 
                     let results = future
                         .until(
-                            |results: &BTreeMap<T::Address, ReplyUnlogged<UR<K, V>, T::Address>>,
+                            |results: &BTreeMap<<T as Transport<Replica<K, V, S>>>::Address, ReplyUnlogged<UR<K, V>, <T as Transport<Replica<K, V, S>>>::Address>>,
                              cx: &mut Context<'_>| {
                                 decide(results, membership).is_some()
                                     || timeout.as_mut().poll(cx).is_ready()
@@ -873,7 +873,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> Replica<K, V, S> {
         // transaction_log trimming) using finalized_min_prepare_time.
     }
 
-    pub fn tick<T: TapirTransport<K, V, S>>(
+    pub fn tick<T: TapirTransport<K, V, Store = S>>(
         &self,
         transport: &T,
         membership: &IrMembership<T::Address>,

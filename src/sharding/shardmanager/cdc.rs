@@ -2,9 +2,8 @@ use crate::tapir::replica::{ShardConfig, ShardPhase};
 use crate::tapir::{Change, Key, KeyRange, ShardClient, ShardNumber, Value};
 use crate::discovery::{RemoteShardDirectory, ShardDirectoryChange};
 use super::ShardManager;
-use crate::tapir::{Replica, Sharded};
-use crate::transport::Transport;
-use crate::{IrClientId, IrMembership, OccTransaction, OccTransactionId};
+use crate::tapir::Sharded;
+use crate::{IrClientId, IrMembership, OccTransaction, OccTransactionId, TapirTransport};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -63,7 +62,7 @@ impl CdcCursor {
     }
 }
 
-impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteShardDirectory<T::Address, K>> ShardManager<K, V, T, RD> {
+impl<K: Key + Clone, V: Value + Clone, T: TapirTransport<K, V>, RD: RemoteShardDirectory<T::Address, K>> ShardManager<K, V, T, RD> {
     /// Freeze the source shard, query its read-protection watermark, and
     /// raise min_prepare_time on the target to subsume all historical
     /// read protections from the source.
@@ -909,7 +908,7 @@ fn filter_changes<K: Ord + Clone, V: Clone>(
 }
 
 /// Ship a set of changes to a target shard by wrapping each as an IO::Commit.
-pub(crate) async fn ship_changes<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>>(
+pub(crate) async fn ship_changes<K: Key + Clone, V: Value + Clone, T: TapirTransport<K, V>>(
     client: &crate::tapir::ShardClient<K, V, T>,
     shard: ShardNumber,
     changes: &[Change<K, V>],

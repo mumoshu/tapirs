@@ -2,7 +2,7 @@ use super::{TapirTransport, Transport};
 use crate::{
     discovery::{InMemoryShardDirectory, ShardDirectory as _},
     tapir::{Key, Value},
-    IrMembership, IrMessage, IrReplicaUpcalls, ShardNumber, TapirReplica,
+    IrMembership, IrMessage, IrReplicaUpcalls, ShardNumber,
 };
 use std::{
     fmt::Debug,
@@ -219,7 +219,10 @@ impl<U: IrReplicaUpcalls> Transport<U> for Channel<U> {
     }
 }
 
-impl<K: Key, V: Value> TapirTransport<K, V> for Channel<TapirReplica<K, V>> {
+impl<K: Key, V: Value, S: crate::tapirstore::TapirStore<K, V>> TapirTransport<K, V>
+    for Channel<crate::tapir::Replica<K, V, S>>
+{
+    type Store = S;
     fn shard_addresses(
         &self,
         shard: ShardNumber,
@@ -231,7 +234,10 @@ impl<K: Key, V: Value> TapirTransport<K, V> for Channel<TapirReplica<K, V>> {
                     break membership;
                 }
 
-                <Self as Transport<TapirReplica<K, V>>>::sleep(Duration::from_millis(100)).await;
+                <Self as Transport<crate::tapir::Replica<K, V, S>>>::sleep(
+                    Duration::from_millis(100),
+                )
+                .await;
             }
         }
     }

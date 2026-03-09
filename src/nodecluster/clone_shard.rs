@@ -1,8 +1,8 @@
 use super::types::{CloneError, SoloClusterManager};
 use crate::tapir::replica::{ShardConfig, ShardPhase};
 use crate::sharding::shardmanager::cdc::{ship_changes, CdcCursor};
-use crate::tapir::{Key, Replica, ShardNumber, Value};
-use crate::transport::Transport;
+use crate::tapir::{Key, ShardNumber, Value};
+use crate::TapirTransport;
 use std::time::Duration;
 
 impl SoloClusterManager {
@@ -49,7 +49,7 @@ impl SoloClusterManager {
     where
         K: Key + Clone,
         V: Value + Clone,
-        T: Transport<Replica<K, V>>,
+        T: TapirTransport<K, V>,
     {
         let mut cursor = CdcCursor::new();
 

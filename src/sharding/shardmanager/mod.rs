@@ -4,9 +4,7 @@ pub mod scan_changes_types;
 
 use crate::tapir::{Key, KeyRange, ShardClient, ShardNumber, Value};
 use crate::discovery::{DiscoveryError, RemoteShardDirectory, ShardDirectoryChange, ShardRecord, ShardStatus};
-use crate::transport::Transport;
-use crate::tapir::Replica;
-use crate::{IrClientId, IrMembership};
+use crate::{IrClientId, IrMembership, TapirTransport};
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -104,7 +102,7 @@ use std::sync::Arc;
 pub struct ShardManager<
     K: Key,
     V: Value,
-    T: Transport<Replica<K, V>>,
+    T: TapirTransport<K, V>,
     RD: RemoteShardDirectory<T::Address, K>,
 > {
     pub(crate) transport: T,
@@ -117,7 +115,7 @@ pub struct ShardManager<
 impl<
     K: Key,
     V: Value,
-    T: Transport<Replica<K, V>>,
+    T: TapirTransport<K, V>,
     RD: RemoteShardDirectory<T::Address, K>,
 > ShardManager<K, V, T, RD>
 {

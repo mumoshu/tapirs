@@ -1,8 +1,7 @@
 use crate::discovery::{RemoteShardDirectory, ShardStatus};
 use super::ShardManager;
-use crate::tapir::{Key, Replica, ShardClient, ShardNumber, Value};
-use crate::transport::Transport;
-use crate::{IrClientId, IrMembership};
+use crate::tapir::{Key, ShardClient, ShardNumber, Value};
+use crate::{IrClientId, IrMembership, TapirTransport};
 use std::time::Duration;
 
 /// Membership-change operations for adding/removing replicas from shards.
@@ -19,7 +18,7 @@ use std::time::Duration;
 ///
 /// `join` additionally fetches the leader_record and bootstraps the new
 /// replica before sending AddMember.
-impl<K: Key + Clone, V: Value + Clone, T: Transport<Replica<K, V>>, RD: RemoteShardDirectory<T::Address, K>> ShardManager<K, V, T, RD> {
+impl<K: Key + Clone, V: Value + Clone, T: TapirTransport<K, V>, RD: RemoteShardDirectory<T::Address, K>> ShardManager<K, V, T, RD> {
     /// Add a replica to a shard.
     ///
     /// Auto-discovers the existing membership from the remote directory and

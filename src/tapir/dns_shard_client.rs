@@ -1,6 +1,5 @@
-use super::{Key, Replica, ShardClient, ShardNumber, Value};
-use crate::transport::Transport;
-use crate::{IrClientId, IrMembership};
+use super::{Key, ShardClient, ShardNumber, Value};
+use crate::{IrClientId, IrMembership, TapirTransport};
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -12,7 +11,7 @@ use std::time::Duration;
 /// The `ShardClient` is accessed via [`DnsRefreshingShardClient::get`] which
 /// clones the current client (cheap — `ShardClient` wraps `Arc`). The
 /// background DNS task acquires a read lock only when IPs actually change.
-pub struct DnsRefreshingShardClient<K: Key, V: Value, T: Transport<Replica<K, V>>> {
+pub struct DnsRefreshingShardClient<K: Key, V: Value, T: TapirTransport<K, V>> {
     inner: Arc<RwLock<ShardClient<K, V, T>>>,
     _task: tokio::task::JoinHandle<()>,
 }
@@ -41,7 +40,7 @@ impl<K, V, T> DnsRefreshingShardClient<K, V, T>
 where
     K: Key + Clone,
     V: Value + Clone,
-    T: Transport<Replica<K, V>> + Clone,
+    T: TapirTransport<K, V> + Clone,
     T::Address: From<SocketAddr> + Ord,
 {
     /// Create a new DNS-refreshing ShardClient.
@@ -107,7 +106,7 @@ impl<K, V, T> DnsRefreshingShardClient<K, V, T>
 where
     K: Key,
     V: Value,
-    T: Transport<Replica<K, V>>,
+    T: TapirTransport<K, V>,
 {
     /// Get a clone of the current ShardClient.
     ///

@@ -218,6 +218,8 @@ impl Transport<TapirReplica<K, V>> for Maelstrom {
 }
 
 impl TapirTransport<K, V> for Maelstrom {
+    type Store = tapirs::tapirstore::InMemTapirStore<K, V, tapirs::MvccDiskStore<K, V, tapirs::TapirTimestamp, tapirs::DefaultDiskIo>>;
+
     fn shard_addresses(
         &self,
         shard: tapirs::ShardNumber,
