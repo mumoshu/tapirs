@@ -8,11 +8,11 @@ use crate::DefaultDiskIo;
 
 // ── Non-persistent (default) ────────────────────────────────────────────────
 
-#[cfg(not(feature = "persistent-store"))]
+#[cfg(not(any(feature = "persistent-store", feature = "combined-store")))]
 pub type ProductionTapirStore =
     crate::tapirstore::InMemTapirStore<String, String, crate::MvccDiskStore<String, String, crate::tapir::Timestamp, DefaultDiskIo>>;
 
-#[cfg(not(feature = "persistent-store"))]
+#[cfg(not(any(feature = "persistent-store", feature = "combined-store")))]
 pub type ProductionIrRecordStore =
     crate::ir::VersionedRecord<IO<String, String>, CO<String, String>, CR>;
 
@@ -30,6 +30,17 @@ pub type ProductionIrRecordStore =
         CR,
         DefaultDiskIo,
     >;
+
+// ── Combined (deduplicated IR+TAPIR) ────────────────────────────────────────
+
+// Placeholder: TapirStore handle will be CombinedTapirHandle once implemented.
+#[cfg(feature = "combined-store")]
+pub type ProductionTapirStore =
+    crate::unified::tapir::persistent_store::PersistentTapirStore<String, String, DefaultDiskIo>;
+
+#[cfg(feature = "combined-store")]
+pub type ProductionIrRecordStore =
+    crate::unified::combined::record_handle::CombinedRecordHandle<String, String, DefaultDiskIo>;
 
 // ── Composites (feature-independent) ────────────────────────────────────────
 
@@ -67,7 +78,7 @@ pub fn production_app_tick() -> Option<AppTickFn> {
 ///
 /// Persistent path: opens `TapirState` + `PersistentTapirStore` and
 /// `PersistentIrRecordStore` from disk.
-#[cfg(not(feature = "persistent-store"))]
+#[cfg(not(any(feature = "persistent-store", feature = "combined-store")))]
 pub fn open_production_stores(
     shard: ShardNumber,
     persist_dir: &str,

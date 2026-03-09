@@ -553,6 +553,60 @@ where
             }
         }
     }
+
+    /// Static helper for `IrRecordStore::make_full_payload` — callable from
+    /// CombinedRecordHandle without needing a `&self` reference.
+    #[cfg(any(feature = "combined-store", test))]
+    pub(crate) fn make_full_payload_static(
+        record: PersistentRecord<IO, CO, CR>,
+    ) -> PersistentPayload<IO, CO, CR> {
+        match record {
+            PersistentRecord::Raw {
+                inc_segments,
+                con_segments,
+            } => PersistentPayload::full(inc_segments, con_segments),
+            PersistentRecord::Indexed {
+                ref inconsistent,
+                ref consensus,
+                ..
+            } => {
+                // Serialize Indexed entries to segment bytes (same as make_full_payload)
+                let mut inc_bytes = Vec::new();
+                for (op_id, entry) in inconsistent {
+                    let payload = bitcode::serialize(entry).expect("serialize inc entry");
+                    let raw = VlogSegment::<DIO>::encode_raw_entry(
+                        ENTRY_TYPE_INCONSISTENT,
+                        op_id.client_id.0,
+                        op_id.number,
+                        &payload,
+                    );
+                    inc_bytes.extend_from_slice(&raw);
+                }
+                let mut con_bytes = Vec::new();
+                for (op_id, entry) in consensus {
+                    let payload = bitcode::serialize(entry).expect("serialize con entry");
+                    let raw = VlogSegment::<DIO>::encode_raw_entry(
+                        ENTRY_TYPE_CONSENSUS,
+                        op_id.client_id.0,
+                        op_id.number,
+                        &payload,
+                    );
+                    con_bytes.extend_from_slice(&raw);
+                }
+                let inc = if inc_bytes.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![inc_bytes]
+                };
+                let con = if con_bytes.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![con_bytes]
+                };
+                PersistentPayload::full(inc, con)
+            }
+        }
+    }
 }
 
 impl<IO, CO, CR, DIO: DiskIo> IrRecordStore<IO, CO, CR>
