@@ -532,6 +532,188 @@ mod tests {
         assert_eq!(guard.ir.base_view(), 0);
     }
 
+    #[test]
+    fn combined_prepare_commit_ref_resolution() {
+        use crate::ir::{RecordConsensusEntry, RecordEntryState, RecordInconsistentEntry};
+        use crate::occ::{Transaction, TransactionId};
+        use crate::tapir::{Timestamp, CO, CR, IO};
+        use crate::tapirstore::TapirStore;
+        use crate::IrClientId;
+        use std::sync::Arc;
+
+        let base_dir = MemoryIo::temp_path();
+        let inner = CombinedStoreInner::<String, String, MemoryIo>::open(
+            &base_dir,
+            test_flags(),
+            ShardNumber(0),
+            true,
+        )
+        .unwrap();
+        let mut record_handle = inner.into_record_handle();
+        let mut tapir_handle = record_handle.tapir_handle();
+
+        let txn_id = TransactionId {
+            client_id: IrClientId(1),
+            number: 1,
+        };
+        let commit_ts = Timestamp {
+            time: 5,
+            client_id: IrClientId(1),
+        };
+        let prepare_op_id = crate::ir::OpId {
+            client_id: IrClientId(1),
+            number: 1,
+        };
+        let commit_op_id = crate::ir::OpId {
+            client_id: IrClientId(1),
+            number: 2,
+        };
+
+        // Build a transaction with a write to shard 0.
+        let mut txn = Transaction::<String, String, Timestamp>::default();
+        txn.add_write(
+            crate::tapir::Sharded {
+                shard: ShardNumber(0),
+                key: "key1".to_string(),
+            },
+            Some("val1".to_string()),
+        );
+        let shared_txn = Arc::new(txn);
+
+        // Insert IR entries (simulating what ir::Replica would do).
+        // CO::Prepare into con_lsm.
+        record_handle.insert_consensus_entry(
+            prepare_op_id,
+            RecordConsensusEntry {
+                op: CO::Prepare {
+                    transaction_id: txn_id,
+                    transaction: shared_txn.clone(),
+                    commit: commit_ts,
+                },
+                result: CR::Prepare(crate::occ::PrepareResult::Ok),
+                state: RecordEntryState::Finalized(crate::ir::ViewNumber(0)),
+                modified_view: 0,
+            },
+        );
+        // IO::Commit into inc_lsm.
+        record_handle.insert_inconsistent_entry(
+            commit_op_id,
+            RecordInconsistentEntry {
+                op: IO::Commit {
+                    transaction_id: txn_id,
+                    transaction: shared_txn.clone(),
+                    commit: commit_ts,
+                },
+                state: RecordEntryState::Finalized(crate::ir::ViewNumber(0)),
+                modified_view: 0,
+            },
+        );
+
+        // Prepare through TapirStore (registers OCC, stores PreparedRef).
+        tapir_handle.add_or_replace_or_finalize_prepared_txn(
+            prepare_op_id,
+            txn_id,
+            shared_txn.clone(),
+            commit_ts,
+            true,
+        );
+
+        // Verify PreparedRef exists and resolves.
+        assert!(tapir_handle.get_prepared_txn(&txn_id).is_some());
+
+        // Commit through TapirStore (stores TxnLogRef, inserts MVCC, removes prepared).
+        tapir_handle.commit_txn(commit_op_id, txn_id, &shared_txn, commit_ts);
+
+        // Verify committed ref resolves to correct value via inc_lsm.
+        {
+            let guard = record_handle.inner.lock().unwrap();
+            let txn_log_ref = guard.committed.get(&txn_id).unwrap();
+            assert!(
+                matches!(txn_log_ref, Some(TxnLogRef::Committed { op_id, .. }) if op_id == commit_op_id),
+                "Expected TxnLogRef::Committed with correct op_id"
+            );
+
+            // PreparedRef cleaned up after commit.
+            let prep = guard.prepared.get(&txn_id).unwrap();
+            assert!(
+                matches!(prep, Some(None)),
+                "Prepared entry should be None after commit"
+            );
+        }
+
+        // MVCC entry readable through TapirStore trait.
+        let (value, ts) = tapir_handle
+            .do_uncommitted_get_at(&"key1".to_string(), commit_ts)
+            .unwrap();
+        assert_eq!(value.as_deref(), Some("val1"));
+        assert_eq!(ts, commit_ts);
+    }
+
+    #[test]
+    fn combined_multi_seal_accumulates_manifest() {
+        use crate::tapirstore::TapirStore;
+
+        let base_dir = MemoryIo::temp_path();
+        let inner = CombinedStoreInner::<String, String, MemoryIo>::open(
+            &base_dir,
+            test_flags(),
+            ShardNumber(0),
+            true,
+        )
+        .unwrap();
+        let mut record_handle = inner.into_record_handle();
+        let mut tapir_handle = record_handle.tapir_handle();
+
+        // Seal 1: insert data, seal IR + TAPIR.
+        tapir_handle.txn_log_insert(
+            TransactionId {
+                client_id: crate::IrClientId(1),
+                number: 1,
+            },
+            Timestamp::default(),
+            false,
+        );
+        record_handle.flush();
+        tapir_handle.flush();
+
+        let bytes_after_seal1 = tapir_handle.stored_bytes().unwrap();
+        assert!(bytes_after_seal1 > 0, "stored_bytes should be > 0 after first seal");
+        {
+            let guard = record_handle.inner.lock().unwrap();
+            assert_eq!(guard.tapir_view, 1);
+            assert_eq!(guard.tapir_manifest.current_view, 1);
+        }
+
+        // Seal 2: insert more data, seal again.
+        tapir_handle.txn_log_insert(
+            TransactionId {
+                client_id: crate::IrClientId(2),
+                number: 1,
+            },
+            Timestamp::default(),
+            true,
+        );
+        record_handle.flush();
+        tapir_handle.flush();
+
+        let bytes_after_seal2 = tapir_handle.stored_bytes().unwrap();
+        assert!(
+            bytes_after_seal2 > bytes_after_seal1,
+            "stored_bytes should grow: {bytes_after_seal1} -> {bytes_after_seal2}"
+        );
+        {
+            let guard = record_handle.inner.lock().unwrap();
+            assert_eq!(guard.tapir_view, 2);
+            assert_eq!(guard.tapir_manifest.current_view, 2);
+            // Each seal produces one sealed segment for committed VlogLsm.
+            assert_eq!(
+                guard.tapir_manifest.committed.sealed_vlog_segments.len(),
+                2,
+                "Should have 2 sealed committed segments after 2 seals"
+            );
+        }
+    }
+
     mod ir_conformance {
         use crate::discovery::InMemoryShardDirectory;
         use crate::mvcc::disk::disk_io::OpenFlags;
