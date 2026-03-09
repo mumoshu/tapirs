@@ -714,6 +714,346 @@ mod tests {
         }
     }
 
+    /// Helper: prepare + commit a transaction through both IR and TAPIR sides.
+    fn test_prepare_and_commit(
+        record_handle: &mut super::record_handle::CombinedRecordHandle<String, String, MemoryIo>,
+        tapir_handle: &mut super::tapir_handle::CombinedTapirHandle<String, String, MemoryIo>,
+        prepare_op_id: crate::ir::OpId,
+        commit_op_id: crate::ir::OpId,
+        txn_id: crate::occ::TransactionId,
+        writes: Vec<(&str, &str)>,
+        commit_ts: crate::tapir::Timestamp,
+    ) {
+        use crate::ir::{RecordConsensusEntry, RecordEntryState, RecordInconsistentEntry};
+        use crate::occ::Transaction;
+        use crate::tapir::{CO, CR, IO};
+        use crate::tapirstore::TapirStore;
+        use std::sync::Arc;
+
+        let mut txn = Transaction::<String, String, crate::tapir::Timestamp>::default();
+        for (key, value) in &writes {
+            txn.add_write(
+                crate::tapir::Sharded {
+                    shard: ShardNumber(0),
+                    key: key.to_string(),
+                },
+                Some(value.to_string()),
+            );
+        }
+        let shared_txn = Arc::new(txn);
+
+        // Insert IR entries.
+        record_handle.insert_consensus_entry(
+            prepare_op_id,
+            RecordConsensusEntry {
+                op: CO::Prepare {
+                    transaction_id: txn_id,
+                    transaction: shared_txn.clone(),
+                    commit: commit_ts,
+                },
+                result: CR::Prepare(crate::occ::PrepareResult::Ok),
+                state: RecordEntryState::Finalized(crate::ir::ViewNumber(0)),
+                modified_view: 0,
+            },
+        );
+        record_handle.insert_inconsistent_entry(
+            commit_op_id,
+            RecordInconsistentEntry {
+                op: IO::Commit {
+                    transaction_id: txn_id,
+                    transaction: shared_txn.clone(),
+                    commit: commit_ts,
+                },
+                state: RecordEntryState::Finalized(crate::ir::ViewNumber(0)),
+                modified_view: 0,
+            },
+        );
+
+        // Prepare + commit through TapirStore.
+        tapir_handle.add_or_replace_or_finalize_prepared_txn(
+            prepare_op_id,
+            txn_id,
+            shared_txn.clone(),
+            commit_ts,
+            true,
+        );
+        tapir_handle.commit_txn(commit_op_id, txn_id, &shared_txn, commit_ts);
+    }
+
+    #[test]
+    fn combined_reopen_preserves_committed_data() {
+        use crate::ir::IrRecordStore;
+        use crate::tapirstore::TapirStore;
+
+        let base_dir = MemoryIo::temp_path();
+
+        let bytes_before_drop;
+        // Phase 1: Create store, commit data, seal.
+        {
+            let inner = CombinedStoreInner::<String, String, MemoryIo>::open(
+                &base_dir,
+                test_flags(),
+                ShardNumber(0),
+                true,
+            )
+            .unwrap();
+            let mut record_handle = inner.into_record_handle();
+            let mut tapir_handle = record_handle.tapir_handle();
+
+            let txn_id = TransactionId {
+                client_id: crate::IrClientId(1),
+                number: 1,
+            };
+            let commit_ts = Timestamp {
+                time: 5,
+                client_id: crate::IrClientId(1),
+            };
+            test_prepare_and_commit(
+                &mut record_handle,
+                &mut tapir_handle,
+                crate::ir::OpId {
+                    client_id: crate::IrClientId(1),
+                    number: 1,
+                },
+                crate::ir::OpId {
+                    client_id: crate::IrClientId(1),
+                    number: 2,
+                },
+                txn_id,
+                vec![("x", "v1"), ("y", "v2")],
+                commit_ts,
+            );
+
+            // Verify readable before seal.
+            let (val, ts) = tapir_handle
+                .do_uncommitted_get_at(&"x".to_string(), commit_ts)
+                .unwrap();
+            assert_eq!(val.as_deref(), Some("v1"));
+            assert_eq!(ts, commit_ts);
+
+            // Seal IR + TAPIR.
+            record_handle.flush();
+            tapir_handle.flush();
+
+            bytes_before_drop = tapir_handle.stored_bytes().unwrap();
+            assert!(bytes_before_drop > 0);
+        }
+        // Store dropped — simulates crash/shutdown.
+
+        // Phase 2: Reopen from the same path.
+        let inner = CombinedStoreInner::<String, String, MemoryIo>::open(
+            &base_dir,
+            test_flags(),
+            ShardNumber(0),
+            true,
+        )
+        .unwrap();
+        let record_handle = inner.into_record_handle();
+        let tapir_handle = record_handle.tapir_handle();
+
+        // Manifest restored.
+        {
+            let guard = record_handle.inner.lock().unwrap();
+            assert_eq!(guard.tapir_view, 1);
+            assert_eq!(guard.tapir_manifest.current_view, 1);
+            assert_eq!(guard.txn_log_count, 1);
+        }
+
+        // Committed data still readable through ref resolution.
+        let commit_ts = Timestamp {
+            time: 5,
+            client_id: crate::IrClientId(1),
+        };
+        let (val, ts) = tapir_handle
+            .do_uncommitted_get_at(&"x".to_string(), commit_ts)
+            .unwrap();
+        assert_eq!(val.as_deref(), Some("v1"));
+        assert_eq!(ts, commit_ts);
+
+        let (val, ts) = tapir_handle
+            .do_uncommitted_get_at(&"y".to_string(), commit_ts)
+            .unwrap();
+        assert_eq!(val.as_deref(), Some("v2"));
+        assert_eq!(ts, commit_ts);
+
+        // stored_bytes should be at least what we had before drop.
+        let bytes_after_reopen = tapir_handle.stored_bytes().unwrap();
+        assert!(
+            bytes_after_reopen >= bytes_before_drop,
+            "stored_bytes after reopen ({bytes_after_reopen}) < before drop ({bytes_before_drop})"
+        );
+    }
+
+    #[test]
+    fn combined_reopen_multi_view() {
+        use crate::ir::IrRecordStore;
+        use crate::tapirstore::TapirStore;
+
+        let base_dir = MemoryIo::temp_path();
+
+        // Phase 1: Build state across multiple views.
+        {
+            let inner = CombinedStoreInner::<String, String, MemoryIo>::open(
+                &base_dir,
+                test_flags(),
+                ShardNumber(0),
+                true,
+            )
+            .unwrap();
+            let mut record_handle = inner.into_record_handle();
+            let mut tapir_handle = record_handle.tapir_handle();
+
+            // View 0: Commit txn1 and txn2.
+            test_prepare_and_commit(
+                &mut record_handle,
+                &mut tapir_handle,
+                crate::ir::OpId {
+                    client_id: crate::IrClientId(1),
+                    number: 1,
+                },
+                crate::ir::OpId {
+                    client_id: crate::IrClientId(1),
+                    number: 2,
+                },
+                TransactionId {
+                    client_id: crate::IrClientId(1),
+                    number: 1,
+                },
+                vec![("a", "val_a"), ("b", "val_b")],
+                Timestamp {
+                    time: 5,
+                    client_id: crate::IrClientId(1),
+                },
+            );
+            test_prepare_and_commit(
+                &mut record_handle,
+                &mut tapir_handle,
+                crate::ir::OpId {
+                    client_id: crate::IrClientId(1),
+                    number: 3,
+                },
+                crate::ir::OpId {
+                    client_id: crate::IrClientId(1),
+                    number: 4,
+                },
+                TransactionId {
+                    client_id: crate::IrClientId(1),
+                    number: 2,
+                },
+                vec![("c", "val_c")],
+                Timestamp {
+                    time: 10,
+                    client_id: crate::IrClientId(1),
+                },
+            );
+
+            // Seal → view 1.
+            record_handle.flush();
+            tapir_handle.flush();
+
+            // View 1: Commit txn3 (overwrites "a", adds "d").
+            test_prepare_and_commit(
+                &mut record_handle,
+                &mut tapir_handle,
+                crate::ir::OpId {
+                    client_id: crate::IrClientId(2),
+                    number: 1,
+                },
+                crate::ir::OpId {
+                    client_id: crate::IrClientId(2),
+                    number: 2,
+                },
+                TransactionId {
+                    client_id: crate::IrClientId(2),
+                    number: 1,
+                },
+                vec![("d", "val_d"), ("a", "val_a_v2")],
+                Timestamp {
+                    time: 20,
+                    client_id: crate::IrClientId(2),
+                },
+            );
+
+            // Seal → view 2.
+            record_handle.flush();
+            tapir_handle.flush();
+        }
+
+        // Phase 2: Reopen and verify all data across both views.
+        let inner = CombinedStoreInner::<String, String, MemoryIo>::open(
+            &base_dir,
+            test_flags(),
+            ShardNumber(0),
+            true,
+        )
+        .unwrap();
+        let record_handle = inner.into_record_handle();
+        let tapir_handle = record_handle.tapir_handle();
+
+        {
+            let guard = record_handle.inner.lock().unwrap();
+            assert_eq!(guard.tapir_view, 2);
+            assert_eq!(guard.txn_log_count, 3);
+        }
+
+        // View 0 data (sealed in first seal).
+        let ts5 = Timestamp {
+            time: 5,
+            client_id: crate::IrClientId(1),
+        };
+        let ts10 = Timestamp {
+            time: 10,
+            client_id: crate::IrClientId(1),
+        };
+        let ts20 = Timestamp {
+            time: 20,
+            client_id: crate::IrClientId(2),
+        };
+
+        let (val, ts) = tapir_handle
+            .do_uncommitted_get_at(&"a".to_string(), ts5)
+            .unwrap();
+        assert_eq!(val.as_deref(), Some("val_a"));
+        assert_eq!(ts, ts5);
+
+        let (val, ts) = tapir_handle
+            .do_uncommitted_get_at(&"b".to_string(), ts5)
+            .unwrap();
+        assert_eq!(val.as_deref(), Some("val_b"));
+        assert_eq!(ts, ts5);
+
+        let (val, ts) = tapir_handle
+            .do_uncommitted_get_at(&"c".to_string(), ts10)
+            .unwrap();
+        assert_eq!(val.as_deref(), Some("val_c"));
+        assert_eq!(ts, ts10);
+
+        // View 1 data (sealed in second seal).
+        let (val, ts) = tapir_handle
+            .do_uncommitted_get_at(&"d".to_string(), ts20)
+            .unwrap();
+        assert_eq!(val.as_deref(), Some("val_d"));
+        assert_eq!(ts, ts20);
+
+        // "a" at ts=20 should return val_a_v2 (overwritten in view 1).
+        let (val, ts) = tapir_handle
+            .do_uncommitted_get_at(&"a".to_string(), ts20)
+            .unwrap();
+        assert_eq!(val.as_deref(), Some("val_a_v2"));
+        assert_eq!(ts, ts20);
+
+        // "a" at ts=15 should return val_a (view 0 version, before overwrite).
+        let ts15 = Timestamp {
+            time: 15,
+            client_id: crate::IrClientId(1),
+        };
+        let (val, ts) = tapir_handle
+            .do_uncommitted_get_at(&"a".to_string(), ts15)
+            .unwrap();
+        assert_eq!(val.as_deref(), Some("val_a"));
+        assert_eq!(ts, ts5);
+    }
+
     mod ir_conformance {
         use crate::discovery::InMemoryShardDirectory;
         use crate::mvcc::disk::disk_io::OpenFlags;
