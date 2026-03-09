@@ -439,6 +439,38 @@ where
         &self.con_lsm
     }
 
+    /// Open a store from a persisted manifest, restoring sealed segments.
+    #[cfg(any(feature = "combined-store", test))]
+    pub(crate) fn open_from_manifest(
+        base_dir: &Path,
+        io_flags: OpenFlags,
+        manifest: &UnifiedManifest,
+    ) -> Result<Self, StorageError> {
+        let inc_lsm = VlogLsm::open_from_manifest(
+            "ir_inc",
+            base_dir,
+            &manifest.ir_inc,
+            manifest.current_view,
+            io_flags,
+            IndexMode::InMemory,
+        )?;
+        let con_lsm = VlogLsm::open_from_manifest(
+            "ir_con",
+            base_dir,
+            &manifest.ir_con,
+            manifest.current_view,
+            io_flags,
+            IndexMode::InMemory,
+        )?;
+        Ok(Self {
+            inc_lsm,
+            con_lsm,
+            base_view: manifest.current_view,
+            manifest: manifest.clone(),
+            base_dir: base_dir.to_path_buf(),
+        })
+    }
+
     /// Create a new store with empty VlogLsms at the given directory.
     pub(crate) fn open(
         base_dir: &Path,

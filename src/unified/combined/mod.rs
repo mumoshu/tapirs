@@ -111,7 +111,8 @@ pub(crate) struct CombinedStoreInner<K: Ord, V, DIO: DiskIo> {
 }
 
 impl<K: Key, V: Value, DIO: DiskIo> CombinedStoreInner<K, V, DIO> {
-    /// Open a new CombinedStore, creating VlogLsm segments on disk.
+    /// Open a CombinedStore. If a manifest exists on disk, restore sealed
+    /// segments from it (reopen path); otherwise create fresh VlogLsm segments.
     pub(crate) fn open(
         base_dir: &Path,
         io_flags: OpenFlags,
@@ -120,12 +121,60 @@ impl<K: Key, V: Value, DIO: DiskIo> CombinedStoreInner<K, V, DIO> {
     ) -> Result<Self, StorageError> {
         DIO::create_dir_all(base_dir)?;
 
-        let ir = PersistentIrRecordStore::open(base_dir, io_flags)?;
-
         let tapir_manifest = match UnifiedManifest::load::<DIO>(base_dir) {
             Ok(Some(m)) => m,
             Ok(None) | Err(_) => UnifiedManifest::new(),
         };
+
+        if tapir_manifest.current_view > 0 {
+            // Reopen from existing manifest — restore sealed segments.
+            let ir =
+                PersistentIrRecordStore::open_from_manifest(base_dir, io_flags, &tapir_manifest)?;
+            let committed = VlogLsm::open_from_manifest(
+                "comb_comm",
+                base_dir,
+                &tapir_manifest.committed,
+                tapir_manifest.current_view,
+                io_flags,
+                IndexMode::SstOnly,
+            )?;
+            let prepared = VlogLsm::open_from_manifest(
+                "comb_prep",
+                base_dir,
+                &tapir_manifest.prepared,
+                tapir_manifest.current_view,
+                io_flags,
+                IndexMode::InMemory,
+            )?;
+            let mvcc = VlogLsm::open_from_manifest(
+                "comb_mvcc",
+                base_dir,
+                &tapir_manifest.mvcc,
+                tapir_manifest.current_view,
+                io_flags,
+                IndexMode::InMemory,
+            )?;
+            let txn_log_count = tapir_manifest.txn_log_count as usize;
+            let tapir_view = tapir_manifest.current_view;
+            return Ok(Self {
+                ir,
+                mvcc,
+                committed,
+                prepared,
+                occ_cache: OccCache::new(linearizable, None),
+                min_prepare_times: MinPrepareTimes::default(),
+                record_delta_during_view: RecordDeltaDuringView::default(),
+                txn_log_count,
+                shard,
+                linearizable,
+                tapir_manifest,
+                base_dir: base_dir.to_path_buf(),
+                tapir_view,
+            });
+        }
+
+        // Fresh open — no manifest on disk.
+        let ir = PersistentIrRecordStore::open(base_dir, io_flags)?;
 
         let committed_active = VlogSegment::<DIO>::open(
             0,
