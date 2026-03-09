@@ -50,7 +50,7 @@ fn con_header_fn<CO, CR>(
 /// Indexed: holds BTreeMaps for the leader's merged record (efficient O(log n) lookup).
 ///
 /// Default creates empty Indexed; full_record()/resolve return Raw.
-pub(crate) enum PersistentRecord<IO, CO, CR> {
+pub enum PersistentRecord<IO, CO, CR> {
     Raw {
         inc_segments: Vec<Vec<u8>>,
         con_segments: Vec<Vec<u8>>,
@@ -242,7 +242,7 @@ where
 ///
 /// Arc-wrapped for O(1) clone during StartView broadcast.
 #[derive(Clone, Debug)]
-pub(crate) struct PersistentPayload<IO, CO, CR> {
+pub struct PersistentPayload<IO, CO, CR> {
     inner: Arc<PayloadInner>,
     _phantom: std::marker::PhantomData<fn() -> (IO, CO, CR)>,
 }

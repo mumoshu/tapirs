@@ -40,6 +40,17 @@ pub enum CheckPrepareStatus {
 /// The TAPIR replica keeps only transient protocol state (key range,
 /// phase, counters) and delegates all persistent state through this trait.
 pub trait TapirStore<K: Key, V: Value>: Send + 'static {
+    /// IR Payload type used in DoViewChange/StartView messages.
+    ///
+    /// `InMemTapirStore` → `RecordPayload`, `PersistentTapirStore` → `PersistentPayload`.
+    type Payload: Clone
+        + std::fmt::Debug
+        + Send
+        + Sync
+        + serde::Serialize
+        + serde::de::DeserializeOwned
+        + 'static;
+
     // === Identity ===
 
     fn shard(&self) -> ShardNumber;

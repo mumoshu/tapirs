@@ -99,6 +99,12 @@ where
     V: Value,
     M: MvccBackend<K, V, Timestamp> + Serialize + DeserializeOwned + 'static,
 {
+    type Payload = crate::ir::RecordPayload<
+        crate::tapir::IO<K, V>,
+        crate::tapir::CO<K, V>,
+        crate::tapir::CR,
+    >;
+
     fn shard(&self) -> ShardNumber {
         self.occ.shard()
     }

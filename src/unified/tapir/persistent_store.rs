@@ -96,6 +96,12 @@ impl<
         IO: DiskIo,
     > TapirStore<K, V> for PersistentTapirStore<K, V, IO>
 {
+    type Payload = crate::unified::ir::ir_record_store::PersistentPayload<
+        crate::tapir::IO<K, V>,
+        crate::tapir::CO<K, V>,
+        crate::tapir::CR,
+    >;
+
     fn shard(&self) -> ShardNumber {
         self.state.shard
     }
