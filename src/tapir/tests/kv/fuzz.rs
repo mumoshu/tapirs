@@ -265,12 +265,12 @@ where
     let event_log = FuzzEventLog::new();
 
     // Wall-clock watchdog: catches hot loops that freeze simulated time.
-    // Default 30s, override with TAPI_WATCHDOG_SECS env var.
+    // Default 300s, override with TAPI_WATCHDOG_SECS env var.
     // Under start_paused=true, tokio::time::timeout uses simulated time which
     // doesn't advance during hot loops. This thread uses real wall-clock time.
     let watchdog_secs: u64 = std::env::var("TAPI_WATCHDOG_SECS")
         .ok()
-        .and_then(|s| s.parse().ok())
+        .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(30);
     let watchdog_log = event_log.clone();
     let (watchdog_cancel_tx, watchdog_cancel_rx) = std::sync::mpsc::channel::<()>();
@@ -588,23 +588,46 @@ where
     let route_poll_caching = Arc::clone(&client_cachings[0]);
     let route_poll_router = Arc::clone(&router);
     let route_poll_stop = Arc::clone(&stop_flag);
+    let route_poll_wall0 = std::time::Instant::now();
     let route_poll_handle = tokio::spawn(async move {
+        let sim0 = tokio::time::Instant::now();
+        let mut cycle = 0u64;
         loop {
             tokio::time::sleep(sync_interval).await;
+            cycle += 1;
             let ranges = route_poll_caching.key_ranges();
             if !ranges.is_empty() {
                 let entries: Vec<ShardEntry<i64>> = ranges
                     .into_iter()
                     .map(|(shard, range)| ShardEntry { shard, range })
                     .collect();
-                eprintln!(
-                    "fuzz: route_update: updating router with {} shard(s): {:?}",
-                    entries.len(),
-                    entries.iter().map(|e| (e.shard, &e.range)).collect::<Vec<_>>()
-                );
+                if cycle <= 5 || cycle.is_multiple_of(50) {
+                    eprintln!(
+                        "fuzz: route_update: cycle={cycle} sim={:?} wall={:?} shards={}",
+                        sim0.elapsed(),
+                        route_poll_wall0.elapsed(),
+                        entries.len(),
+                    );
+                }
                 route_poll_router.directory().write().unwrap().update(entries);
             }
             if route_poll_stop.load(Ordering::Relaxed) {
+                break;
+            }
+        }
+    });
+
+    // Spawn simulated-time progress reporter to detect time freezes.
+    let progress_wall0 = std::time::Instant::now();
+    let progress_stop = Arc::clone(&stop_flag);
+    let _progress_handle = tokio::spawn(async move {
+        let sim0 = tokio::time::Instant::now();
+        loop {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let sim_elapsed = sim0.elapsed();
+            let wall_elapsed = progress_wall0.elapsed();
+            eprintln!("fuzz: progress sim={sim_elapsed:?} wall={wall_elapsed:?}");
+            if progress_stop.load(Ordering::Relaxed) {
                 break;
             }
         }
@@ -1081,7 +1104,7 @@ where
 
     // Wait for all workloads with overall timeout.
     let workload_wall_start = std::time::Instant::now();
-    let all_done = timeout(Duration::from_secs(300), async {
+    let all_done = timeout(Duration::from_secs(120), async {
         let _ = fault_handle.await;
         let mut workload_panic = None;
         for handle in handles {
@@ -1432,4 +1455,43 @@ where
 
     // Keep pre-built shard replicas alive until end of test.
     drop(new_shard_replicas);
+}
+
+#[test]
+fn fuzz_tapir_transactions_combined() {
+    use crate::mvcc::disk::disk_io::OpenFlags;
+    use crate::unified::combined::CombinedStoreInner;
+
+    if cfg!(debug_assertions) {
+        eprintln!("\n\
+            ╔══════════════════════════════════════════════════════════════════╗\n\
+            ║  WARNING: fuzz_tapir_transactions_combined running in DEBUG     ║\n\
+            ║  Use --release: cargo test --release fuzz_tapir_transactions_combined\n\
+            ╚══════════════════════════════════════════════════════════════════╝\n\
+        ");
+    }
+
+    let seed: u64 = std::env::var("TAPI_TEST_SEED")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .start_paused(true)
+        .rng_seed(tokio::runtime::RngSeed::from_bytes(&seed.to_le_bytes()))
+        .build()
+        .unwrap();
+
+    rt.block_on(fuzz_tapir_transactions_inner(seed, |shard, linearizable| {
+        let base_dir = MemoryIo::temp_path();
+        let flags = OpenFlags { create: true, direct: false };
+        let inner = CombinedStoreInner::<K, V, MemoryIo>::open(
+            &base_dir, flags, shard, linearizable,
+        ).unwrap();
+        let record_handle = inner.into_record_handle();
+        let tapir_handle = record_handle.tapir_handle();
+        let upcalls = TapirReplica::new_with_store(tapir_handle);
+        (upcalls, record_handle)
+    }));
 }

@@ -353,27 +353,32 @@ where
 
         let weak = Arc::downgrade(&dir);
         tokio::spawn(async move {
+            let mut cycle_count = 0u64;
             loop {
                 tokio::time::sleep(sync_interval).await;
                 let Some(dir) = weak.upgrade() else {
                     break;
                 };
+                let cycle_wall_start = std::time::Instant::now();
 
                 // PULL membership: write ALL remote entries to local (no own_shards check).
                 // put() is monotonic — rejects if remote_view < current local_view.
                 // Alive replica's local (higher view) is never overwritten.
                 // Dead replica's local (lower view) gets overwritten by fresh remote data.
                 // Tombstoned shards are omitted by remote.all().
+                let pull_start = std::time::Instant::now();
                 if let Ok(entries) = dir.remote.weak_all_active_shard_view_memberships().await {
                     for (shard, membership, remote_view) in entries {
                         dir.local.put(shard, membership, remote_view);
                     }
                 }
+                let pull_ms = pull_start.elapsed().as_millis();
 
                 // PULL route changelog: apply atomic changesets to key_ranges.
                 // High watermark never regresses — stale eventual reads are ignored.
                 // Within each changeset, process TombstoneShard before ActivateShard to
                 // avoid transient overlapping ranges when a shard is replaced.
+                let route_start = std::time::Instant::now();
                 let hwm = *dir.route_hwm.read().unwrap();
                 if let Ok(changesets) = dir.remote.weak_route_changes_since(hwm).await {
                     let mut ranges = dir.key_ranges.write().unwrap();
@@ -398,16 +403,30 @@ where
                     drop(ranges);
                     *dir.route_hwm.write().unwrap() = new_hwm;
                 }
+                let route_ms = route_start.elapsed().as_millis();
 
                 // PUSH: push only own_shards entries to remote.
                 // Prevents echo traffic (pulled entries pushed back).
                 // Remote rejects stale pushes (view < current) — harmless.
                 // Remote tombstones reject puts for decommissioned shards — harmless.
+                let push_start = std::time::Instant::now();
                 let own = dir.own_shards.read().unwrap().clone();
                 for (shard, membership, local_view) in dir.local.all() {
                     if own.contains(&shard) {
                         let _ = dir.remote.strong_put_active_shard_view_membership(shard, membership, local_view).await;
                     }
+                }
+                let push_ms = push_start.elapsed().as_millis();
+
+                let total_ms = cycle_wall_start.elapsed().as_millis();
+                cycle_count += 1;
+                if total_ms > 500 || cycle_count.is_multiple_of(50) {
+                    eprintln!(
+                        "[csd] sync cycle={cycle_count} \
+                         pull={pull_ms}ms route={route_ms}ms push={push_ms}ms \
+                         total={total_ms}ms own_shards={}",
+                        own.len(),
+                    );
                 }
             }
         });

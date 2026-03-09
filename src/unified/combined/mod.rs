@@ -77,7 +77,7 @@ pub(crate) struct PreparedRef {
 /// Aborted variant stores timestamp directly (no IR reference needed).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) enum TxnLogRef {
-    Committed(OpId),
+    Committed { op_id: OpId, commit: Timestamp },
     Aborted(Timestamp),
 }
 
@@ -479,7 +479,8 @@ mod tests {
         // Both views advanced independently.
         let guard = record_handle.inner.lock().unwrap();
         assert_eq!(guard.tapir_view, 1);
-        assert_eq!(guard.ir.base_view(), 1);
+        // flush() seals at the current base_view without advancing it.
+        assert_eq!(guard.ir.base_view(), 0);
     }
 
     mod ir_conformance {

@@ -648,7 +648,11 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
         local: &Rec,
         leader: &Rec,
     ) {
+        let sync_wall = std::time::Instant::now();
+        let mut con_count = 0u64;
+        let mut inc_count = 0u64;
         for (op_id, entry) in leader.consensus_entries() {
+            con_count += 1;
             if local
                 .get_consensus(&op_id)
                 .map(|local| local.state.is_finalized() && local.result == entry.result)
@@ -709,7 +713,9 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                 }
             }
         }
+        let con_ms = sync_wall.elapsed().as_millis();
         for (op_id, entry) in leader.inconsistent_entries() {
+            inc_count += 1;
             if local
                 .get_inconsistent(&op_id)
                 .map(|e| e.state.is_finalized())
@@ -722,6 +728,10 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
             trace!("syncing inconsistent {op_id:?} {:?}", entry.op);
 
             self.exec_inconsistent(&op_id, &entry.op);
+        }
+        let total_ms = sync_wall.elapsed().as_millis();
+        if total_ms > 10 {
+            eprintln!("[tapir-sync] con={con_count} inc={inc_count} con_ms={con_ms} total_ms={total_ms}");
         }
         self.gc_stale_state();
     }

@@ -239,8 +239,9 @@ where
         } else {
             (0, new_record.clone())
         };
+        let new_record_for_caller = new_record.clone();
         *self = Self::from_full(new_record, new_view);
-        Some(ViewInstallResult { previous_record, transition })
+        Some(ViewInstallResult { previous_record, transition, new_record: new_record_for_caller })
     }
 
     fn install_merged_record(

@@ -708,9 +708,14 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
 
                                 merge_result
                             };
+                            let merge_wall = std::time::Instant::now();
                             // Persist resolved state before transitioning to Normal.
                             sync.record.flush();
                             sync.upcalls.flush();
+                            let leader_addr = self.inner.transport.address();
+                            eprintln!("[ir-leader-{leader_addr}] merged view {:?} has_delta={} prev_base={:?}",
+                                msg_view_number, merge_result.start_view_delta.is_some(), merge_result.previous_base_view);
+                            let _ = merge_wall;
 
                             sync.record_base_view = Some(sync.view.clone());
                             sync.changed_view_recently = true;
@@ -737,22 +742,24 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                                 if address == self.inner.transport.address() {
                                     continue;
                                 }
-                                let recipient_same_base = merge_result.previous_base_view
+                                let (recipient_same_base, delta_reason) = merge_result.previous_base_view
                                     .map(|bv| {
-                                        sync.outstanding_do_view_changes
-                                            .get(&address)
-                                            .filter(|dvc| dvc.view.number == sync.view.number)
-                                            .and_then(|dvc| dvc.addendum.as_ref())
-                                            .map(|a| a.latest_normal_view.number == bv)
-                                            .unwrap_or(false)
+                                        let dvc = sync.outstanding_do_view_changes.get(&address);
+                                        let dvc_view_match = dvc.map(|d| d.view.number == sync.view.number).unwrap_or(false);
+                                        let addendum = dvc.and_then(|d| d.addendum.as_ref());
+                                        let lnv = addendum.map(|a| a.latest_normal_view.number);
+                                        let matches = lnv.map(|n| n == bv).unwrap_or(false) && dvc_view_match;
+                                        (matches, format!("bv={bv:?} dvc_view_match={dvc_view_match} lnv={lnv:?}"))
                                     })
-                                    .unwrap_or(false);
+                                    .unwrap_or((false, "no_prev_base".to_string()));
 
                                 let payload = if recipient_same_base {
                                     sync.record.build_start_view_payload(merge_result.start_view_delta.as_ref())
                                 } else {
                                     full_payload.clone()
                                 };
+                                eprintln!("[ir-leader-{leader_addr}] → {address:?} view {:?} delta={recipient_same_base} {delta_reason}",
+                                    msg_view_number);
                                 let sv = StartView::new(
                                     payload,
                                     sync.view.clone(),
@@ -778,19 +785,31 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                 if view.number > sync.view.number
                     || (view.number == sync.view.number && !sync.status.is_normal())
                 {
-                    info!("starting view {:?} (was {:?} in {:?})", view.number, sync.status, sync.view.number);
+                    let sv_wall = std::time::Instant::now();
+                    let sv_addr = self.inner.transport.address();
+                    eprintln!("[ir-replica-{sv_addr}] starting view {:?} (was {:?} in {:?})",
+                        view.number, sync.status, sync.view.number);
                     let Some(result) = sync.record.install_start_view_payload(payload, view.number.0) else {
+                        eprintln!("[ir-replica-{sv_addr}] REJECTED StartView v={:?}: payload validation failed (delta base mismatch)",
+                            view.number);
                         debug_assert!(false, "StartView payload validation failed (delta base mismatch)");
                         warn!("ignoring StartView: payload validation failed (delta base mismatch)");
                         return None;
                     };
+                    let install_ms = sv_wall.elapsed().as_millis();
                     let (from_view, ref changes) = result.transition;
                     sync.upcalls.on_install_leader_record_delta(from_view, view.number.0, changes);
-                    let new_record = sync.record.full_record();
-                    sync.upcalls.sync(&result.previous_record, &new_record);
+                    sync.upcalls.sync(&result.previous_record, &result.new_record);
+                    let sync_ms = sv_wall.elapsed().as_millis();
                     // Persist resolved state before transitioning to Normal.
                     sync.record.flush();
+                    let rec_flush_ms = sv_wall.elapsed().as_millis();
                     sync.upcalls.flush();
+                    let upcalls_flush_ms = sv_wall.elapsed().as_millis();
+                    if upcalls_flush_ms > 10 {
+                        eprintln!("[ir-replica-{sv_addr}] view {:?} wall: install={}ms sync={}ms rec_flush={}ms upcalls_flush={}ms",
+                            view.number, install_ms, sync_ms - install_ms, rec_flush_ms - sync_ms, upcalls_flush_ms - rec_flush_ms);
+                    }
 
                     sync.record_base_view = Some(view.clone());
                     sync.status = Status::Normal;
@@ -855,6 +874,8 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
             }
             Message::<U, T>::Reconfigure(Reconfigure { config }) => {
                 if sync.status.is_normal() {
+                    eprintln!("[ir-replica-{}] reconfiguring with {} bytes (view={:?})",
+                        self.inner.transport.address(), config.len(), sync.view.number);
                     info!("reconfiguring with {} bytes", config.len());
                     sync.view.make_mut().app_config = Some(config);
                     if sync.view.membership.len() == 1 {

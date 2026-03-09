@@ -98,9 +98,10 @@ impl<K: Key + Clone, V: Value + Clone, T: TapirTransport<K, V>, RD: RemoteShardD
         source_client.reconfigure(decommission);
 
         // Wait for in-flight reads to complete after freeze propagates.
-        eprintln!("[transfer_rp] sleeping 3s");
+        let rp_wall = std::time::Instant::now();
+        eprintln!("[transfer_rp] sleeping 3s (wall={:?})", rp_wall.elapsed());
         T::sleep(Duration::from_secs(3)).await;
-        eprintln!("[transfer_rp] sleep done, querying min_prepare_baseline");
+        eprintln!("[transfer_rp] sleep done (wall={:?}), querying min_prepare_baseline", rp_wall.elapsed());
 
         // Query min_prepare_baseline from source (f+1 replicas).
         let max_read_time = source_client.min_prepare_baseline().await;
@@ -439,8 +440,10 @@ impl<K: Key + Clone, V: Value + Clone, T: TapirTransport<K, V>, RD: RemoteShardD
 
         // Phase 3b: Drain — wait for pending_prepares == 0 + final seal.
         self.report_progress("merge:drain-prepared");
+        let merge_drain_wall = std::time::Instant::now();
         for drain_iter in 0..60u32 {
             T::sleep(Duration::from_secs(1)).await;
+            eprintln!("[merge] drain iter={drain_iter} wall={:?}", merge_drain_wall.elapsed());
             let r = absorbed_client
                 .scan_changes(cursor.next_from())
                 .await;
@@ -463,7 +466,9 @@ impl<K: Key + Clone, V: Value + Clone, T: TapirTransport<K, V>, RD: RemoteShardD
             }
         }
         // One final poll after all prepares resolved to capture sealed commits.
+        eprintln!("[merge] final-poll sleep 3s wall={:?}", merge_drain_wall.elapsed());
         T::sleep(Duration::from_secs(3)).await;
+        eprintln!("[merge] final-poll sleep done wall={:?}", merge_drain_wall.elapsed());
         let r = absorbed_client
             .scan_changes(cursor.next_from())
             .await;
@@ -492,7 +497,9 @@ impl<K: Key + Clone, V: Value + Clone, T: TapirTransport<K, V>, RD: RemoteShardD
         // transactions see the same data regardless of which shard
         // originally held the key — version timestamps are preserved.
         self.report_progress("merge:transfer-read-protection");
+        eprintln!("[merge] transfer-rp starting wall={:?}", merge_drain_wall.elapsed());
         self.transfer_read_protection(&absorbed_client, &surviving_client).await;
+        eprintln!("[merge] transfer-rp done wall={:?}", merge_drain_wall.elapsed());
 
         // Phase 3c: Expand surviving shard's key range.
         self.report_progress("merge:switchover");

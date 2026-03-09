@@ -176,7 +176,7 @@ impl<K: Key + Serialize + DeserializeOwned, V: Value + Serialize + DeserializeOw
     /// VlogLsm (TxnLogRef) and the IR inc_lsm (IO::Commit).
     fn resolve_value(&self, entry: &MvccIndexEntry) -> Result<Option<V>, StorageError> {
         // committed stores TxnLogRef; Committed(op_id) → inc_lsm → IO::Commit → transaction
-        if let Some(TxnLogRef::Committed(op_id)) = self.committed.get(&entry.txn_id)?
+        if let Some(TxnLogRef::Committed { op_id, .. }) = self.committed.get(&entry.txn_id)?
             && let Some(inc_entry) = self.ir.inc_lsm().get(&op_id)?
             && let crate::tapir::IO::Commit { transaction, .. } = &inc_entry.op
         {
@@ -421,7 +421,7 @@ impl<K: Key + Serialize + DeserializeOwned, V: Value + Serialize + DeserializeOw
         self.prepared.put(txn_id, None);
 
         // Store lightweight TxnLogRef instead of the full transaction.
-        self.committed.put(txn_id, TxnLogRef::Committed(op_id));
+        self.committed.put(txn_id, TxnLogRef::Committed { op_id, commit });
 
         for (i, (key, _value)) in write_set.iter().enumerate() {
             self.insert_mvcc_entry(key.clone(), commit, txn_id, i as u16);
@@ -776,10 +776,13 @@ where
             // op_id via do_commit(). This path is only used by conformance tests.
             inner.committed.put(
                 id,
-                TxnLogRef::Committed(OpId {
-                    client_id: crate::IrClientId(0),
-                    number: 0,
-                }),
+                TxnLogRef::Committed {
+                    op_id: OpId {
+                        client_id: crate::IrClientId(0),
+                        number: 0,
+                    },
+                    commit: ts,
+                },
             );
         } else {
             inner.committed.put(id, TxnLogRef::Aborted(ts));
@@ -869,31 +872,17 @@ where
 
 // ---------------------------------------------------------------------------
 // Helper: read TxnLogRef from committed VlogLsm and resolve to (Timestamp, bool).
-// For TxnLogRef::Committed, we need to look up the timestamp from inc_lsm.
-// For TxnLogRef::Aborted, the timestamp is stored directly.
+// The commit timestamp is stored directly in TxnLogRef::Committed, avoiding
+// lazy resolution from inc_lsm which can fail after view-change seals drop
+// tentative IR entries.
 // ---------------------------------------------------------------------------
 
-fn txn_log_get_inner<K, V, DIO>(
+fn txn_log_get_inner<K: Ord, V, DIO: DiskIo>(
     inner: &CombinedStoreInner<K, V, DIO>,
     id: &TransactionId,
-) -> Option<(Timestamp, bool)>
-where
-    K: Key + Serialize + DeserializeOwned,
-    V: Value + Serialize + DeserializeOwned,
-    DIO: DiskIo,
-{
+) -> Option<(Timestamp, bool)> {
     match inner.committed.get(id) {
-        Ok(Some(TxnLogRef::Committed(op_id))) => {
-            // Resolve commit timestamp from inc_lsm → IO::Commit.
-            if let Ok(Some(inc_entry)) = inner.ir.inc_lsm().get(&op_id)
-                && let crate::tapir::IO::Commit { commit, .. } = &inc_entry.op
-            {
-                return Some((*commit, true));
-            }
-            // Fallback: synthetic op_id from conformance tests has no IR entry.
-            // Return a default timestamp to indicate committed status.
-            Some((Timestamp::default(), true))
-        }
+        Ok(Some(TxnLogRef::Committed { commit, .. })) => Some((commit, true)),
         Ok(Some(TxnLogRef::Aborted(ts))) => Some((ts, false)),
         _ => None,
     }

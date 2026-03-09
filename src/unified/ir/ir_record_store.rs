@@ -94,6 +94,32 @@ impl<IO, CO, CR> Default for PersistentRecord<IO, CO, CR> {
     }
 }
 
+impl<IO: Clone + DeserializeOwned, CO: Clone + DeserializeOwned, CR: Clone + DeserializeOwned>
+    PersistentRecord<IO, CO, CR>
+{
+    /// Convert Raw segment bytes to Indexed BTreeMaps for O(log n) lookups.
+    ///
+    /// Raw records yield O(n) linear scans per `get_consensus`/`get_inconsistent`
+    /// call, making sync O(n²). Converting to Indexed once before sync brings
+    /// the total cost down to O(n log n).
+    pub fn into_indexed(self) -> Self {
+        match self {
+            Self::Indexed { .. } => self,
+            Self::Raw {
+                inc_segments,
+                con_segments,
+            } => Self::Indexed {
+                inconsistent: scan_entries::<InconsistentEntry<IO>>(&inc_segments)
+                    .into_iter()
+                    .collect(),
+                consensus: scan_entries::<ConsensusEntry<CO, CR>>(&con_segments)
+                    .into_iter()
+                    .collect(),
+            },
+        }
+    }
+}
+
 /// Iterator adapter that unifies two concrete iterator types.
 enum EitherIter<A, B> {
     Left(A),
@@ -625,6 +651,172 @@ where
             }
         }
     }
+
+    /// Delta fast path for install_start_view_payload.
+    ///
+    /// The sealed segments are already in the VlogLsm from the previous view.
+    /// Only the delta bytes (leader's memtable from the current view) need
+    /// importing. This avoids re-importing 30-80MB of existing segment data.
+    fn install_start_view_delta(
+        &mut self,
+        payload: PersistentPayload<IO, CO, CR>,
+        new_view: u64,
+    ) -> Option<ViewInstallResult<PersistentRecord<IO, CO, CR>>> {
+        let iw = std::time::Instant::now();
+
+        // Build previous_record from existing data (segments + memtable).
+        let previous_record = self.full_record();
+        let prev_ms = iw.elapsed().as_millis();
+
+        // Extract delta bytes from payload (we know it's Delta since caller checked).
+        let (delta_inc, delta_con) = match payload.inner.as_ref() {
+            PayloadInner::Delta {
+                inc_bytes,
+                con_bytes,
+                ..
+            } => (inc_bytes.clone(), con_bytes.clone()),
+            PayloadInner::Full { .. } => unreachable!("caller guarantees Delta"),
+        };
+
+        // Build the new_record: previous base segments + delta bytes → Indexed.
+        // The base segments are already in the VlogLsm, so we read them once
+        // and append the delta to build the complete new record.
+        let (seg_inc, seg_con) = self
+            .all_segment_bytes()
+            .expect("install_start_view_delta: export failed");
+        let mut all_inc = seg_inc;
+        if !delta_inc.is_empty() {
+            all_inc.push(delta_inc.clone());
+        }
+        let mut all_con = seg_con;
+        if !delta_con.is_empty() {
+            all_con.push(delta_con.clone());
+        }
+        let new_record_indexed = PersistentRecord::Raw {
+            inc_segments: all_inc,
+            con_segments: all_con,
+        }
+        .into_indexed();
+        let idx_ms = iw.elapsed().as_millis();
+
+        // Compute transition (CDC): the delta bytes are the changes.
+        let mut transition_inc = Vec::new();
+        if !delta_inc.is_empty() {
+            transition_inc.push(delta_inc.clone());
+        }
+        let mut transition_con = Vec::new();
+        if !delta_con.is_empty() {
+            transition_con.push(delta_con.clone());
+        }
+        let transition = (
+            self.base_view,
+            PersistentRecord::Raw {
+                inc_segments: transition_inc,
+                con_segments: transition_con,
+            },
+        );
+
+        // Only import the delta bytes — sealed segments stay untouched.
+        if !delta_inc.is_empty() {
+            self.inc_lsm
+                .import_raw_segment(&delta_inc, op_id_from_raw)
+                .expect("install_start_view_delta: import inc failed");
+        }
+        if !delta_con.is_empty() {
+            self.con_lsm
+                .import_raw_segment(&delta_con, op_id_from_raw)
+                .expect("install_start_view_delta: import con failed");
+        }
+        let import_ms = iw.elapsed().as_millis();
+
+        self.inc_lsm.clear_memtable();
+        self.con_lsm.clear_memtable();
+        self.base_view = new_view;
+        self.inc_lsm.start_view(new_view);
+        self.con_lsm.start_view(new_view);
+
+        let total_ms = iw.elapsed().as_millis();
+        if total_ms > 10 {
+            eprintln!("[install_sv_delta] view={new_view} prev={}ms idx={}ms import={}ms total={total_ms}ms",
+                prev_ms, idx_ms - prev_ms, import_ms - idx_ms);
+        }
+
+        Some(ViewInstallResult {
+            previous_record,
+            transition,
+            new_record: new_record_indexed,
+        })
+    }
+
+    /// Full payload path for install_start_view_payload.
+    ///
+    /// Clears all existing data and imports the full payload.
+    fn install_start_view_full(
+        &mut self,
+        payload: PersistentPayload<IO, CO, CR>,
+        new_view: u64,
+    ) -> Option<ViewInstallResult<PersistentRecord<IO, CO, CR>>> {
+        let iw = std::time::Instant::now();
+
+        // Build previous_record from existing data.
+        let previous_record = self.full_record();
+        let prev_ms = iw.elapsed().as_millis();
+
+        // Resolve payload to a full record.
+        let base = if self.base_view > 0 {
+            let (inc, con) = self
+                .all_segment_bytes()
+                .expect("install_start_view_full: export failed");
+            Some(PersistentRecord::Raw {
+                inc_segments: inc,
+                con_segments: con,
+            })
+        } else {
+            None
+        };
+        let new_record = payload.resolve(base.as_ref());
+
+        // Compute transition (CDC delta)
+        let transition = (
+            if self.base_view > 0 { self.base_view } else { 0 },
+            new_record.clone_as_raw(),
+        );
+
+        // Clear ALL data (index, sealed segments, SSTs) before reimporting.
+        // Without clear_all, sealed segments accumulate indefinitely across
+        // view changes, causing unbounded memory growth.
+        self.inc_lsm.clear_all();
+        self.con_lsm.clear_all();
+        match &new_record {
+            PersistentRecord::Raw {
+                inc_segments,
+                con_segments,
+            } => {
+                self.import_segments(inc_segments, con_segments)
+                    .expect("install_start_view_full: import failed");
+            }
+            PersistentRecord::Indexed { .. } => {
+                panic!("install_start_view_full: expected Raw record");
+            }
+        }
+
+        // Convert to Indexed for the caller.
+        let new_record_indexed = new_record.into_indexed();
+        self.base_view = new_view;
+        self.inc_lsm.start_view(new_view);
+        self.con_lsm.start_view(new_view);
+
+        let total_ms = iw.elapsed().as_millis();
+        if total_ms > 10 {
+            eprintln!("[install_sv_full] view={new_view} prev={}ms total={total_ms}ms", prev_ms);
+        }
+
+        Some(ViewInstallResult {
+            previous_record,
+            transition,
+            new_record: new_record_indexed,
+        })
+    }
 }
 
 impl<IO, CO, CR, DIO: DiskIo> IrRecordStore<IO, CO, CR>
@@ -669,10 +861,14 @@ where
         if !con_mem.is_empty() {
             con_segments.push(con_mem);
         }
+        // Return Indexed (BTreeMap) instead of Raw to avoid O(n) linear scans
+        // in get_consensus/get_inconsistent. The sync() path calls get_consensus
+        // for every entry, making Raw records O(n²).
         PersistentRecord::Raw {
             inc_segments,
             con_segments,
         }
+        .into_indexed()
     }
 
     fn inconsistent_len(&self) -> usize {
@@ -778,57 +974,16 @@ where
             return None;
         }
 
-        let previous_record = self.full_record();
+        let is_delta = payload.base_view().is_some();
 
-        // Resolve payload to a full record
-        let base = if self.base_view > 0 {
-            let (inc, con) = self
-                .all_segment_bytes()
-                .expect("install_start_view: export failed");
-            Some(PersistentRecord::Raw {
-                inc_segments: inc,
-                con_segments: con,
-            })
+        if is_delta {
+            // Delta fast path: sealed segments are already in the VlogLsm.
+            // Only import the delta bytes (new entries from the leader's current view).
+            self.install_start_view_delta(payload, new_view)
         } else {
-            None
-        };
-        let new_record = payload.resolve(base.as_ref());
-
-        // Compute transition (CDC delta)
-        // For Raw records, the transition is the full new record (caller extracts changes)
-        let transition = (
-            if self.base_view > 0 { self.base_view } else { 0 },
-            new_record.clone_as_raw(),
-        );
-
-        // Install: clear everything, import new segments
-        let is_full = payload_was_full(&new_record);
-        if is_full {
-            self.inc_lsm.clear_index();
-            self.con_lsm.clear_index();
+            // Full payload: clear everything and import all segments.
+            self.install_start_view_full(payload, new_view)
         }
-        match &new_record {
-            PersistentRecord::Raw {
-                inc_segments,
-                con_segments,
-            } => {
-                self.import_segments(inc_segments, con_segments)
-                    .expect("install_start_view: import failed");
-            }
-            PersistentRecord::Indexed { .. } => {
-                panic!("install_start_view_payload: expected Raw record");
-            }
-        }
-        self.inc_lsm.clear_memtable();
-        self.con_lsm.clear_memtable();
-        self.base_view = new_view;
-        self.inc_lsm.start_view(new_view);
-        self.con_lsm.start_view(new_view);
-
-        Some(ViewInstallResult {
-            previous_record,
-            transition,
-        })
     }
 
     fn install_merged_record(
@@ -893,8 +1048,8 @@ where
         // Install: encode merged Indexed → segment bytes → import
         let (inc_bytes, con_bytes) =
             Self::encode_indexed_as_segments(&merged).expect("install_merged: encode failed");
-        self.inc_lsm.clear_index();
-        self.con_lsm.clear_index();
+        self.inc_lsm.clear_all();
+        self.con_lsm.clear_all();
         if !inc_bytes.is_empty() {
             self.inc_lsm
                 .import_raw_segment(&inc_bytes, op_id_from_raw)
@@ -905,8 +1060,6 @@ where
                 .import_raw_segment(&con_bytes, op_id_from_raw)
                 .expect("install_merged: import con failed");
         }
-        self.inc_lsm.clear_memtable();
-        self.con_lsm.clear_memtable();
         self.base_view = new_view;
         self.inc_lsm.start_view(new_view);
         self.con_lsm.start_view(new_view);
@@ -956,7 +1109,10 @@ where
 
     fn flush(&mut self) {
         // seal() flushes both VlogLsm memtables and saves the manifest.
-        self.seal(self.base_view + 1)
+        // Pass current base_view — flush must NOT advance the base view.
+        // Advancing it causes an off-by-one that breaks delta payload matching:
+        // the leader's base_view would be 1 ahead of recipients' latest_normal_view.
+        self.seal(self.base_view)
             .expect("PersistentIrRecordStore::flush: seal failed");
     }
 
@@ -981,12 +1137,6 @@ where
     }
 }
 
-/// Check if a PersistentRecord was created from a Full payload (vs Delta).
-fn payload_was_full<IO, CO, CR>(_record: &PersistentRecord<IO, CO, CR>) -> bool {
-    // After resolve, we can't distinguish Full from Delta origin.
-    // Conservatively treat all installs as Full (clear index before import).
-    true
-}
 
 impl<IO: Clone, CO: Clone, CR: Clone> PersistentRecord<IO, CO, CR> {
     fn clone_as_raw(&self) -> Self {

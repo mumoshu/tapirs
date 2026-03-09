@@ -637,11 +637,20 @@ impl<K: Ord, V, IO: DiskIo, M: Memtable<K, V>> VlogLsm<K, V, IO, M> {
         Ok(())
     }
 
-    /// Clear the in-memory index (for Full payload installs).
-    pub(crate) fn clear_index(&mut self) {
+    /// Clear all data: index, sealed segments, and SSTs.
+    ///
+    /// Used before full payload installs to release old segment memory.
+    /// Without this, sealed segments accumulate indefinitely across view changes,
+    /// causing unbounded memory growth.
+    pub(crate) fn clear_all(&mut self) {
         if let Some(ref mut idx) = self.index {
             idx.clear();
         }
+        self.sealed_segments.clear();
+        self.sst_readers.clear();
+        self.sst_metas.clear();
+        self.memtable.mem_clear();
+        self.entry_count = 0;
     }
 
     /// Clear the memtable.

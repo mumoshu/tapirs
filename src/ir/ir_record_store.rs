@@ -10,6 +10,8 @@ pub struct ViewInstallResult<R> {
     pub previous_record: R,
     /// CDC: (from_view, changes). The replica adds new_view from context.
     pub transition: (u64, R),
+    /// Full record after the install — avoids caller needing a second full_record() call.
+    pub new_record: R,
 }
 
 /// Result of install_merged_record.
