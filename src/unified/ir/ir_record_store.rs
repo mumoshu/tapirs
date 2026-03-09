@@ -9,7 +9,7 @@ use crate::mvcc::disk::error::StorageError;
 use crate::unified::wisckeylsm::lsm::{IndexMode, VlogLsm};
 use crate::unified::wisckeylsm::vlog::{RawVlogEntry, VlogSegment, VLOG_RAW_ENTRY_OVERHEAD};
 use serde::de::DeserializeOwned;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::path::Path;
@@ -247,7 +247,7 @@ pub(crate) struct PersistentPayload<IO, CO, CR> {
     _phantom: std::marker::PhantomData<fn() -> (IO, CO, CR)>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 enum PayloadInner {
     Full {
         inc_segments: Vec<Vec<u8>>,
@@ -258,6 +258,22 @@ enum PayloadInner {
         inc_bytes: Vec<u8>,
         con_bytes: Vec<u8>,
     },
+}
+
+impl<IO, CO, CR> Serialize for PersistentPayload<IO, CO, CR> {
+    fn serialize<Ser: serde::Serializer>(&self, serializer: Ser) -> Result<Ser::Ok, Ser::Error> {
+        self.inner.serialize(serializer)
+    }
+}
+
+impl<'de, IO, CO, CR> Deserialize<'de> for PersistentPayload<IO, CO, CR> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let inner = PayloadInner::deserialize(deserializer)?;
+        Ok(Self {
+            inner: Arc::new(inner),
+            _phantom: std::marker::PhantomData,
+        })
+    }
 }
 
 impl<IO, CO, CR> PersistentPayload<IO, CO, CR> {
@@ -1171,6 +1187,23 @@ mod tests {
             VersionedEntry::Occupied(e) => assert_eq!(e.op, "op1"),
             _ => panic!("expected occupied"),
         }
+    }
+
+    #[test]
+    fn persistent_payload_serde_round_trip() {
+        let payload: PersistentPayload<String, String, String> =
+            PersistentPayload::full(vec![vec![1, 2, 3]], vec![vec![4, 5]]);
+        let bytes = bitcode::serialize(&payload).unwrap();
+        let decoded: PersistentPayload<String, String, String> =
+            bitcode::deserialize(&bytes).unwrap();
+        assert!(format!("{:?}", decoded).contains("Full"));
+
+        let delta: PersistentPayload<String, String, String> =
+            PersistentPayload::delta(ViewNumber(5), vec![10, 20], vec![30]);
+        let bytes2 = bitcode::serialize(&delta).unwrap();
+        let decoded2: PersistentPayload<String, String, String> =
+            bitcode::deserialize(&bytes2).unwrap();
+        assert!(format!("{:?}", decoded2).contains("Delta"));
     }
 
     #[test]
