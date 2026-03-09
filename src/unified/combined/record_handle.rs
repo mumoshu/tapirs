@@ -23,6 +23,15 @@ pub(crate) struct CombinedRecordHandle<K: Ord, V, DIO: DiskIo> {
     pub(crate) inner: Arc<Mutex<CombinedStoreInner<K, V, DIO>>>,
 }
 
+impl<K: Ord, V, DIO: DiskIo> CombinedRecordHandle<K, V, DIO> {
+    /// Create a TAPIR store handle sharing the same inner state.
+    pub(crate) fn tapir_handle(&self) -> super::tapir_handle::CombinedTapirHandle<K, V, DIO> {
+        super::tapir_handle::CombinedTapirHandle {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
 impl<K: Ord + Debug, V: Debug, DIO: DiskIo> Debug for CombinedRecordHandle<K, V, DIO> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let inner = self.inner.lock().unwrap();

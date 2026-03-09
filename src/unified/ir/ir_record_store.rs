@@ -395,6 +395,18 @@ where
         self.base_view
     }
 
+    /// Borrow the inconsistent-op VlogLsm (for lazy resolution by CombinedTapirHandle).
+    #[cfg(any(feature = "combined-store", test))]
+    pub(crate) fn inc_lsm(&self) -> &VlogLsm<OpId, InconsistentEntry<IO>, DIO> {
+        &self.inc_lsm
+    }
+
+    /// Borrow the consensus-op VlogLsm (for lazy resolution by CombinedTapirHandle).
+    #[cfg(any(feature = "combined-store", test))]
+    pub(crate) fn con_lsm(&self) -> &VlogLsm<OpId, ConsensusEntry<CO, CR>, DIO> {
+        &self.con_lsm
+    }
+
     /// Create a new store with empty VlogLsms at the given directory.
     pub(crate) fn open(
         base_dir: &Path,

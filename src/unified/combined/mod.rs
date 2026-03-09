@@ -32,6 +32,7 @@
 //! rebuild TAPIR state.
 
 pub(crate) mod record_handle;
+pub(crate) mod tapir_handle;
 
 use crate::ir::OpId;
 use crate::mvcc::disk::disk_io::{DiskIo, OpenFlags};
@@ -250,5 +251,30 @@ mod tests {
         assert_eq!(handle.inconsistent_len(), 0);
         assert_eq!(handle.consensus_len(), 0);
         assert!(handle.stored_bytes().is_some());
+    }
+
+    #[test]
+    fn combined_tapir_handle_basic_operations() {
+        use crate::tapirstore::TapirStore;
+
+        let base_dir = MemoryIo::temp_path();
+        let inner = CombinedStoreInner::<String, String, MemoryIo>::open(
+            &base_dir,
+            test_flags(),
+            ShardNumber(0),
+            true,
+        )
+        .unwrap();
+        let record_handle = inner.into_record_handle();
+        let tapir_handle = record_handle.tapir_handle();
+
+        // Basic TapirStore queries on empty store.
+        assert_eq!(tapir_handle.shard(), ShardNumber(0));
+        assert_eq!(tapir_handle.prepared_count(), 0);
+        assert_eq!(tapir_handle.txn_log_len(), 0);
+        assert!(tapir_handle.get_oldest_prepared_txn().is_none());
+        assert!(tapir_handle.min_prepare_baseline().is_none());
+        assert!(tapir_handle.cdc_max_view().is_none());
+        assert!(tapir_handle.stored_bytes().is_some());
     }
 }
