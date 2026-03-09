@@ -15,17 +15,18 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tapirs::store_defaults::{ProductionIrRecordStore, ProductionTapirReplica};
 use tapirs::{
-    IrMembership, IrMessage, IrReplica, IrVersionedRecord, MvccDiskStore, TapirCO, TapirCR,
-    TapirClient, TapirIO, TapirReplica, TapirTransport, Transport,
+    IrMembership, IrMessage, IrReplica,
+    TapirClient, TapirTransport, Transport,
 };
 use tokio::spawn;
 use tracing::{info, trace, warn};
 
 type K = String;
 type V = String;
-type Message = IrMessage<TapirReplica<K, V>, Maelstrom>;
-type MaelstromIrReplica = IrReplica<TapirReplica<K, V>, Maelstrom, IrVersionedRecord<TapirIO<K, V>, TapirCO<K, V>, TapirCR>>;
+type Message = IrMessage<ProductionTapirReplica, Maelstrom>;
+type MaelstromIrReplica = IrReplica<ProductionTapirReplica, Maelstrom, ProductionIrRecordStore>;
 
 #[derive(Default)]
 struct KvNode {
@@ -116,7 +117,7 @@ impl FromStr for IdEnum {
     }
 }
 
-impl Transport<TapirReplica<K, V>> for Maelstrom {
+impl Transport<ProductionTapirReplica> for Maelstrom {
     type Address = IdEnum;
     type Sleep = tokio::time::Sleep;
 
@@ -150,10 +151,10 @@ impl Transport<TapirReplica<K, V>> for Maelstrom {
         tokio::spawn(future);
     }
 
-    fn send<R: TryFrom<IrMessage<TapirReplica<K, V>, Self>> + Send + std::fmt::Debug>(
+    fn send<R: TryFrom<IrMessage<ProductionTapirReplica, Self>> + Send + std::fmt::Debug>(
         &self,
         address: Self::Address,
-        message: impl Into<IrMessage<TapirReplica<K, V>, Self>> + std::fmt::Debug,
+        message: impl Into<IrMessage<ProductionTapirReplica, Self>> + std::fmt::Debug,
     ) -> impl futures::Future<Output = R> + Send + 'static {
         let id = self.id;
         let (sender, mut receiver) = tokio::sync::oneshot::channel();
@@ -195,7 +196,7 @@ impl Transport<TapirReplica<K, V>> for Maelstrom {
     fn do_send(
         &self,
         address: Self::Address,
-        message: impl Into<IrMessage<TapirReplica<K, V>, Self>> + std::fmt::Debug,
+        message: impl Into<IrMessage<ProductionTapirReplica, Self>> + std::fmt::Debug,
     ) {
         let message = Wrapper {
             message: message.into(),
@@ -218,7 +219,7 @@ impl Transport<TapirReplica<K, V>> for Maelstrom {
 }
 
 impl TapirTransport<K, V> for Maelstrom {
-    type Store = tapirs::tapirstore::InMemTapirStore<K, V, tapirs::MvccDiskStore<K, V, tapirs::TapirTimestamp, tapirs::DefaultDiskIo>>;
+    type Store = tapirs::store_defaults::ProductionTapirStore;
 
     fn shard_addresses(
         &self,
@@ -293,16 +294,22 @@ impl Process<LinKv, Wrapper> for KvNode {
             transport.clone(),
             match id {
                 IdEnum::Replica(_) => {
-                    let mvcc_dir = std::env::temp_dir().join(format!("maelstrom-tapir-{}", std::process::id()));
-                    let backend = MvccDiskStore::open(mvcc_dir).expect("open DiskStore");
+                    let base_dir = std::env::temp_dir().join(format!("maelstrom-tapir-{}", std::process::id()));
+                    let (upcalls, ir_store) = tapirs::store_defaults::open_production_stores(
+                        tapirs::ShardNumber(0),
+                        &base_dir.to_string_lossy(),
+                        0,
+                        true,
+                    )
+                    .expect("open production stores");
                     KvNodeInner::Replica(Arc::new(IrReplica::with_view_change_interval(
                         tapirs::Rng::from_seed(thread_rng().r#gen()),
                         membership,
-                        TapirReplica::new_with_backend(tapirs::ShardNumber(0), true, backend),
+                        upcalls,
                         transport,
-                        Some(TapirReplica::tick),
+                        Some(ProductionTapirReplica::tick),
                         Some(view_change_interval),
-                        Default::default(),
+                        ir_store,
                     )))
                 }
                 IdEnum::App(_) => {
@@ -673,3 +680,4 @@ async fn main() -> Status {
 
     Ok(())
 }
+

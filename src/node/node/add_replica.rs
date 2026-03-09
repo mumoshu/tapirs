@@ -70,7 +70,7 @@ impl Node {
 
         let transport_for_replica = transport.clone();
         let (upcalls, ir_store) =
-            crate::store_defaults::open_production_stores(shard, &self.persist_dir, cfg.shard)?;
+            crate::store_defaults::open_production_stores(shard, &self.persist_dir, cfg.shard, true)?;
         let replica = Arc::new_cyclic(|weak: &std::sync::Weak<TapirIrReplica>| {
             let weak = weak.clone();
             transport_for_replica.set_receive_callback(move |from, message| {

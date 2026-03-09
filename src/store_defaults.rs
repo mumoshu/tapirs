@@ -85,6 +85,7 @@ pub fn open_production_stores(
     shard: ShardNumber,
     persist_dir: &str,
     shard_id: u32,
+    linearizable: bool,
 ) -> Result<(ProductionTapirReplica, ProductionIrRecordStore), String> {
     let mvcc_dir = format!("{}/shard_{}/mvcc", persist_dir, shard_id);
 
@@ -102,7 +103,7 @@ pub fn open_production_stores(
     let backend = crate::MvccDiskStore::open(std::path::PathBuf::from(&mvcc_dir))
         .map_err(|e| format!("failed to open DiskStore at {mvcc_dir}: {e}"))?;
 
-    let upcalls = crate::TapirReplica::new_with_backend(shard, false, backend);
+    let upcalls = crate::TapirReplica::new_with_backend(shard, linearizable, backend);
     let ir_store = ProductionIrRecordStore::default();
     Ok((upcalls, ir_store))
 }
@@ -112,6 +113,7 @@ pub fn open_production_stores(
     shard: ShardNumber,
     persist_dir: &str,
     shard_id: u32,
+    linearizable: bool,
 ) -> Result<(ProductionTapirReplica, ProductionIrRecordStore), String> {
     use crate::mvcc::disk::disk_io::OpenFlags;
     use crate::unified::tapir::persistent_store::PersistentTapirStore;
@@ -126,7 +128,7 @@ pub fn open_production_stores(
         std::path::Path::new(&base_dir),
         io_flags,
         shard,
-        true,
+        linearizable,
     )
     .map_err(|e| format!("failed to open TapirState at {base_dir}: {e}"))?;
 
@@ -147,6 +149,7 @@ pub fn open_production_stores(
     shard: ShardNumber,
     persist_dir: &str,
     shard_id: u32,
+    linearizable: bool,
 ) -> Result<(ProductionTapirReplica, ProductionIrRecordStore), String> {
     use crate::mvcc::disk::disk_io::OpenFlags;
     use crate::unified::combined::CombinedStoreInner;
@@ -161,7 +164,7 @@ pub fn open_production_stores(
         std::path::Path::new(&base_dir),
         io_flags,
         shard,
-        true,
+        linearizable,
     )
     .map_err(|e| format!("failed to open CombinedStore at {base_dir}: {e}"))?;
 

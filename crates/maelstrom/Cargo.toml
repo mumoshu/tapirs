@@ -7,6 +7,9 @@ edition = "2024"
 name = "maelstrom"
 path = "src/main.rs"
 
+[features]
+combined-store = ["tapi-rs/combined-store"]
+
 [dependencies]
 tapi-rs = { path = "../.." }
 async-maelstrom = "0.1.2"
