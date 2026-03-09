@@ -395,6 +395,12 @@ where
         self.base_view
     }
 
+    /// Borrow the manifest (for CombinedStore unified manifest save).
+    #[cfg(any(feature = "combined-store", test))]
+    pub(crate) fn manifest(&self) -> &UnifiedManifest {
+        &self.manifest
+    }
+
     /// Borrow the inconsistent-op VlogLsm (for lazy resolution by CombinedTapirHandle).
     #[cfg(any(feature = "combined-store", test))]
     pub(crate) fn inc_lsm(&self) -> &VlogLsm<OpId, InconsistentEntry<IO>, DIO> {

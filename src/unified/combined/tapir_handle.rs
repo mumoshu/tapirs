@@ -854,18 +854,16 @@ where
         self.inner.lock().unwrap().occ_cache.max_read_time()
     }
 
-    // Combined store flush/stored_bytes are stub no-ops here.
-    // Real sealing happens in Commit 4 (independent seal).
     fn flush(&mut self) {
-        // Stub: TAPIR-side seal will be implemented in the independent seal commit.
+        self.inner
+            .lock()
+            .unwrap()
+            .seal_tapir_side()
+            .expect("CombinedTapirHandle::flush: seal failed");
     }
 
     fn stored_bytes(&self) -> Option<u64> {
-        let inner = self.inner.lock().unwrap();
-        let committed = inner.committed.active_write_offset();
-        let prepared = inner.prepared.active_write_offset();
-        let mvcc = inner.mvcc.active_write_offset();
-        Some(committed + prepared + mvcc)
+        Some(self.inner.lock().unwrap().tapir_stored_bytes())
     }
 }
 

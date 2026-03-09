@@ -47,9 +47,15 @@ use crate::unified::tapir::storage_types::MvccIndexEntry;
 use crate::unified::wisckeylsm::lsm::{IndexMode, VlogLsm};
 use crate::unified::wisckeylsm::manifest::UnifiedManifest;
 use crate::unified::wisckeylsm::vlog::VlogSegment;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+
+/// Entry type markers for combined store VlogLsm seals.
+const COMB_COMMITTED_ENTRY_TYPE: u8 = 0x90;
+const COMB_PREPARED_ENTRY_TYPE: u8 = 0x91;
+const COMB_MVCC_ENTRY_TYPE: u8 = 0x92;
 
 /// Lightweight reference to a prepared transaction in con_lsm.
 ///
@@ -197,6 +203,116 @@ impl<K: Key, V: Value, DIO: DiskIo> CombinedStoreInner<K, V, DIO> {
             inner: Arc::new(Mutex::new(self)),
         }
     }
+
+    /// Seal the three TAPIR VlogLsms (committed, prepared, mvcc) and save
+    /// the unified manifest with both IR and TAPIR metadata.
+    ///
+    /// Called by CombinedTapirHandle::flush(). IrReplica always calls
+    /// record.flush() (IR seal) before upcalls.flush() (this method),
+    /// so the IR manifest fields are up-to-date when we copy them.
+    pub(crate) fn seal_tapir_side(&mut self) -> Result<(), StorageError>
+    where
+        K: Serialize + DeserializeOwned,
+        V: Serialize,
+    {
+        let sealed_comm =
+            self.committed
+                .seal_view(0, |txn_id, _| {
+                    Some((
+                        COMB_COMMITTED_ENTRY_TYPE,
+                        txn_id.client_id.0,
+                        txn_id.number,
+                    ))
+                })?;
+        if let Some(meta) = sealed_comm {
+            self.tapir_manifest.committed.sealed_vlog_segments.push(meta);
+        }
+
+        let sealed_prep =
+            self.prepared
+                .seal_view(0, |txn_id, _| {
+                    Some((
+                        COMB_PREPARED_ENTRY_TYPE,
+                        txn_id.client_id.0,
+                        txn_id.number,
+                    ))
+                })?;
+        if let Some(meta) = sealed_prep {
+            self.tapir_manifest.prepared.sealed_vlog_segments.push(meta);
+        }
+
+        let sealed_mvcc =
+            self.mvcc
+                .seal_view(0, |_ck, _| {
+                    Some((COMB_MVCC_ENTRY_TYPE, 0, 0))
+                })?;
+        if let Some(meta) = sealed_mvcc {
+            self.tapir_manifest.mvcc.sealed_vlog_segments.push(meta);
+        }
+
+        // Update TAPIR VlogLsm metadata in manifest.
+        self.tapir_manifest.committed.active_segment_id = self.committed.active_vlog_id();
+        self.tapir_manifest.committed.active_write_offset = self.committed.active_write_offset();
+        self.tapir_manifest.committed.next_segment_id = self.committed.next_segment_id();
+        self.tapir_manifest.committed.sst_metas = self.committed.sst_metas().to_vec();
+        self.tapir_manifest.committed.next_sst_id = self.committed.next_sst_id();
+        self.tapir_manifest.prepared.active_segment_id = self.prepared.active_vlog_id();
+        self.tapir_manifest.prepared.active_write_offset = self.prepared.active_write_offset();
+        self.tapir_manifest.prepared.next_segment_id = self.prepared.next_segment_id();
+        self.tapir_manifest.prepared.sst_metas = self.prepared.sst_metas().to_vec();
+        self.tapir_manifest.prepared.next_sst_id = self.prepared.next_sst_id();
+        self.tapir_manifest.mvcc.active_segment_id = self.mvcc.active_vlog_id();
+        self.tapir_manifest.mvcc.active_write_offset = self.mvcc.active_write_offset();
+        self.tapir_manifest.mvcc.next_segment_id = self.mvcc.next_segment_id();
+        self.tapir_manifest.mvcc.sst_metas = self.mvcc.sst_metas().to_vec();
+        self.tapir_manifest.mvcc.next_sst_id = self.mvcc.next_sst_id();
+        self.tapir_manifest.max_read_time = self.occ_cache.max_read_time().map(|ts| ts.time);
+        self.tapir_manifest.txn_log_count = self.txn_log_count as u64;
+        self.tapir_view += 1;
+        self.tapir_manifest.current_view = self.tapir_view;
+
+        // Copy IR manifest fields so the unified manifest is complete.
+        let ir_m = self.ir.manifest();
+        self.tapir_manifest.ir_inc = ir_m.ir_inc.clone();
+        self.tapir_manifest.ir_con = ir_m.ir_con.clone();
+
+        self.tapir_manifest.save::<DIO>(&self.base_dir)?;
+        self.committed.start_view(self.tapir_view);
+        self.prepared.start_view(self.tapir_view);
+        self.mvcc.start_view(self.tapir_view);
+        Ok(())
+    }
+
+    /// Total bytes stored across all three TAPIR VlogLsms (sealed + active).
+    pub(crate) fn tapir_stored_bytes(&self) -> u64 {
+        let committed_sealed: u64 = self
+            .tapir_manifest
+            .committed
+            .sealed_vlog_segments
+            .iter()
+            .map(|seg| seg.total_size)
+            .sum();
+        let prepared_sealed: u64 = self
+            .tapir_manifest
+            .prepared
+            .sealed_vlog_segments
+            .iter()
+            .map(|seg| seg.total_size)
+            .sum();
+        let mvcc_sealed: u64 = self
+            .tapir_manifest
+            .mvcc
+            .sealed_vlog_segments
+            .iter()
+            .map(|seg| seg.total_size)
+            .sum();
+        committed_sealed
+            + prepared_sealed
+            + mvcc_sealed
+            + self.committed.active_write_offset()
+            + self.prepared.active_write_offset()
+            + self.mvcc.active_write_offset()
+    }
 }
 
 #[cfg(test)]
@@ -276,5 +392,93 @@ mod tests {
         assert!(tapir_handle.min_prepare_baseline().is_none());
         assert!(tapir_handle.cdc_max_view().is_none());
         assert!(tapir_handle.stored_bytes().is_some());
+    }
+
+    #[test]
+    fn combined_seal_updates_manifest_and_stored_bytes() {
+        use crate::tapirstore::TapirStore;
+
+        let base_dir = MemoryIo::temp_path();
+        let inner = CombinedStoreInner::<String, String, MemoryIo>::open(
+            &base_dir,
+            test_flags(),
+            ShardNumber(0),
+            true,
+        )
+        .unwrap();
+        let record_handle = inner.into_record_handle();
+        let mut tapir_handle = record_handle.tapir_handle();
+
+        // Insert a txn log entry to have data to seal.
+        tapir_handle.txn_log_insert(
+            TransactionId {
+                client_id: crate::IrClientId(1),
+                number: 1,
+            },
+            Timestamp::default(),
+            false,
+        );
+        assert_eq!(tapir_handle.txn_log_len(), 1);
+
+        // Before seal, memtable data isn't in vlog yet (put is memtable-only).
+        let bytes_before = tapir_handle.stored_bytes().unwrap();
+
+        // Seal TAPIR side — flushes memtable to vlog.
+        tapir_handle.flush();
+
+        let bytes_after = tapir_handle.stored_bytes().unwrap();
+        assert!(
+            bytes_after > bytes_before,
+            "stored_bytes should increase after seal: {bytes_before} -> {bytes_after}"
+        );
+
+        // Manifest updated.
+        let guard = record_handle.inner.lock().unwrap();
+        assert_eq!(guard.tapir_view, 1);
+        assert_eq!(guard.tapir_manifest.current_view, 1);
+        assert_eq!(guard.tapir_manifest.txn_log_count, 1);
+    }
+
+    #[test]
+    fn combined_ir_and_tapir_seal_independently() {
+        use crate::ir::IrRecordStore;
+        use crate::tapirstore::TapirStore;
+
+        let base_dir = MemoryIo::temp_path();
+        let inner = CombinedStoreInner::<String, String, MemoryIo>::open(
+            &base_dir,
+            test_flags(),
+            ShardNumber(0),
+            true,
+        )
+        .unwrap();
+        let mut record_handle = inner.into_record_handle();
+        let mut tapir_handle = record_handle.tapir_handle();
+
+        // Insert TAPIR data.
+        tapir_handle.txn_log_insert(
+            TransactionId {
+                client_id: crate::IrClientId(2),
+                number: 2,
+            },
+            Timestamp::default(),
+            false,
+        );
+
+        // Seal IR side first (as IrReplica would do).
+        // IR memtables are empty, but seal still advances the view.
+        record_handle.flush();
+
+        // Seal TAPIR side.
+        tapir_handle.flush();
+
+        // Verify TAPIR sealed.
+        let tapir_bytes = tapir_handle.stored_bytes().unwrap();
+        assert!(tapir_bytes > 0, "TAPIR should have sealed data");
+
+        // Both views advanced independently.
+        let guard = record_handle.inner.lock().unwrap();
+        assert_eq!(guard.tapir_view, 1);
+        assert_eq!(guard.ir.base_view(), 1);
     }
 }
