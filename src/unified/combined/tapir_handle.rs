@@ -62,7 +62,7 @@ impl<K: Key + Serialize + DeserializeOwned, IO: DiskIo> MvccQueries<K> for MvccV
         {
             ck.timestamp.0
         } else {
-            return Ok((Timestamp::default(), None));
+            Timestamp::default()
         };
 
         let start = CompositeKey::new(key.clone(), Timestamp::max_value());

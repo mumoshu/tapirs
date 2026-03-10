@@ -45,7 +45,7 @@ impl<K: Key + serde::Serialize + serde::de::DeserializeOwned, IO: DiskIo> MvccQu
         {
             ck.timestamp.0
         } else {
-            return Ok((Timestamp::default(), None));
+            Timestamp::default()
         };
 
         // Find the next version (higher timestamp) for this key.
