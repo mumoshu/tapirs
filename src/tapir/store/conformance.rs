@@ -7,7 +7,7 @@
 use crate::ir::OpId;
 use crate::occ::{PrepareResult, ScanEntry, SharedTransaction, Transaction, TransactionId};
 use crate::tapir::{LeaderRecordDelta, ShardNumber, Sharded, Timestamp};
-use crate::tapirstore::{CheckPrepareStatus, TapirStore};
+use crate::tapir::store::{CheckPrepareStatus, TapirStore};
 use crate::IrClientId;
 
 const DUMMY_OP_ID: OpId = OpId { client_id: IrClientId(0), number: 0 };
@@ -698,12 +698,12 @@ macro_rules! tapir_store_conformance_tests {
         #[test]
         fn txn_log_insert_get_contains_len() {
             let (_g, mut s) = $new_store;
-            $crate::tapirstore::conformance::test_txn_log_insert_get_contains_len(&mut s);
+            $crate::tapir::store::conformance::test_txn_log_insert_get_contains_len(&mut s);
         }
         #[test]
         fn txn_log_insert_returns_previous_on_duplicate() {
             let (_g, mut s) = $new_store;
-            $crate::tapirstore::conformance::test_txn_log_insert_returns_previous_on_duplicate(
+            $crate::tapir::store::conformance::test_txn_log_insert_returns_previous_on_duplicate(
                 &mut s,
             );
         }
@@ -712,97 +712,97 @@ macro_rules! tapir_store_conformance_tests {
         #[test]
         fn record_and_query_cdc_deltas() {
             let (_g, mut s) = $new_store;
-            $crate::tapirstore::conformance::test_record_and_query_cdc_deltas(&mut s);
+            $crate::tapir::store::conformance::test_record_and_query_cdc_deltas(&mut s);
         }
         #[test]
         fn cdc_deltas_from_filters_by_view() {
             let (_g, mut s) = $new_store;
-            $crate::tapirstore::conformance::test_cdc_deltas_from_filters_by_view(&mut s);
+            $crate::tapir::store::conformance::test_cdc_deltas_from_filters_by_view(&mut s);
         }
 
         // Prepare / abort
         #[test]
         fn prepare_abort_removes_from_prepared() {
             let (_g, mut s) = $new_store;
-            $crate::tapirstore::conformance::test_prepare_abort_removes_from_prepared(&mut s);
+            $crate::tapir::store::conformance::test_prepare_abort_removes_from_prepared(&mut s);
         }
         #[test]
         fn remove_prepared_returns_false_if_not_found() {
             let (_g, mut s) = $new_store;
-            $crate::tapirstore::conformance::test_remove_prepared_returns_false_if_not_found(
+            $crate::tapir::store::conformance::test_remove_prepared_returns_false_if_not_found(
                 &mut s,
             );
         }
         #[test]
         fn abort_does_not_affect_txn_log() {
             let (_g, mut s) = $new_store;
-            $crate::tapirstore::conformance::test_abort_does_not_affect_txn_log(&mut s);
+            $crate::tapir::store::conformance::test_abort_does_not_affect_txn_log(&mut s);
         }
 
         // Prepare / commit
         #[test]
         fn prepare_commit_read() {
             let (_g, mut s) = $new_store;
-            $crate::tapirstore::conformance::test_prepare_commit_read(&mut s);
+            $crate::tapir::store::conformance::test_prepare_commit_read(&mut s);
         }
         #[test]
         fn commit_txn_writes_both() {
             let (_g, mut s) = $new_store;
-            $crate::tapirstore::conformance::test_commit_txn_writes_both(&mut s);
+            $crate::tapir::store::conformance::test_commit_txn_writes_both(&mut s);
         }
 
         // Prepared queries
         #[test]
         fn prepared_get() {
             let (_g, mut s) = $new_store;
-            $crate::tapirstore::conformance::test_prepared_get(&mut s);
+            $crate::tapir::store::conformance::test_prepared_get(&mut s);
         }
         #[test]
         fn finalize_prepared_txn() {
             let (_g, mut s) = $new_store;
-            $crate::tapirstore::conformance::test_finalize_prepared_txn(&mut s);
+            $crate::tapir::store::conformance::test_finalize_prepared_txn(&mut s);
         }
         #[test]
         fn oldest_prepared_returns_min_timestamp() {
             let (_g, mut s) = $new_store;
-            $crate::tapirstore::conformance::test_oldest_prepared_returns_min_timestamp(&mut s);
+            $crate::tapir::store::conformance::test_oldest_prepared_returns_min_timestamp(&mut s);
         }
         #[test]
         fn remove_unfinalized_prepared() {
             let (_g, mut s) = $new_store;
-            $crate::tapirstore::conformance::test_remove_unfinalized_prepared(&mut s);
+            $crate::tapir::store::conformance::test_remove_unfinalized_prepared(&mut s);
         }
 
         // Check prepare status (split from check_prepare_status_all_variants)
         #[test]
         fn check_prepare_status_unknown() {
             let (_g, mut s) = $new_store;
-            $crate::tapirstore::conformance::test_check_prepare_status_unknown(&mut s);
+            $crate::tapir::store::conformance::test_check_prepare_status_unknown(&mut s);
         }
         #[test]
         fn check_prepare_status_prepared() {
             let (_g, mut s) = $new_store;
-            $crate::tapirstore::conformance::test_check_prepare_status_prepared(&mut s);
+            $crate::tapir::store::conformance::test_check_prepare_status_prepared(&mut s);
         }
         #[test]
         fn check_prepare_status_committed() {
             let (_g, mut s) = $new_store;
-            $crate::tapirstore::conformance::test_check_prepare_status_committed(&mut s);
+            $crate::tapir::store::conformance::test_check_prepare_status_committed(&mut s);
         }
         #[test]
         fn check_prepare_status_aborted() {
             let (_g, mut s) = $new_store;
-            $crate::tapirstore::conformance::test_check_prepare_status_aborted(&mut s);
+            $crate::tapir::store::conformance::test_check_prepare_status_aborted(&mut s);
         }
         #[test]
         fn check_prepare_status_too_late() {
             let (_g, mut s) = $new_store;
-            $crate::tapirstore::conformance::test_check_prepare_status_too_late(&mut s);
+            $crate::tapir::store::conformance::test_check_prepare_status_too_late(&mut s);
         }
         #[test]
         fn check_prepare_status_too_late_via_prepared() {
             let (_g, mut s) = $new_store;
-            $crate::tapirstore::conformance::test_check_prepare_status_too_late_via_prepared(
+            $crate::tapir::store::conformance::test_check_prepare_status_too_late_via_prepared(
                 &mut s,
             );
         }
@@ -811,17 +811,17 @@ macro_rules! tapir_store_conformance_tests {
         #[test]
         fn quorum_read_returns_committed_value() {
             let (_g, mut s) = $new_store;
-            $crate::tapirstore::conformance::test_quorum_read_returns_committed_value(&mut s);
+            $crate::tapir::store::conformance::test_quorum_read_returns_committed_value(&mut s);
         }
         #[test]
         fn quorum_scan_returns_range() {
             let (_g, mut s) = $new_store;
-            $crate::tapirstore::conformance::test_quorum_scan_returns_range(&mut s);
+            $crate::tapir::store::conformance::test_quorum_scan_returns_range(&mut s);
         }
         #[test]
         fn quorum_read_conflicts_with_prepared_write() {
             let (_g, mut s) = $new_store;
-            $crate::tapirstore::conformance::test_quorum_read_conflicts_with_prepared_write(
+            $crate::tapir::store::conformance::test_quorum_read_conflicts_with_prepared_write(
                 &mut s,
             );
         }
@@ -830,28 +830,28 @@ macro_rules! tapir_store_conformance_tests {
         #[test]
         fn get_validated_returns_none_before_quorum_read() {
             let (_g, mut s) = $new_store;
-            $crate::tapirstore::conformance::test_get_validated_returns_none_before_quorum_read(
+            $crate::tapir::store::conformance::test_get_validated_returns_none_before_quorum_read(
                 &mut s,
             );
         }
         #[test]
         fn get_validated_returns_some_after_quorum_read() {
             let (_g, mut s) = $new_store;
-            $crate::tapirstore::conformance::test_get_validated_returns_some_after_quorum_read(
+            $crate::tapir::store::conformance::test_get_validated_returns_some_after_quorum_read(
                 &mut s,
             );
         }
         #[test]
         fn scan_validated_returns_none_before_quorum_scan() {
             let (_g, mut s) = $new_store;
-            $crate::tapirstore::conformance::test_scan_validated_returns_none_before_quorum_scan(
+            $crate::tapir::store::conformance::test_scan_validated_returns_none_before_quorum_scan(
                 &mut s,
             );
         }
         #[test]
         fn scan_validated_returns_some_after_quorum_scan() {
             let (_g, mut s) = $new_store;
-            $crate::tapirstore::conformance::test_scan_validated_returns_some_after_quorum_scan(
+            $crate::tapir::store::conformance::test_scan_validated_returns_some_after_quorum_scan(
                 &mut s,
             );
         }
@@ -860,50 +860,50 @@ macro_rules! tapir_store_conformance_tests {
         #[test]
         fn min_prepare_baseline_fresh_store() {
             let (_g, mut s) = $new_store;
-            $crate::tapirstore::conformance::test_min_prepare_baseline_fresh_store(&mut s);
+            $crate::tapir::store::conformance::test_min_prepare_baseline_fresh_store(&mut s);
         }
         #[test]
         fn min_prepare_baseline_after_quorum_read() {
             let (_g, mut s) = $new_store;
-            $crate::tapirstore::conformance::test_min_prepare_baseline_after_quorum_read(&mut s);
+            $crate::tapir::store::conformance::test_min_prepare_baseline_after_quorum_read(&mut s);
         }
         #[test]
         fn min_prepare_baseline_after_quorum_scan() {
             let (_g, mut s) = $new_store;
-            $crate::tapirstore::conformance::test_min_prepare_baseline_after_quorum_scan(&mut s);
+            $crate::tapir::store::conformance::test_min_prepare_baseline_after_quorum_scan(&mut s);
         }
 
         // Min prepare time
         #[test]
         fn oldest_prepared_is_min_prepared_timestamp() {
             let (_g, mut s) = $new_store;
-            $crate::tapirstore::conformance::test_oldest_prepared_is_min_prepared_timestamp(
+            $crate::tapir::store::conformance::test_oldest_prepared_is_min_prepared_timestamp(
                 &mut s,
             );
         }
         #[test]
         fn raise_min_prepare_time_caps_at_min_prepared() {
             let (_g, mut s) = $new_store;
-            $crate::tapirstore::conformance::test_raise_min_prepare_time_caps_at_min_prepared(
+            $crate::tapir::store::conformance::test_raise_min_prepare_time_caps_at_min_prepared(
                 &mut s,
             );
         }
         #[test]
         fn finalize_min_prepare_time_raises_both() {
             let (_g, mut s) = $new_store;
-            $crate::tapirstore::conformance::test_finalize_min_prepare_time_raises_both(&mut s);
+            $crate::tapir::store::conformance::test_finalize_min_prepare_time_raises_both(&mut s);
         }
         #[test]
         fn sync_min_prepare_time_can_rollback_tentative() {
             let (_g, mut s) = $new_store;
-            $crate::tapirstore::conformance::test_sync_min_prepare_time_can_rollback_tentative(
+            $crate::tapir::store::conformance::test_sync_min_prepare_time_can_rollback_tentative(
                 &mut s,
             );
         }
         #[test]
         fn reset_min_prepare_time_to_finalized_resets_tentative() {
             let (_g, mut s) = $new_store;
-            $crate::tapirstore::conformance::test_reset_min_prepare_time_to_finalized_resets_tentative(
+            $crate::tapir::store::conformance::test_reset_min_prepare_time_to_finalized_resets_tentative(
                 &mut s,
             );
         }

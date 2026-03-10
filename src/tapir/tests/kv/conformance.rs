@@ -4,7 +4,7 @@ use crate::tapir::{self, Timestamp};
 use crate::{ChannelRegistry, IrVersionedRecord};
 use std::sync::Arc;
 
-type S = crate::tapirstore::InMemTapirStore<
+type S = crate::tapir::store::InMemTapirStore<
     String,
     String,
     DiskStore<String, String, Timestamp, MemoryIo>,

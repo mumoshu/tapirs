@@ -1,14 +1,14 @@
 use super::{Change, Key, KeyRange, LeaderRecordDelta, ShardNumber, Timestamp, Value, CO, CR, IO, IR, UO, UR};
 use super::message::MinPrepareBaselineResult;
 use crate::ir::ReplyUnlogged;
-use crate::tapirstore::TapirStore;
+use crate::tapir::store::TapirStore;
 use crate::{
     DefaultDiskIo, IrClient, IrClientId, IrMembership, IrMembershipSize, IrOpId, IrRecordView,
     IrReplicaUpcalls,
     MvccBackend, MvccDiskStore,
     OccPrepareResult, OccSharedTransaction, OccTransactionId, TapirTransport, Transport,
 };
-use crate::tapirstore::InMemTapirStore;
+use crate::tapir::store::InMemTapirStore;
 use futures::future::join_all;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -388,7 +388,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                 transaction_id,
                 commit,
             } => {
-                use crate::tapirstore::CheckPrepareStatus;
+                use crate::tapir::store::CheckPrepareStatus;
                 UR::CheckPrepare(match self.store.check_prepare_status(&transaction_id, &commit) {
                     CheckPrepareStatus::CommittedAtTimestamp => OccPrepareResult::Ok,
                     CheckPrepareStatus::CommittedDifferent { .. }
@@ -586,7 +586,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                     self.counters.prepare_fail_count.fetch_add(1, Ordering::Relaxed);
                     return CR::Prepare(OccPrepareResult::Fail);
                 }
-                use crate::tapirstore::CheckPrepareStatus;
+                use crate::tapir::store::CheckPrepareStatus;
                 let result = match self.store.check_prepare_status(transaction_id, commit) {
                     CheckPrepareStatus::CommittedAtTimestamp => OccPrepareResult::Ok,
                     CheckPrepareStatus::CommittedDifferent { proposed } => {

@@ -6,7 +6,7 @@ use crate::occ::{
     TransactionId,
 };
 use crate::tapir::{Key, LeaderRecordDelta, ShardNumber, Timestamp, Value};
-use crate::tapirstore::{CheckPrepareStatus, MinPrepareTimes, RecordDeltaDuringView, TapirStore};
+use crate::tapir::store::{CheckPrepareStatus, MinPrepareTimes, RecordDeltaDuringView, TapirStore};
 use crate::unified::tapir::store::TapirState;
 use std::collections::BTreeSet;
 use std::sync::Arc;

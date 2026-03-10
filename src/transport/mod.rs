@@ -1,6 +1,5 @@
 use crate::{
-    tapir::{Key, Value},
-    tapirstore::TapirStore,
+    tapir::{Key, Value, store::TapirStore},
     IrMembership, IrMessage, IrReplicaUpcalls, ShardNumber,
 };
 pub use channel::{Channel, Registry as ChannelRegistry};

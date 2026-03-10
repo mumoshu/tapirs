@@ -10,7 +10,7 @@ mod occ;
 mod rng;
 pub mod sharding;
 mod tapir;
-pub mod tapirstore;
+
 #[cfg(feature = "tls")]
 pub mod tls;
 mod transport;

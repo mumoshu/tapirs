@@ -1,7 +1,6 @@
 use super::{SharedTransaction, Timestamp, Transaction, TransactionId};
 use crate::{
-    tapir::{Key, ShardNumber, Value},
-    tapirstore::CheckPrepareStatus,
+    tapir::{Key, ShardNumber, Value, store::CheckPrepareStatus},
     util::vectorize_btree,
 };
 use serde::{Deserialize, Serialize};

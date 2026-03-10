@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::mvcc::disk::memory_io::MemoryIo;
-use crate::tapirstore::TapirStore;
+use crate::tapir::store::TapirStore;
 use crate::unified::types::*;
 use crate::unified::UnifiedStore;
 

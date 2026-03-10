@@ -7,7 +7,7 @@ use crate::occ::{
     Transaction as OccTransaction, TransactionId,
 };
 use crate::tapir::{Key, LeaderRecordDelta, ShardNumber, Timestamp, Value};
-use crate::tapirstore::{CheckPrepareStatus, TapirStore};
+use crate::tapir::store::{CheckPrepareStatus, TapirStore};
 use crate::unified::ir::ir_record_store::PersistentPayload;
 use crate::unified::tapir::occ_cache::MvccQueries;
 use crate::unified::tapir::storage_types::MvccIndexEntry;

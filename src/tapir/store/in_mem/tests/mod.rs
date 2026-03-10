@@ -2,7 +2,7 @@ use crate::ir::OpId;
 use crate::mvcc::disk::{DiskStore, disk_io::BufferedIo};
 use crate::occ::{ScanEntry, SharedTransaction, Transaction, TransactionId};
 use crate::tapir::{ShardNumber, Sharded, Timestamp};
-use crate::tapirstore::InMemTapirStore;
+use crate::tapir::store::InMemTapirStore;
 use crate::IrClientId;
 
 const DUMMY_OP_ID: OpId = OpId { client_id: IrClientId(0), number: 0 };
@@ -68,25 +68,29 @@ crate::tapir_store_conformance_tests!(new_store());
 
 #[test]
 fn min_prepare_time_round_trip() {
+    use crate::tapir::store::TapirStore;
+
     let (_dir, mut store) = new_store();
 
     assert_eq!(store.min_prepare_time(), 0);
-    store.set_min_prepare_time(100);
+    store.raise_min_prepare_time(100);
     assert_eq!(store.min_prepare_time(), 100);
 }
 
 #[test]
 fn finalized_min_prepare_time_round_trip() {
+    use crate::tapir::store::TapirStore;
+
     let (_dir, mut store) = new_store();
 
     assert_eq!(store.finalized_min_prepare_time(), 0);
-    store.set_finalized_min_prepare_time(200);
+    store.finalize_min_prepare_time(200);
     assert_eq!(store.finalized_min_prepare_time(), 200);
 }
 
 #[test]
 fn commit_records_in_txn_log() {
-    use crate::tapirstore::TapirStore;
+    use crate::tapir::store::TapirStore;
 
     let (_dir, mut store) = new_store();
 

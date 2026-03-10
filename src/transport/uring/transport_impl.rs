@@ -9,7 +9,7 @@ use crate::ir::ReplicaUpcalls;
 use crate::{IrMembership, IrMessage, ShardNumber};
 use crate::transport::{TapirTransport, Transport};
 use crate::tapir::{Key, Value};
-use crate::tapirstore::TapirStore;
+use crate::tapir::store::TapirStore;
 use serde::{Serialize, de::DeserializeOwned};
 use std::cell::RefCell;
 use std::fmt::Debug;

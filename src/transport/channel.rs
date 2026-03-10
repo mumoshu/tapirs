@@ -219,7 +219,7 @@ impl<U: IrReplicaUpcalls> Transport<U> for Channel<U> {
     }
 }
 
-impl<K: Key, V: Value, S: crate::tapirstore::TapirStore<K, V>> TapirTransport<K, V>
+impl<K: Key, V: Value, S: crate::tapir::store::TapirStore<K, V>> TapirTransport<K, V>
     for Channel<crate::tapir::Replica<K, V, S>>
 {
     type Store = S;

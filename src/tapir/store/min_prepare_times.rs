@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct MinPrepareTimes {
     min_prepare_time: u64,
-    finalized_min_prepare_time: u64,
+    pub finalized_min_prepare_time: u64,
 }
 
 impl Default for MinPrepareTimes {
@@ -31,18 +31,6 @@ impl MinPrepareTimes {
 
     pub fn min_prepare_time(&self) -> u64 {
         self.min_prepare_time
-    }
-
-    pub fn set_min_prepare_time(&mut self, time: u64) {
-        self.min_prepare_time = time;
-    }
-
-    pub fn finalized_min_prepare_time(&self) -> u64 {
-        self.finalized_min_prepare_time
-    }
-
-    pub fn set_finalized_min_prepare_time(&mut self, time: u64) {
-        self.finalized_min_prepare_time = time;
     }
 
     /// Speculatively raise the tentative min_prepare_time.
@@ -103,7 +91,7 @@ mod tests {
         mpt.raise(50, None);
         mpt.finalize(100);
         assert_eq!(mpt.raise(0, None), 100);
-        assert_eq!(mpt.finalized_min_prepare_time(), 100);
+        assert_eq!(mpt.finalized_min_prepare_time, 100);
     }
 
     #[test]
@@ -113,7 +101,7 @@ mod tests {
         mpt.finalize(30);
         mpt.sync(50);
         assert_eq!(mpt.raise(0, None), 50);
-        assert_eq!(mpt.finalized_min_prepare_time(), 50);
+        assert_eq!(mpt.finalized_min_prepare_time, 50);
     }
 
     #[test]

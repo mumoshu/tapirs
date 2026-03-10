@@ -40,7 +40,7 @@ use crate::mvcc::disk::error::StorageError;
 use crate::mvcc::disk::memtable::CompositeKey;
 use crate::occ::TransactionId;
 use crate::tapir::{Key, ShardNumber, Timestamp, Value, CO, CR, IO};
-use crate::tapirstore::{MinPrepareTimes, RecordDeltaDuringView};
+use crate::tapir::store::{MinPrepareTimes, RecordDeltaDuringView};
 use crate::unified::ir::ir_record_store::PersistentIrRecordStore;
 use crate::unified::tapir::occ_cache::OccCache;
 use crate::unified::tapir::storage_types::MvccIndexEntry;
@@ -420,7 +420,7 @@ mod tests {
 
     #[test]
     fn combined_tapir_handle_basic_operations() {
-        use crate::tapirstore::TapirStore;
+        use crate::tapir::store::TapirStore;
 
         let base_dir = MemoryIo::temp_path();
         let inner = CombinedStoreInner::<String, String, MemoryIo>::open(
@@ -445,7 +445,7 @@ mod tests {
 
     #[test]
     fn combined_seal_updates_manifest_and_stored_bytes() {
-        use crate::tapirstore::TapirStore;
+        use crate::tapir::store::TapirStore;
 
         let base_dir = MemoryIo::temp_path();
         let inner = CombinedStoreInner::<String, String, MemoryIo>::open(
@@ -491,7 +491,7 @@ mod tests {
     #[test]
     fn combined_ir_and_tapir_seal_independently() {
         use crate::ir::IrRecordStore;
-        use crate::tapirstore::TapirStore;
+        use crate::tapir::store::TapirStore;
 
         let base_dir = MemoryIo::temp_path();
         let inner = CombinedStoreInner::<String, String, MemoryIo>::open(
@@ -537,7 +537,7 @@ mod tests {
         use crate::ir::{RecordConsensusEntry, RecordEntryState, RecordInconsistentEntry};
         use crate::occ::{Transaction, TransactionId};
         use crate::tapir::{Timestamp, CO, CR, IO};
-        use crate::tapirstore::TapirStore;
+        use crate::tapir::store::TapirStore;
         use crate::IrClientId;
         use std::sync::Arc;
 
@@ -651,7 +651,7 @@ mod tests {
 
     #[test]
     fn combined_multi_seal_accumulates_manifest() {
-        use crate::tapirstore::TapirStore;
+        use crate::tapir::store::TapirStore;
 
         let base_dir = MemoryIo::temp_path();
         let inner = CombinedStoreInner::<String, String, MemoryIo>::open(
@@ -727,7 +727,7 @@ mod tests {
         use crate::ir::{RecordConsensusEntry, RecordEntryState, RecordInconsistentEntry};
         use crate::occ::Transaction;
         use crate::tapir::{CO, CR, IO};
-        use crate::tapirstore::TapirStore;
+        use crate::tapir::store::TapirStore;
         use std::sync::Arc;
 
         let mut txn = Transaction::<String, String, crate::tapir::Timestamp>::default();
@@ -783,7 +783,7 @@ mod tests {
     #[test]
     fn combined_reopen_preserves_committed_data() {
         use crate::ir::IrRecordStore;
-        use crate::tapirstore::TapirStore;
+        use crate::tapir::store::TapirStore;
 
         let base_dir = MemoryIo::temp_path();
 
@@ -887,7 +887,7 @@ mod tests {
     #[test]
     fn combined_reopen_multi_view() {
         use crate::ir::IrRecordStore;
-        use crate::tapirstore::TapirStore;
+        use crate::tapir::store::TapirStore;
 
         let base_dir = MemoryIo::temp_path();
 

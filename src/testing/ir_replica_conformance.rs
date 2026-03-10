@@ -7,7 +7,7 @@
 use crate::discovery::{InMemoryShardDirectory, ShardDirectory as _};
 use crate::ir::{IrRecordStore, Replica as IrReplica};
 use crate::tapir::{self, Key, Value, CO, CR, IO};
-use crate::tapirstore::TapirStore;
+use crate::tapir::store::TapirStore;
 use crate::{ChannelRegistry, ChannelTransport, IrMembership, ShardNumber, TapirClient};
 use std::sync::Arc;
 

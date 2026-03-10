@@ -1,5 +1,6 @@
 mod client;
 pub mod dns_shard_client;
+pub mod store;
 pub mod dynamic_router;
 pub mod key_range;
 mod key_value;

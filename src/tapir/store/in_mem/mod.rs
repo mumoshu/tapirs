@@ -6,7 +6,7 @@ use crate::mvcc::backend::MvccBackend;
 use crate::mvcc::disk::error::StorageError;
 use crate::occ::{PrepareConflict, PrepareResult, SharedTransaction, Store as OccStore, Transaction, TransactionId};
 use crate::tapir::{Key, LeaderRecordDelta, ShardNumber, Timestamp, Value};
-use crate::tapirstore::{CheckPrepareStatus, MinPrepareTimes, RecordDeltaDuringView, TapirStore, TransactionLog};
+use crate::tapir::store::{CheckPrepareStatus, MinPrepareTimes, RecordDeltaDuringView, TapirStore, TransactionLog};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 /// In-memory TapirStore wrapping OccStore + transaction log + min-prepare-time + CDC deltas.
@@ -80,16 +80,8 @@ impl<K: Key, V: Value, M> InMemTapirStore<K, V, M> {
         self.min_prepare_times.min_prepare_time()
     }
 
-    pub fn set_min_prepare_time(&mut self, time: u64) {
-        self.min_prepare_times.set_min_prepare_time(time);
-    }
-
     pub fn finalized_min_prepare_time(&self) -> u64 {
-        self.min_prepare_times.finalized_min_prepare_time()
-    }
-
-    pub fn set_finalized_min_prepare_time(&mut self, time: u64) {
-        self.min_prepare_times.set_finalized_min_prepare_time(time);
+        self.min_prepare_times.finalized_min_prepare_time
     }
 }
 

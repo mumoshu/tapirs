@@ -5,7 +5,7 @@ use super::state::TcpTransport;
 use super::wire::{TcpIrMessage, WireMessage};
 use crate::ir::ReplicaUpcalls;
 use crate::tapir::{Key, Value};
-use crate::tapirstore::TapirStore;
+use crate::tapir::store::TapirStore;
 use crate::transport::{TapirTransport, Transport};
 use crate::discovery::ShardDirectory as _;
 use crate::{IrMembership, IrMessage, ShardNumber};

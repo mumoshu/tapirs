@@ -1,6 +1,6 @@
 use super::*;
 use crate::ir::IrRecordStore;
-use crate::tapirstore::TapirStore;
+use crate::tapir::store::TapirStore;
 
 // --- Faulty transport helpers ---
 

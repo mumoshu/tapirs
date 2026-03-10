@@ -13,7 +13,7 @@ use crate::DefaultDiskIo;
 
 #[cfg(not(any(feature = "persistent-store", feature = "combined-store")))]
 pub type ProductionTapirStore =
-    crate::tapirstore::InMemTapirStore<String, String, crate::MvccDiskStore<String, String, crate::tapir::Timestamp, DefaultDiskIo>>;
+    crate::tapir::store::InMemTapirStore<String, String, crate::MvccDiskStore<String, String, crate::tapir::Timestamp, DefaultDiskIo>>;
 
 #[cfg(not(any(feature = "persistent-store", feature = "combined-store")))]
 pub type ProductionIrRecordStore =
