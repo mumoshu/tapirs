@@ -46,8 +46,8 @@ Paper Extensions (S5.2.3, S6)
 |-----------|---------|-------------|----------|
 | RO quorum path | S6.1 | QuorumRead/QuorumScan, f+1 replicas. Default. Requires `begin_read_only(ε)` for linearizability | `tapir/shard_client.rs` |
 | TrueTime uncertainty bound | S6.1 | Mandatory ε in `begin_read_only()`: adjusts snapshot_ts + commit-wait. See [deep dive](protocol-tapir-paper-extensions-truetime.md) | `tapir/client.rs` |
-| RO fast path (get) | S6.1 | `get_validated` — opt-in via `set_ro_fast_path_delay()`, falls back to quorum | `occ/store.rs` |
-| RO fast path (scan) | S6.1 | `scan_validated` — opt-in via `set_ro_fast_path_delay()`, falls back to quorum | `occ/store.rs` |
+| RO fast path (get) | S6.1 | `get_validated` — opt-in via `set_ro_fast_path_delay()`, falls back to quorum | `unified/tapir/occ_cache.rs` |
+| RO fast path (scan) | S6.1 | `scan_validated` — opt-in via `set_ro_fast_path_delay()`, falls back to quorum | `unified/tapir/occ_cache.rs` |
 | Read timeout | — | Configurable timeout for fast path `read_validated` (default 2s) | `tapir/shard_client.rs` |
 | Coordinator recovery | S5.2.3 | Backup shard polls; modified decide: f+1 NO-VOTE to abort | `tapir/replica.rs` |
 | Retry timestamp | S6.4 | Exponentially increase proposed timestamp on retry | `tapir/client.rs` |

@@ -28,10 +28,10 @@
 
 | Term | Definition in tapirs | Where it appears |
 |------|---------------------|-----------------|
-| Prepared | Transaction passed OCC check, awaiting commit/abort. Blocks conflicting transactions via prepared_reads/writes indexes | `occ/store.rs` — `prepared` BTreeMap |
+| Prepared | Transaction passed OCC check, awaiting commit/abort. Blocks conflicting transactions via prepared_reads/writes indexes | `occ/mod.rs` — `prepared` BTreeMap |
 | Committed | Transaction executed and durable in transaction_log. Protected by `max_read_commit_time` | `tapir/replica.rs` |
-| PrepareResult | Ok, Retry(timestamp), Abstain, Fail, TooLate, TooOld, OutOfRange — each indicates a different conflict resolution path | `occ/store.rs` — `PrepareResult` enum |
+| PrepareResult | Ok, Retry(timestamp), Abstain, Fail, TooLate, TooOld, OutOfRange — each indicates a different conflict resolution path | `occ/mod.rs` — `PrepareResult` enum |
 | SharedTransaction | `Arc<Transaction>` — refcount bumps instead of deep clones during consensus broadcast, view change merge, backup coordinator recovery | `occ/transaction.rs` |
-| Phantom Write | A write into a previously-scanned range — detected by scan-set conflict check at prepare time | `occ/store.rs` — scan-set validation |
-| Read-Set Conflict | A later committed write invalidates a read → Fail. A later prepared write → Abstain (may resolve) | `occ/store.rs` — read-set check |
-| Write-Set Conflict | A later committed read or write blocks this write → Retry with proposed timestamp | `occ/store.rs` — write-set check |
+| Phantom Write | A write into a previously-scanned range — detected by scan-set conflict check at prepare time | `occ/mod.rs` — scan-set validation |
+| Read-Set Conflict | A later committed write invalidates a read → Fail. A later prepared write → Abstain (may resolve) | `occ/mod.rs` — read-set check |
+| Write-Set Conflict | A later committed read or write blocks this write → Retry with proposed timestamp | `occ/mod.rs` — write-set check |

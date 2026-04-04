@@ -47,7 +47,7 @@
 |--------------------------|------------|-----------|
 | How transactions achieve consensus | `src/ir/replica.rs` (~700 lines, the most complex file) | [Protocol](protocol-tapir.md) |
 | How the paper's extensions work (RO txns, coordinator recovery) | `src/tapir/client.rs` | [Paper Extensions](protocol-tapir-paper-extensions.md) |
-| How range scan + phantom protection work | `src/occ/store.rs` | [Custom Extensions](protocol-tapir-custom-extensions.md) |
+| How range scan + phantom protection work | `src/unified/tapir/occ_cache.rs` | [Custom Extensions](protocol-tapir-custom-extensions.md) |
 | How IR record representation and compaction work | `src/ir/record.rs`, `src/ir/replica.rs` | [IR Custom Extensions](ir-custom-extensions.md) |
 | How data is persisted to disk | `src/mvcc/disk/` | [Storage](storage.md) |
 | How shards split, merge, and compact online | `src/sharding/shardmanager/cdc.rs` | [Resharding](resharding.md) |

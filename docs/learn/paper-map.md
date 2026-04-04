@@ -25,12 +25,12 @@
 | &sect;4 | TAPIR Design | `src/tapir/replica.rs` | [TAPIR concepts](concepts/tapir.md) |
 | &sect;5.2 | RW Transaction Protocol | `src/tapir/client.rs`, `src/tapir/replica.rs` | [Protocol](internals/protocol-tapir.md) |
 | &sect;5.2.3 | Coordinator Recovery | `src/tapir/replica.rs` | [Paper Extensions](internals/protocol-tapir-paper-extensions.md) |
-| &sect;5.3.1 | Correctness (Strict Serializability) | `src/occ/store.rs` | [Consistency](concepts/consistency.md) |
+| &sect;5.3.1 | Correctness (Strict Serializability) | `src/occ/mod.rs` | [Consistency](concepts/consistency.md) |
 | &sect;6.1 | Read-Only Transactions | `src/tapir/shard_client.rs` | [Paper Extensions](internals/protocol-tapir-paper-extensions.md) |
 | &sect;6.4 | Retry Timestamp Selection | `src/tapir/client.rs` | [Paper Extensions](internals/protocol-tapir-paper-extensions.md) |
-| Fig. 9 | TAPIR-OCC-CHECK | `src/occ/store.rs` | [OCC concepts](concepts/occ.md) |
+| Fig. 9 | TAPIR-OCC-CHECK | `src/occ/mod.rs` | [OCC concepts](concepts/occ.md) |
 | Fig. 10 | TAPIR-DECIDE | `src/tapir/client.rs` (tapir_decide) | [Protocol](internals/protocol-tapir.md) |
 | Fig. 13 | Recovery DECIDE | `src/tapir/replica.rs` | [Paper Extensions](internals/protocol-tapir-paper-extensions.md) |
-| &mdash; | Range Scan (beyond paper) | `src/occ/store.rs`, `src/tapir/routing_client.rs` | [Custom Extensions](internals/protocol-tapir-custom-extensions.md) |
+| &mdash; | Range Scan (beyond paper) | `src/occ/mod.rs`, `src/tapir/routing_client.rs` | [Custom Extensions](internals/protocol-tapir-custom-extensions.md) |
 | &mdash; | Online Resharding (beyond paper) | `src/sharding/shardmanager/cdc.rs` | [Resharding](internals/resharding.md) |
 | &mdash; | Discovery (beyond paper) | `src/discovery/mod.rs`, `src/discovery/tapir.rs` | [Discovery](internals/discovery.md) |

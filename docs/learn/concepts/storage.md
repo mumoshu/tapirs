@@ -40,5 +40,5 @@
 | Memtable | In-memory write buffer (BTreeMap). Flushed to L0 SSTable on size limit | `mvcc/disk/memtable.rs` |
 | SSTable | Immutable on-disk index file — sorted key entries mapping `CompositeKey(K, TS)` to `ValuePointer` | `mvcc/disk/sstable.rs` |
 | Compaction | Merges L0 into L1 — consolidates duplicates, removes tombstones, triggered when L0 reaches 4 files | `mvcc/disk/lsm.rs` |
-| Tombstone (Storage) | Marker for a deleted key at a specific timestamp — not the same as discovery tombstone | `mvcc/store.rs` |
+| Tombstone (Storage) | Marker for a deleted key at a specific timestamp — not the same as discovery tombstone | `unified/tapir/store.rs` |
 | Manifest | Metadata file persisting LSM state — SSTable lists, next ID, vlog cursor. Replayed on recovery | `mvcc/disk/manifest.rs` |
