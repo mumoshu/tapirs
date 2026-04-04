@@ -1,67 +1,44 @@
-# VersionedRecord
+# PersistentIrRecordStore
 
 ```
-VersionedRecord (beyond the paper)
+PersistentIrRecordStore (beyond the paper)
 +----------------------------------------------------------+
 |                                                          |
-|  Before: three separate fields                          |
+|  VlogLsm-backed IR record storage                       |
 |  +----------------------------------------------------+ |
-|  | record: Arc<Record>        (full state)            | |
-|  | leader_record: Option<...> (base snapshot clone)   | |
-|  | delta_op_ids: HashSet      (changed OpId tracking) | |
-|  +----------------------------------------------------+ |
-|                                                          |
-|  After: single VersionedRecord                          |
-|  +----------------------------------------------------+ |
-|  | base: RecordImpl   (sealed at last view change)    | |
-|  | base_view: u64     (view when base was sealed)     | |
-|  | overlay: RecordImpl (changes during current view)  | |
+|  | inc_lsm: VlogLsm<OpId, InconsistentEntry>          | |
+|  | con_lsm: VlogLsm<OpId, ConsensusEntry>             | |
+|  | base_view: u64   (view when last sealed)            | |
+|  | manifest: UnifiedManifest (crash recovery)          | |
 |  +----------------------------------------------------+ |
 |                                                          |
-|  Read:  check overlay first, fall back to base          |
-|  Write: always to overlay (promote from base on mutate) |
-|  Delta: overlay IS the delta (O(1) access)              |
-|  Seal:  merge overlay into base on view change          |
+|  Read:  memtable first, then sealed SST segments        |
+|  Write: always to memtable (current view)               |
+|  Delta: entries in memtable = changes since last seal   |
+|  Seal:  flush memtable to vlog + SST on view change     |
+|  Recovery: reload sealed segments from manifest          |
 |                                                          |
 +----------------------------------------------------------+
 ```
 
-**The problem:** The IR replica previously maintained three overlapping data structures to track the consensus record: (1) `record: Arc<Record>` -- the full state of all operations ever seen, (2) `leader_record: Option<LeaderRecord>` -- a full clone of the record snapshot at the last view-change boundary, used as the resolution base for StartView deltas, and (3) `delta_op_ids: HashSet<OpId>` -- tracking which OpIds changed since the last view change, used to extract delta payloads for DoViewChange. These three had to be manually kept in sync: every mutation updated both `record` and `delta_op_ids`, and every view change cloned the full record into `leader_record`.
+**Design:** `PersistentIrRecordStore` stores the IR consensus record using two VlogLsm instances: one for inconsistent entries (`inc_lsm`) and one for consensus entries (`con_lsm`). Each VlogLsm uses a memtable (in-memory BTreeMap) for the current view's entries, with sealed segments (vlog + SST files) for previous views.
 
-**Memory cost of the old design:** After the first mutation post-view-change, `Arc::make_mut(&mut record)` triggered a full record clone because `leader_record.record` held an `Arc` reference to the same data. Both copies held all entries -- O(record) memory duplication at every view boundary. For a shard with 10K entries, each view change allocated a second 10K-entry BTreeMap.
+**Per-view sealing:** On each view change, the memtable is flushed to a new sealed segment. Each sealed segment naturally represents the delta for that view. This enables efficient CDC delta extraction: the delta for a view transition is exactly the entries that were sealed at that boundary.
 
-**VersionedRecord design:** A single `VersionedRecord` replaces all three fields. It holds an immutable `base` (the snapshot from the last view change) and a mutable `overlay` (changes during the current view):
+**CombinedStore integration:** In `CombinedStore`, `PersistentIrRecordStore` is embedded inside `CombinedStoreInner` and shared (via `Arc<Mutex<>>`) between `CombinedRecordHandle` (IR interface) and `CombinedTapirHandle` (TAPIR interface). TAPIR's committed/prepared VlogLsms store lightweight references (`TxnLogRef`, `PreparedRef`) that resolve lazily from the IR VlogLsms, deduplicating transaction storage.
 
-```rust
-struct VersionedRecord<IO, CO, CR> {
-    base: RecordImpl<IO, CO, CR>,     // Immutable until next seal
-    base_view: u64,                    // View number when base was sealed
-    overlay: RecordImpl<IO, CO, CR>,  // Changes during current view
-}
-```
+**Recovery:** On reopen, sealed segments are loaded from the manifest. The memtable starts empty. IR's view-change protocol recovers any data lost between the last seal and the crash.
 
-The API maps directly to protocol operations:
+**Complexity:**
 
-- **Propose** (insert new op): `entry_inconsistent(op_id)` / `entry_consensus(op_id)` -- returns Vacant (insert into overlay) or Occupied (already exists in overlay or base).
-- **Finalize** (mutate existing op): `get_mut_inconsistent(op_id)` / `get_mut_consensus(op_id)` -- if the entry is in base, promotes a clone to overlay first, then returns `&mut` to the overlay copy. Base is never modified.
-- **DoViewChange** (extract delta): `overlay_clone()` -- the overlay IS the delta. O(overlay) instead of O(record) filtering.
-- **StartView** (resolve delta): `base()` returns a reference to the resolution base. No separate `leader_record` field needed.
-- **Coordinator merge** (install new record): `from_full(merged_record, new_view)` -- the merged record becomes the new base with an empty overlay. No clone of the old record.
-- **Seal** (view boundary): `seal(new_view)` -- merges overlay into base, clears overlay. O(overlay) instead of O(record).
+| Operation | Behavior |
+|-----------|----------|
+| Normal op (Propose/Finalize) | `memtable.put(op_id, entry)` O(log n) |
+| DoViewChange payload | `encode_memtable_as_segment()` + `all_segment_bytes()` |
+| Coordinator merge install | Clear VlogLsms, import merged record, advance base_view |
+| StartView install (delta) | Import delta bytes alongside existing sealed segments |
+| StartView install (full) | Clear all, import full payload |
+| View change seal | Flush memtable to vlog + SST, start new view |
+| CDC delta | OpId-based diff against sealed segments (previous view checkpoint) |
 
-**modified_view annotation:** Each record entry carries a `modified_view: u64` field stamped with the current view number at insert or mutation time. This enables `entries_since(since_view)` for CDC delta extraction without comparing against a separate snapshot. The field is structural metadata only -- it does not affect protocol correctness.
-
-**What VersionedRecord does NOT do:** VersionedRecord is a replica-internal optimization. It does not change the wire format (`RecordImpl` remains the serialized type for DoViewChange and StartView payloads), does not change protocol semantics (all operations produce the same results), and does not enable record compaction (see [Record Compaction](ir-custom-extensions-compaction.md) for why in-place compaction is unsafe).
-
-**Complexity comparison:**
-
-| Operation | Before (triple storage) | After (VersionedRecord) |
-|-----------|------------------------|------------------------|
-| Normal op (Propose/Finalize) | `Arc::make_mut` O(record) on first mutation + `delta_op_ids.insert` | `overlay.insert` O(log n) |
-| DoViewChange delta | `record.filter_by_op_ids(&delta_op_ids)` O(delta x log(record)) | `overlay_clone()` O(overlay) |
-| Coordinator merge install | `record = merged; leader_record = clone(merged)` O(record) | `from_full(merged, view)` O(1) move |
-| StartView resolve | `payload.resolve(Some(&leader_record.record))` | `payload.resolve(Some(record.base()))` |
-| View change seal | `leader_record = clone(record); delta_op_ids.clear()` O(record) | `seal(new_view)` O(overlay) |
-| CDC delta | `record.delta_from(&leader_record)` O(record) | `record.delta_from(&record.base())` O(record) |
-
-**Related docs:** Back to [IR Custom Extensions](ir-custom-extensions.md). See [Protocol](protocol-tapir.md) for view change flow, [IR concepts](../concepts/ir.md) for record terminology. Key files: `src/ir/record.rs` (VersionedRecord type), `src/ir/replica.rs` (usage in SyncInner).
+**Related docs:** Back to [IR Custom Extensions](ir-custom-extensions.md). See [Protocol](protocol-tapir.md) for view change flow, [IR concepts](../concepts/ir.md) for record terminology. Key files: `src/unified/ir/ir_record_store.rs` (PersistentIrRecordStore), `src/unified/combined/` (CombinedStore integration).

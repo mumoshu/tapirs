@@ -1,7 +1,9 @@
 # Unified TAPIR/IR Storage Layer
 
-> This is a working progress documentation that introduces on-going research
-> about tapirs's replica storage architecture.
+> **Historical document.** This describes the design research that led to `CombinedStore`,
+> which is now the only store implementation. References to `VersionedRecord`, `MvccBackend`,
+> `OccStore`, `DiskStore`, and `SurrealKvStore` are historical — these types have been removed.
+> See `src/unified/combined/` for the current implementation.
 
 ## Context
 

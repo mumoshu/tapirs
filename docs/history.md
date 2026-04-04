@@ -45,7 +45,7 @@ See the table below for what came from tapi-rs and what tapirs added.
 
 | Area | tapi-rs (foundation) | tapirs (added) |
 |------|---------------------|----------------|
-| Consensus | IR replica, view change, recovery | VersionedRecord (base/overlay), delta view change, membership reconfigure, exponential backoff retry |
+| Consensus | IR replica, view change, recovery | PersistentIrRecordStore (VlogLsm-backed), delta view change, membership reconfigure, exponential backoff retry |
 | Transactions | Get, put, prepare, commit, abort | Range scan, phantom protection, coordinator recovery, read-only fast path, backup/restore |
 | Storage | MVCC memory store | WiscKey-inspired replica storage (LSM + value log), crash-safe compaction, vlog GC |
 | Sharding | Static shard routing | Online split/merge/compact, CDC view-based cursors, prepared-drain |

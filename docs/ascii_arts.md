@@ -10,8 +10,8 @@
 - [TAPIR Transaction Lifecycle](#tapir-transaction-lifecycle)
 - [OCC — Optimistic Concurrency Control](#occ--optimistic-concurrency-control)
 - [Storage: WiscKey on Disk](#storage-wisckey-on-disk)
-- [VersionedRecord — Base/Overlay (tapirs extension)](#versionedrecord--baseoverlay-tapirs-extension)
-- [Compare: VersionedRecord vs Original IR Record](#compare-versionedrecord-vs-original-ir-record)
+- [PersistentIrRecordStore — VlogLsm-backed IR Record](#persistentirrecordstore--vloglsm-backed-ir-record-tapirs-extension)
+- [View Change: Delta Payloads](#view-change-delta-payloads)
 - [View Change](#view-change)
 - [Sharding & Routing](#sharding--routing)
 - [Backup & Restore](#backup--restore)
@@ -344,19 +344,19 @@
         Large values stay put in the append-only vLog.
 ```
 
-## VersionedRecord — Base/Overlay (tapirs extension)
+## PersistentIrRecordStore — VlogLsm-backed IR Record (tapirs extension)
 
 ```
   tapirs extension over the original TAPIR paper.
-  IR replicas track operations using a VersionedRecord.
-  Avoids cloning the full record on every mutation.
+  IR replicas store operations in PersistentIrRecordStore.
+  Uses VlogLsm with per-view sealed segments.
 
-  View 5 (after view change)        View 6 (current)
+  View 5 (sealed segments)          View 6 (memtable)
   ============================      =================
 
   +-------------------------+      +----------------+
-  |         BASE            |      |    OVERLAY     |
-  |  (immutable snapshot)   |      | (current view) |
+  |    SEALED SEGMENTS      |      |   MEMTABLE     |
+  |  (vlog + SST on disk)   |      | (current view) |
   |                         |      |                |
   |  op1: Finalized(COMMIT) |      | op5: Tentative |
   |  op2: Finalized(ABORT)  |      | op6: Finalized |
@@ -365,89 +365,35 @@
   +-------------------------+      +----------------+
               ^                           ^
               |                           |
-         from last                  changes during
-         view change                current view
+         from previous               changes during
+         view changes               current view
 
-  On next view change:
-    new_base = merge(base, overlay)
-    overlay  = empty
+  On view change:
+    seal memtable -> new segment (= this view's delta)
+    start new empty memtable for next view
+
+  CDC delta for a view = the sealed segment at that boundary
 ```
 
-## Compare: VersionedRecord vs Original IR Record
+## View Change: Delta Payloads
 
 ```
-  Original TAPIR Paper: Full Record Clone
-  ========================================
+  tapirs: PersistentIrRecordStore with delta payloads
+  ====================================================
 
-  Every view change, the leader merges f+1 records
-  and broadcasts the FULL merged result to all replicas.
+  Replicas with matching base_view receive only the delta
+  (new entries since last seal). Others get a full payload.
 
-  View 5         View Change          View 6
+  R0 ---DoViewChange(sealed + memtable bytes)-----> Leader
+  R1 ---DoViewChange(sealed + memtable bytes)-----> Leader
+  R2 ---DoViewChange(sealed + memtable bytes)-----> Leader
+                                                      |
+  Leader ---StartView(delta: 80 new ops)-----------> R0 (same base)
+  Leader ---StartView(full: 10,000 ops)------------> R1 (different base)
+  Leader ---StartView(delta: 80 new ops)-----------> R2 (same base)
 
-  Record:        Leader merges        Record:
-  [op1..op99]    f+1 full records     [op1..op120]
-                       |
-                  clone entire         Every replica
-                  merged record        stores one
-                  to all replicas      full copy
-
-  Problem: Record only grows. After 10,000 ops:
-
-  View N record:
-  +-------------------------------------------------------+
-  | op1 | op2 | op3 | ... | op9999 | op10000 |            |
-  +-------------------------------------------------------+
-  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  All 10,000 entries cloned on every mutation.
-  All 10,000 entries sent in every view change.
-
-
-  tapirs: VersionedRecord (Base + Overlay)
-  ========================================
-
-  Only the OVERLAY (current view's changes) is cloned/sent.
-  Base is immutable — shared, never copied during normal ops.
-
-  View N record:
-  +-------------------------------------------------------+   +--------+
-  | op1 | op2 | op3 | ... | op9999 | op10000 |            |   | op10001|
-  +-------------------------------------------------------+   | op10002|
-    BASE (immutable, from last view change)                    +--------+
-    Never cloned during normal operations.                      OVERLAY
-                                                             (only new ops)
-
-  Mutation cost:   O(1)              not O(record size)
-  View change:     send overlay      not full record
-  CDC delta:       overlay_clone()   not diff(old, new)
-
-
-  View Change: What Gets Sent
-  ============================
-
-  Original paper:
-
-  R0 ---DoViewChange(full record: 10,000 ops)---> Leader
-  R1 ---DoViewChange(full record: 10,000 ops)---> Leader
-  R2 ---DoViewChange(full record: 10,000 ops)---> Leader
-                                                    |
-  Leader ---StartView(merged: 10,000 ops)---------> R0
-  Leader ---StartView(merged: 10,000 ops)---------> R1
-  Leader ---StartView(merged: 10,000 ops)---------> R2
-
-  Network: ~60,000 ops transferred
-
-
-  tapirs VersionedRecord:
-
-  R0 ---DoViewChange(overlay: 50 ops)------------> Leader
-  R1 ---DoViewChange(overlay: 50 ops)------------> Leader
-  R2 ---DoViewChange(overlay: 50 ops)------------> Leader
-                                                    |
-  Leader ---StartView(merged overlay: 80 ops)-----> R0
-  Leader ---StartView(merged overlay: 80 ops)-----> R1
-  Leader ---StartView(merged overlay: 80 ops)-----> R2
-
-  Network: ~390 ops transferred  (vs 60,000)
+  Followers with matching base keep their sealed segments,
+  import only the delta. No re-reading of existing data.
 ```
 
 ## View Change
@@ -823,9 +769,7 @@
    |    +-- store.rs          conflict detection at prepare time
    |
    +-- mvcc/               Multi-Version Concurrency Control
-   |    +-- store.rs          in-memory versioned KV
-   |    +-- disk/             WiscKey SSD storage
-   |    +-- surrealkvstore/   SurrealKV backend (optional)
+   |    +-- disk/             WiscKey SSD storage (DiskIo, MemoryIo, FaultyDiskIo)
    |
    +-- transport/           Network layer
    |    +-- channel.rs        in-process (tests)
