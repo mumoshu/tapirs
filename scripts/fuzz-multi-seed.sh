@@ -13,7 +13,7 @@
 #   FUZZ_KEEP_PASS   - If set to 1, keep logs for passing seeds (default: 0)
 #   FUZZ_BASE_SEED   - Starting seed for sequential seeds (default: random independent seeds)
 #   FUZZ_VERBOSE     - Passed through to test (default: 0)
-#   FUZZ_CARGO_FLAGS - Extra cargo flags (e.g. "--features combined-store")
+#   FUZZ_CARGO_FLAGS - Extra cargo flags
 
 set -euo pipefail
 

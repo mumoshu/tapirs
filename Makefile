@@ -1,4 +1,4 @@
-.PHONY: test lint check-no-cfg-test-helpers lock_server_stress_test coordinator_failure_stress_test_3 coordinator_failure_stress_test_7 bench bench/ro bench/rw bench/mix bench/compare fuzz fuzz100 maelstrom maelstrom-run maelstrom-sync-ro-txn-get maelstrom-skewed-rw-txn-get-commit maelstrom-skewed-ro-txn-get-fail maelstrom-sync-ro-fast-path maelstrom-sync-ro-fast-path-may-fail maelstrom-skew-ro-slow-path-truetime ci ci-full ci/operator-lint ci/operator-test ci/bench-solo ci/bench-compare ci/testbed-kube-operator ci/testbed-kube-operator-tls ci/testbed-kube ci/testbed-docker-compose ci/testbed-solo ci/testbed ci/fuzz-diagnose ci/fuzz-multi-seed ci/test-surrealkv ci/test-s3 ci/test-persistent-store ci/test-combined-store maelstrom-combined-store maelstrom-combined-store-sync-ro maelstrom-combined-store-skewed-rw maelstrom-combined-store-skewed-ro-fail maelstrom-combined-store-sync-ro-fast-path maelstrom-combined-store-skew-ro-slow-path-truetime maelstrom-run-combined-store
+.PHONY: test lint check-no-cfg-test-helpers lock_server_stress_test coordinator_failure_stress_test_3 coordinator_failure_stress_test_7 bench bench/ro bench/rw bench/mix bench/compare fuzz fuzz100 maelstrom maelstrom-run maelstrom-sync-ro-txn-get maelstrom-skewed-rw-txn-get-commit maelstrom-skewed-ro-txn-get-fail maelstrom-sync-ro-fast-path maelstrom-sync-ro-fast-path-may-fail maelstrom-skew-ro-slow-path-truetime ci ci-full ci/operator-lint ci/operator-test ci/bench-solo ci/bench-compare ci/testbed-kube-operator ci/testbed-kube-operator-tls ci/testbed-kube ci/testbed-docker-compose ci/testbed-solo ci/testbed ci/fuzz-diagnose ci/fuzz-multi-seed ci/test-s3
 
 lint: check-no-cfg-test-helpers
 	cargo clippy --workspace --all-targets -- -D warnings -D clippy::iter_over_hash_type && ./scripts/check-determinism.sh
@@ -162,46 +162,6 @@ ci/fuzz-diagnose:
 
 ci/fuzz-multi-seed:
 	./scripts/fuzz-multi-seed.sh
-
-ci/test-surrealkv:
-	cargo clippy --features surrealkv --all-targets -- -D warnings
-	cargo test --features surrealkv --release -- surrealkvstore
-
-ci/test-persistent-store:
-	cargo clippy --features persistent-store --all-targets -- -D warnings
-	cargo test --features persistent-store --release --lib
-
-ci/test-combined-store:
-	cargo clippy --features combined-store --all-targets -- -D warnings
-	cargo test --features combined-store --release --lib
-	FUZZ_TEST_NAME=fuzz_tapir_transactions_combined FUZZ_ITERATIONS=5 ./scripts/fuzz-multi-seed.sh
-	$(MAKE) maelstrom-combined-store
-
-maelstrom-combined-store: maelstrom-combined-store-sync-ro maelstrom-combined-store-skewed-rw maelstrom-combined-store-skewed-ro-fail maelstrom-combined-store-sync-ro-fast-path maelstrom-combined-store-skew-ro-slow-path-truetime
-
-maelstrom-combined-store-sync-ro:
-	TAPIR_CLOCK_SKEW_MAX=0 TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get $(MAKE) maelstrom-run-combined-store
-
-maelstrom-combined-store-skewed-rw:
-	TAPIR_CLOCK_SKEW_MAX=1000 TAPIR_LINEARIZABLE_READ_METHOD=rw_txn_get_commit $(MAKE) maelstrom-run-combined-store
-
-maelstrom-combined-store-skewed-ro-fail:
-	@TAPIR_CLOCK_SKEW_MAX=1000 TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get $(MAKE) maelstrom-run-combined-store \
-		&& { echo "ERROR: expected failure (clock skew + ro_txn_get should fail linearizability)"; exit 1; } \
-		|| echo "OK: correctly failed linearizability check"
-
-maelstrom-combined-store-sync-ro-fast-path:
-	TAPIR_CLOCK_SKEW_MAX=0 TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get TAPIR_RO_FAST_PATH_DELAY_MS=200 TAPIR_READ_TIMEOUT_MS=200 TAPIR_VIEW_CHANGE_INTERVAL_MS=200 TAPIR_INCONSISTENT_RESULT_DEADLINE_MS=500 $(MAKE) maelstrom-run-combined-store
-
-maelstrom-combined-store-skew-ro-slow-path-truetime:
-	TAPIR_CLOCK_SKEW_MAX=100 TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get TAPIR_RO_CLOCK_SKEW_UNCERTAINTY_BOUND=200 $(MAKE) maelstrom-run-combined-store
-
-maelstrom-run-combined-store: $(MAELSTROM_BIN)
-	cargo build --release -p tapi-maelstrom --features combined-store
-	bash -c 'set -o pipefail; $(MAELSTROM_BIN) test -w lin-kv --bin target/release/maelstrom --latency 0 --rate 10 --time-limit 90 --concurrency 20 --nemesis partition --nemesis-interval 20 2>&1 | tee /tmp/maelstrom-output.txt'; \
-	EXIT=$$?; \
-	bash scripts/maelstrom-summary.sh /tmp/maelstrom-output.txt; \
-	exit $$EXIT
 
 ci/test-s3:
 	docker run -d --name tapi-minio -p 9100:9000 \

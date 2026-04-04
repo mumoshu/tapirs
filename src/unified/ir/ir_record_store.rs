@@ -94,6 +94,36 @@ impl<IO, CO, CR> Default for PersistentRecord<IO, CO, CR> {
     }
 }
 
+impl<IO: Clone, CO: Clone, CR: Clone> PersistentRecord<IO, CO, CR> {
+    /// Compute the delta by OpId: entries in `self` whose OpId is NOT in `base`.
+    /// Both `self` and `base` must be `Indexed`.
+    /// Unlike equality-based delta_from, this only checks for OpId presence,
+    /// making it robust against `modified_view` discrepancies across view changes.
+    pub fn delta_from(&self, base: &Self) -> Self {
+        match (self, base) {
+            (
+                Self::Indexed { inconsistent, consensus },
+                Self::Indexed {
+                    inconsistent: base_inc,
+                    consensus: base_con,
+                },
+            ) => Self::Indexed {
+                inconsistent: inconsistent
+                    .iter()
+                    .filter(|(id, _)| !base_inc.contains_key(id))
+                    .map(|(id, e)| (*id, e.clone()))
+                    .collect(),
+                consensus: consensus
+                    .iter()
+                    .filter(|(id, _)| !base_con.contains_key(id))
+                    .map(|(id, e)| (*id, e.clone()))
+                    .collect(),
+            },
+            _ => panic!("delta_from requires both records to be Indexed"),
+        }
+    }
+}
+
 impl<IO: Clone + DeserializeOwned, CO: Clone + DeserializeOwned, CR: Clone + DeserializeOwned>
     PersistentRecord<IO, CO, CR>
 {
@@ -422,25 +452,21 @@ where
     }
 
     /// Borrow the manifest (for CombinedStore unified manifest save).
-    #[cfg(any(feature = "combined-store", test))]
     pub(crate) fn manifest(&self) -> &UnifiedManifest {
         &self.manifest
     }
 
     /// Borrow the inconsistent-op VlogLsm (for lazy resolution by CombinedTapirHandle).
-    #[cfg(any(feature = "combined-store", test))]
     pub(crate) fn inc_lsm(&self) -> &VlogLsm<OpId, InconsistentEntry<IO>, DIO> {
         &self.inc_lsm
     }
 
     /// Borrow the consensus-op VlogLsm (for lazy resolution by CombinedTapirHandle).
-    #[cfg(any(feature = "combined-store", test))]
     pub(crate) fn con_lsm(&self) -> &VlogLsm<OpId, ConsensusEntry<CO, CR>, DIO> {
         &self.con_lsm
     }
 
     /// Open a store from a persisted manifest, restoring sealed segments.
-    #[cfg(any(feature = "combined-store", test))]
     pub(crate) fn open_from_manifest(
         base_dir: &Path,
         io_flags: OpenFlags,
@@ -560,6 +586,18 @@ where
         Ok(())
     }
 
+    /// Return the sealed-only record as Indexed (excluding memtable).
+    /// This represents the checkpoint after the previous view change.
+    fn sealed_record(&self) -> PersistentRecord<IO, CO, CR> {
+        let (inc, con) = self.all_segment_bytes()
+            .expect("sealed_record: export_segment_bytes failed");
+        PersistentRecord::Raw {
+            inc_segments: inc,
+            con_segments: con,
+        }
+        .into_indexed()
+    }
+
     /// Build segment bytes for all sealed + active vlog data.
     fn all_segment_bytes(&self) -> Result<(Vec<Vec<u8>>, Vec<Vec<u8>>), StorageError> {
         let inc = self.inc_lsm.export_segment_bytes()?;
@@ -632,7 +670,6 @@ where
 
     /// Static helper for `IrRecordStore::make_full_payload` — callable from
     /// CombinedRecordHandle without needing a `&self` reference.
-    #[cfg(any(feature = "combined-store", test))]
     pub(crate) fn make_full_payload_static(
         record: PersistentRecord<IO, CO, CR>,
     ) -> PersistentPayload<IO, CO, CR> {
@@ -731,22 +768,10 @@ where
         .into_indexed();
         let idx_ms = iw.elapsed().as_millis();
 
-        // Compute transition (CDC): the delta bytes are the changes.
-        let mut transition_inc = Vec::new();
-        if !delta_inc.is_empty() {
-            transition_inc.push(delta_inc.clone());
-        }
-        let mut transition_con = Vec::new();
-        if !delta_con.is_empty() {
-            transition_con.push(delta_con.clone());
-        }
-        let transition = (
-            self.base_view,
-            PersistentRecord::Raw {
-                inc_segments: transition_inc,
-                con_segments: transition_con,
-            },
-        );
+        // Compute transition (CDC): entries in new record not in the sealed base.
+        let sealed_base = self.sealed_record();
+        let delta = new_record_indexed.delta_from(&sealed_base);
+        let transition = (self.base_view, delta);
 
         // Only import the delta bytes — sealed segments stay untouched.
         if !delta_inc.is_empty() {
@@ -792,6 +817,8 @@ where
 
         // Build previous_record from existing data.
         let previous_record = self.full_record();
+        // Sealed-only record = checkpoint from previous view change (for CDC delta).
+        let sealed_base = self.sealed_record();
         let prev_ms = iw.elapsed().as_millis();
 
         // Resolve payload to a full record.
@@ -807,12 +834,6 @@ where
             None
         };
         let new_record = payload.resolve(base.as_ref());
-
-        // Compute transition (CDC delta)
-        let transition = (
-            if self.base_view > 0 { self.base_view } else { 0 },
-            new_record.clone_as_raw(),
-        );
 
         // Clear ALL data (index, sealed segments, SSTs) before reimporting.
         // Without clear_all, sealed segments accumulate indefinitely across
@@ -834,6 +855,12 @@ where
 
         // Convert to Indexed for the caller.
         let new_record_indexed = new_record.into_indexed();
+
+        // Compute transition (CDC): entries in new record not in the sealed base.
+        // The sealed base is the checkpoint from the previous view change,
+        // so the delta contains exactly the new entries from this view.
+        let from_view = if self.base_view > 0 { self.base_view } else { 0 };
+        let transition = (from_view, new_record_indexed.delta_from(&sealed_base));
         self.base_view = new_view;
         self.inc_lsm.start_view(new_view);
         self.con_lsm.start_view(new_view);
@@ -1023,39 +1050,25 @@ where
         merged: Self::Record,
         new_view: u64,
     ) -> MergeInstallResult<Self::Record, Self::Payload> {
-        // Compute CDC transition
+        // Compute CDC transition: only entries in merged that differ from the base.
         let (transition, start_view_delta, previous_base_view) = if self.base_view > 0 {
-            let (base_inc, base_con) = self
-                .all_segment_bytes()
-                .expect("install_merged: export failed");
-            let _base: PersistentRecord<IO, CO, CR> = PersistentRecord::Raw {
-                inc_segments: base_inc,
-                con_segments: base_con,
-            };
+            // The sealed record = checkpoint from the previous view change.
+            // The merged record = leader's new authoritative state.
+            // Delta = entries in merged whose OpId is not in the sealed base.
+            let sealed_base = self.sealed_record();
+            let delta_indexed = merged.delta_from(&sealed_base);
 
-            // Encode merged into segment bytes for delta computation
+            // Encode merged into segment bytes for the StartView wire payload.
             let (merged_inc, merged_con) =
-                Self::encode_indexed_as_segments(&merged).expect("install_merged: encode failed");
-
-            let delta_record = PersistentRecord::Raw {
-                inc_segments: if merged_inc.is_empty() {
-                    Vec::new()
-                } else {
-                    vec![merged_inc.clone()]
-                },
-                con_segments: if merged_con.is_empty() {
-                    Vec::new()
-                } else {
-                    vec![merged_con.clone()]
-                },
-            };
+                Self::encode_indexed_as_segments(&merged)
+                    .expect("install_merged: encode merged failed");
 
             let prev_bv = ViewNumber(self.base_view);
             let delta_payload =
                 PersistentPayload::delta(prev_bv, merged_inc, merged_con);
 
             (
-                (self.base_view, delta_record),
+                (self.base_view, delta_indexed),
                 Some(delta_payload),
                 Some(prev_bv),
             )
@@ -1166,28 +1179,6 @@ where
         let inc_active = self.inc_lsm.active_write_offset();
         let con_active = self.con_lsm.active_write_offset();
         Some(inc_sealed + con_sealed + inc_active + con_active)
-    }
-}
-
-
-impl<IO: Clone, CO: Clone, CR: Clone> PersistentRecord<IO, CO, CR> {
-    fn clone_as_raw(&self) -> Self {
-        match self {
-            Self::Raw {
-                inc_segments,
-                con_segments,
-            } => Self::Raw {
-                inc_segments: inc_segments.clone(),
-                con_segments: con_segments.clone(),
-            },
-            Self::Indexed {
-                inconsistent,
-                consensus,
-            } => Self::Indexed {
-                inconsistent: inconsistent.clone(),
-                consensus: consensus.clone(),
-            },
-        }
     }
 }
 

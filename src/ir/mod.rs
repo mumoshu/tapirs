@@ -24,8 +24,6 @@ pub use message::{
     StartView,
 };
 pub use op::Id as OpId;
-pub use inmem::record_payload::RecordPayload;
-pub use inmem::VersionedRecord;
 pub use record::{
     ConsensusEntry as RecordConsensusEntry,
     InconsistentEntry as RecordInconsistentEntry, Record, RecordBuilder, RecordView,

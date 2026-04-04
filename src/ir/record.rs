@@ -1,6 +1,6 @@
 use super::{OpId, ReplicaUpcalls, ViewNumber};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, fmt::Debug};
+use std::fmt::Debug;
 
 pub use super::inmem::record::RecordImpl;
 
@@ -104,18 +104,3 @@ pub trait RecordBuilder: RecordView {
     fn insert_consensus(&mut self, op_id: OpId, entry: ConsensusEntry<Self::CO, Self::CR>);
 }
 
-pub enum VersionedEntry<'a, V> {
-    Vacant(VersionedVacantEntry<'a, V>),
-    Occupied(V),
-}
-
-pub struct VersionedVacantEntry<'a, V> {
-    pub(crate) map: &'a mut BTreeMap<OpId, V>,
-    pub(crate) op_id: OpId,
-}
-
-impl<'a, V> VersionedVacantEntry<'a, V> {
-    pub fn insert(self, value: V) -> &'a mut V {
-        self.map.entry(self.op_id).or_insert(value)
-    }
-}

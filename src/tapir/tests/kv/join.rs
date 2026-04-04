@@ -1,7 +1,11 @@
 use super::*;
 
 use crate::ShardManager;
+use crate::mvcc::disk::disk_io::OpenFlags;
+use crate::mvcc::disk::memory_io::MemoryIo;
+use crate::testing::cluster::TestIrReplica;
 use crate::testing::discovery::build_single_node_discovery;
+use crate::unified::combined::CombinedStoreInner;
 
 #[tokio::test(start_paused = true)]
 async fn test_join_with_preload() {
@@ -38,18 +42,24 @@ async fn test_join_with_preload() {
     // Create 4th replica.
     let new_address = registry.len();
     let new_replica = Arc::new_cyclic(
-        |weak: &std::sync::Weak<
-            IrReplica<TapirReplica<K, V>, ChannelTransport<TapirReplica<K, V>>, TapirIrRecord>,
-        >| {
+        |weak: &std::sync::Weak<TestIrReplica<K, V>>| {
             let weak = weak.clone();
             let channel =
                 registry.channel(move |from, message| weak.upgrade()?.receive(from, message), Arc::clone(&dir));
             channel.set_shard(shard);
-            let upcalls = TapirReplica::new_with_backend(shard, true,
-                DiskStore::<K, V, Timestamp, MemoryIo>::open(
-                    MemoryIo::temp_path(),
-                ).unwrap(),
-            );
+            let io_flags = OpenFlags {
+                create: true,
+                direct: false,
+            };
+            let inner = CombinedStoreInner::<K, V, MemoryIo>::open(
+                &MemoryIo::temp_path(),
+                io_flags,
+                shard,
+                true,
+            ).unwrap();
+            let record_handle = inner.into_record_handle();
+            let tapir_handle = record_handle.tapir_handle();
+            let upcalls = TapirReplica::new_with_store(tapir_handle);
             // Start with membership=[self] only — the real membership comes via AddMember.
             IrReplica::new(
                 rng.fork(),
@@ -57,7 +67,7 @@ async fn test_join_with_preload() {
                 upcalls,
                 channel,
                 Some(TapirReplica::tick),
-                Default::default(),
+                record_handle,
             )
         },
     );

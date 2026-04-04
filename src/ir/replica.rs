@@ -595,11 +595,20 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                                 let mut finalized = HashSet::new();
                                 for r in latest_records {
                                     for (op_id, entry) in r.inconsistent_entries() {
-                                        if let Some(mut existing) = R.get_inconsistent(&op_id) {
+                                        if let Some(existing) = R.get_inconsistent(&op_id) {
+                                            // Already in R — only update if incoming has a
+                                            // higher-view finalization (never downgrade).
                                             if let RecordEntryState::Finalized(view) = entry.state {
-                                                existing.state = RecordEntryState::Finalized(view);
-                                                existing.modified_view = view.0;
-                                                R.insert_inconsistent(op_id, existing);
+                                                let dominated = match existing.state {
+                                                    RecordEntryState::Tentative => true,
+                                                    RecordEntryState::Finalized(ev) => view > ev,
+                                                };
+                                                if dominated {
+                                                    let mut e = existing;
+                                                    e.state = RecordEntryState::Finalized(view);
+                                                    e.modified_view = view.0;
+                                                    R.insert_inconsistent(op_id, e);
+                                                }
                                             }
                                         } else {
                                             // Mark as finalized as `sync` will execute it.

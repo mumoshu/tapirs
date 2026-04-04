@@ -1,34 +1,40 @@
 use crate::discovery::InMemoryShardDirectory;
-use crate::mvcc::disk::{DiskStore, memory_io::MemoryIo};
-use crate::tapir::{self, Timestamp};
-use crate::{ChannelRegistry, IrVersionedRecord};
+use crate::mvcc::disk::disk_io::OpenFlags;
+use crate::mvcc::disk::memory_io::MemoryIo;
+use crate::unified::combined::CombinedStoreInner;
+use crate::unified::combined::record_handle::CombinedRecordHandle;
+use crate::unified::combined::tapir_handle::CombinedTapirHandle;
+use crate::{tapir, ChannelRegistry};
 use std::sync::Arc;
 
-type S = crate::tapir::store::InMemTapirStore<
-    String,
-    String,
-    DiskStore<String, String, Timestamp, MemoryIo>,
->;
+type S = CombinedTapirHandle<String, String, MemoryIo>;
 type U = tapir::Replica<String, String, S>;
 
-fn inmem_factory() -> (
+fn combined_factory() -> (
     ChannelRegistry<U>,
     Arc<InMemoryShardDirectory<usize>>,
-    impl FnMut() -> (U, IrVersionedRecord<tapir::IO<String, String>, tapir::CO<String, String>, tapir::CR>),
+    impl FnMut() -> (U, CombinedRecordHandle<String, String, MemoryIo>),
 ) {
     let registry = ChannelRegistry::default();
     let directory = Arc::new(InMemoryShardDirectory::new());
     let factory = || {
-        let backend =
-            DiskStore::<String, String, Timestamp, MemoryIo>::open(MemoryIo::temp_path()).unwrap();
-        let upcalls = tapir::Replica::new_with_backend(
+        let io_flags = OpenFlags {
+            create: true,
+            direct: false,
+        };
+        let inner = CombinedStoreInner::<String, String, MemoryIo>::open(
+            &MemoryIo::temp_path(),
+            io_flags,
             crate::ShardNumber(0),
             true,
-            backend,
-        );
-        (upcalls, IrVersionedRecord::default())
+        )
+        .unwrap();
+        let record_handle = inner.into_record_handle();
+        let tapir_handle = record_handle.tapir_handle();
+        let upcalls = tapir::Replica::new_with_store(tapir_handle);
+        (upcalls, record_handle)
     };
     (registry, directory, factory)
 }
 
-crate::ir_replica_conformance_tests!(inmem_factory);
+crate::ir_replica_conformance_tests!(combined_factory);

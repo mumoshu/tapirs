@@ -22,7 +22,6 @@ pub fn new_test_store() -> TestStore {
             direct: false,
         },
         crate::tapir::ShardNumber(0),
-        true,
     )
     .unwrap()
 }

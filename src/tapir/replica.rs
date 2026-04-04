@@ -5,12 +5,11 @@ use crate::tapir::store::TapirStore;
 use crate::{
     DefaultDiskIo, IrClient, IrClientId, IrMembership, IrMembershipSize, IrOpId, IrRecordView,
     IrReplicaUpcalls,
-    MvccBackend, MvccDiskStore,
     OccPrepareResult, OccSharedTransaction, OccTransactionId, TapirTransport, Transport,
 };
-use crate::tapir::store::InMemTapirStore;
+use crate::unified::combined::tapir_handle::CombinedTapirHandle;
 use futures::future::join_all;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::marker::PhantomData;
@@ -52,7 +51,7 @@ pub(crate) struct ShardConfig<K> {
 /// Diverge from TAPIR and don't maintain a no-vote list. Instead, wait for a
 /// view change to syncronize each participant shard's prepare result and then
 /// let one or more of many possible backup coordinators take them at face-value.
-pub struct Replica<K, V, S = InMemTapirStore<K, V, MvccDiskStore<K, V, Timestamp, DefaultDiskIo>>> {
+pub struct Replica<K, V, S = CombinedTapirHandle<K, V, DefaultDiskIo>> {
     store: S,
     _phantom: PhantomData<V>,
     /// If set, reject operations for keys outside this range.
@@ -78,21 +77,6 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> Replica<K, V, S> {
     pub fn new_with_store(store: S) -> Self {
         Self {
             store,
-            _phantom: PhantomData,
-            key_range: None,
-            phase: ShardPhase::default(),
-            counters: ReplicaCounters::default(),
-        }
-    }
-}
-
-impl<K: Key, V: Value, M> Replica<K, V, InMemTapirStore<K, V, M>>
-where
-    M: MvccBackend<K, V, Timestamp> + Serialize + DeserializeOwned + 'static,
-{
-    pub fn new_with_backend(shard: ShardNumber, linearizable: bool, backend: M) -> Self {
-        Self {
-            store: InMemTapirStore::new_with_backend(shard, linearizable, backend),
             _phantom: PhantomData,
             key_range: None,
             phase: ShardPhase::default(),
@@ -925,10 +909,14 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> Replica<K, V, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::ReplicaUpcalls;
-    use crate::mvcc::disk::{DiskStore, memory_io::MemoryIo};
+    use crate::ir::{IrRecordStore, ReplicaUpcalls};
+    use crate::mvcc::disk::disk_io::OpenFlags;
+    use crate::mvcc::disk::memory_io::MemoryIo;
+    use crate::unified::combined::CombinedStoreInner;
+    use crate::unified::combined::record_handle::CombinedRecordHandle;
     use std::sync::Arc;
 
+    type TestRecordHandle = CombinedRecordHandle<i64, i64, MemoryIo>;
 
     fn make_txn_id(client: u64, num: u64) -> OccTransactionId {
         OccTransactionId {
@@ -952,9 +940,53 @@ mod tests {
         })
     }
 
-    fn new_replica(shard: ShardNumber, linearizable: bool) -> Replica<i64, i64> {
-        let backend = DiskStore::<i64, i64, Timestamp, MemoryIo>::open(MemoryIo::temp_path()).unwrap();
-        Replica::new_with_backend(shard, linearizable, backend)
+    /// Create a TAPIR replica backed by CombinedStore.
+    /// Returns both the replica and the record handle (which must stay alive
+    /// since CombinedStore does lazy resolution from the IR record).
+    fn new_replica(shard: ShardNumber, linearizable: bool) -> (Replica<i64, i64>, TestRecordHandle) {
+        let io_flags = OpenFlags { create: true, direct: false };
+        let inner = CombinedStoreInner::<i64, i64, MemoryIo>::open(
+            &MemoryIo::temp_path(), io_flags, shard, linearizable,
+        ).unwrap();
+        let record_handle = inner.into_record_handle();
+        let tapir_handle = record_handle.tapir_handle();
+        (Replica::new_with_store(tapir_handle), record_handle)
+    }
+
+    /// Helper: populate IR consensus entry so CombinedStore can resolve it lazily.
+    fn ir_insert_consensus(
+        record: &mut TestRecordHandle,
+        op_id: IrOpId,
+        op: CO<i64, i64>,
+        result: CR,
+    ) {
+        use crate::ir::{RecordConsensusEntry, RecordEntryState};
+        record.insert_consensus_entry(
+            op_id,
+            RecordConsensusEntry {
+                op,
+                result,
+                state: RecordEntryState::Tentative,
+                modified_view: 0,
+            },
+        );
+    }
+
+    /// Helper: populate IR inconsistent entry so CombinedStore can resolve commits.
+    fn ir_insert_inconsistent(
+        record: &mut TestRecordHandle,
+        op_id: IrOpId,
+        op: IO<i64, i64>,
+    ) {
+        use crate::ir::{RecordInconsistentEntry, RecordEntryState};
+        record.insert_inconsistent_entry(
+            op_id,
+            RecordInconsistentEntry {
+                op,
+                state: RecordEntryState::Tentative,
+                modified_view: 0,
+            },
+        );
     }
 
     fn dummy_op_id() -> IrOpId {
@@ -963,24 +995,31 @@ mod tests {
 
     #[test]
     fn abort_none_does_not_overwrite_committed() {
-        let mut replica = new_replica(ShardNumber(0), false);
+        let (mut replica, mut _ir) = new_replica(ShardNumber(0), false);
         let txn_id = make_txn_id(1, 1);
         let ts = make_ts(10, 1);
         let txn = empty_txn();
 
-        // Commit the transaction.
-        replica.exec_inconsistent(&dummy_op_id(), &IO::Commit {
+        let op = dummy_op_id();
+        let io_op = IO::Commit {
             transaction_id: txn_id,
             transaction: txn,
             commit: ts,
-        });
+        };
+        ir_insert_inconsistent(&mut _ir, op, io_op.clone());
+
+        // Commit the transaction.
+        replica.exec_inconsistent(&op, &io_op);
         assert_eq!(replica.store.txn_log_get(&txn_id), Some((ts, true)));
 
         // Abort with commit: None should NOT overwrite the committed entry.
-        replica.exec_inconsistent(&dummy_op_id(), &IO::Abort {
+        let abort_op = IrOpId { client_id: IrClientId(0), number: 1 };
+        let abort_io = IO::Abort {
             transaction_id: txn_id,
             commit: None,
-        });
+        };
+        ir_insert_inconsistent(&mut _ir, abort_op, abort_io.clone());
+        replica.exec_inconsistent(&abort_op, &abort_io);
         assert_eq!(
             replica.store.txn_log_get(&txn_id),
             Some((ts, true)),
@@ -990,18 +1029,24 @@ mod tests {
 
     #[test]
     fn abort_with_timestamp_skips_different_prepare() {
-        let mut replica = new_replica(ShardNumber(0), false);
+        let (mut replica, mut ir) = new_replica(ShardNumber(0), false);
         let txn_id = make_txn_id(1, 1);
         let ts1 = make_ts(10, 1);
         let ts2 = make_ts(20, 1);
         let txn = empty_txn();
 
-        // Prepare at ts1.
-        let result = replica.exec_consensus(&dummy_op_id(), &CO::Prepare {
+        let op = dummy_op_id();
+        let co_op = CO::Prepare {
             transaction_id: txn_id,
             transaction: txn,
             commit: ts1,
-        });
+        };
+
+        // Populate IR so CombinedStore can resolve the prepare lazily.
+        ir_insert_consensus(&mut ir, op, co_op.clone(), CR::Prepare(OccPrepareResult::Ok));
+
+        // Prepare at ts1.
+        let result = replica.exec_consensus(&op, &co_op);
         assert!(
             matches!(result, CR::Prepare(OccPrepareResult::Ok)),
             "prepare should succeed"
@@ -1009,10 +1054,13 @@ mod tests {
         assert!(replica.store.get_prepared_txn(&txn_id).is_some());
 
         // Abort at ts2 (different timestamp) should NOT remove the prepare at ts1.
-        replica.exec_inconsistent(&dummy_op_id(), &IO::Abort {
+        let abort_op = IrOpId { client_id: IrClientId(0), number: 1 };
+        let abort_io = IO::Abort {
             transaction_id: txn_id,
             commit: Some(ts2),
-        });
+        };
+        ir_insert_inconsistent(&mut ir, abort_op, abort_io.clone());
+        replica.exec_inconsistent(&abort_op, &abort_io);
         assert!(
             replica.store.get_prepared_txn(&txn_id).is_some(),
             "abort at different timestamp must not remove the prepared entry"
@@ -1021,17 +1069,23 @@ mod tests {
 
     #[test]
     fn abort_with_timestamp_removes_matching_prepare() {
-        let mut replica = new_replica(ShardNumber(0), false);
+        let (mut replica, mut ir) = new_replica(ShardNumber(0), false);
         let txn_id = make_txn_id(1, 1);
         let ts1 = make_ts(10, 1);
         let txn = empty_txn();
 
-        // Prepare at ts1.
-        let result = replica.exec_consensus(&dummy_op_id(), &CO::Prepare {
+        let op = dummy_op_id();
+        let co_op = CO::Prepare {
             transaction_id: txn_id,
             transaction: txn,
             commit: ts1,
-        });
+        };
+
+        // Populate IR so CombinedStore can resolve the prepare lazily.
+        ir_insert_consensus(&mut ir, op, co_op.clone(), CR::Prepare(OccPrepareResult::Ok));
+
+        // Prepare at ts1.
+        let result = replica.exec_consensus(&op, &co_op);
         assert!(
             matches!(result, CR::Prepare(OccPrepareResult::Ok)),
             "prepare should succeed"
@@ -1039,10 +1093,13 @@ mod tests {
         assert!(replica.store.get_prepared_txn(&txn_id).is_some());
 
         // Abort at ts1 (matching timestamp) should remove the prepare.
-        replica.exec_inconsistent(&dummy_op_id(), &IO::Abort {
+        let abort_op = IrOpId { client_id: IrClientId(0), number: 1 };
+        let abort_io = IO::Abort {
             transaction_id: txn_id,
             commit: Some(ts1),
-        });
+        };
+        ir_insert_inconsistent(&mut ir, abort_op, abort_io.clone());
+        replica.exec_inconsistent(&abort_op, &abort_io);
         assert!(
             replica.store.get_prepared_txn(&txn_id).is_none(),
             "abort at matching timestamp must remove the prepared entry"
@@ -1051,17 +1108,23 @@ mod tests {
 
     #[test]
     fn gc_stale_state_does_not_remove_prepared_entries() {
-        let mut replica = new_replica(ShardNumber(0), false);
+        let (mut replica, mut ir) = new_replica(ShardNumber(0), false);
         let txn_id = make_txn_id(1, 1);
         let ts = make_ts(5, 1);
         let txn = empty_txn();
 
-        // Prepare at time=5.
-        let result = replica.exec_consensus(&dummy_op_id(), &CO::Prepare {
+        let op = dummy_op_id();
+        let co_op = CO::Prepare {
             transaction_id: txn_id,
             transaction: txn,
             commit: ts,
-        });
+        };
+
+        // Populate IR so CombinedStore can resolve the prepare lazily.
+        ir_insert_consensus(&mut ir, op, co_op.clone(), CR::Prepare(OccPrepareResult::Ok));
+
+        // Prepare at time=5.
+        let result = replica.exec_consensus(&op, &co_op);
         assert!(
             matches!(result, CR::Prepare(OccPrepareResult::Ok)),
             "prepare should succeed"

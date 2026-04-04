@@ -239,12 +239,19 @@ fn fuzz_tapir_transactions() {
         .unwrap();
 
     rt.block_on(fuzz_tapir_transactions_inner(seed, |shard, linearizable| {
-        let backend = DiskStore::<K, V, Timestamp, MemoryIo>::open(
-            MemoryIo::temp_path(),
+        use crate::mvcc::disk::disk_io::OpenFlags;
+        use crate::mvcc::disk::memory_io::MemoryIo;
+        use crate::unified::combined::CombinedStoreInner;
+
+        let base_dir = MemoryIo::temp_path();
+        let flags = OpenFlags { create: true, direct: false };
+        let inner = CombinedStoreInner::<K, V, MemoryIo>::open(
+            &base_dir, flags, shard, linearizable,
         ).unwrap();
-        let upcalls = TapirReplica::new_with_backend(shard, linearizable, backend);
-        let record: IrVersionedRecord<crate::tapir::IO<K, V>, crate::tapir::CO<K, V>, crate::tapir::CR> = Default::default();
-        (upcalls, record)
+        let record_handle = inner.into_record_handle();
+        let tapir_handle = record_handle.tapir_handle();
+        let upcalls = TapirReplica::new_with_store(tapir_handle);
+        (upcalls, record_handle)
     }));
 }
 
@@ -1457,41 +1464,3 @@ where
     drop(new_shard_replicas);
 }
 
-#[test]
-fn fuzz_tapir_transactions_combined() {
-    use crate::mvcc::disk::disk_io::OpenFlags;
-    use crate::unified::combined::CombinedStoreInner;
-
-    if cfg!(debug_assertions) {
-        eprintln!("\n\
-            ╔══════════════════════════════════════════════════════════════════╗\n\
-            ║  WARNING: fuzz_tapir_transactions_combined running in DEBUG     ║\n\
-            ║  Use --release: cargo test --release fuzz_tapir_transactions_combined\n\
-            ╚══════════════════════════════════════════════════════════════════╝\n\
-        ");
-    }
-
-    let seed: u64 = std::env::var("TAPI_TEST_SEED")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .start_paused(true)
-        .rng_seed(tokio::runtime::RngSeed::from_bytes(&seed.to_le_bytes()))
-        .build()
-        .unwrap();
-
-    rt.block_on(fuzz_tapir_transactions_inner(seed, |shard, linearizable| {
-        let base_dir = MemoryIo::temp_path();
-        let flags = OpenFlags { create: true, direct: false };
-        let inner = CombinedStoreInner::<K, V, MemoryIo>::open(
-            &base_dir, flags, shard, linearizable,
-        ).unwrap();
-        let record_handle = inner.into_record_handle();
-        let tapir_handle = record_handle.tapir_handle();
-        let upcalls = TapirReplica::new_with_store(tapir_handle);
-        (upcalls, record_handle)
-    }));
-}

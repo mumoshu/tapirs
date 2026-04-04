@@ -1,8 +1,11 @@
 use crate::{
     discovery::InMemoryShardDirectory,
     ChannelRegistry, ChannelTransport, IrClient, IrClientId, IrMembership, IrMembershipSize,
-    IrOpId, IrRecordView, IrReplica, IrReplicaUpcalls, IrVersionedRecord, Transport,
+    IrOpId, IrRecordView, IrReplica, IrReplicaUpcalls, Transport,
 };
+use crate::mvcc::disk::disk_io::OpenFlags;
+use crate::mvcc::disk::memory_io::MemoryIo;
+use crate::unified::ir::ir_record_store::{PersistentIrRecordStore, PersistentPayload};
 use rand::{seq::IteratorRandom, Rng, SeedableRng};
 use rand::rngs::StdRng;
 
@@ -72,13 +75,13 @@ async fn lock_server(num_replicas: usize) {
     let mut rng = StdRng::seed_from_u64(num_replicas as u64);
     println!("testing lock server with {num_replicas} replicas");
 
-    #[derive(Debug, Clone, Eq, PartialEq)]
+    #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
     struct Lock(IrClientId);
 
-    #[derive(Debug, Clone, Eq, PartialEq)]
+    #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
     struct Unlock(IrClientId);
 
-    #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
+    #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
     enum LockResult {
         Ok,
         No,
@@ -89,6 +92,8 @@ async fn lock_server(num_replicas: usize) {
         locked: Option<IrClientId>,
     }
 
+    type RecordStore = PersistentIrRecordStore<Unlock, Lock, LockResult, MemoryIo>;
+
     impl IrReplicaUpcalls for Upcalls {
         type UO = ();
         type UR = ();
@@ -96,7 +101,7 @@ async fn lock_server(num_replicas: usize) {
         type IR = ();
         type CO = Lock;
         type CR = LockResult;
-        type Payload = crate::ir::RecordPayload<Self::IO, Self::CO, Self::CR>;
+        type Payload = PersistentPayload<Self::IO, Self::CO, Self::CR>;
 
         fn exec_unlogged(&self, _op: Self::UO) -> Self::UR {
             unreachable!();
@@ -184,14 +189,19 @@ async fn lock_server(num_replicas: usize) {
         registry: &ChannelRegistry<Upcalls>,
         dir: &Arc<InMemoryShardDirectory<usize>>,
         membership: &IrMembership<usize>,
-    ) -> Arc<IrReplica<Upcalls, ChannelTransport<Upcalls>, IrVersionedRecord<Unlock, Lock, LockResult>>> {
+    ) -> Arc<IrReplica<Upcalls, ChannelTransport<Upcalls>, RecordStore>> {
         Arc::new_cyclic(
-            |weak: &std::sync::Weak<IrReplica<Upcalls, ChannelTransport<Upcalls>, IrVersionedRecord<Unlock, Lock, LockResult>>>| {
+            |weak: &std::sync::Weak<IrReplica<Upcalls, ChannelTransport<Upcalls>, RecordStore>>| {
                 let weak = weak.clone();
                 let channel =
                     registry.channel(move |from, message| weak.upgrade()?.receive(from, message), Arc::clone(dir));
                 let upcalls = Upcalls { locked: None };
-                IrReplica::new(rng.fork(), membership.clone(), upcalls, channel, None, Default::default())
+                let io_flags = OpenFlags { create: true, direct: false };
+                let record_store = RecordStore::open(
+                    &MemoryIo::temp_path(),
+                    io_flags,
+                ).unwrap();
+                IrReplica::new(rng.fork(), membership.clone(), upcalls, channel, None, record_store)
             },
         )
     }
@@ -225,7 +235,7 @@ async fn lock_server(num_replicas: usize) {
 
     fn add_replica(
         rng: &mut crate::Rng,
-        replicas: &mut Vec<Arc<IrReplica<Upcalls, ChannelTransport<Upcalls>, IrVersionedRecord<Unlock, Lock, LockResult>>>>,
+        replicas: &mut Vec<Arc<IrReplica<Upcalls, ChannelTransport<Upcalls>, RecordStore>>>,
         registry: &ChannelRegistry<Upcalls>,
         dir: &Arc<InMemoryShardDirectory<usize>>,
         membership: &IrMembership<usize>,

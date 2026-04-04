@@ -8,7 +8,7 @@ use crate::occ::TransactionId as OccTransactionId;
 use crate::tapir::{ShardNumber, Sharded, Timestamp};
 use crate::unified::ir::ir_record_store::PersistentIrRecordStore;
 use crate::unified::ir::record::IrRecord;
-use crate::unified::tapir::persistent_store::PersistentTapirStore;
+use crate::unified::tapir::store::TapirState;
 use crate::IrClientId;
 use std::sync::Arc;
 
@@ -18,7 +18,7 @@ mod tapir;
 
 const DEFAULT_MIN_VIEW_VLOG_SIZE: u64 = 256 * 1024;
 
-type Tapir = PersistentTapirStore<String, String, BufferedIo>;
+type Tapir = TapirState<String, String, BufferedIo>;
 type Ir = IrRecord<String, String, BufferedIo>;
 type Ir2 = PersistentIrRecordStore<String, String, String, BufferedIo>;
 

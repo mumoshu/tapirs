@@ -1,4 +1,3 @@
-#[cfg(any(feature = "combined-store", test))]
 pub(crate) mod combined;
 pub mod cli;
 pub(crate) mod ir;

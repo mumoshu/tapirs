@@ -30,16 +30,12 @@ pub use rng::Rng;
 pub use ir::{
     Client as IrClient, ClientConfig as IrClientConfig, ClientId as IrClientId, Membership as IrMembership,
     MembershipSize as IrMembershipSize, Message as IrMessage, OpId as IrOpId, Record as IrRecord,
-    IrPayload, IrRecordStore, RecordPayload as IrRecordPayload, RecordView as IrRecordView,
+    IrPayload, IrRecordStore, RecordView as IrRecordView,
     RecordConsensusEntry as IrRecordConsensusEntry, Replica as IrReplica,
     ReplicaMetrics as IrReplicaMetrics, ReplicaUpcalls as IrReplicaUpcalls,
-    VersionedRecord as IrVersionedRecord,
     SharedView as IrSharedView, View as IrView, ViewNumber as IrViewNumber,
 };
-pub use mvcc::MvccBackend;
-#[cfg(feature = "surrealkv")]
-pub use mvcc::surrealkvstore::SurrealKvStore;
-pub use mvcc::disk::{DiskStore as MvccDiskStore, StorageError};
+pub use mvcc::disk::StorageError;
 pub use mvcc::disk::disk_io::{BufferedIo, OpenFlags as DiskOpenFlags};
 #[cfg(test)]
 pub use mvcc::disk::memory_io::MemoryIo as DefaultDiskIo;
@@ -48,7 +44,7 @@ pub use transport::uring::UringDirectIo as DefaultDiskIo;
 #[cfg(all(not(test), not(all(target_os = "linux", feature = "io-uring"))))]
 pub use mvcc::disk::disk_io::BufferedIo as DefaultDiskIo;
 pub use occ::{
-    PrepareResult as OccPrepareResult, ScanEntry as OccScanEntry, Store as OccStore,
+    PrepareResult as OccPrepareResult, ScanEntry as OccScanEntry,
     Timestamp as OccTimestamp, SharedTransaction as OccSharedTransaction,
     Transaction as OccTransaction, TransactionId as OccTransactionId,
 };

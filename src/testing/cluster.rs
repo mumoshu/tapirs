@@ -1,11 +1,17 @@
-use crate::mvcc::disk::{DiskStore, memory_io::MemoryIo};
-use crate::tapir::{Key, Timestamp, Value, IO, CO, CR};
+use crate::mvcc::disk::memory_io::MemoryIo;
+use crate::mvcc::disk::disk_io::OpenFlags;
+use crate::tapir::{Key, Value};
+use crate::unified::combined::CombinedStoreInner;
+use crate::unified::combined::record_handle::CombinedRecordHandle;
 use crate::{
     discovery::{InMemoryShardDirectory, ShardDirectory as _},
-    ChannelRegistry, ChannelTransport, IrMembership, IrReplica, IrVersionedRecord, ShardNumber,
+    ChannelRegistry, ChannelTransport, IrMembership, IrReplica, ShardNumber,
     TapirClient, TapirReplica,
 };
 use std::sync::Arc;
+
+pub type TestIrRecordStore<K, V> = CombinedRecordHandle<K, V, MemoryIo>;
+pub type TestIrReplica<K, V> = IrReplica<TapirReplica<K, V>, ChannelTransport<TapirReplica<K, V>>, TestIrRecordStore<K, V>>;
 
 pub fn build_shard<K: Key, V: Value>(
     rng: &mut crate::Rng,
@@ -14,7 +20,7 @@ pub fn build_shard<K: Key, V: Value>(
     num_replicas: usize,
     registry: &ChannelRegistry<TapirReplica<K, V>>,
     directory: &Arc<InMemoryShardDirectory<usize>>,
-) -> Vec<Arc<IrReplica<TapirReplica<K, V>, ChannelTransport<TapirReplica<K, V>>, IrVersionedRecord<IO<K, V>, CO<K, V>, CR>>>> {
+) -> Vec<Arc<TestIrReplica<K, V>>> {
     let initial_address = registry.len();
     let membership = IrMembership::new(
         (0..num_replicas)
@@ -28,26 +34,33 @@ pub fn build_shard<K: Key, V: Value>(
             let dir = Arc::clone(directory);
             let m = membership.clone();
             Arc::new_cyclic(
-                |weak: &std::sync::Weak<
-                    IrReplica<TapirReplica<K, V>, ChannelTransport<TapirReplica<K, V>>, IrVersionedRecord<IO<K, V>, CO<K, V>, CR>>,
-                >| {
+                |weak: &std::sync::Weak<TestIrReplica<K, V>>| {
                     let weak = weak.clone();
                     let channel = registry.channel(
                         move |from, message| weak.upgrade()?.receive(from, message),
                         Arc::clone(&dir),
                     );
                     channel.set_shard(shard);
-                    let backend = DiskStore::<K, V, Timestamp, MemoryIo>::open(
-                        MemoryIo::temp_path(),
+                    let io_flags = OpenFlags {
+                        create: true,
+                        direct: false,
+                    };
+                    let inner = CombinedStoreInner::<K, V, MemoryIo>::open(
+                        &MemoryIo::temp_path(),
+                        io_flags,
+                        shard,
+                        linearizable,
                     ).unwrap();
-                    let upcalls = TapirReplica::new_with_backend(shard, linearizable, backend);
+                    let record_handle = inner.into_record_handle();
+                    let tapir_handle = record_handle.tapir_handle();
+                    let upcalls = TapirReplica::new_with_store(tapir_handle);
                     IrReplica::new(
                         replica_rng,
                         m.clone(),
                         upcalls,
                         channel,
                         Some(TapirReplica::tick),
-                        Default::default(),
+                        record_handle,
                     )
                 },
             )

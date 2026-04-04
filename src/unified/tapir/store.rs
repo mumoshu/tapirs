@@ -144,9 +144,6 @@ pub(crate) struct TapirState<K: Ord, V, IO: DiskIo> {
     /// Which shard this store serves. Used to extract shard-local read/write/scan
     /// sets from cross-shard transactions stored in the prepared VlogLsm.
     pub(crate) shard: ShardNumber,
-    /// Whether linearizable reads are enabled. Controls whether
-    /// snapshot_get_protected/snapshot_scan_protected track read-protection.
-    linearizable: bool,
     /// MVCC index: maps (key, timestamp) → MvccIndexEntry for get/get_at/scan.
     /// Each MvccIndexEntry stores (txn_id, write_index) resolved via committed VlogLsm.
     mvcc: VlogLsm<CompositeKey<K, Timestamp>, MvccIndexEntry, IO>,
@@ -300,111 +297,6 @@ impl<K: Ord + Clone, V, IO: DiskIo> TapirState<K, V, IO> {
         keys.iter()
             .filter(|k| matches!(self.prepared.get(k), Ok(Some(Some(_)))))
             .count()
-    }
-
-    // === Accessors for PersistentTapirStore ===
-
-    /// Iterate prepared VlogLsm memtable keys from `from` onward.
-    pub(crate) fn prepared_memtable_keys<'a>(
-        &'a self,
-        from: &'a OccTransactionId,
-    ) -> impl Iterator<Item = OccTransactionId> + 'a {
-        self.prepared.memtable_range_from(from).map(|(k, _)| *k)
-    }
-
-    /// Iterate prepared VlogLsm index keys.
-    pub(crate) fn prepared_index_keys(&self) -> impl Iterator<Item = OccTransactionId> + '_ {
-        self.prepared.index_range(..).map(|(k, _)| *k)
-    }
-
-    /// Look up a committed VlogLsm entry by transaction ID.
-    pub(crate) fn committed_get(
-        &self,
-        id: &OccTransactionId,
-    ) -> Result<Option<TxnLogEntry<K, V>>, StorageError>
-    where
-        K: Key + serde::Serialize + serde::de::DeserializeOwned,
-        V: Value + serde::Serialize + serde::de::DeserializeOwned,
-    {
-        self.committed.get(id)
-    }
-
-    /// Put an entry into the committed VlogLsm.
-    pub(crate) fn committed_put(
-        &mut self,
-        id: OccTransactionId,
-        value: TxnLogEntry<K, V>,
-    ) {
-        self.committed.put(id, value);
-    }
-
-    /// Iterate committed VlogLsm memtable keys from `from` onward.
-    pub(crate) fn committed_memtable_keys<'a>(
-        &'a self,
-        from: &'a OccTransactionId,
-    ) -> impl Iterator<Item = OccTransactionId> + 'a {
-        self.committed.memtable_range_from(from).map(|(k, _)| *k)
-    }
-
-    /// Get the persisted txn_log_count from the manifest.
-    pub(crate) fn manifest_txn_log_count(&self) -> u64 {
-        self.manifest.txn_log_count
-    }
-
-    /// Returns max_read_time from the OCC cache.
-    pub(crate) fn max_read_time(&self) -> Option<Timestamp> {
-        self.occ_cache.max_read_time()
-    }
-
-    /// Total bytes across all VlogLsm segments (committed + prepared + mvcc).
-    pub(crate) fn stored_bytes(&self) -> u64 {
-        let committed_sealed: u64 = self
-            .manifest
-            .committed
-            .sealed_vlog_segments
-            .iter()
-            .map(|seg| seg.total_size)
-            .sum();
-        let prepared_sealed: u64 = self
-            .manifest
-            .prepared
-            .sealed_vlog_segments
-            .iter()
-            .map(|seg| seg.total_size)
-            .sum();
-        let mvcc_sealed: u64 = self
-            .manifest
-            .mvcc
-            .sealed_vlog_segments
-            .iter()
-            .map(|seg| seg.total_size)
-            .sum();
-        committed_sealed
-            + prepared_sealed
-            + mvcc_sealed
-            + self.committed.active_write_offset()
-            + self.prepared.active_write_offset()
-            + self.mvcc.active_write_offset()
-    }
-
-    /// Check if last_read_ts >= ts for the MVCC version at the given timestamp.
-    /// Returns the last_read_ts if one exists.
-    pub(crate) fn get_last_read_ts_at(&self, key: &K, ts: Timestamp) -> Option<Timestamp>
-    where
-        K: Key + serde::Serialize + serde::de::DeserializeOwned,
-    {
-        let mvcc_view = MvccView { mvcc: &self.mvcc };
-        mvcc_view.get_last_read_ts_at(key, ts).ok().flatten()
-    }
-
-    /// Check if any recorded range_read covers [start, end] at ts.
-    pub(crate) fn has_covering_range_read(&self, start: &K, end: &K, ts: Timestamp) -> bool {
-        self.occ_cache.has_covering_range_read(start, end, ts)
-    }
-
-    /// Set the txn_log_count in the manifest for persistence on next seal.
-    pub(crate) fn set_manifest_txn_log_count(&mut self, count: u64) {
-        self.manifest.txn_log_count = count;
     }
 
     pub(crate) fn commit(
@@ -657,7 +549,6 @@ pub(crate) fn open<K: Key, V: Value, IO: DiskIo>(
     base_dir: &Path,
     io_flags: OpenFlags,
     shard: ShardNumber,
-    linearizable: bool,
 ) -> Result<TapirState<K, V, IO>, StorageError> {
     IO::create_dir_all(base_dir)?;
 
@@ -741,7 +632,6 @@ pub(crate) fn open<K: Key, V: Value, IO: DiskIo>(
 
     let state = TapirState {
         shard,
-        linearizable,
         mvcc,
         committed,
         prepared,
@@ -812,63 +702,6 @@ impl<
         Ok(out)
     }
 
-    /// Read a key with RO transaction protection.
-    /// Returns PrepareConflict if a prepared write to this key at ts <= snapshot_ts
-    /// is in flight. On success, if linearizable is true, sets last_read_ts on the
-    /// MVCC entry (for existing keys) or records a degenerate range_read (for
-    /// non-existent keys, preventing phantom writes).
-    pub(crate) fn snapshot_get_protected(
-        &mut self,
-        key: &K,
-        snapshot_ts: Timestamp,
-    ) -> Result<(Option<V>, Timestamp), crate::occ::PrepareConflict> {
-        if self.occ_cache.check_get_conflict(key, snapshot_ts) {
-            return Err(crate::occ::PrepareConflict);
-        }
-
-        let (value, ts) = self
-            .snapshot_get_at(key, snapshot_ts)
-            .map_err(|_| crate::occ::PrepareConflict)?;
-
-        if self.linearizable {
-            if value.is_some() {
-                self.update_mvcc_last_read_ts(key, snapshot_ts, snapshot_ts.time);
-            } else {
-                self.occ_cache
-                    .record_range_read(key.clone(), key.clone(), snapshot_ts);
-            }
-            self.occ_cache.update_max_read_time(snapshot_ts);
-        }
-
-        Ok((value, ts))
-    }
-
-    /// Scan a range with RO transaction protection.
-    /// Returns PrepareConflict if a prepared write in [start, end] at ts <= snapshot_ts
-    /// is in flight. On success, if linearizable is true, records a range_read to
-    /// prevent future prepares from writing into this range at ts < snapshot_ts.
-    pub(crate) fn snapshot_scan_protected(
-        &mut self,
-        start: &K,
-        end: &K,
-        snapshot_ts: Timestamp,
-    ) -> Result<Vec<(K, Option<V>, Timestamp)>, crate::occ::PrepareConflict> {
-        if self.occ_cache.check_scan_conflict(start, end, snapshot_ts) {
-            return Err(crate::occ::PrepareConflict);
-        }
-
-        let results = self
-            .snapshot_scan(start, end, snapshot_ts)
-            .map_err(|_| crate::occ::PrepareConflict)?;
-
-        if self.linearizable {
-            self.occ_cache
-                .record_range_read(start.clone(), end.clone(), snapshot_ts);
-            self.occ_cache.update_max_read_time(snapshot_ts);
-        }
-
-        Ok(results)
-    }
 }
 
 #[cfg(test)]
@@ -885,7 +718,6 @@ impl TapirStateRunner {
             &base_dir,
             io_flags,
             ShardNumber(0),
-            true,
         )?;
         Ok(Self {
             state,
@@ -1051,125 +883,7 @@ mod tests {
         txn
     }
 
-    fn open_test_state() -> TapirState<String, String, crate::mvcc::disk::memory_io::MemoryIo> {
-        let base_dir = crate::mvcc::disk::memory_io::MemoryIo::temp_path();
-        open(&base_dir, OpenFlags { create: true, direct: false }, ShardNumber(0), true).unwrap()
-    }
 
-    #[test]
-    fn snapshot_get_protected_sets_last_read_ts() {
-        let mut state = open_test_state();
-
-        // Commit a key
-        state
-            .commit(
-                test_txn_id(1, 1),
-                &[],
-                &[("x".to_string(), Some("v1".to_string()))],
-                &[],
-                test_ts(5),
-            )
-            .unwrap();
-
-        // Protected read at ts=10
-        let (value, ts) = state
-            .snapshot_get_protected(&"x".to_string(), test_ts(10))
-            .unwrap();
-        assert_eq!(value.as_deref(), Some("v1"));
-        assert_eq!(ts, test_ts(5));
-
-        // Now prepare a write to "x" at ts=8 → should be rejected (Retry)
-        // because last_read_ts=10 > commit_ts=8
-        let txn = make_write_only_txn(vec![("x", Some("v2"))]);
-        let result = state.prepare(test_txn_id(2, 1), &txn, test_ts(8)).unwrap();
-        assert!(
-            result.is_retry(),
-            "prepare at ts=8 after protected read at ts=10 should Retry, got {result:?}"
-        );
-    }
-
-    #[test]
-    fn snapshot_scan_protected_prevents_write_in_range() {
-        let mut state = open_test_state();
-
-        // Commit a key in range
-        state
-            .commit(
-                test_txn_id(1, 1),
-                &[],
-                &[("m".to_string(), Some("v1".to_string()))],
-                &[],
-                test_ts(5),
-            )
-            .unwrap();
-
-        // Protected scan ["a", "z"] at ts=10
-        let results = state
-            .snapshot_scan_protected(
-                &"a".to_string(),
-                &"z".to_string(),
-                test_ts(10),
-            )
-            .unwrap();
-        assert_eq!(results.len(), 1);
-
-        // Prepare a write to "n" (in range) at ts=8 → should Retry
-        // because range_reads has ("a", "z", ts=10) and ts=10 > ts=8
-        let txn = make_write_only_txn(vec![("n", Some("v2"))]);
-        let result = state.prepare(test_txn_id(2, 1), &txn, test_ts(8)).unwrap();
-        assert!(
-            result.is_retry(),
-            "prepare at ts=8 in protected range should Retry, got {result:?}"
-        );
-    }
-
-    #[test]
-    fn snapshot_get_protected_phantom_prevention() {
-        let mut state = open_test_state();
-
-        // Protected read of non-existent key records degenerate range_read
-        let (value, _) = state
-            .snapshot_get_protected(&"phantom".to_string(), test_ts(10))
-            .unwrap();
-        assert!(value.is_none());
-
-        // Prepare a write to "phantom" at ts=8 → should Retry
-        let txn = make_write_only_txn(vec![("phantom", Some("v1"))]);
-        let result = state.prepare(test_txn_id(1, 1), &txn, test_ts(8)).unwrap();
-        assert!(
-            result.is_retry(),
-            "prepare at ts=8 after phantom read at ts=10 should Retry, got {result:?}"
-        );
-    }
-
-    #[test]
-    fn snapshot_get_protected_conflict_with_prepared_write() {
-        let mut state = open_test_state();
-
-        // Commit a key
-        state
-            .commit(
-                test_txn_id(1, 1),
-                &[],
-                &[("x".to_string(), Some("v1".to_string()))],
-                &[],
-                test_ts(5),
-            )
-            .unwrap();
-
-        // Prepare a write to "x" at ts=8
-        let txn = make_write_only_txn(vec![("x", Some("v2"))]);
-        let result = state.prepare(test_txn_id(2, 1), &txn, test_ts(8)).unwrap();
-        assert!(result.is_ok());
-
-        // Protected read of "x" at ts=10 → should fail (PrepareConflict)
-        // because prepared write at ts=8 <= snapshot_ts=10
-        let read_result = state.snapshot_get_protected(&"x".to_string(), test_ts(10));
-        assert!(
-            read_result.is_err(),
-            "protected read should fail when prepared write exists at ts <= snapshot_ts"
-        );
-    }
 
     #[test]
     fn recovery_rebuilds_occ_cache_from_prepared() {
@@ -1179,7 +893,7 @@ mod tests {
         // Phase 1: prepare a transaction, seal, then "crash" (drop state)
         {
             let mut state: TapirState<String, String, crate::mvcc::disk::memory_io::MemoryIo> =
-                open(&base_dir, flags, ShardNumber(0), true).unwrap();
+                open(&base_dir, flags, ShardNumber(0)).unwrap();
 
             let txn = make_write_only_txn(vec![("x", Some("v1"))]);
             let result = state.prepare(test_txn_id(1, 1), &txn, test_ts(10)).unwrap();
@@ -1191,7 +905,7 @@ mod tests {
         // Phase 2: reopen — OccCache should be rebuilt from prepared VlogLsm
         {
             let mut state: TapirState<String, String, crate::mvcc::disk::memory_io::MemoryIo> =
-                open(&base_dir, flags, ShardNumber(0), true).unwrap();
+                open(&base_dir, flags, ShardNumber(0)).unwrap();
 
             // Another prepare writing to the same key "x" should conflict
             // because the recovered OccCache has "x" registered as a prepared write
@@ -1212,7 +926,7 @@ mod tests {
         // Phase 1: protected read (sets max_read_time), seal, "crash"
         {
             let mut state: TapirState<String, String, crate::mvcc::disk::memory_io::MemoryIo> =
-                open(&base_dir, flags, ShardNumber(0), true).unwrap();
+                open(&base_dir, flags, ShardNumber(0)).unwrap();
 
             // Commit a key, then do a protected read at ts=20
             state
@@ -1225,8 +939,9 @@ mod tests {
                 )
                 .unwrap();
             let _ = state
-                .snapshot_get_protected(&"k".to_string(), test_ts(20))
+                .snapshot_get(&"k".to_string())
                 .unwrap();
+            state.occ_cache.update_max_read_time(test_ts(20));
 
             state.seal_current_view(0).unwrap();
         }
@@ -1234,7 +949,7 @@ mod tests {
         // Phase 2: reopen — max_read_time=20 should block prepares at ts < 20
         {
             let mut state: TapirState<String, String, crate::mvcc::disk::memory_io::MemoryIo> =
-                open(&base_dir, flags, ShardNumber(0), true).unwrap();
+                open(&base_dir, flags, ShardNumber(0)).unwrap();
 
             let txn = make_write_only_txn(vec![("any_key", Some("v2"))]);
             let result = state.prepare(test_txn_id(2, 1), &txn, test_ts(15)).unwrap();
