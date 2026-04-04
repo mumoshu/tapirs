@@ -1,4 +1,4 @@
-pub(crate) mod combined;
+pub mod combined;
 pub mod cli;
 pub(crate) mod ir;
 pub(crate) mod tapir;

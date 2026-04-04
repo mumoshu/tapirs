@@ -15,11 +15,20 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tapirs::store_defaults::{ProductionIrRecordStore, ProductionTapirReplica};
 use tapirs::{
     IrMembership, IrMessage, IrReplica,
     TapirClient, TapirTransport, Transport,
 };
+
+// Maelstrom uses MemoryIo (not BufferedIo) because:
+// 1. Maelstrom doesn't test crash recovery (no node restart with preserved data)
+// 2. View changes with disk I/O (BufferedIo) add latency that causes operation
+//    timeouts under Maelstrom's aggressive partition nemesis + ~1s op timeout
+type MaelstromDiskIo = tapirs::MemoryIo;
+type MaelstromTapirStore = tapirs::unified::combined::tapir_handle::CombinedTapirHandle<String, String, MaelstromDiskIo>;
+type MaelstromIrRecordStore = tapirs::unified::combined::record_handle::CombinedRecordHandle<String, String, MaelstromDiskIo>;
+type ProductionTapirReplica = tapirs::TapirReplica<String, String, MaelstromTapirStore>;
+type ProductionIrRecordStore = MaelstromIrRecordStore;
 use tokio::spawn;
 use tracing::{info, trace, warn};
 
@@ -219,7 +228,7 @@ impl Transport<ProductionTapirReplica> for Maelstrom {
 }
 
 impl TapirTransport<K, V> for Maelstrom {
-    type Store = tapirs::store_defaults::ProductionTapirStore;
+    type Store = MaelstromTapirStore;
 
     fn shard_addresses(
         &self,
@@ -294,14 +303,20 @@ impl Process<LinKv, Wrapper> for KvNode {
             transport.clone(),
             match id {
                 IdEnum::Replica(_) => {
-                    let base_dir = std::env::temp_dir().join(format!("maelstrom-tapir-{}", std::process::id()));
-                    let (upcalls, ir_store) = tapirs::store_defaults::open_production_stores(
+                    let base_dir = MaelstromDiskIo::temp_path();
+                    let io_flags = tapirs::DiskOpenFlags {
+                        create: true,
+                        direct: false,
+                    };
+                    let inner = tapirs::unified::combined::CombinedStoreInner::<String, String, MaelstromDiskIo>::open(
+                        &base_dir,
+                        io_flags,
                         tapirs::ShardNumber(0),
-                        &base_dir.to_string_lossy(),
-                        0,
                         true,
                     )
-                    .expect("open production stores");
+                    .expect("open CombinedStore");
+                    let ir_store = inner.into_record_handle();
+                    let upcalls = tapirs::TapirReplica::new_with_store(ir_store.tapir_handle());
                     KvNodeInner::Replica(Arc::new(IrReplica::with_view_change_interval(
                         tapirs::Rng::from_seed(thread_rng().r#gen()),
                         membership,

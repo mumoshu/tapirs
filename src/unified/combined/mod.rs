@@ -87,7 +87,7 @@ pub(crate) enum TxnLogRef {
 /// The prepared VlogLsm stores lightweight PreparedRef and the committed
 /// VlogLsm stores TxnLogRef instead of full transactions — resolving the
 /// data duplication.
-pub(crate) struct CombinedStoreInner<K: Ord, V, DIO: DiskIo> {
+pub struct CombinedStoreInner<K: Ord, V, DIO: DiskIo> {
     // --- IR (embedded, owns inc_lsm + con_lsm internally) ---
     pub(crate) ir: PersistentIrRecordStore<IO<K, V>, CO<K, V>, CR, DIO>,
 
@@ -113,7 +113,7 @@ pub(crate) struct CombinedStoreInner<K: Ord, V, DIO: DiskIo> {
 impl<K: Key, V: Value, DIO: DiskIo> CombinedStoreInner<K, V, DIO> {
     /// Open a CombinedStore. If a manifest exists on disk, restore sealed
     /// segments from it (reopen path); otherwise create fresh VlogLsm segments.
-    pub(crate) fn open(
+    pub fn open(
         base_dir: &Path,
         io_flags: OpenFlags,
         shard: ShardNumber,
@@ -245,7 +245,7 @@ impl<K: Key, V: Value, DIO: DiskIo> CombinedStoreInner<K, V, DIO> {
     }
 
     /// Wrap self in Arc<Mutex> and return the IR record handle.
-    pub(crate) fn into_record_handle(
+    pub fn into_record_handle(
         self,
     ) -> record_handle::CombinedRecordHandle<K, V, DIO> {
         record_handle::CombinedRecordHandle {

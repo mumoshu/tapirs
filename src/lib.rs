@@ -37,6 +37,7 @@ pub use ir::{
 };
 pub use mvcc::disk::StorageError;
 pub use mvcc::disk::disk_io::{BufferedIo, OpenFlags as DiskOpenFlags};
+pub use mvcc::disk::memory_io::MemoryIo;
 #[cfg(test)]
 pub use mvcc::disk::memory_io::MemoryIo as DefaultDiskIo;
 #[cfg(all(not(test), target_os = "linux", feature = "io-uring"))]

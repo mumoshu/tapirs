@@ -5,7 +5,6 @@ pub mod disk_io;
 pub mod error;
 pub mod faulty_disk_io;
 pub mod gc;
-#[cfg(test)]
 pub mod memory_io;
 pub mod lsm;
 pub mod manifest;

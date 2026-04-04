@@ -25,7 +25,7 @@ pub struct CombinedRecordHandle<K: Ord, V, DIO: DiskIo> {
 
 impl<K: Ord, V, DIO: DiskIo> CombinedRecordHandle<K, V, DIO> {
     /// Create a TAPIR store handle sharing the same inner state.
-    pub(crate) fn tapir_handle(&self) -> super::tapir_handle::CombinedTapirHandle<K, V, DIO> {
+    pub fn tapir_handle(&self) -> super::tapir_handle::CombinedTapirHandle<K, V, DIO> {
         super::tapir_handle::CombinedTapirHandle {
             inner: Arc::clone(&self.inner),
         }
