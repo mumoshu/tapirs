@@ -298,6 +298,7 @@ impl<K: Key + Serialize + DeserializeOwned, V: Value + Serialize + DeserializeOw
             self.occ_cache.update_max_read_time(snapshot_ts);
         }
 
+        eprintln!("[QR] key={key:?} snapshot_ts={snapshot_ts:?} write_ts={ts:?} value={value:?}");
         Ok((value, ts))
     }
 
@@ -349,10 +350,12 @@ impl<K: Key + Serialize + DeserializeOwned, V: Value + Serialize + DeserializeOw
         if let Ok(Some((found_ck, mut entry))) = self.mvcc.range_get_first(&search)
             && found_ck.key == *key
         {
+            let old = entry.last_read_ts;
             entry.last_read_ts = Some(match entry.last_read_ts {
                 Some(existing) => existing.max(commit_time),
                 None => commit_time,
             });
+            eprintln!("[MVCC-UPDATE-LRT] key={key:?} read={read:?} found_ts={:?} old_lrt={old:?} new_lrt={:?} commit_time={commit_time}", found_ck.timestamp.0, entry.last_read_ts);
             self.mvcc.put(found_ck, entry);
         }
     }
@@ -737,8 +740,10 @@ where
         let read_ts = mvcc_view.get_last_read_ts_at(key, ts).ok()??;
         if read_ts >= ts {
             let (value, write_ts) = inner.snapshot_get_at(key, ts).ok()?;
+            eprintln!("[FP-HIT] key={key:?} snapshot_ts={ts:?} last_read_ts={read_ts:?} write_ts={write_ts:?} value={value:?}");
             Some((value, write_ts))
         } else {
+            eprintln!("[FP-MISS] key={key:?} snapshot_ts={ts:?} last_read_ts={read_ts:?} (too old)");
             None
         }
     }

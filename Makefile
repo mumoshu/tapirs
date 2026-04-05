@@ -65,51 +65,112 @@ $(MAELSTROM_BIN):
 	@curl -fsSL https://github.com/jepsen-io/maelstrom/releases/download/v$(MAELSTROM_VERSION)/maelstrom.tar.bz2 | tar -xjf - -C $(MAELSTROM_DIR)
 	@echo "Maelstrom v$(MAELSTROM_VERSION) installed to $(MAELSTROM_DIR)/"
 
-maelstrom: maelstrom-sync-ro-txn-get maelstrom-skewed-rw-txn-get-commit maelstrom-skewed-ro-txn-get-fail maelstrom-sync-ro-fast-path maelstrom-skew-ro-slow-path-truetime
+# ── Maelstrom linearizability tests ──────────────────────────────────
+#
+# Each target exercises a different read path / clock configuration.
+# Maelstrom's lin-kv workload verifies linearizability via Knossos.
+#
+# Key settings (env vars → Maelstrom binary):
+#   TAPIR_CLOCK_SKEW_MAX          Max simulated clock offset (ns). 0 = synchronized.
+#   TAPIR_LINEARIZABLE_READ_METHOD  ro_txn_get | rw_txn_get_commit
+#     ro_txn_get:           RO transaction — quorum read (+ optional fast path).
+#     rw_txn_get_commit:    RW transaction — OCC validates the read at commit.
+#   TAPIR_RO_FAST_PATH_DELAY_MS   Sleep before trying single-replica read_validated.
+#   TAPIR_READ_TIMEOUT_MS         Timeout for the read_validated RPC.
+#   TAPIR_VIEW_CHANGE_INTERVAL_MS Override IR view change timer (default 2s).
+#   TAPIR_INCONSISTENT_RESULT_DEADLINE_MS  IR client deadline for inconsistent ops.
+#   TAPIR_RO_CLOCK_SKEW_UNCERTAINTY_BOUND  TrueTime uncertainty window (ns).
+#
+# Setting relationships:
+#   - fast_path_delay is a performance knob, not a correctness one.
+#     Too short → more misses (safe quorum fallback). Never causes stale reads.
+#     Recommended: fast_path_delay > view_change_interval for high hit rate.
+#   - view_change_interval controls how often replicas initiate view changes.
+#     Too short under partition nemesis → replicas spend most time in
+#     ViewChanging, rejecting operations → near-zero availability.
+#     The default (2s) works well with Maelstrom's 20s nemesis-interval.
+#   - All delays (fast_path_delay + read_timeout + quorum_read) must fit
+#     within Maelstrom's ~1s per-operation timeout, otherwise reads show
+#     as :net-timeout (fail) even though the system is correct.
+#   - inconsistent_result_deadline must exceed view_change_interval so
+#     the IR client can retry after a view change completes.
+#
+# Misconfiguration examples:
+#   - view_change_interval=200ms + partition nemesis:
+#     View numbers advance every 200ms, faster than view changes complete.
+#     System stuck in ViewChanging → 0% availability → test fails on stats.
+#   - fast_path_delay=2s with Maelstrom:
+#     Delay alone exceeds the ~1s operation timeout → all reads timeout.
+#   - clock_skew > 0 + ro_txn_get (without TrueTime uncertainty_bound):
+#     Snapshot timestamp may be < commit_ts of a completed write → stale read.
+#     This is a KNOWN limitation (Paper S6.1), tested by skewed-ro-txn-get-fail.
 
-# Synchronized clocks: RO quorum read is linearizable.
+maelstrom: maelstrom-sync-ro-txn-get maelstrom-skewed-rw-txn-get-commit maelstrom-skewed-ro-txn-get-fail maelstrom-sync-ro-fast-path maelstrom-sync-ro-fast-path-partition maelstrom-skew-ro-slow-path-truetime
+
+# Baseline: synchronized clocks, RO quorum read, with partitions.
+# Proves the quorum read path (f+1 merge by highest write_ts) is linearizable.
 maelstrom-sync-ro-txn-get:
 	TAPIR_CLOCK_SKEW_MAX=0 TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get MAELSTROM_RUN_NAME=sync-ro-txn-get $(MAKE) maelstrom-run
 
+# Clock skew + RW transactions: OCC validates reads at commit time.
+# Proves linearizability when clocks are skewed, using the RW path.
 maelstrom-skewed-rw-txn-get-commit:
 	TAPIR_CLOCK_SKEW_MAX=1000 TAPIR_LINEARIZABLE_READ_METHOD=rw_txn_get_commit MAELSTROM_RUN_NAME=skewed-rw-txn-get-commit $(MAKE) maelstrom-run
 
-# Under clock skew (max 1000ms), RO reads are not linearizable (Paper S6.1).
-# Use RW transaction: OCC validates the read at commit time.
+# Negative test: clock skew + RO reads (no TrueTime) → NOT linearizable.
+# Expected to FAIL. Validates that Maelstrom catches the known limitation.
 maelstrom-skewed-ro-txn-get-fail:
 	@echo "Expecting linearizability FAILURE (RO reads under clock skew)..."
 	@TAPIR_CLOCK_SKEW_MAX=1000 TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get MAELSTROM_RUN_NAME=skewed-ro-txn-get-fail $(MAKE) maelstrom-run \
 		&& { echo "ERROR: expected maelstrom to fail but it passed"; exit 1; } \
 		|| echo "Good: maelstrom failed as expected (RO reads not linearizable under clock skew)"
 
+# Fast path (no partitions): exercises single-replica validated reads
+# (do_uncommitted_get_validated). Replica returns a cached value when
+# last_read_ts >= snapshot_ts, skipping quorum. On miss, falls back to
+# quorum read. No nemesis → high availability, high fast path hit rate.
 maelstrom-sync-ro-fast-path:
-	TAPIR_CLOCK_SKEW_MAX=0 TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get TAPIR_RO_FAST_PATH_DELAY_MS=200 TAPIR_READ_TIMEOUT_MS=200 TAPIR_VIEW_CHANGE_INTERVAL_MS=200 TAPIR_INCONSISTENT_RESULT_DEADLINE_MS=500 MAELSTROM_RUN_NAME=sync-ro-fast-path $(MAKE) maelstrom-run
+	TAPIR_CLOCK_SKEW_MAX=0 TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get TAPIR_RO_FAST_PATH_DELAY_MS=200 TAPIR_READ_TIMEOUT_MS=200 TAPIR_INCONSISTENT_RESULT_DEADLINE_MS=500 MAELSTROM_RUN_NAME=sync-ro-fast-path $(MAKE) maelstrom-run-no-nemesis
 
-# Expect frequent failure: 1ms delay is too short for replicas to sync via view change
-# (view change interval is 200ms), so read_validated may return stale data.
-# When it did return stale data, it's linearizability violation that maelstrom catches.
-#
-# NOT included in `make maelstrom` — probabilistic, not deterministic.
-# With zero-latency transport, async FinalizeInconsistent propagates
-# nearly instantly, so read_validated often returns correct data even
-# with 1ms delay. The stale-read scenario requires a specific partition
-# timing where a prior commit_get set read_ts on a replica that then
-# misses a subsequent write's FinalizeInconsistent. Run manually to
-# check: it should fail more often than not, but may occasionally pass.
-maelstrom-sync-ro-fast-path-may-fail:
-	TAPIR_CLOCK_SKEW_MAX=0 TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get TAPIR_RO_FAST_PATH_DELAY_MS=1 TAPIR_READ_TIMEOUT_MS=200 TAPIR_VIEW_CHANGE_INTERVAL_MS=200 MAELSTROM_RUN_NAME=sync-ro-fast-path-may-fail $(MAKE) maelstrom-run
+# Fast path (with partitions): same fast path logic under network faults.
+# Uses default 2s view_change_interval for stability under partitions.
+# fast_path_delay (200ms) < view_change_interval → mostly misses, proving
+# that misses safely fall back to quorum reads without stale data.
+maelstrom-sync-ro-fast-path-partition:
+	TAPIR_CLOCK_SKEW_MAX=0 TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get TAPIR_RO_FAST_PATH_DELAY_MS=200 TAPIR_READ_TIMEOUT_MS=200 TAPIR_INCONSISTENT_RESULT_DEADLINE_MS=500 MAELSTROM_RUN_NAME=sync-ro-fast-path-partition $(MAKE) maelstrom-run
 
-# TrueTime-style RO linearizability under clock skew (Paper S6.1 + Spanner).
-# Clock skew up to 100ms (one-directional: now + [0,100ms)).
-# Uncertainty bound = 2 * max_skew = 200ms: covers worst case where writer's
-# clock is +100ms ahead and reader's clock is +0ms (or bidirectional ±100ms).
-# snapshot_ts is adjusted by the bound so that snapshot_ts >= commit_ts of
-# any completed write. The delay before quorum_read ensures async
-# FinalizeInconsistent(Commit) propagation. No fast path — always quorum read.
+# TrueTime-style: RO linearizability under clock skew (Paper S6.1 + Spanner).
+# uncertainty_bound = 2 * max_skew covers worst-case bidirectional skew.
+# snapshot_ts is shifted by the bound so it always >= commit_ts of any
+# completed write. The delay ensures FinalizeInconsistent(Commit) propagates.
 maelstrom-skew-ro-slow-path-truetime:
 	TAPIR_CLOCK_SKEW_MAX=100 TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get TAPIR_RO_CLOCK_SKEW_UNCERTAINTY_BOUND=200 MAELSTROM_RUN_NAME=skew-ro-slow-path-truetime $(MAKE) maelstrom-run
 
+# ── Manual / exploratory targets (NOT in `make maelstrom`) ──────────
+
+# Deliberately broken fast path: 1ms delay is far too short for any
+# view change sync. read_validated may see stale last_read_ts and return
+# an old value. Expected to fail with linearizability violations.
+# Probabilistic — may occasionally pass when FinalizeInconsistent
+# propagates fast enough over Maelstrom's zero-latency transport.
+maelstrom-sync-ro-fast-path-may-fail:
+	TAPIR_CLOCK_SKEW_MAX=0 TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get TAPIR_RO_FAST_PATH_DELAY_MS=1 TAPIR_READ_TIMEOUT_MS=200 TAPIR_VIEW_CHANGE_INTERVAL_MS=200 MAELSTROM_RUN_NAME=sync-ro-fast-path-may-fail $(MAKE) maelstrom-run
+
 MAELSTROM_RUN_NAME ?= unnamed
+maelstrom-run-no-nemesis: $(MAELSTROM_BIN)
+	cargo build --release -p tapi-maelstrom
+	$(eval MAELSTROM_LOG := /tmp/maelstrom-output-$(MAELSTROM_RUN_NAME)-$(shell date +%Y%m%d-%H%M%S).txt)
+	bash -c 'set -o pipefail; $(MAELSTROM_BIN) test -w lin-kv --bin target/release/maelstrom --latency 0 --rate 10 --time-limit 90 --concurrency 20 2>&1 | tee $(MAELSTROM_LOG)'; \
+	EXIT=$$?; \
+	cp $(MAELSTROM_LOG) /tmp/maelstrom-output.txt; \
+	bash scripts/maelstrom-summary.sh $(MAELSTROM_LOG); \
+	if [ $$EXIT -eq 0 ]; then \
+		echo "PASSED"; \
+	else \
+		echo "FAILED (exit $$EXIT). Investigate with: less $(MAELSTROM_LOG)"; \
+		exit 1; \
+	fi
+
 maelstrom-run: $(MAELSTROM_BIN)
 	cargo build --release -p tapi-maelstrom
 	$(eval MAELSTROM_LOG := /tmp/maelstrom-output-$(MAELSTROM_RUN_NAME)-$(shell date +%Y%m%d-%H%M%S).txt)
