@@ -259,11 +259,16 @@ impl<K: Key, V: Value, DIO: DiskIo> CombinedStoreInner<K, V, DIO> {
     /// Called by CombinedTapirHandle::flush(). IrReplica always calls
     /// record.flush() (IR seal) before upcalls.flush() (this method),
     /// so the IR manifest fields are up-to-date when we copy them.
-    pub(crate) fn seal_tapir_side(&mut self) -> Result<(), StorageError>
+    /// Seal all TAPIR VlogLsms, save manifest, and return the list of
+    /// newly-sealed segment/SST filenames (for remote upload).
+    pub(crate) fn seal_tapir_side(&mut self) -> Result<Vec<String>, StorageError>
     where
         K: Serialize + DeserializeOwned,
         V: Serialize,
     {
+        #[cfg(feature = "s3")]
+        let manifest_before = self.tapir_manifest.clone();
+
         let sealed_comm =
             self.committed
                 .seal_view(0, |txn_id, _| {
@@ -329,7 +334,16 @@ impl<K: Key, V: Value, DIO: DiskIo> CombinedStoreInner<K, V, DIO> {
         self.committed.start_view(self.tapir_view);
         self.prepared.start_view(self.tapir_view);
         self.mvcc.start_view(self.tapir_view);
-        Ok(())
+
+        #[cfg(feature = "s3")]
+        let new_files = crate::remote_store::upload::diff_manifests(
+            &manifest_before,
+            &self.tapir_manifest,
+        );
+        #[cfg(not(feature = "s3"))]
+        let new_files = Vec::new();
+
+        Ok(new_files)
     }
 
     /// Total bytes stored across all three TAPIR VlogLsms (sealed + active).
