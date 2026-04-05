@@ -199,21 +199,10 @@ mod tests {
         assert!(S3BackupStorage::parse_s3_uri("s3://").is_err());
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "current_thread")]
     async fn s3_storage_roundtrip() {
-        let endpoint = match std::env::var("TAPI_TEST_S3_ENDPOINT") {
-            Ok(ep) => ep,
-            Err(_) => {
-                eprintln!("skipping s3_storage_roundtrip: TAPI_TEST_S3_ENDPOINT not set");
-                return;
-            }
-        };
-
-        let storage = S3BackupStorage::new(
-            "tapi-test",
-            "roundtrip-test/",
-            None,
-            Some(&endpoint),
+        let storage = crate::remote_store::test_helpers::minio::test_s3_storage(
+            "s3-storage-roundtrip",
         )
         .await;
 
