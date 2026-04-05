@@ -5,14 +5,28 @@ use crate::unified::wisckeylsm::manifest::{LsmManifestData, UnifiedManifest};
 
 use super::segment_store::RemoteSegmentStore;
 
-/// Collect all segment and SST filenames referenced in an LsmManifestData.
-fn lsm_file_names(data: &LsmManifestData) -> Vec<String> {
+/// Compute the vlog filename for an active segment.
+pub(crate) fn active_vlog_name(label: &str, id: u64) -> String {
+    if label.is_empty() {
+        format!("vlog_seg_{id:04}.dat")
+    } else {
+        format!("{label}_vlog_{id:04}.dat")
+    }
+}
+
+/// Collect all segment and SST filenames referenced in an LsmManifestData,
+/// including the active segment.
+fn lsm_file_names(label: &str, data: &LsmManifestData) -> Vec<String> {
     let mut names = Vec::new();
+    // Active segment (may have data from current view).
+    names.push(active_vlog_name(label, data.active_segment_id));
+    // Sealed segments.
     for seg in &data.sealed_vlog_segments {
         if let Some(name) = seg.path.file_name().and_then(|n| n.to_str()) {
             names.push(name.to_string());
         }
     }
+    // SST files.
     for sst in &data.sst_metas {
         if let Some(name) = sst.path.file_name().and_then(|n| n.to_str()) {
             names.push(name.to_string());
@@ -21,14 +35,15 @@ fn lsm_file_names(data: &LsmManifestData) -> Vec<String> {
     names
 }
 
-/// Collect all segment and SST filenames across the entire manifest.
+/// Collect all segment and SST filenames across the entire manifest,
+/// including active segments for each VlogLsm.
 pub fn all_file_names(manifest: &UnifiedManifest) -> Vec<String> {
     let mut names = Vec::new();
-    names.extend(lsm_file_names(&manifest.committed));
-    names.extend(lsm_file_names(&manifest.prepared));
-    names.extend(lsm_file_names(&manifest.mvcc));
-    names.extend(lsm_file_names(&manifest.ir_inc));
-    names.extend(lsm_file_names(&manifest.ir_con));
+    names.extend(lsm_file_names("comb_comm", &manifest.committed));
+    names.extend(lsm_file_names("comb_prep", &manifest.prepared));
+    names.extend(lsm_file_names("comb_mvcc", &manifest.mvcc));
+    names.extend(lsm_file_names("ir_inc", &manifest.ir_inc));
+    names.extend(lsm_file_names("ir_con", &manifest.ir_con));
     names
 }
 
@@ -76,6 +91,12 @@ mod tests {
             num_entries: 10,
         });
         let names = all_file_names(&m);
-        assert_eq!(names, vec!["comb_comm_vlog_0000.dat", "comb_mvcc_sst_0000.db"]);
+        // Includes active segments for all 5 VlogLsms + the sealed segment + the SST.
+        assert!(names.contains(&"comb_comm_vlog_0000.dat".to_string()));
+        assert!(names.contains(&"comb_mvcc_sst_0000.db".to_string()));
+        // Active segments for VlogLsms that have no sealed data:
+        assert!(names.contains(&"comb_prep_vlog_0000.dat".to_string()));
+        assert!(names.contains(&"ir_inc_vlog_0000.dat".to_string()));
+        assert!(names.contains(&"ir_con_vlog_0000.dat".to_string()));
     }
 }

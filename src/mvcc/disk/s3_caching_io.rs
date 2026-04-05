@@ -54,19 +54,16 @@ fn lookup_config(path: &Path) -> Option<S3CacheConfig> {
 
 /// Download a single file from S3 to a local path.
 ///
-/// Uses a temporary tokio runtime since DiskIo::open() is synchronous.
-/// This is acceptable because segment downloads happen once per segment.
+/// If called from within an existing tokio runtime, uses the current handle.
+/// Otherwise creates a temporary runtime. This supports both production use
+/// (where DiskIo::open runs outside tokio) and test use (where it runs
+/// inside a #[tokio::test]).
 fn download_from_s3_blocking(
     config: &S3CacheConfig,
     segment_name: &str,
     local_path: &Path,
 ) -> Result<(), StorageError> {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| StorageError::Io(std::io::Error::other(format!("tokio runtime: {e}"))))?;
-
-    rt.block_on(async {
+    let download = async {
         let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
             .region(aws_config::Region::new("us-east-1"))
             .endpoint_url(&config.endpoint)
@@ -97,7 +94,19 @@ fn download_from_s3_blocking(
         })?;
 
         std::fs::write(local_path, bytes.into_bytes()).map_err(StorageError::Io)
-    })
+    };
+
+    // If we're already inside a tokio runtime (e.g. in tests), use block_in_place
+    // to avoid the "runtime within runtime" panic. Otherwise create a new runtime.
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        tokio::task::block_in_place(|| handle.block_on(download))
+    } else {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| StorageError::Io(std::io::Error::other(format!("tokio runtime: {e}"))))?;
+        rt.block_on(download)
+    }
 }
 
 /// DiskIo implementation that lazily downloads segments from S3 on first open.

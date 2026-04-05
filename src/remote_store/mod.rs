@@ -12,3 +12,5 @@ pub mod upload;
 
 #[cfg(test)]
 pub(crate) mod test_helpers;
+#[cfg(test)]
+mod tests;

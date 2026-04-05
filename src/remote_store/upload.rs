@@ -45,6 +45,12 @@ pub fn diff_manifests(before: &UnifiedManifest, after: &UnifiedManifest) -> Vec<
     files
 }
 
+/// Collect ALL filenames referenced in the manifest (for full upload).
+/// Reuses all_file_names from the download module.
+pub fn all_manifest_files(manifest: &UnifiedManifest) -> Vec<String> {
+    super::download::all_file_names(manifest)
+}
+
 /// Upload all new segment files to S3. Checks existence first (HEAD) to
 /// skip already-uploaded segments (idempotent).
 pub async fn upload_new_segments<S: BackupStorage>(

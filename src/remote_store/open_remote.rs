@@ -43,7 +43,7 @@ async fn prepare_from_manifest_bytes<S: BackupStorage>(
     base_dir: &Path,
     manifest_bytes: &[u8],
 ) -> Result<UnifiedManifest, String> {
-    let manifest: UnifiedManifest = bitcode::deserialize(manifest_bytes)
+    let mut manifest: UnifiedManifest = bitcode::deserialize(manifest_bytes)
         .map_err(|e| format!("deserialize manifest: {e}"))?;
 
     // Ensure base_dir exists.
@@ -52,6 +52,9 @@ async fn prepare_from_manifest_bytes<S: BackupStorage>(
 
     // Download all segment and SST files.
     download_all_files(segment_store, shard, base_dir, &manifest).await?;
+
+    // Rebase manifest paths to the new base_dir.
+    rebase_manifest_paths(&mut manifest, base_dir);
 
     // Save manifest locally so CombinedStoreInner::open() finds it.
     manifest
@@ -97,7 +100,7 @@ fn prepare_lazy_from_bytes(
     base_dir: &Path,
     manifest_bytes: &[u8],
 ) -> Result<UnifiedManifest, String> {
-    let manifest: UnifiedManifest = bitcode::deserialize(manifest_bytes)
+    let mut manifest: UnifiedManifest = bitcode::deserialize(manifest_bytes)
         .map_err(|e| format!("deserialize manifest: {e}"))?;
 
     std::fs::create_dir_all(base_dir)
@@ -118,6 +121,10 @@ fn prepare_lazy_from_bytes(
         },
     );
 
+    // Rebase manifest paths to the new base_dir. The source manifest has
+    // absolute paths from the source machine; we need paths in our directory.
+    rebase_manifest_paths(&mut manifest, base_dir);
+
     // Save manifest locally so CombinedStoreInner::open() finds it.
     manifest
         .save::<crate::mvcc::disk::disk_io::BufferedIo>(base_dir)
@@ -125,6 +132,32 @@ fn prepare_lazy_from_bytes(
 
     Ok(manifest)
 }
+
+/// Rewrite all paths in the manifest to point to the new base_dir.
+/// Sealed segment and SST paths are stored as absolute paths from the
+/// source machine. When opening in a different directory, they need
+/// to be rebased to the new location.
+pub(crate) fn rebase_manifest_paths(manifest: &mut UnifiedManifest, base_dir: &Path) {
+    rebase_lsm_paths(&mut manifest.committed, base_dir);
+    rebase_lsm_paths(&mut manifest.prepared, base_dir);
+    rebase_lsm_paths(&mut manifest.mvcc, base_dir);
+    rebase_lsm_paths(&mut manifest.ir_inc, base_dir);
+    rebase_lsm_paths(&mut manifest.ir_con, base_dir);
+}
+
+fn rebase_lsm_paths(data: &mut crate::unified::wisckeylsm::manifest::LsmManifestData, base_dir: &Path) {
+    for seg in &mut data.sealed_vlog_segments {
+        if let Some(name) = seg.path.file_name() {
+            seg.path = base_dir.join(name);
+        }
+    }
+    for sst in &mut data.sst_metas {
+        if let Some(name) = sst.path.file_name() {
+            sst.path = base_dir.join(name);
+        }
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -153,10 +186,17 @@ mod tests {
             total_size: 42,
         });
 
-        // Upload segment file and manifest.
+        // Upload segment files and active segment stubs.
         let seg_sub = storage.sub("shard_0").sub("segments");
         seg_sub.init().await.unwrap();
         seg_sub.write("comb_comm_vlog_0000.dat", b"segment-data").await.unwrap();
+        // Active segment files (empty, needed by open_from_manifest).
+        for name in ["comb_comm_vlog_0000.dat", "comb_prep_vlog_0000.dat",
+                      "comb_mvcc_vlog_0000.dat", "ir_inc_vlog_0000.dat",
+                      "ir_con_vlog_0000.dat"] {
+            if seg_sub.exists(name).await.unwrap() { continue; }
+            seg_sub.write(name, b"").await.unwrap();
+        }
 
         let manifest_bytes = bitcode::serialize(&manifest).unwrap();
         man_store.upload_manifest("shard_0", 1, &manifest_bytes).await.unwrap();
