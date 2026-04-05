@@ -1,4 +1,5 @@
 pub mod config;
+pub mod cow_clone;
 pub mod download;
 pub mod manifest_store;
 pub mod open_remote;
