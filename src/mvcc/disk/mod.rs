@@ -9,6 +9,8 @@ pub mod memory_io;
 pub mod lsm;
 pub mod manifest;
 pub mod memtable;
+#[cfg(feature = "s3")]
+pub mod s3_caching_io;
 pub mod sstable;
 pub mod vlog;
 

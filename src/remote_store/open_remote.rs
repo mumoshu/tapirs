@@ -2,8 +2,10 @@ use std::path::Path;
 
 use crate::backup::storage::BackupStorage;
 use crate::mvcc::disk::error::StorageError;
+use crate::mvcc::disk::s3_caching_io::{S3CacheConfig, register_s3_cache};
 use crate::unified::wisckeylsm::manifest::UnifiedManifest;
 
+use super::config::S3StorageConfig;
 use super::download::download_all_files;
 use super::manifest_store::RemoteManifestStore;
 use super::segment_store::RemoteSegmentStore;
@@ -50,6 +52,71 @@ async fn prepare_from_manifest_bytes<S: BackupStorage>(
 
     // Download all segment and SST files.
     download_all_files(segment_store, shard, base_dir, &manifest).await?;
+
+    // Save manifest locally so CombinedStoreInner::open() finds it.
+    manifest
+        .save::<crate::mvcc::disk::disk_io::BufferedIo>(base_dir)
+        .map_err(|e: StorageError| format!("save manifest: {e}"))?;
+
+    Ok(manifest)
+}
+
+/// Download only the manifest from S3 and register S3 cache config so that
+/// `S3CachingIo` will lazy-download segments on first access.
+///
+/// This is the zero-copy open path: no segment data is transferred until
+/// a read actually needs it. The caller should open `CombinedStoreInner`
+/// with `S3CachingIo` as the DiskIo type after calling this.
+///
+/// Returns the manifest for the caller to inspect.
+pub async fn prepare_local_lazy<S: BackupStorage>(
+    manifest_store: &RemoteManifestStore<S>,
+    s3_config: &S3StorageConfig,
+    shard: &str,
+    base_dir: &Path,
+) -> Result<UnifiedManifest, String> {
+    let (_view, bytes) = manifest_store.download_latest_manifest(shard).await?;
+    prepare_lazy_from_bytes(s3_config, shard, base_dir, &bytes)
+}
+
+/// Download a specific view's manifest (lazy, no segments).
+pub async fn prepare_local_lazy_at_view<S: BackupStorage>(
+    manifest_store: &RemoteManifestStore<S>,
+    s3_config: &S3StorageConfig,
+    shard: &str,
+    view: u64,
+    base_dir: &Path,
+) -> Result<UnifiedManifest, String> {
+    let bytes = manifest_store.download_manifest(shard, view).await?;
+    prepare_lazy_from_bytes(s3_config, shard, base_dir, &bytes)
+}
+
+fn prepare_lazy_from_bytes(
+    s3_config: &S3StorageConfig,
+    shard: &str,
+    base_dir: &Path,
+    manifest_bytes: &[u8],
+) -> Result<UnifiedManifest, String> {
+    let manifest: UnifiedManifest = bitcode::deserialize(manifest_bytes)
+        .map_err(|e| format!("deserialize manifest: {e}"))?;
+
+    std::fs::create_dir_all(base_dir)
+        .map_err(|e| format!("create_dir_all {}: {e}", base_dir.display()))?;
+
+    // Register S3 config so S3CachingIo::open() can download segments on demand.
+    let endpoint = s3_config
+        .endpoint_url
+        .as_deref()
+        .unwrap_or("")
+        .to_string();
+    register_s3_cache(
+        base_dir,
+        S3CacheConfig {
+            endpoint,
+            bucket: s3_config.bucket.clone(),
+            shard_segments_prefix: format!("{shard}/segments/"),
+        },
+    );
 
     // Save manifest locally so CombinedStoreInner::open() finds it.
     manifest

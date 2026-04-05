@@ -1,8 +1,10 @@
 use std::path::Path;
 
 use crate::backup::storage::BackupStorage;
+use crate::mvcc::disk::s3_caching_io::{S3CacheConfig, register_s3_cache};
 use crate::unified::wisckeylsm::manifest::{LsmManifestData, UnifiedManifest};
 
+use super::config::S3StorageConfig;
 use super::download::download_all_files;
 use super::manifest_store::RemoteManifestStore;
 use super::segment_store::RemoteSegmentStore;
@@ -58,6 +60,54 @@ pub async fn clone_from_remote<S: BackupStorage>(
     let cloned = rewrite_manifest_for_clone(&source);
 
     // Save clone manifest locally.
+    cloned
+        .save::<crate::mvcc::disk::disk_io::BufferedIo>(clone_base_dir)
+        .map_err(|e| format!("save clone manifest: {e}"))?;
+
+    Ok(cloned)
+}
+
+/// Zero-copy clone: download only the manifest from S3, rewrite it for
+/// the clone, and register S3 cache config so segments are lazy-downloaded
+/// on first access via S3CachingIo.
+///
+/// No segment data is transferred until the clone actually reads it. The
+/// clone's new writes go to local active segments. Reads of existing data
+/// fall through to S3-backed sealed segments, cached locally on first access.
+pub async fn clone_from_remote_lazy<S: BackupStorage>(
+    manifest_store: &RemoteManifestStore<S>,
+    s3_config: &S3StorageConfig,
+    shard: &str,
+    view: Option<u64>,
+    clone_base_dir: &Path,
+) -> Result<UnifiedManifest, String> {
+    let source_bytes = match view {
+        Some(v) => manifest_store.download_manifest(shard, v).await?,
+        None => manifest_store.download_latest_manifest(shard).await?.1,
+    };
+    let source: UnifiedManifest = bitcode::deserialize(&source_bytes)
+        .map_err(|e| format!("deserialize source manifest: {e}"))?;
+
+    std::fs::create_dir_all(clone_base_dir)
+        .map_err(|e| format!("create_dir_all {}: {e}", clone_base_dir.display()))?;
+
+    // Register S3 config so S3CachingIo downloads segments on demand.
+    let endpoint = s3_config
+        .endpoint_url
+        .as_deref()
+        .unwrap_or("")
+        .to_string();
+    register_s3_cache(
+        clone_base_dir,
+        S3CacheConfig {
+            endpoint,
+            bucket: s3_config.bucket.clone(),
+            shard_segments_prefix: format!("{shard}/segments/"),
+        },
+    );
+
+    let cloned = rewrite_manifest_for_clone(&source);
+
     cloned
         .save::<crate::mvcc::disk::disk_io::BufferedIo>(clone_base_dir)
         .map_err(|e| format!("save clone manifest: {e}"))?;
