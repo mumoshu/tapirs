@@ -1,3 +1,4 @@
+pub mod backup_descriptor;
 pub mod config;
 pub mod cow_clone;
 pub mod download;
