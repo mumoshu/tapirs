@@ -457,16 +457,11 @@ fn main() {
             let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");
             rt.block_on(async {
                 if dir.starts_with("s3://") {
-                    #[cfg(feature = "s3")]
-                    {
-                        let (bucket, prefix) = tapirs::backup::s3backup::S3BackupStorage::parse_s3_uri(&dir)?;
-                        let storage = tapirs::backup::s3backup::S3BackupStorage::new(
-                            &bucket, &prefix, cli.s3.s3_region.as_deref(), cli.s3.s3_endpoint.as_deref(),
-                        ).await;
-                        tapirs::backup::BackupManager::list_backups(&storage).await
-                    }
-                    #[cfg(not(feature = "s3"))]
-                    Err("S3 support requires building with --features s3".to_string())
+                    let (bucket, prefix) = tapirs::backup::s3backup::S3BackupStorage::parse_s3_uri(&dir)?;
+                    let storage = tapirs::backup::s3backup::S3BackupStorage::new(
+                        &bucket, &prefix, cli.s3.s3_region.as_deref(), cli.s3.s3_endpoint.as_deref(),
+                    ).await;
+                    tapirs::backup::BackupManager::list_backups(&storage).await
                 } else {
                     let storage = LocalBackupStorage::new(&dir);
                     tapirs::backup::BackupManager::list_backups(&storage).await
@@ -495,16 +490,11 @@ fn main() {
             let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");
             rt.block_on(async {
                 if output.starts_with("s3://") {
-                    #[cfg(feature = "s3")]
-                    {
-                        let (bucket, prefix) = tapirs::backup::s3backup::S3BackupStorage::parse_s3_uri(&output)?;
-                        let storage = tapirs::backup::s3backup::S3BackupStorage::new(
-                            &bucket, &prefix, cli.s3.s3_region.as_deref(), cli.s3.s3_endpoint.as_deref(),
-                        ).await;
-                        mgr.backup_cluster(&storage).await
-                    }
-                    #[cfg(not(feature = "s3"))]
-                    Err("S3 support requires building with --features s3".to_string())
+                    let (bucket, prefix) = tapirs::backup::s3backup::S3BackupStorage::parse_s3_uri(&output)?;
+                    let storage = tapirs::backup::s3backup::S3BackupStorage::new(
+                        &bucket, &prefix, cli.s3.s3_region.as_deref(), cli.s3.s3_endpoint.as_deref(),
+                    ).await;
+                    mgr.backup_cluster(&storage).await
                 } else {
                     let storage = LocalBackupStorage::new(&output);
                     mgr.backup_cluster(&storage).await
@@ -529,16 +519,11 @@ fn main() {
             let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");
             rt.block_on(async {
                 if input.starts_with("s3://") {
-                    #[cfg(feature = "s3")]
-                    {
-                        let (bucket, prefix) = tapirs::backup::s3backup::S3BackupStorage::parse_s3_uri(&input)?;
-                        let storage = tapirs::backup::s3backup::S3BackupStorage::new(
-                            &bucket, &prefix, cli.s3.s3_region.as_deref(), cli.s3.s3_endpoint.as_deref(),
-                        ).await;
-                        mgr.restore_cluster(&addrs, &storage).await
-                    }
-                    #[cfg(not(feature = "s3"))]
-                    Err("S3 support requires building with --features s3".to_string())
+                    let (bucket, prefix) = tapirs::backup::s3backup::S3BackupStorage::parse_s3_uri(&input)?;
+                    let storage = tapirs::backup::s3backup::S3BackupStorage::new(
+                        &bucket, &prefix, cli.s3.s3_region.as_deref(), cli.s3.s3_endpoint.as_deref(),
+                    ).await;
+                    mgr.restore_cluster(&addrs, &storage).await
                 } else {
                     let storage = LocalBackupStorage::new(&input);
                     mgr.restore_cluster(&addrs, &storage).await
@@ -609,19 +594,14 @@ fn main() {
                     eprintln!("[solo backup] {phase}");
                 });
                 if output.starts_with("s3://") {
-                    #[cfg(feature = "s3")]
-                    {
-                        let (bucket, prefix) = tapirs::backup::s3backup::S3BackupStorage::parse_s3_uri(&output).map_err(|e| format!("{e:?}"))?;
-                        let storage = tapirs::backup::s3backup::S3BackupStorage::new(
-                            &bucket, &prefix, cli.s3.s3_region.as_deref(), cli.s3.s3_endpoint.as_deref(),
-                        ).await;
-                        mgr.backup_cluster_direct(&addrs, &storage)
-                            .await
-                            .map_err(|e| format!("{e:?}"))
-                            .map(|()| println!("Backup completed to {output}"))
-                    }
-                    #[cfg(not(feature = "s3"))]
-                    Err("S3 support requires building with --features s3".to_string())
+                    let (bucket, prefix) = tapirs::backup::s3backup::S3BackupStorage::parse_s3_uri(&output).map_err(|e| format!("{e:?}"))?;
+                    let storage = tapirs::backup::s3backup::S3BackupStorage::new(
+                        &bucket, &prefix, cli.s3.s3_region.as_deref(), cli.s3.s3_endpoint.as_deref(),
+                    ).await;
+                    mgr.backup_cluster_direct(&addrs, &storage)
+                        .await
+                        .map_err(|e| format!("{e:?}"))
+                        .map(|()| println!("Backup completed to {output}"))
                 } else {
                     let storage = LocalBackupStorage::new(&output);
                     mgr.backup_cluster_direct(&addrs, &storage)
@@ -651,19 +631,14 @@ fn main() {
                     eprintln!("[solo restore] {phase}");
                 });
                 if input.starts_with("s3://") {
-                    #[cfg(feature = "s3")]
-                    {
-                        let (bucket, prefix) = tapirs::backup::s3backup::S3BackupStorage::parse_s3_uri(&input).map_err(|e| format!("{e:?}"))?;
-                        let storage = tapirs::backup::s3backup::S3BackupStorage::new(
-                            &bucket, &prefix, cli.s3.s3_region.as_deref(), cli.s3.s3_endpoint.as_deref(),
-                        ).await;
-                        mgr.restore_cluster_direct(&addrs, &storage)
-                            .await
-                            .map_err(|e| format!("{e:?}"))
-                            .map(|()| println!("Restore completed from {input}"))
-                    }
-                    #[cfg(not(feature = "s3"))]
-                    Err("S3 support requires building with --features s3".to_string())
+                    let (bucket, prefix) = tapirs::backup::s3backup::S3BackupStorage::parse_s3_uri(&input).map_err(|e| format!("{e:?}"))?;
+                    let storage = tapirs::backup::s3backup::S3BackupStorage::new(
+                        &bucket, &prefix, cli.s3.s3_region.as_deref(), cli.s3.s3_endpoint.as_deref(),
+                    ).await;
+                    mgr.restore_cluster_direct(&addrs, &storage)
+                        .await
+                        .map_err(|e| format!("{e:?}"))
+                        .map(|()| println!("Restore completed from {input}"))
                 } else {
                     let storage = LocalBackupStorage::new(&input);
                     mgr.restore_cluster_direct(&addrs, &storage)

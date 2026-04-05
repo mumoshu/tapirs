@@ -16,19 +16,19 @@ fn new_segment_paths(before: &LsmManifestData, after: &LsmManifestData) -> Vec<S
         .map(|s| s.segment_id)
         .collect();
     for seg in &after.sealed_vlog_segments {
-        if !before_seg_ids.contains(&seg.segment_id) {
-            if let Some(name) = seg.path.file_name().and_then(|n| n.to_str()) {
-                paths.push(name.to_string());
-            }
+        if !before_seg_ids.contains(&seg.segment_id)
+            && let Some(name) = seg.path.file_name().and_then(|n| n.to_str())
+        {
+            paths.push(name.to_string());
         }
     }
     let before_sst_ids: std::collections::BTreeSet<u64> =
         before.sst_metas.iter().map(|s| s.id).collect();
     for sst in &after.sst_metas {
-        if !before_sst_ids.contains(&sst.id) {
-            if let Some(name) = sst.path.file_name().and_then(|n| n.to_str()) {
-                paths.push(name.to_string());
-            }
+        if !before_sst_ids.contains(&sst.id)
+            && let Some(name) = sst.path.file_name().and_then(|n| n.to_str())
+        {
+            paths.push(name.to_string());
         }
     }
     paths

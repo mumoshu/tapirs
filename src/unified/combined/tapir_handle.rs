@@ -187,7 +187,6 @@ impl<K: Key + Serialize + DeserializeOwned, V: Value + Serialize + DeserializeOw
     ///
     /// Without this, reads at timestamps in the ghost range would return entries
     /// that other shards don't have, breaking cross-shard consistency.
-    #[cfg(feature = "s3")]
     fn effective_snapshot_ts(&self, ts: Timestamp) -> Timestamp {
         match &self.ghost_filter {
             Some(gf) => Timestamp {
@@ -196,11 +195,6 @@ impl<K: Key + Serialize + DeserializeOwned, V: Value + Serialize + DeserializeOw
             },
             None => ts,
         }
-    }
-
-    #[cfg(not(feature = "s3"))]
-    fn effective_snapshot_ts(&self, ts: Timestamp) -> Timestamp {
-        ts
     }
 
     /// Resolve the value for an MVCC entry by chaining through the committed

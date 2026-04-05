@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 /// SST metadata stored in manifests.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct SstMeta {
+pub struct SstMeta {
     pub id: u64,
     pub path: PathBuf,
     pub num_entries: u64,

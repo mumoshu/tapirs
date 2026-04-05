@@ -242,8 +242,8 @@ ci/test-s3:
 	  amazon/aws-cli --endpoint-url http://localhost:9100 s3 mb s3://tapi-test \
 	  || { docker rm -f tapi-minio; exit 1; }
 	AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
-	  cargo clippy --features s3 --all-targets -- -D warnings \
+	  cargo clippy --all-targets -- -D warnings \
 	  && AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
 	  TAPI_TEST_S3_ENDPOINT=http://localhost:9100 \
-	  cargo test --features s3 --release -- s3backup \
+	  cargo test --release -- s3backup \
 	  ; EXIT=$$?; docker rm -f tapi-minio; exit $$EXIT

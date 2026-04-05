@@ -10,7 +10,7 @@
 //! must be called before opening files from that directory.
 
 use std::collections::BTreeMap;
-use std::future::{Future, Ready, ready};
+use std::future::{Future, Ready};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -126,12 +126,11 @@ impl DiskIo for S3CachingIo {
     type WriteFuture = Ready<Result<(), StorageError>>;
 
     fn open(path: &Path, flags: OpenFlags) -> Result<Self, StorageError> {
-        if !path.exists() {
-            if let Some(config) = lookup_config(path) {
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    download_from_s3_blocking(&config, name, path)?;
-                }
-            }
+        if !path.exists()
+            && let Some(config) = lookup_config(path)
+            && let Some(name) = path.file_name().and_then(|n| n.to_str())
+        {
+            download_from_s3_blocking(&config, name, path)?;
         }
         Ok(Self {
             inner: BufferedIo::open(path, flags)?,

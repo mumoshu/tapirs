@@ -26,7 +26,7 @@ default = []
 io-uring = ["dep:io-uring", "dep:socket2"]
 tls = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile"]
 tikv = ["dep:tikv-client"]
-s3 = ["dep:aws-sdk-s3", "dep:aws-config"]
+
 
 [dependencies]
 bitcode = { version = "0.4.0", features = ["serde"] }
@@ -55,8 +55,8 @@ rustls = { version = "0.23", features = ["ring", "std"], default-features = fals
 tokio-rustls = { version = "0.26", optional = true }
 rustls-pemfile = { version = "2", optional = true }
 tikv-client = { version = "0.3", optional = true, default-features = false }
-aws-sdk-s3 = { version = "1", optional = true }
-aws-config = { version = "1", features = ["behavior-version-latest"], optional = true }
+aws-sdk-s3 = { version = "1" }
+aws-config = { version = "1", features = ["behavior-version-latest"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 io-uring = { version = "0.7", optional = true }

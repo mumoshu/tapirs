@@ -110,7 +110,6 @@ pub struct CombinedStoreInner<K: Ord, V, DIO: DiskIo> {
     pub(crate) tapir_view: u64,
 
     // --- Cross-shard consistency (set after restoring from snapshot) ---
-    #[cfg(feature = "s3")]
     pub(crate) ghost_filter: Option<crate::remote_store::ghost_filter::GhostFilter>,
 }
 
@@ -174,7 +173,6 @@ impl<K: Key, V: Value, DIO: DiskIo> CombinedStoreInner<K, V, DIO> {
                 tapir_manifest,
                 base_dir: base_dir.to_path_buf(),
                 tapir_view,
-                #[cfg(feature = "s3")]
                 ghost_filter: None,
             });
         }
@@ -247,7 +245,6 @@ impl<K: Key, V: Value, DIO: DiskIo> CombinedStoreInner<K, V, DIO> {
             tapir_manifest,
             base_dir: base_dir.to_path_buf(),
             tapir_view: 0,
-            #[cfg(feature = "s3")]
             ghost_filter: None,
         })
     }
@@ -274,7 +271,6 @@ impl<K: Key, V: Value, DIO: DiskIo> CombinedStoreInner<K, V, DIO> {
         K: Serialize + DeserializeOwned,
         V: Serialize,
     {
-        #[cfg(feature = "s3")]
         let manifest_before = self.tapir_manifest.clone();
 
         let sealed_comm =
@@ -343,13 +339,10 @@ impl<K: Key, V: Value, DIO: DiskIo> CombinedStoreInner<K, V, DIO> {
         self.prepared.start_view(self.tapir_view);
         self.mvcc.start_view(self.tapir_view);
 
-        #[cfg(feature = "s3")]
         let new_files = crate::remote_store::upload::diff_manifests(
             &manifest_before,
             &self.tapir_manifest,
         );
-        #[cfg(not(feature = "s3"))]
-        let new_files = Vec::new();
 
         Ok(new_files)
     }

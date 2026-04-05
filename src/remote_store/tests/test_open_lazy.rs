@@ -7,7 +7,7 @@ use crate::unified::combined::CombinedStoreInner;
 use crate::IrClientId;
 
 use super::helpers::{
-    create_s3_stores, flush_and_upload, open_buffered_store, test_flags, write_and_commit,
+    create_s3_stores, flush_and_upload, open_buffered_store, write_and_commit,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
