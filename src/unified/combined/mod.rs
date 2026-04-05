@@ -354,6 +354,33 @@ impl<K: Key, V: Value, DIO: DiskIo> CombinedStoreInner<K, V, DIO> {
             &self.tapir_manifest,
         );
 
+        // Fire-and-forget S3 upload if configured.
+        if let Some(ref s3_cfg) = self.s3_config {
+            use crate::backup::storage::BackupStorage as _;
+            let base_dir = self.base_dir.clone();
+            let cfg = s3_cfg.clone();
+            let shard = format!("shard_{}", self.shard.0);
+            let before = manifest_before;
+            let after = self.tapir_manifest.clone();
+            tokio::task::spawn(async move {
+                let storage = crate::backup::s3backup::S3BackupStorage::new(
+                    &cfg.bucket,
+                    &cfg.prefix,
+                    cfg.region.as_deref(),
+                    cfg.endpoint_url.as_deref(),
+                )
+                .await;
+                let seg_store =
+                    crate::remote_store::segment_store::RemoteSegmentStore::new(storage.sub(""));
+                let man_store =
+                    crate::remote_store::manifest_store::RemoteManifestStore::new(storage.sub(""));
+                crate::remote_store::sync_to_remote::sync_to_remote(
+                    &seg_store, &man_store, &shard, &base_dir, &before, &after,
+                )
+                .await;
+            });
+        }
+
         Ok(new_files)
     }
 
