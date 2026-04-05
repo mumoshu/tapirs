@@ -109,6 +109,9 @@ pub struct CombinedStoreInner<K: Ord, V, DIO: DiskIo> {
     pub(crate) base_dir: PathBuf,
     pub(crate) tapir_view: u64,
 
+    // --- S3 remote storage (set via set_s3_config before into_record_handle) ---
+    pub(crate) s3_config: Option<crate::remote_store::config::S3StorageConfig>,
+
     // --- Cross-shard consistency (set after restoring from snapshot) ---
     pub(crate) ghost_filter: Option<crate::remote_store::ghost_filter::GhostFilter>,
 }
@@ -173,6 +176,7 @@ impl<K: Key, V: Value, DIO: DiskIo> CombinedStoreInner<K, V, DIO> {
                 tapir_manifest,
                 base_dir: base_dir.to_path_buf(),
                 tapir_view,
+                s3_config: None,
                 ghost_filter: None,
             });
         }
@@ -245,8 +249,14 @@ impl<K: Key, V: Value, DIO: DiskIo> CombinedStoreInner<K, V, DIO> {
             tapir_manifest,
             base_dir: base_dir.to_path_buf(),
             tapir_view: 0,
+            s3_config: None,
             ghost_filter: None,
         })
+    }
+
+    /// Set S3 config for automatic upload on flush.
+    pub fn set_s3_config(&mut self, config: crate::remote_store::config::S3StorageConfig) {
+        self.s3_config = Some(config);
     }
 
     /// Wrap self in Arc<Mutex> and return the IR record handle.

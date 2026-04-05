@@ -2,7 +2,7 @@
 ///
 /// Used by [`RemoteSegmentStore`] and [`RemoteManifestStore`] to
 /// upload/download segment files and manifests.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct S3StorageConfig {
     pub bucket: String,
     pub prefix: String,
