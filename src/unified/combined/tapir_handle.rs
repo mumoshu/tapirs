@@ -172,6 +172,37 @@ impl<K: Key + Serialize + DeserializeOwned, IO: DiskIo> MvccQueries<K> for MvccV
 impl<K: Key + Serialize + DeserializeOwned, V: Value + Serialize + DeserializeOwned, DIO: DiskIo>
     CombinedStoreInner<K, V, DIO>
 {
+    /// Clamp a snapshot timestamp to enforce the ghost filter.
+    ///
+    /// After restoring from a cross-shard consistent snapshot, some MVCC entries
+    /// may exist on this shard but not on others (cross-shard transactions that
+    /// committed here but not everywhere). The ghost filter defines a timestamp
+    /// range (cutoff_ts, ceiling_ts] of such entries.
+    ///
+    /// This method clamps the search timestamp so that MVCC lookups skip the
+    /// ghost range entirely:
+    /// - ts <= cutoff_ts: no change (all shards have these entries)
+    /// - ts in (cutoff_ts, ceiling_ts]: clamped to cutoff_ts (skip ghost range)
+    /// - ts > ceiling_ts: no change (new writes after restore, all shards see them)
+    ///
+    /// Without this, reads at timestamps in the ghost range would return entries
+    /// that other shards don't have, breaking cross-shard consistency.
+    #[cfg(feature = "s3")]
+    fn effective_snapshot_ts(&self, ts: Timestamp) -> Timestamp {
+        match &self.ghost_filter {
+            Some(gf) => Timestamp {
+                time: gf.clamp_ts(ts.time),
+                ..ts
+            },
+            None => ts,
+        }
+    }
+
+    #[cfg(not(feature = "s3"))]
+    fn effective_snapshot_ts(&self, ts: Timestamp) -> Timestamp {
+        ts
+    }
+
     /// Resolve the value for an MVCC entry by chaining through the committed
     /// VlogLsm (TxnLogRef) and the IR inc_lsm (IO::Commit).
     fn resolve_value(&self, entry: &MvccIndexEntry) -> Result<Option<V>, StorageError> {
@@ -227,6 +258,10 @@ impl<K: Key + Serialize + DeserializeOwned, V: Value + Serialize + DeserializeOw
         key: &K,
         ts: Timestamp,
     ) -> Result<(Option<V>, Timestamp), StorageError> {
+        // Ghost filter: clamp ts to skip entries in the cross-shard inconsistent
+        // range. Without this, a restored shard could return values that other
+        // shards in the cluster don't have.
+        let ts = self.effective_snapshot_ts(ts);
         let search = CompositeKey::new(key.clone(), ts);
         if let Some((ck, entry)) = self.mvcc.range_get_first(&search)?
             && ck.key == *key
@@ -242,6 +277,9 @@ impl<K: Key + Serialize + DeserializeOwned, V: Value + Serialize + DeserializeOw
         end: &K,
         ts: Timestamp,
     ) -> Result<Vec<(K, Option<V>, Timestamp)>, StorageError> {
+        // Ghost filter: clamp ts to skip entries in the cross-shard inconsistent
+        // range. Without this, scan results would include ghost-range entries.
+        let ts = self.effective_snapshot_ts(ts);
         let from_ck = CompositeKey::new(start.clone(), Timestamp::max_value());
         let mut merged: std::collections::BTreeMap<CompositeKey<K, Timestamp>, MvccIndexEntry> =
             std::collections::BTreeMap::new();
@@ -736,6 +774,8 @@ where
         ts: Timestamp,
     ) -> Option<(Option<V>, Timestamp)> {
         let inner = self.inner.lock().unwrap();
+        // Ghost filter: clamp ts so fast path doesn't return ghost entries.
+        let ts = inner.effective_snapshot_ts(ts);
         let mvcc_view = MvccView { mvcc: &inner.mvcc };
         let read_ts = mvcc_view.get_last_read_ts_at(key, ts).ok()??;
         if read_ts >= ts {

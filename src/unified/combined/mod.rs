@@ -108,6 +108,10 @@ pub struct CombinedStoreInner<K: Ord, V, DIO: DiskIo> {
     pub(crate) tapir_manifest: UnifiedManifest,
     pub(crate) base_dir: PathBuf,
     pub(crate) tapir_view: u64,
+
+    // --- Cross-shard consistency (set after restoring from snapshot) ---
+    #[cfg(feature = "s3")]
+    pub(crate) ghost_filter: Option<crate::remote_store::ghost_filter::GhostFilter>,
 }
 
 impl<K: Key, V: Value, DIO: DiskIo> CombinedStoreInner<K, V, DIO> {
@@ -170,6 +174,8 @@ impl<K: Key, V: Value, DIO: DiskIo> CombinedStoreInner<K, V, DIO> {
                 tapir_manifest,
                 base_dir: base_dir.to_path_buf(),
                 tapir_view,
+                #[cfg(feature = "s3")]
+                ghost_filter: None,
             });
         }
 
@@ -241,6 +247,8 @@ impl<K: Key, V: Value, DIO: DiskIo> CombinedStoreInner<K, V, DIO> {
             tapir_manifest,
             base_dir: base_dir.to_path_buf(),
             tapir_view: 0,
+            #[cfg(feature = "s3")]
+            ghost_filter: None,
         })
     }
 
