@@ -69,21 +69,21 @@ maelstrom: maelstrom-sync-ro-txn-get maelstrom-skewed-rw-txn-get-commit maelstro
 
 # Synchronized clocks: RO quorum read is linearizable.
 maelstrom-sync-ro-txn-get:
-	TAPIR_CLOCK_SKEW_MAX=0 TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get $(MAKE) maelstrom-run
+	TAPIR_CLOCK_SKEW_MAX=0 TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get MAELSTROM_RUN_NAME=sync-ro-txn-get $(MAKE) maelstrom-run
 
 maelstrom-skewed-rw-txn-get-commit:
-	TAPIR_CLOCK_SKEW_MAX=1000 TAPIR_LINEARIZABLE_READ_METHOD=rw_txn_get_commit $(MAKE) maelstrom-run
+	TAPIR_CLOCK_SKEW_MAX=1000 TAPIR_LINEARIZABLE_READ_METHOD=rw_txn_get_commit MAELSTROM_RUN_NAME=skewed-rw-txn-get-commit $(MAKE) maelstrom-run
 
 # Under clock skew (max 1000ms), RO reads are not linearizable (Paper S6.1).
 # Use RW transaction: OCC validates the read at commit time.
 maelstrom-skewed-ro-txn-get-fail:
 	@echo "Expecting linearizability FAILURE (RO reads under clock skew)..."
-	@TAPIR_CLOCK_SKEW_MAX=1000 TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get $(MAKE) maelstrom-run \
+	@TAPIR_CLOCK_SKEW_MAX=1000 TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get MAELSTROM_RUN_NAME=skewed-ro-txn-get-fail $(MAKE) maelstrom-run \
 		&& { echo "ERROR: expected maelstrom to fail but it passed"; exit 1; } \
 		|| echo "Good: maelstrom failed as expected (RO reads not linearizable under clock skew)"
 
 maelstrom-sync-ro-fast-path:
-	TAPIR_CLOCK_SKEW_MAX=0 TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get TAPIR_RO_FAST_PATH_DELAY_MS=200 TAPIR_READ_TIMEOUT_MS=200 TAPIR_VIEW_CHANGE_INTERVAL_MS=200 TAPIR_INCONSISTENT_RESULT_DEADLINE_MS=500 $(MAKE) maelstrom-run
+	TAPIR_CLOCK_SKEW_MAX=0 TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get TAPIR_RO_FAST_PATH_DELAY_MS=200 TAPIR_READ_TIMEOUT_MS=200 TAPIR_VIEW_CHANGE_INTERVAL_MS=200 TAPIR_INCONSISTENT_RESULT_DEADLINE_MS=500 MAELSTROM_RUN_NAME=sync-ro-fast-path $(MAKE) maelstrom-run
 
 # Expect frequent failure: 1ms delay is too short for replicas to sync via view change
 # (view change interval is 200ms), so read_validated may return stale data.
@@ -97,7 +97,7 @@ maelstrom-sync-ro-fast-path:
 # misses a subsequent write's FinalizeInconsistent. Run manually to
 # check: it should fail more often than not, but may occasionally pass.
 maelstrom-sync-ro-fast-path-may-fail:
-	TAPIR_CLOCK_SKEW_MAX=0 TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get TAPIR_RO_FAST_PATH_DELAY_MS=1 TAPIR_READ_TIMEOUT_MS=200 TAPIR_VIEW_CHANGE_INTERVAL_MS=200 $(MAKE) maelstrom-run
+	TAPIR_CLOCK_SKEW_MAX=0 TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get TAPIR_RO_FAST_PATH_DELAY_MS=1 TAPIR_READ_TIMEOUT_MS=200 TAPIR_VIEW_CHANGE_INTERVAL_MS=200 MAELSTROM_RUN_NAME=sync-ro-fast-path-may-fail $(MAKE) maelstrom-run
 
 # TrueTime-style RO linearizability under clock skew (Paper S6.1 + Spanner).
 # Clock skew up to 100ms (one-directional: now + [0,100ms)).
@@ -107,13 +107,21 @@ maelstrom-sync-ro-fast-path-may-fail:
 # any completed write. The delay before quorum_read ensures async
 # FinalizeInconsistent(Commit) propagation. No fast path — always quorum read.
 maelstrom-skew-ro-slow-path-truetime:
-	TAPIR_CLOCK_SKEW_MAX=100 TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get TAPIR_RO_CLOCK_SKEW_UNCERTAINTY_BOUND=200 $(MAKE) maelstrom-run
+	TAPIR_CLOCK_SKEW_MAX=100 TAPIR_LINEARIZABLE_READ_METHOD=ro_txn_get TAPIR_RO_CLOCK_SKEW_UNCERTAINTY_BOUND=200 MAELSTROM_RUN_NAME=skew-ro-slow-path-truetime $(MAKE) maelstrom-run
 
+MAELSTROM_RUN_NAME ?= unnamed
 maelstrom-run: $(MAELSTROM_BIN)
 	cargo build --release -p tapi-maelstrom
-	bash -c 'set -o pipefail; $(MAELSTROM_BIN) test -w lin-kv --bin target/release/maelstrom --latency 0 --rate 10 --time-limit 90 --concurrency 20 --nemesis partition --nemesis-interval 20 2>&1 | tee /tmp/maelstrom-output.txt'; \
+	$(eval MAELSTROM_LOG := /tmp/maelstrom-output-$(MAELSTROM_RUN_NAME)-$(shell date +%Y%m%d-%H%M%S).txt)
+	bash -c 'set -o pipefail; $(MAELSTROM_BIN) test -w lin-kv --bin target/release/maelstrom --latency 0 --rate 10 --time-limit 90 --concurrency 20 --nemesis partition --nemesis-interval 20 2>&1 | tee $(MAELSTROM_LOG)'; \
 	EXIT=$$?; \
-	bash scripts/maelstrom-summary.sh /tmp/maelstrom-output.txt; \
+	cp $(MAELSTROM_LOG) /tmp/maelstrom-output.txt; \
+	bash scripts/maelstrom-summary.sh $(MAELSTROM_LOG); \
+	if [ $$EXIT -eq 0 ]; then \
+		echo "PASSED (exit $$EXIT). Log: $(MAELSTROM_LOG)"; \
+	else \
+		echo "FAILED (exit $$EXIT). Investigate with: less $(MAELSTROM_LOG)"; \
+	fi; \
 	exit $$EXIT
 
 ci: test maelstrom ci/operator-lint ci/operator-test
