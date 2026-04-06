@@ -25,12 +25,22 @@ type AdminClient struct {
 	TLSConfig *tls.Config
 }
 
+// S3SourceConfig matches the Rust S3SourceConfig in admin request types.
+type S3SourceConfig struct {
+	Bucket   string `json:"bucket"`
+	Prefix   string `json:"prefix,omitempty"`
+	Endpoint string `json:"endpoint,omitempty"`
+	Region   string `json:"region,omitempty"`
+}
+
 type adminRequest struct {
-	Command    string   `json:"command"`
-	Shard      *int32   `json:"shard,omitempty"`
-	ListenAddr string   `json:"listen_addr,omitempty"`
-	Storage    string   `json:"storage,omitempty"`
-	Membership []string `json:"membership,omitempty"`
+	Command             string         `json:"command"`
+	Shard               *int32         `json:"shard,omitempty"`
+	ListenAddr          string         `json:"listen_addr,omitempty"`
+	Storage             string         `json:"storage,omitempty"`
+	Membership          []string       `json:"membership,omitempty"`
+	S3Source            *S3SourceConfig `json:"s3_source,omitempty"`
+	RefreshIntervalSecs *int64         `json:"refresh_interval_secs,omitempty"`
 }
 
 // AdminResponse is the JSON response from the admin server.
@@ -154,6 +164,39 @@ func (c *AdminClient) Leave(ctx context.Context, shard int32) error {
 	_, err := c.do(ctx, adminRequest{
 		Command: "leave",
 		Shard:   &shard,
+	})
+	return err
+}
+
+// AddWritableCloneFromS3 creates a writable replica pre-populated from S3
+// via zero-copy clone. The clone downloads the manifest and lazily fetches
+// segments on first read. After bootstrap, the replica participates in
+// consensus normally and is fully independent of the source.
+func (c *AdminClient) AddWritableCloneFromS3(ctx context.Context, shard int32, listenAddr string, membership []string, storage string, s3Source S3SourceConfig) error {
+	if storage == "" {
+		storage = "memory"
+	}
+	_, err := c.do(ctx, adminRequest{
+		Command:    "add_writable_clone_from_s3",
+		Shard:      &shard,
+		ListenAddr: listenAddr,
+		Storage:    storage,
+		Membership: membership,
+		S3Source:   &s3Source,
+	})
+	return err
+}
+
+// AddReadReplicaFromS3 creates a read-only replica backed by S3 with
+// auto-refresh. The replica serves reads via RequestUnlogged (GetAt/ScanAt)
+// and does not participate in consensus. No membership needed.
+func (c *AdminClient) AddReadReplicaFromS3(ctx context.Context, shard int32, listenAddr string, s3Source S3SourceConfig, refreshIntervalSecs int64) error {
+	_, err := c.do(ctx, adminRequest{
+		Command:             "add_read_replica_from_s3",
+		Shard:               &shard,
+		ListenAddr:          listenAddr,
+		S3Source:             &s3Source,
+		RefreshIntervalSecs: &refreshIntervalSecs,
 	})
 	return err
 }
