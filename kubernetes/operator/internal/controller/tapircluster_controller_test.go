@@ -203,11 +203,13 @@ var _ = Describe("TAPIRCluster S3 resource generation", func() {
 			Shards: []tapirv1alpha1.ShardSpec{
 				{Number: 0, Replicas: 3},
 			},
-			S3: &tapirv1alpha1.S3Spec{
-				Bucket:   "my-bucket",
-				Prefix:   "prod/",
-				Endpoint: "http://minio:9000",
-				Region:   "us-east-1",
+			Destination: &tapirv1alpha1.DestinationSpec{
+				S3: tapirv1alpha1.S3Spec{
+					Bucket:   "my-bucket",
+					Prefix:   "prod/",
+					Endpoint: "http://minio:9000",
+					Region:   "us-east-1",
+				},
 			},
 		},
 	}

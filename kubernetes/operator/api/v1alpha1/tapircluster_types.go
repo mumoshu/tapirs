@@ -49,10 +49,17 @@ type TAPIRClusterSpec struct {
 	// +optional
 	TLS *TLSSpec `json:"tls,omitempty"`
 
-	// s3 configures S3 backend for remote storage. When set, all replicas
-	// upload segments and manifests to S3 on every flush.
+	// destination configures where the cluster uploads segments and
+	// manifests. When set, all replicas upload to S3 on every flush.
 	// +optional
-	S3 *S3Spec `json:"s3,omitempty"`
+	Destination *DestinationSpec `json:"destination,omitempty"`
+}
+
+// DestinationSpec configures where the cluster uploads segments and manifests.
+type DestinationSpec struct {
+	// s3 configures S3 as the upload target.
+	// +required
+	S3 S3Spec `json:"s3"`
 }
 
 // S3Spec configures S3 backend for remote segment and manifest storage.

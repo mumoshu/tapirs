@@ -343,9 +343,9 @@ install_cluster_with_s3() {
         --create-namespace \
         --set "name=${TAPIR_CLUSTER_NAME}" \
         --set "image=${TAPIR_IMAGE}" \
-        --set "s3.bucket=${TAPIR_S3_BUCKET}" \
-        --set "s3.endpoint=${minio_endpoint}" \
-        --set "s3.credentialsSecret=minio-credentials" \
+        --set "destination.s3.bucket=${TAPIR_S3_BUCKET}" \
+        --set "destination.s3.endpoint=${minio_endpoint}" \
+        --set "destination.s3.credentialsSecret=minio-credentials" \
         --wait --timeout 30s
     ok "Cluster chart installed with S3 enabled."
 }

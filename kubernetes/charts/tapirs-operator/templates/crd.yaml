@@ -52,6 +52,42 @@ spec:
           spec:
             description: TAPIRClusterSpec defines the desired state of a TAPIRCluster.
             properties:
+              destination:
+                description: |-
+                  destination configures where the cluster uploads segments and
+                  manifests. When set, all replicas upload to S3 on every flush.
+                properties:
+                  s3:
+                    description: s3 configures S3 as the upload target.
+                    properties:
+                      bucket:
+                        description: bucket is the S3 bucket name.
+                        type: string
+                      credentialsSecret:
+                        description: |-
+                          credentialsSecret is the name of a Kubernetes Secret containing
+                          AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY. When set, envFrom is
+                          added to node containers. For production use, prefer IAM roles
+                          (IRSA/pod identity) and leave this empty.
+                        type: string
+                      endpoint:
+                        description: endpoint is a custom S3-compatible endpoint URL
+                          (e.g. MinIO).
+                        type: string
+                      prefix:
+                        description: |-
+                          prefix is the cluster-level key prefix (e.g. "prod/").
+                          Each replica derives its shard prefix internally.
+                        type: string
+                      region:
+                        description: region is the AWS region.
+                        type: string
+                    required:
+                    - bucket
+                    type: object
+                required:
+                - s3
+                type: object
               discovery:
                 description: discovery configures the TAPIR discovery store tier.
                 properties:
@@ -212,36 +248,6 @@ spec:
                   type: object
                 minItems: 1
                 type: array
-              s3:
-                description: |-
-                  s3 configures S3 backend for remote storage. When set, all replicas
-                  upload segments and manifests to S3 on every flush.
-                properties:
-                  bucket:
-                    description: bucket is the S3 bucket name.
-                    type: string
-                  credentialsSecret:
-                    description: |-
-                      credentialsSecret is the name of a Kubernetes Secret containing
-                      AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY. When set, envFrom is
-                      added to node containers. For production use, prefer IAM roles
-                      (IRSA/pod identity) and leave this empty.
-                    type: string
-                  endpoint:
-                    description: endpoint is a custom S3-compatible endpoint URL (e.g.
-                      MinIO).
-                    type: string
-                  prefix:
-                    description: |-
-                      prefix is the cluster-level key prefix (e.g. "prod/").
-                      Each replica derives its shard prefix internally.
-                    type: string
-                  region:
-                    description: region is the AWS region.
-                    type: string
-                required:
-                - bucket
-                type: object
               shards:
                 description: |-
                   shards defines the shard layout. Key ranges must cover the full

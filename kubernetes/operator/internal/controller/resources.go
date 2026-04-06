@@ -331,12 +331,12 @@ func desiredNodePoolStatefulSet(cluster *tapirv1alpha1.TAPIRCluster, pool tapirv
 	}
 }
 
-// injectS3 adds S3 CLI args and optional credentials to a container when S3 is configured.
+// injectS3 adds S3 CLI args and optional credentials to a container when destination S3 is configured.
 func injectS3(container *corev1.Container, cluster *tapirv1alpha1.TAPIRCluster) {
-	if cluster.Spec.S3 == nil {
+	if cluster.Spec.Destination == nil {
 		return
 	}
-	s3 := cluster.Spec.S3
+	s3 := &cluster.Spec.Destination.S3
 	container.Args = append(container.Args, fmt.Sprintf("--s3-bucket=%s", s3.Bucket))
 	if s3.Prefix != "" {
 		container.Args = append(container.Args, fmt.Sprintf("--s3-prefix=%s", s3.Prefix))

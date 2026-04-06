@@ -90,7 +90,7 @@ kubectl run --rm -i aws-cli -n tapir --image=amazon/aws-cli --restart=Never \
   -- --endpoint-url http://minio.tapir.svc.cluster.local:9000 s3 mb s3://tapir-backup
 ```
 
-Add `S3Spec` to the TAPIRCluster CR (or pass `--set s3.bucket=tapir-backup --set s3.endpoint=http://minio.tapir.svc.cluster.local:9000` to the Helm install):
+Add a `destination` to the TAPIRCluster CR (or pass `--set destination.s3.bucket=tapir-backup --set destination.s3.endpoint=http://minio.tapir.svc.cluster.local:9000` to the Helm install):
 
 ```yaml
 apiVersion: tapir.tapir.dev/v1alpha1
@@ -98,9 +98,10 @@ kind: TAPIRCluster
 metadata:
   name: tapir
 spec:
-  s3:
-    bucket: tapir-backup
-    endpoint: http://minio.tapir.svc.cluster.local:9000
+  destination:
+    s3:
+      bucket: tapir-backup
+      endpoint: http://minio.tapir.svc.cluster.local:9000
   # ... rest of spec
 ```
 

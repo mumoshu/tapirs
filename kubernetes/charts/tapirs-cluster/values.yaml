@@ -25,10 +25,11 @@ tls:
     name: ""
     kind: ClusterIssuer
 
-# s3 configures S3 remote storage for automatic segment/manifest upload.
-s3:
-  bucket: ""
-  prefix: ""
-  endpoint: ""
-  region: ""
-  credentialsSecret: ""
+# destination configures where the cluster uploads segments and manifests.
+destination:
+  s3:
+    bucket: ""
+    prefix: ""
+    endpoint: ""
+    region: ""
+    credentialsSecret: ""
