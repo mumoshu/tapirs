@@ -75,6 +75,45 @@ pub async fn upload_new_segments<S: BackupStorage>(
     Ok(uploaded)
 }
 
+/// Upload segment files unconditionally (no existence check).
+/// Used for newly sealed segments that may overwrite a stale S3 copy
+/// from when they were active (smaller/empty).
+pub async fn upload_segments_force<S: BackupStorage>(
+    segment_store: &RemoteSegmentStore<S>,
+    shard: &str,
+    base_dir: &Path,
+    files: &[String],
+) -> Result<usize, String> {
+    let mut uploaded = 0;
+    for name in files {
+        let local_path = base_dir.join(name);
+        if local_path.exists() {
+            segment_store
+                .upload_segment(&local_path, shard, name)
+                .await?;
+            uploaded += 1;
+        }
+    }
+    Ok(uploaded)
+}
+
+/// Collect active segment filenames from the manifest.
+pub fn active_segment_files(manifest: &UnifiedManifest) -> Vec<String> {
+    super::download::active_vlog_names(manifest)
+}
+
+/// Upload active segment files unconditionally. Active segments grow
+/// between seals, so we always overwrite the S3 copy.
+pub async fn upload_active_segments<S: BackupStorage>(
+    segment_store: &RemoteSegmentStore<S>,
+    shard: &str,
+    base_dir: &Path,
+    manifest: &UnifiedManifest,
+) -> Result<usize, String> {
+    let files = active_segment_files(manifest);
+    upload_segments_force(segment_store, shard, base_dir, &files).await
+}
+
 /// Upload the manifest as a versioned snapshot.
 pub async fn upload_manifest_snapshot<S: BackupStorage>(
     manifest_store: &RemoteManifestStore<S>,

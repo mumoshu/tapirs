@@ -118,8 +118,9 @@ pub async fn flush_and_upload(
     record.flush();
     tapir.flush();
     let manifest = tapir.inner.lock().unwrap().tapir_manifest.clone();
+    // Force-upload all files (sealed segments may overwrite stale active copies).
     let all_files = crate::remote_store::upload::all_manifest_files(&manifest);
-    crate::remote_store::upload::upload_new_segments(seg_store, shard, base_dir, &all_files)
+    crate::remote_store::upload::upload_segments_force(seg_store, shard, base_dir, &all_files)
         .await
         .unwrap();
     let manifest_bytes = bitcode::serialize(&manifest).unwrap();

@@ -5,7 +5,7 @@ use crate::unified::wisckeylsm::manifest::UnifiedManifest;
 
 use super::manifest_store::RemoteManifestStore;
 use super::segment_store::RemoteSegmentStore;
-use super::upload::{diff_manifests, upload_manifest_snapshot, upload_new_segments};
+use super::upload::{diff_manifests, upload_active_segments, upload_manifest_snapshot, upload_segments_force};
 
 /// Sync local state to remote after a flush.
 ///
@@ -27,16 +27,25 @@ pub async fn sync_to_remote<S: BackupStorage>(
         return;
     }
 
-    match upload_new_segments(segment_store, shard, base_dir, &new_files).await {
+    // Force-upload newly sealed segments. A segment that was active in the
+    // previous view may have been uploaded as empty/small; now that it's
+    // sealed with data, we must overwrite the S3 copy.
+    match upload_segments_force(segment_store, shard, base_dir, &new_files).await {
         Ok(n) => {
             if n > 0 {
-                tracing::debug!(shard, n, "uploaded {n} segments to S3");
+                tracing::debug!(shard, n, "uploaded {n} sealed segments to S3");
             }
         }
         Err(e) => {
             tracing::warn!(shard, error = %e, "failed to upload segments to S3");
             return;
         }
+    }
+
+    // Upload active segment files unconditionally (they grow between seals).
+    if let Err(e) = upload_active_segments(segment_store, shard, base_dir, after).await {
+        tracing::warn!(shard, error = %e, "failed to upload active segments to S3");
+        return;
     }
 
     let manifest_bytes = match bitcode::serialize(after) {

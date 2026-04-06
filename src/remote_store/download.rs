@@ -35,6 +35,17 @@ fn lsm_file_names(label: &str, data: &LsmManifestData) -> Vec<String> {
     names
 }
 
+/// Collect only active segment filenames across the manifest.
+pub(crate) fn active_vlog_names(manifest: &UnifiedManifest) -> Vec<String> {
+    vec![
+        active_vlog_name("comb_comm", manifest.committed.active_segment_id),
+        active_vlog_name("comb_prep", manifest.prepared.active_segment_id),
+        active_vlog_name("comb_mvcc", manifest.mvcc.active_segment_id),
+        active_vlog_name("ir_inc", manifest.ir_inc.active_segment_id),
+        active_vlog_name("ir_con", manifest.ir_con.active_segment_id),
+    ]
+}
+
 /// Collect all segment and SST filenames across the entire manifest,
 /// including active segments for each VlogLsm.
 pub fn all_file_names(manifest: &UnifiedManifest) -> Vec<String> {
