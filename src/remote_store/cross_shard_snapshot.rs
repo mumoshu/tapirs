@@ -56,13 +56,18 @@ pub async fn create_cross_shard_snapshot<S: BackupStorage>(
     shard_names: &[(u32, String)],
 ) -> Result<CrossShardSnapshot, String> {
     let mut shards = BTreeMap::new();
-    let mut all_ts = Vec::new();
+    let mut all_ts: Vec<u64> = Vec::new();
     for (shard_id, shard_name) in shard_names {
         let (view, bytes) = manifest_store.download_latest_manifest(shard_name).await?;
         let manifest: UnifiedManifest = bitcode::deserialize(&bytes)
             .map_err(|e| format!("deserialize manifest for {shard_name}: {e}"))?;
-        let ts = manifest.max_read_time.unwrap_or(0);
-        all_ts.push(ts);
+        // Skip shards with no committed data (max_read_time is None).
+        // Only shards that have actually committed transactions contribute
+        // to the cutoff/ceiling computation. A shard with no data has nothing
+        // to ghost-filter.
+        if let Some(ts) = manifest.max_read_time {
+            all_ts.push(ts);
+        }
         shards.insert(*shard_id, ShardSnapshotInfo {
             manifest_view: view,
         });

@@ -127,3 +127,67 @@ async fn cross_shard_snapshot_with_ghost_filter() {
     // range (cutoff, ceiling] has no entries — shard 1's max is at cutoff.
     // The filter is applied but is a no-op for shard 1.
 }
+
+/// When one shard has data and another is empty (max_read_time=None),
+/// the snapshot should NOT ghost-filter the data shard's entries. Empty
+/// shards are excluded from the min/max computation so cutoff_ts equals
+/// ceiling_ts (both from the single data shard), producing no ghost range.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn cross_shard_snapshot_empty_shard_no_ghost() {
+    let (seg_store, man_store, s3_config, _storage) =
+        create_s3_stores("cross-shard-empty").await;
+
+    let shard0 = ShardNumber(0);
+    let shard1 = ShardNumber(1);
+    let shard0_name = "shard_0";
+    let shard1_name = "shard_1";
+    let ts100 = Timestamp { time: 100, client_id: IrClientId(1) };
+
+    // Shard 0: write at ts=100, flush, upload.
+    let (mut rec0, mut tap0, dir0) = open_buffered_store(shard0);
+    write_and_commit(&mut rec0, &mut tap0, shard0, &[("a", "v100")], ts100);
+    flush_and_upload(&mut rec0, &mut tap0, &seg_store, &man_store, shard0_name, dir0.path()).await;
+
+    // Shard 1: empty — flush without any writes.
+    let (mut rec1, mut tap1, dir1) = open_buffered_store(shard1);
+    flush_and_upload(&mut rec1, &mut tap1, &seg_store, &man_store, shard1_name, dir1.path()).await;
+
+    // Create cross-shard snapshot.
+    let snapshot = create_cross_shard_snapshot(
+        &man_store,
+        &[(0, shard0_name.to_string()), (1, shard1_name.to_string())],
+    )
+    .await
+    .unwrap();
+
+    // cutoff should equal ceiling (only shard 0 contributes), so no ghost filter.
+    assert!(
+        snapshot.ghost_filter().is_none(),
+        "empty shard should not create a ghost range; cutoff={}, ceiling={}",
+        snapshot.cutoff_ts, snapshot.ceiling_ts,
+    );
+
+    // Open shard 0 from S3 — data should be visible.
+    let s0_dir = tempfile::tempdir().unwrap();
+    let s0_view = snapshot.shards[&0].manifest_view;
+    prepare_local_lazy_at_view(
+        &man_store, &s3_config, shard0_name, s0_view, s0_dir.path(),
+    )
+    .await
+    .unwrap();
+
+    let s0_inner = CombinedStoreInner::<String, String, S3CachingIo>::open(
+        s0_dir.path(),
+        OpenFlags { create: true, direct: false },
+        shard0,
+        true,
+    )
+    .unwrap();
+    let s0_record = s0_inner.into_record_handle();
+    let s0_tapir = s0_record.tapir_handle();
+
+    let (val, _) = s0_tapir
+        .do_uncommitted_get_at(&"a".to_string(), ts100)
+        .unwrap();
+    assert_eq!(val.as_deref(), Some("v100"), "data should be visible when other shard is empty");
+}
