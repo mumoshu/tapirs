@@ -30,3 +30,9 @@
 | `--data-dir` | (in-memory) | Persistent storage directory for WiscKey SSD mode |
 | `--solo` | `false` | Run in single-node mode with all shards in one process |
 | `--config` | (none) | Path to TOML configuration file |
+| `--s3-bucket` | (none) | S3 bucket for remote segment/manifest storage |
+| `--s3-prefix` | `""` | Key prefix within the bucket (e.g. `prod/`) |
+| `--s3-endpoint` | (none) | Custom S3-compatible endpoint URL (e.g. MinIO) |
+| `--s3-region` | (none) | AWS region for S3 operations |
+
+**S3 remote storage:** When `--s3-bucket` is set, the node uploads sealed segments and manifests to S3 after every view change flush via `sync_to_remote`. This enables zero-copy clone (`cow_clone`), read replicas, and cross-shard snapshots. S3 is never on the critical path — uploads are best-effort and logged on failure. For S3-specific backup/restore operations, see [S3 Backup & Restore](backup-restore-s3.md).
