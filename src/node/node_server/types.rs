@@ -16,6 +16,23 @@ pub struct AdminRequest {
     /// When absent, uses add_replica_join() which coordinates via shard-manager.
     #[serde(default)]
     pub membership: Option<Vec<String>>,
+    /// S3 source for add_writable_clone_from_s3 and add_read_replica_from_s3.
+    #[serde(default)]
+    pub s3_source: Option<S3SourceConfig>,
+    /// Refresh interval in seconds for add_read_replica_from_s3.
+    #[serde(default)]
+    pub refresh_interval_secs: Option<u64>,
+}
+
+#[derive(Deserialize)]
+pub struct S3SourceConfig {
+    pub bucket: String,
+    #[serde(default)]
+    pub prefix: String,
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    #[serde(default)]
+    pub region: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]

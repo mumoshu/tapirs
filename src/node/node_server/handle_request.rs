@@ -91,6 +91,61 @@ pub async fn handle_request(node: &Node, line: &str) -> AdminResponse {
                 }
             }
         }
+        "add_writable_clone_from_s3" => {
+            let Some(shard_id) = req.shard else {
+                return AdminResponse {
+                    ok: false,
+                    message: Some("missing 'shard' field".into()),
+                    shards: None,
+                };
+            };
+            let Some(ref listen_addr_str) = req.listen_addr else {
+                return AdminResponse {
+                    ok: false,
+                    message: Some("missing 'listen_addr' field".into()),
+                    shards: None,
+                };
+            };
+            let Some(membership_strs) = req.membership else {
+                return AdminResponse {
+                    ok: false,
+                    message: Some("missing 'membership' field".into()),
+                    shards: None,
+                };
+            };
+            let Some(s3_src) = req.s3_source else {
+                return AdminResponse {
+                    ok: false,
+                    message: Some("missing 's3_source' field".into()),
+                    shards: None,
+                };
+            };
+            let s3_config = crate::remote_store::config::S3StorageConfig {
+                bucket: s3_src.bucket,
+                prefix: s3_src.prefix,
+                endpoint_url: s3_src.endpoint,
+                region: s3_src.region,
+            };
+            let cfg = ReplicaConfig {
+                shard: shard_id,
+                listen_addr: listen_addr_str.clone(),
+                membership: membership_strs,
+            };
+            match node.add_writable_clone_from_s3(&cfg, s3_config).await {
+                Ok(()) => AdminResponse {
+                    ok: true,
+                    message: Some(format!(
+                        "writable clone for shard {shard_id} created from S3"
+                    )),
+                    shards: None,
+                },
+                Err(e) => AdminResponse {
+                    ok: false,
+                    message: Some(format!("add_writable_clone_from_s3 failed: {e}")),
+                    shards: None,
+                },
+            }
+        }
         "view_change" => {
             let Some(shard_id) = req.shard else {
                 return AdminResponse {

@@ -39,6 +39,19 @@ pub fn production_app_tick() -> Option<AppTickFn> {
     Some(ProductionTapirReplica::tick)
 }
 
+type S3TcpT = crate::transport::tokio_bitcode_tcp::TcpTransport<S3BackedTapirReplica>;
+type S3AppTickFn = fn(
+    &S3BackedTapirReplica,
+    &S3TcpT,
+    &crate::ir::Membership<crate::TcpAddress>,
+    &mut crate::Rng,
+);
+
+/// Returns the app_tick callback for S3-backed replicas.
+pub fn s3_backed_app_tick() -> Option<S3AppTickFn> {
+    Some(S3BackedTapirReplica::tick)
+}
+
 // ── S3-backed type aliases (always BufferedIo, not DefaultDiskIo) ─────
 //
 // DefaultDiskIo is MemoryIo in test builds, but S3-backed stores need

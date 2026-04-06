@@ -1,5 +1,6 @@
 mod add_replica;
 mod add_replica_join;
+mod writable_clone;
 mod leave_shard;
 mod remove_replica;
 mod shard_manager_http;
@@ -14,9 +15,41 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 pub type TapirIrReplica = crate::store_defaults::ProductionIrReplica;
+pub type S3BackedTapirIrReplica = crate::store_defaults::S3BackedIrReplica;
+
+/// A replica can be either a production replica (DefaultDiskIo) or an
+/// S3-backed replica (BufferedIo with S3 cache). Both support the same
+/// IrReplica methods but are different generic instantiations.
+pub enum AnyReplica {
+    Production(Arc<TapirIrReplica>),
+    S3Backed(Arc<S3BackedTapirIrReplica>),
+}
+
+impl AnyReplica {
+    pub fn force_view_change(&self) {
+        match self {
+            Self::Production(r) => r.force_view_change(),
+            Self::S3Backed(r) => r.force_view_change(),
+        }
+    }
+
+    pub fn view_number(&self) -> u64 {
+        match self {
+            Self::Production(r) => r.view_number(),
+            Self::S3Backed(r) => r.view_number(),
+        }
+    }
+
+    pub fn collect_metrics(&self) -> Option<IrReplicaMetrics> {
+        match self {
+            Self::Production(r) => r.collect_metrics(),
+            Self::S3Backed(r) => r.collect_metrics(),
+        }
+    }
+}
 
 pub struct ReplicaHandle {
-    pub replica: Arc<TapirIrReplica>,
+    pub replica: AnyReplica,
     pub listen_addr: SocketAddr,
 }
 

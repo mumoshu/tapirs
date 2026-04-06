@@ -5,5 +5,5 @@ pub mod node_server;
 pub mod nodemetrics_server;
 pub mod types;
 
-pub use node::{Node, ReplicaHandle, TapirIrReplica};
+pub use node::{AnyReplica, Node, ReplicaHandle, TapirIrReplica};
 pub use types::ReplicaConfig;

@@ -1,26 +1,20 @@
 use super::*;
 use crate::node::types::ReplicaConfig;
+use crate::remote_store::config::S3StorageConfig;
 use crate::{IrMembership, TcpTransport};
 use std::time::Duration;
 
 impl Node {
-    pub async fn add_replica_no_join(&self, cfg: &ReplicaConfig) -> Result<(), String> {
-        self.add_replica_inner(cfg, None).await
-    }
-
-    /// Add a replica using a pre-bound TCP listener (no TOCTOU port race).
-    pub async fn add_replica_with_listener(
+    /// Create a writable replica pre-populated from S3 via zero-copy clone.
+    ///
+    /// Same as add_replica_inner but calls open_production_stores_from_s3()
+    /// instead of open_production_stores(). The clone downloads the manifest
+    /// and registers S3CachingIo for lazy segment downloads. After bootstrap,
+    /// the replica is fully independent and participates in consensus normally.
+    pub async fn add_writable_clone_from_s3(
         &self,
         cfg: &ReplicaConfig,
-        listener: std::net::TcpListener,
-    ) -> Result<(), String> {
-        self.add_replica_inner(cfg, Some(listener)).await
-    }
-
-    pub(crate) async fn add_replica_inner(
-        &self,
-        cfg: &ReplicaConfig,
-        pre_bound_listener: Option<std::net::TcpListener>,
+        source_s3: S3StorageConfig,
     ) -> Result<(), String> {
         let shard = ShardNumber(cfg.shard);
         let listen_addr: SocketAddr = cfg
@@ -53,30 +47,31 @@ impl Node {
         let transport =
             TcpTransport::with_directory(address, Arc::clone(&self.directory));
 
-        // Populate shard directory so TapirTransport::shard_addresses works.
         transport.set_shard_addresses(shard, membership.clone());
 
-        // Start listener BEFORE creating replica (IrReplica::new starts tick tasks).
-        if let Some(listener) = pre_bound_listener {
-            transport
-                .listen_from_std(listener)
-                .map_err(|e| format!("failed to listen on {listen_addr}: {e}"))?;
-        } else {
-            transport
-                .listen(listen_addr)
-                .await
-                .map_err(|e| format!("failed to listen on {listen_addr}: {e}"))?;
-        }
+        transport
+            .listen(listen_addr)
+            .await
+            .map_err(|e| format!("failed to listen on {listen_addr}: {e}"))?;
 
+        // *** THE ONE DIFFERENCE: open from S3 instead of fresh ***
+        // block_in_place is needed because open_production_stores_from_s3 uses
+        // Handle::current().block_on() internally for async S3 calls.
         let transport_for_replica = transport.clone();
-        let (upcalls, ir_store) = crate::store_defaults::open_production_stores(
-            shard,
-            &self.persist_dir,
-            cfg.shard,
-            true,
-            self.s3_config.clone(),
-        )?;
-        let replica = Arc::new_cyclic(|weak: &std::sync::Weak<TapirIrReplica>| {
+        let persist_dir = self.persist_dir.clone();
+        let dest_s3 = self.s3_config.clone();
+        let shard_id = cfg.shard;
+        let (upcalls, ir_store) = tokio::task::block_in_place(|| {
+            crate::store_defaults::open_production_stores_from_s3(
+                shard,
+                &persist_dir,
+                shard_id,
+                true,
+                &source_s3,
+                dest_s3,
+            )
+        })?;
+        let replica = Arc::new_cyclic(|weak: &std::sync::Weak<S3BackedTapirIrReplica>| {
             let weak = weak.clone();
             transport_for_replica.set_receive_callback(move |from, message| {
                 weak.upgrade()?.receive(from, message)
@@ -86,23 +81,22 @@ impl Node {
                 membership,
                 upcalls,
                 transport_for_replica.clone(),
-                crate::store_defaults::production_app_tick(),
+                crate::store_defaults::s3_backed_app_tick(),
                 Some(Duration::from_secs(10)),
                 ir_store,
             )
         });
 
-        tracing::info!(?shard, %listen_addr, "replica started");
+        tracing::info!(?shard, %listen_addr, "writable clone started");
 
         self.replicas.lock().unwrap().insert(
             shard,
             ReplicaHandle {
-                replica: AnyReplica::Production(replica),
+                replica: AnyReplica::S3Backed(replica),
                 listen_addr,
             },
         );
 
-        // Register as own shard so CachingShardDirectory pushes membership for it.
         if let Some(ref dir) = self.discovery_dir {
             dir.add_own_shard(shard);
         }

@@ -7,3 +7,4 @@ mod test_read_replica_refresh;
 mod test_e2e_s3_lifecycle;
 mod test_stores_from_s3;
 mod test_upload_flush;
+mod test_writable_clone_admin;
