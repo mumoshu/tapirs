@@ -92,6 +92,13 @@ type SourceSpec struct {
 	// The reconciler rejects this field for writableClone mode.
 	// +optional
 	RefreshInterval string `json:"refreshInterval,omitempty"`
+
+	// snapshotName references a CrossShardSnapshot JSON file on S3,
+	// created by `tapictl snapshot create`. Required for writableClone mode.
+	// The operator reads s3://{bucket}/{prefix}snapshots/{snapshotName}.json
+	// to get per-shard clone parameters.
+	// +optional
+	SnapshotName string `json:"snapshotName,omitempty"`
 }
 
 // DestinationSpec configures where the cluster uploads segments and manifests.

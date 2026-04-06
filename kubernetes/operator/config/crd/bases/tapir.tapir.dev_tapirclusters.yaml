@@ -340,6 +340,13 @@ spec:
                     required:
                     - bucket
                     type: object
+                  snapshotName:
+                    description: |-
+                      snapshotName references a CrossShardSnapshot JSON file on S3,
+                      created by `tapictl snapshot create`. Required for writableClone mode.
+                      The operator reads s3://{bucket}/{prefix}snapshots/{snapshotName}.json
+                      to get per-shard clone parameters.
+                    type: string
                 required:
                 - mode
                 - s3
