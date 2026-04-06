@@ -679,11 +679,14 @@ async fn test_rolling_membership_replacement() {
 
 /// Rewrite cluster.json to replace old replica addresses with fresh ones.
 ///
-/// Returns the new per-shard replica addresses (same shape as shards in cluster.json).
+/// Returns the new per-shard replica addresses and held listeners.
+/// The listeners keep the ports reserved until the caller drops them
+/// right before restore_cluster_direct binds. Without this, the
+/// bind-then-drop pattern in alloc_addr() races with parallel tests.
 fn rewrite_cluster_json_addrs(
     backup_path: &str,
     num_replicas_per_shard: usize,
-) -> Vec<Vec<SocketAddr>> {
+) -> (Vec<Vec<SocketAddr>>, Vec<std::net::TcpListener>) {
     use tapirs::backup::types::ClusterMetadata;
 
     let cluster_json = format!("{backup_path}/cluster.json");
@@ -691,10 +694,14 @@ fn rewrite_cluster_json_addrs(
     let mut meta: ClusterMetadata = serde_json::from_str(&data).unwrap();
 
     let mut fresh_addrs_per_shard = Vec::new();
+    let mut held_listeners = Vec::new();
     for shard_hist in &mut meta.shards {
         let mut fresh = Vec::new();
         for _ in 0..num_replicas_per_shard {
-            fresh.push(alloc_addr());
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let a = l.local_addr().unwrap();
+            fresh.push(a);
+            held_listeners.push(l);
         }
         let fresh_strings: Vec<String> = fresh.iter().map(|a| a.to_string()).collect();
         // Update all deltas with fresh addresses (restore uses the last delta's addresses).
@@ -706,7 +713,7 @@ fn rewrite_cluster_json_addrs(
 
     let json = serde_json::to_string_pretty(&meta).unwrap();
     std::fs::write(&cluster_json, json).unwrap();
-    fresh_addrs_per_shard
+    (fresh_addrs_per_shard, held_listeners)
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -774,7 +781,8 @@ async fn test_cluster_backup_restore_via_admin() {
 
     // Rewrite cluster.json with fresh addresses (old ports remain bound by
     // accept_loop tasks even after remove_replica — port reuse would fail).
-    let _fresh_addrs = rewrite_cluster_json_addrs(backup_path, 3);
+    // Hold listeners to reserve ports until restore binds them.
+    let (_fresh_addrs, held) = rewrite_cluster_json_addrs(backup_path, 3);
 
     // Create fresh Node objects for restored replicas (old nodes still hold
     // the original ports, so restored replicas need separate nodes).
@@ -802,6 +810,9 @@ async fn test_cluster_backup_restore_via_admin() {
         restore_nodes.push(node);
         restore_temp_dirs.push(td);
     }
+
+    // Release reserved ports right before restore binds them.
+    drop(held);
 
     // Restore.
     let restore_sm_client = HttpShardManagerClient::new(&sm_url);
@@ -902,7 +913,8 @@ async fn test_backup_restore_incremental() {
     );
 
     // Rewrite cluster.json with fresh addresses for restore.
-    let _fresh_addrs = rewrite_cluster_json_addrs(backup_path, 3);
+    // Hold listeners to reserve ports until restore binds them.
+    let (_fresh_addrs, held) = rewrite_cluster_json_addrs(backup_path, 3);
 
     // Create fresh Node objects for restore.
     let mut restore_nodes = Vec::new();
@@ -929,6 +941,9 @@ async fn test_backup_restore_incremental() {
         restore_nodes.push(node);
         restore_temp_dirs.push(td);
     }
+
+    // Release reserved ports right before restore binds them.
+    drop(held);
 
     // Restore (applies both delta files).
     let restore_sm_client = HttpShardManagerClient::new(&sm_url);
@@ -1020,7 +1035,8 @@ async fn test_solo_backup_restore() {
     );
 
     // Rewrite cluster.json with fresh addresses.
-    let fresh_addrs = rewrite_cluster_json_addrs(backup_path, 3);
+    // Hold listeners to reserve ports until restore binds them.
+    let (fresh_addrs, held) = rewrite_cluster_json_addrs(backup_path, 3);
 
     // Create fresh Node objects for restore (no discovery needed for solo).
     let mut restore_nodes = Vec::new();
@@ -1044,6 +1060,9 @@ async fn test_solo_backup_restore() {
         restore_nodes.push(node);
         restore_temp_dirs.push(td);
     }
+
+    // Release reserved ports right before restore binds them.
+    drop(held);
 
     // Solo restore.
     let mut restore_mgr =
@@ -1171,7 +1190,8 @@ async fn test_solo_backup_restore_incremental() {
     );
 
     // Rewrite cluster.json with fresh addresses for restore.
-    let fresh_addrs = rewrite_cluster_json_addrs(backup_path, 3);
+    // Hold listeners to reserve ports until restore binds them.
+    let (fresh_addrs, held) = rewrite_cluster_json_addrs(backup_path, 3);
 
     // Create fresh Node objects for restore (no discovery needed for solo).
     let mut restore_nodes = Vec::new();
@@ -1195,6 +1215,9 @@ async fn test_solo_backup_restore_incremental() {
         restore_nodes.push(node);
         restore_temp_dirs.push(td);
     }
+
+    // Release reserved ports right before restore binds them.
+    drop(held);
 
     // Solo restore (applies both delta files).
     let mut restore_mgr =
