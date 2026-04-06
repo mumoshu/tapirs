@@ -223,7 +223,11 @@ ci/testbed-solo:
 ci/testbed-docker-compose:
 	scripts/testbed-docker-compose.sh up && scripts/testbed-docker-compose.sh down || { scripts/testbed-docker-compose.sh down; exit 1; }
 
-ci/testbed: ci/testbed-solo ci/testbed-docker-compose ci/testbed-kube ci/testbed-kube-operator ci/testbed-kube-operator-tls
+ci/testbed-kube-operator-s3:
+	TAPIR_KIND=1 scripts/testbed-kube-operator-s3.sh up
+	scripts/testbed-kube-operator-s3.sh down
+
+ci/testbed: ci/testbed-solo ci/testbed-docker-compose ci/testbed-kube ci/testbed-kube-operator ci/testbed-kube-operator-tls ci/testbed-kube-operator-s3
 	@echo "All testbed checks passed."
 
 ci/fuzz-diagnose:
