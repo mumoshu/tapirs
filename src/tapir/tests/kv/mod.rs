@@ -8,6 +8,7 @@ mod fuzz;
 mod increment;
 mod prepare_conflict;
 mod read_only;
+mod read_replica_txn;
 mod resharding;
 mod rwr;
 mod single_replica;

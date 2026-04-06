@@ -796,6 +796,116 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>> ReadOnlyTransaction<K, V, T> {
     }
 }
 
+/// Read-only transaction for querying read-replica clusters.
+///
+/// Unlike [`ReadOnlyTransaction`], this uses simple `invoke_unlogged(GetAt)`
+/// per read — one replica, one round trip. No quorum, no TrueTime wait,
+/// no read-protection watermarks. Load balancing comes from the IR
+/// client's random replica selection with 250ms timeout retry.
+///
+/// Snapshot isolation within each shard is guaranteed by MVCC timestamps.
+/// Cross-shard reads are eventually consistent (each shard refreshes
+/// independently from S3).
+pub struct ReadReplicaTransaction<K: Key, V: Value, T: TapirTransport<K, V>> {
+    snapshot_ts: Timestamp,
+    client: Arc<Mutex<Inner<K, V, T>>>,
+    read_cache: Arc<Mutex<BTreeMap<Sharded<K>, Option<V>>>>,
+}
+
+impl<K: Key, V: Value, T: TapirTransport<K, V>> Client<K, V, T> {
+    /// Begin a read-replica transaction at the current time.
+    ///
+    /// For querying read-replica clusters only. Uses `invoke_unlogged(GetAt)`
+    /// per read — no quorum, no consensus, no TrueTime. No clock skew
+    /// uncertainty bound needed because read replicas serve committed data
+    /// only and the `snapshot_ts` is chosen by the client.
+    pub fn begin_read_replica(&self) -> ReadReplicaTransaction<K, V, T> {
+        let inner = self.inner.lock().unwrap();
+        let snapshot_ts = Timestamp {
+            time: inner.transport.time(),
+            client_id: inner.id,
+        };
+        ReadReplicaTransaction {
+            snapshot_ts,
+            client: Arc::clone(&self.inner),
+            read_cache: Arc::new(Mutex::new(BTreeMap::new())),
+        }
+    }
+}
+
+impl<K: Key, V: Value, T: TapirTransport<K, V>> ReadReplicaTransaction<K, V, T> {
+    /// Read a key from a read-replica cluster.
+    ///
+    /// Sends `invoke_unlogged(GetAt { key, snapshot_ts })` to one random
+    /// replica. The IR client retries the next replica on 250ms timeout.
+    pub fn get(&self, key: impl Into<Sharded<K>>) -> impl Future<Output = Result<Option<V>, TransactionError>> {
+        let key = key.into();
+        let client = Arc::clone(&self.client);
+        let read_cache = Arc::clone(&self.read_cache);
+        let snapshot_ts = self.snapshot_ts;
+
+        async move {
+            // Check read cache for consistent reads within the transaction.
+            {
+                let cache = read_cache.lock().unwrap();
+                if let Some(value) = cache.get(&key) {
+                    return Ok(value.clone());
+                }
+            }
+
+            let shard_client = Inner::shard_client(&client, key.shard).await;
+            let (value, _write_ts) = shard_client.get_at(key.key.clone(), snapshot_ts).await?;
+
+            let mut cache = read_cache.lock().unwrap();
+            cache.entry(key).or_insert(value.clone());
+            Ok(value)
+        }
+    }
+
+    /// Range scan on a single shard of a read-replica cluster.
+    ///
+    /// Sends `invoke_unlogged(ScanAt { start, end, snapshot_ts })` to one
+    /// random replica. Returns key-value pairs (tombstones filtered out).
+    pub fn scan(
+        &self,
+        start: Sharded<K>,
+        end: Sharded<K>,
+    ) -> impl Future<Output = Result<Vec<(K, V)>, TransactionError>> {
+        assert_eq!(
+            start.shard, end.shard,
+            "scan start and end must target the same shard"
+        );
+        let client = Arc::clone(&self.client);
+        let read_cache = Arc::clone(&self.read_cache);
+        let snapshot_ts = self.snapshot_ts;
+
+        async move {
+            let shard_client = Inner::shard_client(&client, start.shard).await;
+            let (results, _max_ts) = shard_client
+                .scan_at(start.key.clone(), end.key.clone(), snapshot_ts)
+                .await?;
+
+            // Populate read cache (don't overwrite earlier reads).
+            {
+                let mut cache = read_cache.lock().unwrap();
+                for (key, value) in &results {
+                    let sharded = Sharded {
+                        shard: start.shard,
+                        key: key.clone(),
+                    };
+                    cache.entry(sharded).or_insert_with(|| value.clone());
+                }
+            }
+
+            // Filter tombstones and return.
+            Ok(results
+                .into_iter()
+                .filter_map(|(k, v)| v.map(|v| (k, v)))
+                .collect())
+        }
+    }
+}
+
 pub fn max_read_timestamp<K, V>(transaction: &OccTransaction<K, V, Timestamp>) -> u64 {
     let read_max = transaction
         .read_set
