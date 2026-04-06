@@ -187,7 +187,8 @@ func desiredShardManagerDeployment(cluster *tapirv1alpha1.TAPIRCluster) *appsv1.
 
 	var volumes []corev1.Volume
 	injectTLS(&container, &volumes, cluster, "shard-manager")
-	injectS3(&container, cluster)
+	// Note: shard-manager uses `tapi shard-manager` which does not accept S3 flags.
+	// Only `tapi node` (discovery and data node containers) supports --s3-bucket.
 
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
