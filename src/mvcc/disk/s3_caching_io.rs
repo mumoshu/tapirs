@@ -60,7 +60,21 @@ pub fn try_download_from_s3(path: &Path) -> Result<(), StorageError> {
         && let Some(name) = path.file_name().and_then(|n| n.to_str())
     {
         tracing::debug!(file = name, "s3cache: downloading (not cached locally)");
-        download_from_s3_blocking(&config, name, path)?;
+        match download_from_s3_blocking(&config, name, path) {
+            Ok(()) => {}
+            Err(e) => {
+                // If the file doesn't exist on S3 either, this is a new
+                // segment being created locally (e.g. import_raw_segment
+                // during view change merge, or SSTs from compaction). The
+                // caller will create it via OpenOptions::create(true).
+                let msg = format!("{e}");
+                if msg.contains("NoSuchKey") || msg.contains("service error") {
+                    tracing::debug!(file = name, "s3cache: not found on S3, will be created locally");
+                } else {
+                    return Err(e);
+                }
+            }
+        }
     }
     Ok(())
 }

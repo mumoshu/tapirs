@@ -192,9 +192,13 @@ impl DiskIo for BufferedIo {
     fn open(path: &Path, flags: OpenFlags, expected_size: Option<u64>) -> Result<Self, StorageError> {
         // If the file doesn't exist locally but S3 config is registered for
         // its directory (via clone_from_remote_lazy / register_s3_cache),
-        // download the segment from S3 first. This makes BufferedIo
+        // try to download the segment from S3 first. This makes BufferedIo
         // transparently S3-aware — no separate S3CachingIo type needed in
         // the production store type stack.
+        //
+        // try_download_from_s3 is best-effort: if the file doesn't exist
+        // on S3 either (new segment being created during view change merge),
+        // it returns Ok and falls through to create(true).
         if !path.exists() {
             super::s3_caching_io::try_download_from_s3(path)?;
         } else if expected_size.is_some() {

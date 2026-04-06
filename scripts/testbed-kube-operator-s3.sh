@@ -840,9 +840,17 @@ cmd_up() {
     # 2. Smoke test: write + read
     smoke_test_write_read
 
-    # 3. Wait for view change + S3 upload (IR tick ~2s + upload time).
-    info "Waiting for nodes to flush and upload to S3..."
-    sleep 10
+    # 3. Force view change on source nodes to flush "hello" to S3.
+    # The smoke test wrote "hello=world" which is in the active memtable.
+    # A view change flushes it to vlog, and sync_to_remote uploads to S3.
+    step "Triggering view change on source nodes to flush data to S3..."
+    kube exec "${TAPIR_CLUSTER_NAME}-default-0" -- \
+        tapi admin view-change --admin-listen-addr 127.0.0.1:9000 --shard 0 2>/dev/null || true
+    kube exec "${TAPIR_CLUSTER_NAME}-default-0" -- \
+        tapi admin view-change --admin-listen-addr 127.0.0.1:9000 --shard 1 2>/dev/null || true
+    # Wait for async sync_to_remote to complete after the view change.
+    info "Waiting for S3 upload..."
+    sleep 5
 
     # 4. Verify S3 objects exist
     verify_s3_objects
