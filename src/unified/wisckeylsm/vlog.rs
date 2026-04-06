@@ -219,7 +219,7 @@ impl<IO: DiskIo> VlogSegment<IO> {
         views: Vec<ViewRange>,
         flags: OpenFlags,
     ) -> Result<Self, StorageError> {
-        let io = IO::open(&path, flags, crate::mvcc::disk::disk_io::OpenMode::Segment { write_offset })?;
+        let io = IO::open(&path, flags, crate::mvcc::disk::disk_io::OpenMode::OpenMutable { write_offset })?;
         Ok(Self {
             id,
             io: Some(io),

@@ -454,7 +454,7 @@ mod tests {
     #[tokio::test]
     async fn test_no_faults_with_default_config() {
         let file = NamedTempFile::new().unwrap();
-        let io = BufferedIo::open(file.path(), OpenFlags::default(), OpenMode::Existing).unwrap();
+        let io = BufferedIo::open(file.path(), OpenFlags::default(), OpenMode::OpenImmutable).unwrap();
         let faulty = FaultyDiskIo::with_seed(io, 42);
 
         // Default config should never inject faults
@@ -476,7 +476,7 @@ mod tests {
     #[tokio::test]
     async fn test_fsync_fail_rate_always() {
         let file = NamedTempFile::new().unwrap();
-        let io = BufferedIo::open(file.path(), OpenFlags::default(), OpenMode::Existing).unwrap();
+        let io = BufferedIo::open(file.path(), OpenFlags::default(), OpenMode::OpenImmutable).unwrap();
 
         let config = DiskFaultConfig { fsync_fail_rate: 1.0, ..Default::default() };
 
@@ -497,7 +497,7 @@ mod tests {
     #[tokio::test]
     async fn test_fsync_fail_rate_never() {
         let file = NamedTempFile::new().unwrap();
-        let io = BufferedIo::open(file.path(), OpenFlags::default(), OpenMode::Existing).unwrap();
+        let io = BufferedIo::open(file.path(), OpenFlags::default(), OpenMode::OpenImmutable).unwrap();
 
         let config = DiskFaultConfig { fsync_fail_rate: 0.0, ..Default::default() };
 
@@ -512,7 +512,7 @@ mod tests {
     #[tokio::test]
     async fn test_enospc_simulation() {
         let file = NamedTempFile::new().unwrap();
-        let io = BufferedIo::open(file.path(), OpenFlags::default(), OpenMode::Existing).unwrap();
+        let io = BufferedIo::open(file.path(), OpenFlags::default(), OpenMode::OpenImmutable).unwrap();
 
         let config = DiskFaultConfig { enospc_after_bytes: Some(8192), ..Default::default() };
 
@@ -544,7 +544,7 @@ mod tests {
     #[tokio::test]
     async fn test_slow_io_latency() {
         let file = NamedTempFile::new().unwrap();
-        let io = BufferedIo::open(file.path(), OpenFlags::default(), OpenMode::Existing).unwrap();
+        let io = BufferedIo::open(file.path(), OpenFlags::default(), OpenMode::OpenImmutable).unwrap();
 
         let config = DiskFaultConfig { slow_io_latency: Some(Duration::from_millis(50)), ..Default::default() };
 
@@ -566,7 +566,7 @@ mod tests {
     #[tokio::test]
     async fn test_runtime_config_mutation() {
         let file = NamedTempFile::new().unwrap();
-        let io = BufferedIo::open(file.path(), OpenFlags::default(), OpenMode::Existing).unwrap();
+        let io = BufferedIo::open(file.path(), OpenFlags::default(), OpenMode::OpenImmutable).unwrap();
         let faulty = FaultyDiskIo::with_seed(io, 42);
 
         // Start with no failures
@@ -588,8 +588,8 @@ mod tests {
         let file1 = NamedTempFile::new().unwrap();
         let file2 = NamedTempFile::new().unwrap();
 
-        let io1 = BufferedIo::open(file1.path(), OpenFlags::default(), OpenMode::Existing).unwrap();
-        let io2 = BufferedIo::open(file2.path(), OpenFlags::default(), OpenMode::Existing).unwrap();
+        let io1 = BufferedIo::open(file1.path(), OpenFlags::default(), OpenMode::OpenImmutable).unwrap();
+        let io2 = BufferedIo::open(file2.path(), OpenFlags::default(), OpenMode::OpenImmutable).unwrap();
 
         let config = DiskFaultConfig { read_corruption_rate: 0.5, ..Default::default() };
 
@@ -635,7 +635,7 @@ mod tests {
     #[tokio::test]
     async fn test_read_corruption_always() {
         let file = NamedTempFile::new().unwrap();
-        let io = BufferedIo::open(file.path(), OpenFlags::default(), OpenMode::Existing).unwrap();
+        let io = BufferedIo::open(file.path(), OpenFlags::default(), OpenMode::OpenImmutable).unwrap();
 
         let config = DiskFaultConfig { read_corruption_rate: 1.0, ..Default::default() };
 
@@ -661,7 +661,7 @@ mod tests {
     #[tokio::test]
     async fn test_reset_bytes_written() {
         let file = NamedTempFile::new().unwrap();
-        let io = BufferedIo::open(file.path(), OpenFlags::default(), OpenMode::Existing).unwrap();
+        let io = BufferedIo::open(file.path(), OpenFlags::default(), OpenMode::OpenImmutable).unwrap();
         let faulty = FaultyDiskIo::with_seed(io, 42);
 
         let buf = AlignedBuf::new(4096);
@@ -679,7 +679,7 @@ mod tests {
     #[tokio::test]
     async fn test_reset_clears_all_faults() {
         let file = NamedTempFile::new().unwrap();
-        let io = BufferedIo::open(file.path(), OpenFlags::default(), OpenMode::Existing).unwrap();
+        let io = BufferedIo::open(file.path(), OpenFlags::default(), OpenMode::OpenImmutable).unwrap();
         let faulty = FaultyDiskIo::with_seed(io, 42);
 
         // Set various faults

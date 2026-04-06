@@ -54,7 +54,7 @@ impl<IO: DiskIo> VlogSegment<IO> {
         write_offset: u64,
         flags: super::disk_io::OpenFlags,
     ) -> Result<Self, StorageError> {
-        let io = IO::open(&path, flags, super::disk_io::OpenMode::Segment { write_offset })?;
+        let io = IO::open(&path, flags, super::disk_io::OpenMode::OpenMutable { write_offset })?;
         Ok(Self {
             id,
             io,

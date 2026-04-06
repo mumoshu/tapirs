@@ -212,13 +212,13 @@ impl DiskIo for S3CachingIo {
         {
             match mode {
                 OpenMode::CreateNew => {}
-                OpenMode::Existing => {
+                OpenMode::OpenImmutable => {
                     if !path.exists() {
                         tracing::debug!(file = name, "s3cache: downloading (not cached locally)");
                         download_from_s3_blocking(&config, name, path)?;
                     }
                 }
-                OpenMode::Segment { .. } => {
+                OpenMode::OpenMutable { .. } => {
                     if !path.exists() {
                         tracing::debug!(file = name, "s3cache: downloading (not cached locally)");
                         download_from_s3_blocking(&config, name, path)?;
@@ -239,7 +239,7 @@ impl DiskIo for S3CachingIo {
             }
         }
         Ok(Self {
-            inner: BufferedIo::open(path, flags, OpenMode::Existing)?,
+            inner: BufferedIo::open(path, flags, OpenMode::OpenImmutable)?,
         })
     }
 
@@ -274,7 +274,7 @@ mod tests {
         let path = dir.path().join("test.dat");
         std::fs::write(&path, b"hello").unwrap();
 
-        let io = S3CachingIo::open(&path, OpenFlags { create: false, direct: false }, OpenMode::Existing).unwrap();
+        let io = S3CachingIo::open(&path, OpenFlags { create: false, direct: false }, OpenMode::OpenImmutable).unwrap();
         let mut buf = AlignedBuf::new(4096);
         futures::executor::block_on(io.pread(&mut buf, 0)).unwrap();
         assert_eq!(&buf.as_slice()[..5], b"hello");
@@ -285,7 +285,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nonexistent.dat");
 
-        let result = S3CachingIo::open(&path, OpenFlags { create: false, direct: false }, OpenMode::Existing);
+        let result = S3CachingIo::open(&path, OpenFlags { create: false, direct: false }, OpenMode::OpenImmutable);
         assert!(result.is_err());
     }
 }

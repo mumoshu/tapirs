@@ -29,15 +29,14 @@ pub enum OpenMode {
     /// Creating a brand-new file locally. Never download from S3.
     /// Used by: import_raw_segment, fresh vlog/SST creation.
     CreateNew,
-    /// Opening an existing file for reading. Download from S3 if the
-    /// file is missing locally and the S3 cache is registered.
-    /// Used by: SST readers, open_from_parts.
-    Existing,
-    /// Opening a vlog segment with a known write offset. Download from
-    /// S3 if missing locally. ETag-revalidate if cached (the segment may
-    /// have grown between seals on S3).
-    /// Used by: VlogSegment::open_at for sealed and active segments.
-    Segment { write_offset: u64 },
+    /// Opening an immutable file. Download from S3 if missing locally.
+    /// No revalidation — once cached, always valid.
+    /// Used by: SST readers, sealed vlog segments.
+    OpenImmutable,
+    /// Opening a mutable file that may have been updated on S3.
+    /// Download from S3 if missing. ETag-revalidate if cached.
+    /// Used by: active vlog segments (grow between seals).
+    OpenMutable { write_offset: u64 },
 }
 
 /// Abstract disk I/O trait.
@@ -212,13 +211,13 @@ impl DiskIo for BufferedIo {
             OpenMode::CreateNew => {
                 // Never download from S3 — this file is being created locally.
             }
-            OpenMode::Existing => {
+            OpenMode::OpenImmutable => {
                 if !path.exists() {
                     // Download from S3 if registered. Errors propagate — never swallowed.
                     super::s3_caching_io::try_download_from_s3(path)?;
                 }
             }
-            OpenMode::Segment { .. } => {
+            OpenMode::OpenMutable { .. } => {
                 if !path.exists() {
                     super::s3_caching_io::try_download_from_s3(path)?;
                 } else {

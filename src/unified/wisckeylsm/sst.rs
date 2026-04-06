@@ -101,7 +101,7 @@ impl SSTableWriter {
         V: Serialize + Clone,
         IO: DiskIo,
     {
-        let io = IO::open(path, io_flags, crate::mvcc::disk::disk_io::OpenMode::Existing)?;
+        let io = IO::open(path, io_flags, crate::mvcc::disk::disk_io::OpenMode::OpenImmutable)?;
         let mut offset: u64 = 0;
         let mut index_entries: Vec<IndexEntry<K>> = Vec::new();
         let mut bloom = BloomFilter::new(entries.len());
@@ -230,7 +230,7 @@ pub(crate) struct SSTableReader<IO: DiskIo> {
 
 impl<IO: DiskIo> SSTableReader<IO> {
     pub async fn open(path: PathBuf, flags: OpenFlags) -> Result<Self, StorageError> {
-        let io = IO::open(&path, flags, crate::mvcc::disk::disk_io::OpenMode::Existing)?;
+        let io = IO::open(&path, flags, crate::mvcc::disk::disk_io::OpenMode::OpenImmutable)?;
 
         let file_size = io.file_len()?;
         if file_size < BLOCK_SIZE as u64 {
