@@ -8,7 +8,6 @@ Back up and restore TAPIR clusters to Amazon S3 or S3-compatible services
 - AWS credentials configured via environment variables, `~/.aws/credentials`,
   IAM role, or any method supported by the
   [AWS SDK credential chain](https://docs.aws.amazon.com/sdk-for-rust/latest/dg/credentials.html)
-- When building from source: `cargo build --features s3`
 
 ## Usage
 
@@ -104,7 +103,6 @@ Minimum permissions for the backup bucket:
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| `S3 support requires building with --features s3` | Binary compiled without S3 | Rebuild: `cargo build --features s3` |
 | `NoSuchBucket` | Bucket doesn't exist | Create the bucket first |
 | `InvalidAccessKeyId` | Bad credentials | Check `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` |
 | `SignatureDoesNotMatch` | Endpoint/region mismatch | Verify `--s3-region` and `--s3-endpoint` |

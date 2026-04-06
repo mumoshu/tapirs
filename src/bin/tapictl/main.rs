@@ -41,7 +41,7 @@ impl TlsArgs {
     }
 }
 
-/// S3 backup storage flags (requires `--features s3` when building from source).
+/// S3 backup storage flags.
 #[derive(clap::Args, Clone, Default)]
 pub struct S3Args {
     /// AWS region for S3 operations.
