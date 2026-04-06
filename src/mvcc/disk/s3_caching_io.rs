@@ -109,6 +109,66 @@ fn download_from_s3_blocking(
     }
 }
 
+/// Download the tail of a file from S3 starting at `offset` and append it
+/// to the local file. Uses `Range: bytes={offset}-` to fetch only the
+/// bytes beyond what's already cached locally.
+fn download_range_from_s3_blocking(
+    config: &S3CacheConfig,
+    segment_name: &str,
+    local_path: &Path,
+    offset: u64,
+) -> Result<(), StorageError> {
+    let download = async {
+        let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+            .region(aws_config::Region::new("us-east-1"))
+            .endpoint_url(&config.endpoint)
+            .load()
+            .await;
+        let s3_config = aws_sdk_s3::config::Builder::from(&sdk_config)
+            .force_path_style(true)
+            .build();
+        let client = aws_sdk_s3::Client::from_conf(s3_config);
+
+        let key = format!("{}{segment_name}", config.shard_segments_prefix);
+        let resp = client
+            .get_object()
+            .bucket(&config.bucket)
+            .key(&key)
+            .range(format!("bytes={offset}-"))
+            .send()
+            .await
+            .map_err(|e| {
+                StorageError::Io(std::io::Error::other(format!(
+                    "S3 GetObject range {key} offset={offset}: {e}"
+                )))
+            })?;
+
+        let bytes = resp.body.collect().await.map_err(|e| {
+            StorageError::Io(std::io::Error::other(format!(
+                "S3 read body {key}: {e}"
+            )))
+        })?;
+
+        // Append to existing local file.
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(local_path)
+            .map_err(StorageError::Io)?;
+        file.write_all(&bytes.into_bytes()).map_err(StorageError::Io)
+    };
+
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        tokio::task::block_in_place(|| handle.block_on(download))
+    } else {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| StorageError::Io(std::io::Error::other(format!("tokio runtime: {e}"))))?;
+        rt.block_on(download)
+    }
+}
+
 /// DiskIo implementation that lazily downloads segments from S3 on first open.
 ///
 /// If a file exists locally, opens it directly via BufferedIo (zero S3 cost).
@@ -125,15 +185,26 @@ impl DiskIo for S3CachingIo {
     type ReadFuture = Ready<Result<(), StorageError>>;
     type WriteFuture = Ready<Result<(), StorageError>>;
 
-    fn open(path: &Path, flags: OpenFlags) -> Result<Self, StorageError> {
-        if !path.exists()
-            && let Some(config) = lookup_config(path)
+    fn open(path: &Path, flags: OpenFlags, expected_size: Option<u64>) -> Result<Self, StorageError> {
+        if let Some(config) = lookup_config(path)
             && let Some(name) = path.file_name().and_then(|n| n.to_str())
         {
-            download_from_s3_blocking(&config, name, path)?;
+            if !path.exists() {
+                // File not cached locally — full download.
+                download_from_s3_blocking(&config, name, path)?;
+            } else if let Some(expected) = expected_size {
+                // File cached but may be stale (e.g. active segment that
+                // grew into sealed). Download only the appended tail.
+                let local_size = std::fs::metadata(path)
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                if local_size < expected {
+                    download_range_from_s3_blocking(&config, name, path, local_size)?;
+                }
+            }
         }
         Ok(Self {
-            inner: BufferedIo::open(path, flags)?,
+            inner: BufferedIo::open(path, flags, None)?,
         })
     }
 
@@ -168,7 +239,7 @@ mod tests {
         let path = dir.path().join("test.dat");
         std::fs::write(&path, b"hello").unwrap();
 
-        let io = S3CachingIo::open(&path, OpenFlags { create: false, direct: false }).unwrap();
+        let io = S3CachingIo::open(&path, OpenFlags { create: false, direct: false }, None).unwrap();
         let mut buf = AlignedBuf::new(4096);
         futures::executor::block_on(io.pread(&mut buf, 0)).unwrap();
         assert_eq!(&buf.as_slice()[..5], b"hello");
@@ -179,7 +250,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nonexistent.dat");
 
-        let result = S3CachingIo::open(&path, OpenFlags { create: false, direct: false });
+        let result = S3CachingIo::open(&path, OpenFlags { create: false, direct: false }, None);
         assert!(result.is_err());
     }
 }

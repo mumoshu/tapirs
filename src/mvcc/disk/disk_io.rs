@@ -35,7 +35,7 @@ pub trait DiskIo: Clone + Send + 'static {
     type ReadFuture: Future<Output = Result<(), StorageError>> + Send;
     type WriteFuture: Future<Output = Result<(), StorageError>> + Send;
 
-    fn open(path: &Path, flags: OpenFlags) -> Result<Self, StorageError>;
+    fn open(path: &Path, flags: OpenFlags, expected_size: Option<u64>) -> Result<Self, StorageError>;
     fn pread(&self, buf: &mut AlignedBuf, offset: u64) -> Self::ReadFuture;
     fn pwrite(&self, buf: &AlignedBuf, offset: u64) -> Self::WriteFuture;
     fn fsync(&self) -> impl Future<Output = Result<(), StorageError>> + Send;
@@ -112,7 +112,7 @@ impl DiskIo for SyncDirectIo {
     type ReadFuture = Ready<Result<(), StorageError>>;
     type WriteFuture = Ready<Result<(), StorageError>>;
 
-    fn open(path: &Path, flags: OpenFlags) -> Result<Self, StorageError> {
+    fn open(path: &Path, flags: OpenFlags, _expected_size: Option<u64>) -> Result<Self, StorageError> {
         let mut opts = OpenOptions::new();
         opts.read(true).write(true).create(flags.create);
         if flags.direct {
@@ -189,7 +189,7 @@ impl DiskIo for BufferedIo {
     type ReadFuture = Ready<Result<(), StorageError>>;
     type WriteFuture = Ready<Result<(), StorageError>>;
 
-    fn open(path: &Path, flags: OpenFlags) -> Result<Self, StorageError> {
+    fn open(path: &Path, flags: OpenFlags, _expected_size: Option<u64>) -> Result<Self, StorageError> {
         let mut opts = OpenOptions::new();
         opts.read(true).write(true).create(flags.create);
         // No O_DIRECT — works on any filesystem (tmpfs, etc.)

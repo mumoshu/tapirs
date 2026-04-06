@@ -75,7 +75,7 @@ impl DiskIo for MemoryIo {
     type ReadFuture = Ready<Result<(), StorageError>>;
     type WriteFuture = Ready<Result<(), StorageError>>;
 
-    fn open(path: &Path, flags: OpenFlags) -> Result<Self, StorageError> {
+    fn open(path: &Path, flags: OpenFlags, _expected_size: Option<u64>) -> Result<Self, StorageError> {
         let fs = get_fs();
         {
             let mut inner = fs.lock().unwrap();

@@ -90,7 +90,7 @@ impl SSTableWriter {
         TS: Serialize + Clone,
         IO: DiskIo,
     {
-        let io = IO::open(path, io_flags)?;
+        let io = IO::open(path, io_flags, None)?;
         let mut offset: u64 = 0;
         let mut index_entries: Vec<IndexEntry<K, TS>> = Vec::new();
         let mut bloom = BloomFilter::new(entries.len());
@@ -229,7 +229,7 @@ pub struct SSTableReader<IO: DiskIo> {
 impl<IO: DiskIo> SSTableReader<IO> {
     /// Open an SSTable file and read its footer.
     pub async fn open(path: PathBuf, flags: super::disk_io::OpenFlags) -> Result<Self, StorageError> {
-        let io = IO::open(&path, flags)?;
+        let io = IO::open(&path, flags, None)?;
 
         // Read file size to locate footer (last BLOCK_SIZE bytes).
         let file_size = io.file_len()?;

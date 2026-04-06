@@ -22,7 +22,7 @@ impl DiskIo for UringDirectIo {
     type ReadFuture = UringReadFuture;
     type WriteFuture = UringWriteFuture;
 
-    fn open(path: &Path, flags: OpenFlags) -> Result<Self, StorageError> {
+    fn open(path: &Path, flags: OpenFlags, _expected_size: Option<u64>) -> Result<Self, StorageError> {
         let mut opts = std::fs::OpenOptions::new();
         opts.read(true).write(true).create(flags.create);
         if flags.direct {

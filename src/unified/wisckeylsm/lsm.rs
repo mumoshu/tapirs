@@ -608,7 +608,7 @@ impl<K: Ord, V, IO: DiskIo, M: Memtable<K, V>> VlogLsm<K, V, IO, M> {
         self.next_segment_id += 1;
         let path = self.vlog_path(id);
         // Write raw bytes to a new segment file
-        let io = IO::open(&path, self.io_flags)?;
+        let io = IO::open(&path, self.io_flags, None)?;
         let mut buf = AlignedBuf::new(bytes.len());
         buf.as_full_slice_mut()[..bytes.len()].copy_from_slice(bytes);
         buf.set_len(bytes.len());
