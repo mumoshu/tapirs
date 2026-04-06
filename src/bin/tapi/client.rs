@@ -222,17 +222,25 @@ async fn load_tapir_discovery(
         std::process::exit(1);
     });
 
-    // Consistency: weak_all_active_shard_view_memberships() uses eventual reads
-    // (unlogged scan to 1 random replica). The shard-manager writes membership
-    // via strongly-consistent transactions, but this client reads eventually
-    // consistently. Right after
-    // cluster bootstrap or shard-manager operations, a replica may not yet
-    // have the latest writes. Retry with exponential backoff until non-empty.
+    // Strong read (quorum scan) instead of eventual (unlogged to 1 replica).
+    //
+    // An eventual read would eventually return the correct membership, but
+    // "eventually" depends on FinalizeInconsistent(Commit) propagating to
+    // the specific replica that serves the unlogged scan. If that replica
+    // missed the finalize (e.g. it was ViewChanging when the finalize was
+    // sent), it won't have the committed shard entry until the next view
+    // change merges it — which can take 10+ seconds.
+    //
+    // This matters for short-lived clients (REPL -e mode, kubectl run pods)
+    // that execute queries immediately after connecting. A strong read
+    // guarantees the client sees all committed shard entries on the first
+    // attempt. The cost is one quorum scan at startup — negligible for a
+    // one-time topology load.
     let entries = {
         let mut backoff = DISCOVERY_INITIAL_BACKOFF;
         let mut entries = Vec::new();
         for attempt in 0..=DISCOVERY_MAX_RETRIES {
-            entries = <_ as RemoteShardDirectory<TcpAddress, String>>::weak_all_active_shard_view_memberships(&dir)
+            entries = <_ as RemoteShardDirectory<TcpAddress, String>>::strong_all_active_shard_view_memberships(&dir)
                 .await
                 .unwrap_or_else(|e| {
                     panic!("failed to fetch topology from TAPIR discovery: {e}")
