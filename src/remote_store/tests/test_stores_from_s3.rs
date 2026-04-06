@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+use crate::remote_store::cross_shard_snapshot::{CrossShardSnapshot, ShardSnapshotInfo};
 use crate::tapir::{ShardNumber, Timestamp};
 use crate::tapir::store::TapirStore;
 use crate::IrClientId;
@@ -19,8 +21,19 @@ async fn open_stores_from_s3_reads_source_data() {
     write_and_commit(&mut record, &mut tapir, shard, &[("key1", "val1"), ("key2", "val2")], ts100);
     flush_and_upload(&mut record, &mut tapir, &seg_store, &man_store, shard_name, dir.path()).await;
 
-    // Open production stores from S3. Uses Handle::current().block_on()
-    // internally, so must run in block_in_place (not spawn_blocking).
+    // Build a single-shard CrossShardSnapshot. Single shard means
+    // cutoff_ts == ceiling_ts → no ghost range → no prepared txns removed.
+    let versions = man_store.list_manifest_versions(shard_name).await.unwrap();
+    let manifest_view = *versions.last().expect("no manifests uploaded");
+    let mut shards_map = BTreeMap::new();
+    shards_map.insert(0u32, ShardSnapshotInfo { manifest_view, ceiling_ts: ts100.time });
+    let snapshot = CrossShardSnapshot {
+        timestamp: String::new(),
+        cutoff_ts: ts100.time,
+        shards: shards_map,
+    };
+
+    // Open production stores from S3 with the snapshot.
     let source_s3 = s3_config.clone();
     let clone_dir = tempfile::tempdir().unwrap();
     let persist_dir = clone_dir.path().to_str().unwrap().to_string();
@@ -32,6 +45,7 @@ async fn open_stores_from_s3_reads_source_data() {
             0,
             true,
             &source_s3,
+            &snapshot,
             None, // no destination S3
         )
         .unwrap()

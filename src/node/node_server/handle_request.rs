@@ -134,12 +134,19 @@ pub async fn handle_request(node: &Node, line: &str) -> AdminResponse {
                 endpoint_url: s3_src.endpoint,
                 region: s3_src.region,
             };
+            let Some(snapshot_params) = req.snapshot else {
+                return AdminResponse {
+                    ok: false,
+                    message: Some("missing 'snapshot' field".into()),
+                    shards: None,
+                };
+            };
             let cfg = ReplicaConfig {
                 shard: shard_id,
                 listen_addr: listen_addr_str.clone(),
                 membership: membership_strs,
             };
-            match node.add_writable_clone_from_s3(&cfg, s3_config).await {
+            match node.add_writable_clone_from_s3(&cfg, s3_config, snapshot_params).await {
                 Ok(()) => AdminResponse {
                     ok: true,
                     message: Some(format!(

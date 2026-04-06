@@ -23,9 +23,11 @@ async fn cow_clone_reads_source_writes_isolated() {
     write_and_commit(&mut record, &mut tapir, shard, &[("x", "orig")], ts100);
     flush_and_upload(&mut record, &mut tapir, &seg_store, &man_store, shard_name, dir.path()).await;
 
-    // Clone lazily (zero-copy: only manifest downloaded).
+    // Clone lazily at the specific manifest view (zero-copy: only manifest downloaded).
+    let versions = man_store.list_manifest_versions(shard_name).await.unwrap();
+    let view = *versions.last().expect("no manifests uploaded");
     let clone_dir = tempfile::tempdir().unwrap();
-    clone_from_remote_lazy(&man_store, &s3_config, shard_name, None, clone_dir.path())
+    clone_from_remote_lazy(&man_store, &s3_config, shard_name, view, clone_dir.path())
         .await
         .unwrap();
 

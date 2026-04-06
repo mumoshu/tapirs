@@ -514,6 +514,69 @@ impl<K: Key + Serialize + DeserializeOwned, V: Value + Serialize + DeserializeOw
 }
 
 // ---------------------------------------------------------------------------
+// Clone-specific operations
+// ---------------------------------------------------------------------------
+
+impl<K, V, DIO> CombinedTapirHandle<K, V, DIO>
+where
+    K: Key + Serialize + DeserializeOwned,
+    V: Value + Serialize + DeserializeOwned,
+    DIO: DiskIo + Sync,
+{
+    /// Remove prepared transactions whose commit timestamp falls within the
+    /// ghost filter range `(cutoff_ts, ceiling_ts]`.
+    ///
+    /// # When to call
+    ///
+    /// After opening a writable clone from a `CrossShardSnapshot`. The ghost
+    /// filter hides committed data in the range `(cutoff_ts, ceiling_ts]` to
+    /// ensure cross-shard consistency. Prepared transactions in this range
+    /// must also be removed because:
+    ///
+    /// - The ghost filter makes this range invisible to the clone. Any reads
+    ///   or writes in this range are hidden, so prepared transactions here
+    ///   can never be meaningfully committed on the clone.
+    /// - The clone is an independent cluster. The source cluster's transaction
+    ///   coordinators (clients, backup coordinators) communicate with the
+    ///   SOURCE replicas, not the clone. No coordinator will send `IO::Commit`
+    ///   to the clone for these transactions.
+    ///
+    /// Prepared transactions at `ts <= cutoff_ts` are **preserved**. These
+    /// are part of the clone's visible history and a backup coordinator on
+    /// the clone's cluster must resolve them (commit or abort).
+    ///
+    /// # Safety
+    ///
+    /// This only modifies the clone's local in-memory OCC state. The source
+    /// cluster's S3 data is read-only and is NOT modified.
+    pub fn remove_prepared_txns_in_ghost_range(
+        &mut self,
+        cutoff_ts: u64,
+        ceiling_ts: u64,
+    ) {
+        if cutoff_ts >= ceiling_ts {
+            return; // empty ghost range — nothing to remove
+        }
+        let mut inner = self.inner.lock().unwrap();
+        let keys = inner.all_prepared_keys();
+        let to_remove: Vec<TransactionId> = keys
+            .iter()
+            .filter(|k| {
+                if let Some((ts, _)) = inner.resolve_prepared_txn(k) {
+                    ts.time > cutoff_ts && ts.time <= ceiling_ts
+                } else {
+                    false
+                }
+            })
+            .copied()
+            .collect();
+        for id in to_remove {
+            inner.do_abort(&id);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // TapirStore implementation
 // ---------------------------------------------------------------------------
 

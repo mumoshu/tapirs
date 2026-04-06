@@ -22,6 +22,23 @@ pub struct AdminRequest {
     /// Refresh interval in seconds for add_read_replica_from_s3.
     #[serde(default)]
     pub refresh_interval_secs: Option<u64>,
+    /// Cross-shard snapshot parameters for add_writable_clone_from_s3.
+    /// The operator creates the snapshot and passes per-shard info.
+    #[serde(default)]
+    pub snapshot: Option<SnapshotParams>,
+}
+
+/// Per-shard snapshot parameters from a CrossShardSnapshot.
+/// Ensures cross-shard consistency: each shard is cloned at a specific
+/// manifest view and gets a ghost filter based on cutoff_ts/ceiling_ts.
+#[derive(Deserialize)]
+pub struct SnapshotParams {
+    /// Global cutoff: min(ceiling_ts) across all shards.
+    pub cutoff_ts: u64,
+    /// This shard's ceiling_ts (max_committed_ts at snapshot time).
+    pub ceiling_ts: u64,
+    /// Manifest view to clone from for this shard.
+    pub manifest_view: u64,
 }
 
 #[derive(Deserialize)]

@@ -115,31 +115,29 @@ pub fn open_production_stores(
     Ok((upcalls, record_handle))
 }
 
-/// Open production stores pre-populated from S3 via zero-copy clone.
+/// Open production stores pre-populated from a cross-shard S3 snapshot.
 ///
-/// Downloads the source manifest and registers S3CachingIo so segments
-/// are lazy-downloaded on first read. Then opens the store normally —
-/// DefaultDiskIo falls through to S3CachingIo for missing files.
+/// Uses the `CrossShardSnapshot` to determine the exact manifest view and
+/// ghost filter for this shard, ensuring cross-shard consistency. Downloads
+/// the manifest via `clone_from_remote_lazy(view)` and registers S3CachingIo
+/// for lazy segment downloads. Opens the store with BufferedIo (not
+/// DefaultDiskIo which is MemoryIo in tests).
 ///
-/// `source_s3`: where to read source manifests/segments from.
-/// `dest_s3`: optional S3 config for the new cluster's ongoing uploads
-///            (must be a different bucket/prefix from source).
-/// Open production stores pre-populated from S3 via zero-copy clone.
+/// After opening, applies the ghost filter and removes prepared transactions
+/// within the ghost range. See `remove_prepared_txns_in_ghost_range` for why
+/// this is safe.
 ///
-/// Downloads the source manifest and registers S3CachingIo so segments
-/// are lazy-downloaded on first read. Opens the store with `S3CachingIo`
-/// as the DiskIo backend (not `DefaultDiskIo`), which checks the
-/// process-global S3 cache registry and downloads missing segments.
-///
-/// `source_s3`: where to read source manifests/segments from.
-/// `dest_s3`: optional S3 config for the new cluster's ongoing uploads
-///            (must be a different bucket/prefix from source).
+/// `source_s3`: S3 config for the source cluster's bucket.
+/// `snapshot`: cross-shard consistent snapshot (provides per-shard view + ghost filter).
+/// `dest_s3`: optional S3 config for the clone's ongoing uploads (must be a
+///            different bucket/prefix from source).
 pub fn open_production_stores_from_s3(
     shard: ShardNumber,
     persist_dir: &str,
     shard_id: u32,
     linearizable: bool,
     source_s3: &crate::remote_store::config::S3StorageConfig,
+    snapshot: &crate::remote_store::cross_shard_snapshot::CrossShardSnapshot,
     dest_s3: Option<crate::remote_store::config::S3StorageConfig>,
 ) -> Result<(S3BackedTapirReplica, S3BackedIrRecordStore), String> {
     use crate::backup::s3backup::S3BackupStorage;
@@ -152,7 +150,13 @@ pub fn open_production_stores_from_s3(
     let base_dir = format!("{}/shard_{}", persist_dir, shard_id);
     let shard_name = format!("shard_{}", shard_id);
 
-    // Clone from S3: download manifest, register S3CachingIo (blocking).
+    // Get the exact manifest view for this shard from the snapshot.
+    let shard_info = snapshot.shards.get(&shard_id).ok_or_else(|| {
+        format!("shard {shard_id} not found in CrossShardSnapshot")
+    })?;
+    let view = shard_info.manifest_view;
+
+    // Clone from S3 at the specific view (blocking).
     let handle = tokio::runtime::Handle::current();
     handle.block_on(async {
         let storage = S3BackupStorage::new(
@@ -167,16 +171,14 @@ pub fn open_production_stores_from_s3(
             &man_store,
             source_s3,
             &shard_name,
-            None, // latest manifest
+            view,
             std::path::Path::new(&base_dir),
         )
         .await
     })
-    .map_err(|e| format!("clone_from_remote_lazy for {shard_name}: {e}"))?;
+    .map_err(|e| format!("clone_from_remote_lazy for {shard_name} at view {view}: {e}"))?;
 
-    // Open store with BufferedIo (not DefaultDiskIo which is MemoryIo in
-    // tests). BufferedIo::open() transparently checks the S3 cache registry
-    // and downloads missing segments.
+    // Open store with BufferedIo.
     let io_flags = OpenFlags { create: true, direct: false };
     let mut inner = CombinedStoreInner::<String, String, crate::mvcc::disk::disk_io::BufferedIo>::open(
         std::path::Path::new(&base_dir),
@@ -186,13 +188,29 @@ pub fn open_production_stores_from_s3(
     )
     .map_err(|e| format!("open CombinedStore at {base_dir}: {e}"))?;
 
-    // Configure destination S3 for ongoing uploads (optional, may differ from source).
+    // Apply ghost filter for cross-shard consistency.
+    if let Some(gf) = snapshot.ghost_filter_for(shard_id) {
+        inner.ghost_filter = Some(gf);
+    }
+
+    // Configure destination S3 for ongoing uploads (optional).
     if let Some(cfg) = dest_s3 {
         inner.set_s3_config(cfg);
     }
 
     let record_handle = inner.into_record_handle();
-    let tapir_handle = record_handle.tapir_handle();
+    let mut tapir_handle = record_handle.tapir_handle();
+
+    // Remove prepared transactions within the ghost filter range.
+    // These are in the hidden range (cutoff_ts, ceiling_ts] — the ghost
+    // filter makes this range invisible to the clone, so these prepared
+    // transactions can never be meaningfully committed. See the doc comment
+    // on remove_prepared_txns_in_ghost_range for full safety argument.
+    tapir_handle.remove_prepared_txns_in_ghost_range(
+        snapshot.cutoff_ts,
+        shard_info.ceiling_ts,
+    );
+
     let upcalls = crate::tapir::Replica::new_with_store(tapir_handle);
 
     Ok((upcalls, record_handle))

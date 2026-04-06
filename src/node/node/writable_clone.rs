@@ -1,20 +1,24 @@
 use super::*;
 use crate::node::types::ReplicaConfig;
+use crate::node::node_server::SnapshotParams;
 use crate::remote_store::config::S3StorageConfig;
+use crate::remote_store::cross_shard_snapshot::{CrossShardSnapshot, ShardSnapshotInfo};
 use crate::{IrMembership, TcpTransport};
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 impl Node {
-    /// Create a writable replica pre-populated from S3 via zero-copy clone.
+    /// Create a writable replica pre-populated from a cross-shard S3 snapshot.
     ///
     /// Same as add_replica_inner but calls open_production_stores_from_s3()
-    /// instead of open_production_stores(). The clone downloads the manifest
-    /// and registers S3CachingIo for lazy segment downloads. After bootstrap,
-    /// the replica is fully independent and participates in consensus normally.
+    /// with a CrossShardSnapshot for cross-shard consistency. The clone
+    /// downloads the manifest at the specific view, applies the ghost filter,
+    /// and removes prepared transactions within the ghost range.
     pub async fn add_writable_clone_from_s3(
         &self,
         cfg: &ReplicaConfig,
         source_s3: S3StorageConfig,
+        snapshot_params: SnapshotParams,
     ) -> Result<(), String> {
         let shard = ShardNumber(cfg.shard);
         let listen_addr: SocketAddr = cfg
@@ -61,6 +65,19 @@ impl Node {
         let persist_dir = self.persist_dir.clone();
         let dest_s3 = self.s3_config.clone();
         let shard_id = cfg.shard;
+        // Build a CrossShardSnapshot from the per-shard params.
+        // The operator created the full snapshot and sent us the shard-specific
+        // view + ghost filter boundaries.
+        let mut shard_map = BTreeMap::new();
+        shard_map.insert(shard_id, ShardSnapshotInfo {
+            manifest_view: snapshot_params.manifest_view,
+            ceiling_ts: snapshot_params.ceiling_ts,
+        });
+        let snapshot = CrossShardSnapshot {
+            timestamp: String::new(),
+            cutoff_ts: snapshot_params.cutoff_ts,
+            shards: shard_map,
+        };
         let (upcalls, ir_store) = tokio::task::block_in_place(|| {
             crate::store_defaults::open_production_stores_from_s3(
                 shard,
@@ -68,6 +85,7 @@ impl Node {
                 shard_id,
                 true,
                 &source_s3,
+                &snapshot,
                 dest_s3,
             )
         })?;

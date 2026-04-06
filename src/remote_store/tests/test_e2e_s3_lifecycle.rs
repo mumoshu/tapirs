@@ -73,8 +73,10 @@ async fn e2e_multi_shard_s3_lifecycle() {
 
     // ── Phase 3: Zero-copy clone ──
 
+    let clone_versions = man_store.list_manifest_versions(shard0_name).await.unwrap();
+    let clone_view = *clone_versions.last().expect("no manifests for shard 0");
     let clone_dir = tempfile::tempdir().unwrap();
-    clone_from_remote_lazy(&man_store, &s3_config, shard0_name, None, clone_dir.path())
+    clone_from_remote_lazy(&man_store, &s3_config, shard0_name, clone_view, clone_dir.path())
         .await
         .unwrap();
 

@@ -49,14 +49,11 @@ pub async fn clone_from_remote<S: BackupStorage>(
     segment_store: &RemoteSegmentStore<S>,
     manifest_store: &RemoteManifestStore<S>,
     shard: &str,
-    view: Option<u64>,
+    view: u64,
     clone_base_dir: &Path,
 ) -> Result<UnifiedManifest, String> {
     // Download source manifest.
-    let source_bytes = match view {
-        Some(v) => manifest_store.download_manifest(shard, v).await?,
-        None => manifest_store.download_latest_manifest(shard).await?.1,
-    };
+    let source_bytes = manifest_store.download_manifest(shard, view).await?;
     let source: UnifiedManifest = bitcode::deserialize(&source_bytes)
         .map_err(|e| format!("deserialize source manifest: {e}"))?;
 
@@ -90,13 +87,10 @@ pub async fn clone_from_remote_lazy<S: BackupStorage>(
     manifest_store: &RemoteManifestStore<S>,
     s3_config: &S3StorageConfig,
     shard: &str,
-    view: Option<u64>,
+    view: u64,
     clone_base_dir: &Path,
 ) -> Result<UnifiedManifest, String> {
-    let source_bytes = match view {
-        Some(v) => manifest_store.download_manifest(shard, v).await?,
-        None => manifest_store.download_latest_manifest(shard).await?.1,
-    };
+    let source_bytes = manifest_store.download_manifest(shard, view).await?;
     let source: UnifiedManifest = bitcode::deserialize(&source_bytes)
         .map_err(|e| format!("deserialize source manifest: {e}"))?;
 

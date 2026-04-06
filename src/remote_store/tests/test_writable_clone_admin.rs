@@ -52,7 +52,16 @@ async fn writable_clone_via_admin_reads_source_data() {
         region: s3_config.region.clone(),
     };
 
-    node.add_writable_clone_from_s3(&cfg, source_s3).await.unwrap();
+    // Build snapshot params. Single shard, single view.
+    let versions = man_store.list_manifest_versions(shard_name).await.unwrap();
+    let manifest_view = *versions.last().expect("no manifests uploaded");
+    let snapshot_params = crate::node::node_server::SnapshotParams {
+        cutoff_ts: ts100.time,
+        ceiling_ts: ts100.time,
+        manifest_view,
+    };
+
+    node.add_writable_clone_from_s3(&cfg, source_s3, snapshot_params).await.unwrap();
 
     // Verify the node reports the shard.
     let shards = node.shard_list();
