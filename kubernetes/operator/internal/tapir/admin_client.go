@@ -33,14 +33,23 @@ type S3SourceConfig struct {
 	Region   string `json:"region,omitempty"`
 }
 
+// SnapshotParams matches the Rust SnapshotParams in admin request types.
+// Per-shard parameters from a CrossShardSnapshot for consistent cloning.
+type SnapshotParams struct {
+	CutoffTs     uint64 `json:"cutoff_ts"`
+	CeilingTs    uint64 `json:"ceiling_ts"`
+	ManifestView uint64 `json:"manifest_view"`
+}
+
 type adminRequest struct {
-	Command             string         `json:"command"`
-	Shard               *int32         `json:"shard,omitempty"`
-	ListenAddr          string         `json:"listen_addr,omitempty"`
-	Storage             string         `json:"storage,omitempty"`
-	Membership          []string       `json:"membership,omitempty"`
-	S3Source            *S3SourceConfig `json:"s3_source,omitempty"`
-	RefreshIntervalSecs *int64         `json:"refresh_interval_secs,omitempty"`
+	Command             string          `json:"command"`
+	Shard               *int32          `json:"shard,omitempty"`
+	ListenAddr          string          `json:"listen_addr,omitempty"`
+	Storage             string          `json:"storage,omitempty"`
+	Membership          []string        `json:"membership,omitempty"`
+	S3Source            *S3SourceConfig  `json:"s3_source,omitempty"`
+	RefreshIntervalSecs *int64          `json:"refresh_interval_secs,omitempty"`
+	Snapshot            *SnapshotParams `json:"snapshot,omitempty"`
 }
 
 // AdminResponse is the JSON response from the admin server.
@@ -172,7 +181,7 @@ func (c *AdminClient) Leave(ctx context.Context, shard int32) error {
 // via zero-copy clone. The clone downloads the manifest and lazily fetches
 // segments on first read. After bootstrap, the replica participates in
 // consensus normally and is fully independent of the source.
-func (c *AdminClient) AddWritableCloneFromS3(ctx context.Context, shard int32, listenAddr string, membership []string, storage string, s3Source S3SourceConfig) error {
+func (c *AdminClient) AddWritableCloneFromS3(ctx context.Context, shard int32, listenAddr string, membership []string, storage string, s3Source S3SourceConfig, snapshot SnapshotParams) error {
 	if storage == "" {
 		storage = "memory"
 	}
@@ -183,6 +192,7 @@ func (c *AdminClient) AddWritableCloneFromS3(ctx context.Context, shard int32, l
 		Storage:    storage,
 		Membership: membership,
 		S3Source:   &s3Source,
+		Snapshot:   &snapshot,
 	})
 	return err
 }

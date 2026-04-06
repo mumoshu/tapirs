@@ -2,10 +2,16 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"sort"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	awscreds "github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	tapir "github.com/mumoshu/tapirs/kubernetes/operator/internal/tapir"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -163,6 +169,81 @@ func (r *TAPIRClusterReconciler) bootstrapDiscovery(ctx context.Context, cluster
 	return nil
 }
 
+// crossShardSnapshot matches the Rust CrossShardSnapshot JSON format.
+type crossShardSnapshot struct {
+	Timestamp string                       `json:"timestamp"`
+	CutoffTs  uint64                       `json:"cutoff_ts"`
+	CeilingTs uint64                       `json:"ceiling_ts"`
+	Shards    map[string]shardSnapshotInfo `json:"shards"`
+}
+
+type shardSnapshotInfo struct {
+	ManifestView uint64 `json:"manifest_view"`
+}
+
+// readSnapshotFromS3 downloads and parses a CrossShardSnapshot JSON file from S3.
+func (r *TAPIRClusterReconciler) readSnapshotFromS3(ctx context.Context, cluster *tapirv1alpha1.TAPIRCluster) (*crossShardSnapshot, error) {
+	src := cluster.Spec.Source
+	key := src.S3.Prefix + "snapshots/" + src.SnapshotName + ".json"
+
+	// Read S3 credentials from the referenced K8s Secret.
+	var opts []func(*awsconfig.LoadOptions) error
+	if src.S3.CredentialsSecret != "" {
+		var secret corev1.Secret
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      src.S3.CredentialsSecret,
+			Namespace: cluster.Namespace,
+		}, &secret); err != nil {
+			return nil, fmt.Errorf("get credentials secret %q: %w", src.S3.CredentialsSecret, err)
+		}
+		accessKey := string(secret.Data["AWS_ACCESS_KEY_ID"])
+		secretKey := string(secret.Data["AWS_SECRET_ACCESS_KEY"])
+		opts = append(opts, awsconfig.WithCredentialsProvider(
+			awscreds.NewStaticCredentialsProvider(accessKey, secretKey, ""),
+		))
+	}
+
+	if src.S3.Region != "" {
+		opts = append(opts, awsconfig.WithRegion(src.S3.Region))
+	} else {
+		opts = append(opts, awsconfig.WithRegion("us-east-1"))
+	}
+
+	cfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("load AWS config: %w", err)
+	}
+
+	var s3Opts []func(*s3.Options)
+	if src.S3.Endpoint != "" {
+		s3Opts = append(s3Opts, func(o *s3.Options) {
+			o.BaseEndpoint = aws.String(src.S3.Endpoint)
+			o.UsePathStyle = true
+		})
+	}
+	client := s3.NewFromConfig(cfg, s3Opts...)
+
+	resp, err := client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(src.S3.Bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("get snapshot s3://%s/%s: %w", src.S3.Bucket, key, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read snapshot body: %w", err)
+	}
+
+	var snapshot crossShardSnapshot
+	if err := json.Unmarshal(body, &snapshot); err != nil {
+		return nil, fmt.Errorf("parse snapshot JSON: %w", err)
+	}
+	return &snapshot, nil
+}
+
 // bootstrapReplicas bootstraps data-node replicas with static membership per shard.
 func (r *TAPIRClusterReconciler) bootstrapReplicas(ctx context.Context, cluster *tapirv1alpha1.TAPIRCluster) error {
 	log := logf.FromContext(ctx)
@@ -171,6 +252,21 @@ func (r *TAPIRClusterReconciler) bootstrapReplicas(ctx context.Context, cluster 
 	allPods, err := r.getAllDataNodePods(ctx, cluster)
 	if err != nil {
 		return err
+	}
+
+	// For writable clones, read the snapshot from S3 before the shard loop.
+	var snapshot *crossShardSnapshot
+	if src := cluster.Spec.Source; src != nil && src.Mode == tapirv1alpha1.SourceModeWritableClone {
+		if src.SnapshotName == "" {
+			return fmt.Errorf("snapshotName is required for writableClone mode")
+		}
+		snapshot, err = r.readSnapshotFromS3(ctx, cluster)
+		if err != nil {
+			return fmt.Errorf("read snapshot: %w", err)
+		}
+		log.Info("Read snapshot from S3", "snapshot", src.SnapshotName,
+			"cutoffTs", snapshot.CutoffTs, "ceilingTs", snapshot.CeilingTs,
+			"shards", len(snapshot.Shards))
 	}
 
 	for _, shard := range cluster.Spec.Shards {
@@ -229,7 +325,17 @@ func (r *TAPIRClusterReconciler) bootstrapReplicas(ctx context.Context, cluster 
 				}
 				switch src.Mode {
 				case tapirv1alpha1.SourceModeWritableClone:
-					if err := client.AddWritableCloneFromS3(ctx, shard.Number, listenAddr, membership, storage, s3Source); err != nil {
+					shardKey := fmt.Sprintf("%d", shard.Number)
+					shardInfo, ok := snapshot.Shards[shardKey]
+					if !ok {
+						return fmt.Errorf("snapshot has no entry for shard %d", shard.Number)
+					}
+					snapshotParams := tapir.SnapshotParams{
+						CutoffTs:     snapshot.CutoffTs,
+						CeilingTs:    snapshot.CeilingTs,
+						ManifestView: shardInfo.ManifestView,
+					}
+					if err := client.AddWritableCloneFromS3(ctx, shard.Number, listenAddr, membership, storage, s3Source, snapshotParams); err != nil {
 						return fmt.Errorf("add_writable_clone_from_s3 shard %d on %s: %w", shard.Number, client.Addr, err)
 					}
 				case tapirv1alpha1.SourceModeReadReplica:
