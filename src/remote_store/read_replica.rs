@@ -66,7 +66,12 @@ impl ReadReplica {
     /// Current manifest view number.
     pub fn current_view(&self) -> u64 {
         let h = self.handle.load();
-        h.cdc_max_view().unwrap_or(0)
+        h.inner.lock().unwrap().tapir_manifest.current_view
+    }
+
+    /// Load the current tapir handle for direct read access.
+    pub fn load_handle(&self) -> arc_swap::Guard<Arc<TapirHandle>> {
+        self.handle.load()
     }
 
     /// Read a key at a given timestamp.
