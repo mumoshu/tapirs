@@ -107,6 +107,51 @@ spec:
 
 When S3 is configured, the operator injects `--s3-bucket` and `--s3-endpoint` flags into all pod containers. Nodes upload segments and manifests to S3 on every view change flush.
 
+**Cluster cloning and read replicas:** Create new clusters pre-populated from an existing cluster's S3 data. Two modes are available:
+
+*Writable clone* — an independent cluster that starts from a point-in-time S3 snapshot and can diverge freely:
+
+```yaml
+apiVersion: tapir.tapir.dev/v1alpha1
+kind: TAPIRCluster
+metadata:
+  name: my-clone
+spec:
+  source:
+    s3:
+      bucket: source-cluster-data
+      endpoint: http://minio.tapir.svc.cluster.local:9000
+      credentialsSecret: source-creds
+    mode: writableClone
+  destination:
+    s3:
+      bucket: clone-cluster-data
+      endpoint: http://minio.tapir.svc.cluster.local:9000
+      credentialsSecret: clone-creds
+  # ... image, discovery, nodePools, shards as usual
+```
+
+*Read replica* — a non-consensus cluster that serves reads from S3 and auto-refreshes:
+
+```yaml
+apiVersion: tapir.tapir.dev/v1alpha1
+kind: TAPIRCluster
+metadata:
+  name: my-replica
+spec:
+  source:
+    s3:
+      bucket: source-cluster-data
+      endpoint: http://minio.tapir.svc.cluster.local:9000
+      credentialsSecret: source-creds
+    mode: readReplica
+    refreshInterval: 10s
+  # ... image, discovery, nodePools, shards
+  # No destination needed — read replicas don't upload
+```
+
+Read replicas serve reads via `ReadReplicaTransaction` — a client type that uses simple `invoke_unlogged(GetAt)` per read (one random replica, one round trip). No quorum reads, no TrueTime, no read-protection watermarks. Within a shard, snapshot isolation is guaranteed by MVCC timestamps. Across shards, reads are eventually consistent (each shard refreshes independently from S3).
+
 **Inspect the cluster:** Check the operator-managed resources:
 
 ```

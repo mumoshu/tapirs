@@ -116,6 +116,8 @@ The `GhostFilter` works by timestamp clamping, not per-item filtering: `clamp_ts
 
 `clone_from_remote_lazy()` creates a copy-on-write clone of a shard from S3 by downloading only the manifest (not segments). Registers `S3CachingIo` so segments are lazily downloaded on first read. Rewrites the manifest to promote the source's active segment to sealed and creates a fresh active segment for the clone. Writes to the clone don't affect the source.
 
+For declarative Kubernetes-native cloning, use the `TAPIRCluster` CRD with `source.mode: writableClone`. For read-only replicas that auto-refresh from S3, use `source.mode: readReplica`. See [Getting Started: Kubernetes Operator](../../operate/getting-started-testbed-kube-operator.md) for CRD examples and `ReadReplicaTransaction` client usage.
+
 ## Key Files
 
 - [backup/mod.rs](../../../src/backup/mod.rs) — `BackupManager` struct
