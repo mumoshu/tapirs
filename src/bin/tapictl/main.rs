@@ -705,9 +705,15 @@ fn main() {
                 let man_store = RemoteManifestStore::new(storage.sub(""));
                 let snapshot =
                     create_cross_shard_snapshot(&man_store, &shard_names).await?;
+
+                use tapirs::remote_store::cross_shard_snapshot::save_snapshot;
+                let name = save_snapshot(&storage, &snapshot).await
+                    .map_err(|e| format!("save snapshot to S3: {e}"))?;
+                // Name to stdout for scripting, JSON to stderr for debugging.
+                println!("{name}");
                 let json = serde_json::to_string_pretty(&snapshot)
                     .map_err(|e| format!("serialize snapshot: {e}"))?;
-                println!("{json}");
+                eprintln!("{json}");
                 Ok(())
             })
         }
