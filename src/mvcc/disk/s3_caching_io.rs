@@ -115,16 +115,11 @@ fn download_from_s3_blocking(
     }
 }
 
-/// S3 HEAD response metadata.
-struct HeadResult {
-    content_length: u64,
-    etag: String,
-}
-
-fn head_object_blocking(
+/// Get the ETag of an S3 object via HEAD request.
+fn head_object_etag_blocking(
     config: &S3CacheConfig,
     segment_name: &str,
-) -> Result<HeadResult, StorageError> {
+) -> Result<String, StorageError> {
     let head = async {
         let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
             .region(aws_config::Region::new("us-east-1"))
@@ -149,10 +144,7 @@ fn head_object_blocking(
                 )))
             })?;
 
-        Ok(HeadResult {
-            content_length: resp.content_length().unwrap_or(0) as u64,
-            etag: resp.e_tag().unwrap_or("").to_string(),
-        })
+        Ok(resp.e_tag().unwrap_or("").to_string())
     };
 
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -163,74 +155,6 @@ fn head_object_blocking(
             .build()
             .map_err(|e| StorageError::Io(std::io::Error::other(format!("tokio runtime: {e}"))))?;
         rt.block_on(head)
-    }
-}
-
-fn head_object_size_blocking(config: &S3CacheConfig, name: &str) -> Result<u64, StorageError> {
-    head_object_blocking(config, name).map(|r| r.content_length)
-}
-
-fn head_object_etag_blocking(config: &S3CacheConfig, name: &str) -> Result<String, StorageError> {
-    head_object_blocking(config, name).map(|r| r.etag)
-}
-
-/// Download the tail of a file from S3 starting at `offset` and append it
-/// to the local file. Uses `Range: bytes={offset}-` to fetch only the
-/// bytes beyond what's already cached locally.
-fn download_range_from_s3_blocking(
-    config: &S3CacheConfig,
-    segment_name: &str,
-    local_path: &Path,
-    offset: u64,
-) -> Result<(), StorageError> {
-    let download = async {
-        let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
-            .region(aws_config::Region::new("us-east-1"))
-            .endpoint_url(&config.endpoint)
-            .load()
-            .await;
-        let s3_config = aws_sdk_s3::config::Builder::from(&sdk_config)
-            .force_path_style(true)
-            .build();
-        let client = aws_sdk_s3::Client::from_conf(s3_config);
-
-        let key = format!("{}{segment_name}", config.shard_segments_prefix);
-        let resp = client
-            .get_object()
-            .bucket(&config.bucket)
-            .key(&key)
-            .range(format!("bytes={offset}-"))
-            .send()
-            .await
-            .map_err(|e| {
-                StorageError::Io(std::io::Error::other(format!(
-                    "S3 GetObject range {key} offset={offset}: {e}"
-                )))
-            })?;
-
-        let bytes = resp.body.collect().await.map_err(|e| {
-            StorageError::Io(std::io::Error::other(format!(
-                "S3 read body {key}: {e}"
-            )))
-        })?;
-
-        // Append to existing local file.
-        use std::io::Write;
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .open(local_path)
-            .map_err(StorageError::Io)?;
-        file.write_all(&bytes.into_bytes()).map_err(StorageError::Io)
-    };
-
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        tokio::task::block_in_place(|| handle.block_on(download))
-    } else {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| StorageError::Io(std::io::Error::other(format!("tokio runtime: {e}"))))?;
-        rt.block_on(download)
     }
 }
 
@@ -260,31 +184,15 @@ impl DiskIo for S3CachingIo {
                 download_from_s3_blocking(&config, name, path)?;
             } else if expected_size.is_some() {
                 // File cached but may be stale (e.g. active segment that
-                // grew into sealed). Check ETag only if we have a local
-                // ETag file (meaning the file was previously downloaded
+                // grew between seals). Check ETag only if we have a local
+                // .etag file (meaning the file was previously downloaded
                 // from S3, not created locally).
                 let etag_path = path.with_extension("etag");
                 if let Ok(local_etag) = std::fs::read_to_string(&etag_path) {
                     let remote_etag = head_object_etag_blocking(&config, name)?;
                     if remote_etag != local_etag {
-                        let local_size = std::fs::metadata(path)
-                            .map(|m| m.len())
-                            .unwrap_or(0);
-                        let remote_size = head_object_size_blocking(&config, name)?;
-                        if remote_size > local_size {
-                            tracing::debug!(
-                                file = name, local_size, remote_size,
-                                "s3cache: range download (etag changed, remote larger)"
-                            );
-                            download_range_from_s3_blocking(&config, name, path, local_size)?;
-                        } else {
-                            tracing::debug!(
-                                file = name, local_size, remote_size,
-                                "s3cache: full re-download (etag changed)"
-                            );
-                            download_from_s3_blocking(&config, name, path)?;
-                        }
-                        let _ = std::fs::write(&etag_path, &remote_etag);
+                        tracing::debug!(file = name, "s3cache: re-downloading (etag changed)");
+                        download_from_s3_blocking(&config, name, path)?;
                     } else {
                         tracing::debug!(file = name, "s3cache: using cached (etag matches)");
                     }
