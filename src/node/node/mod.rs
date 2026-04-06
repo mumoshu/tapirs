@@ -1,3 +1,4 @@
+mod add_read_replica;
 mod add_replica;
 mod add_replica_join;
 mod writable_clone;
@@ -53,8 +54,17 @@ pub struct ReplicaHandle {
     pub listen_addr: SocketAddr,
 }
 
+pub struct ReadReplicaHandle {
+    pub(crate) listen_addr: SocketAddr,
+    /// Held alive to keep the refresh background task running.
+    /// Dropping the handle aborts the task. The ReadReplica itself
+    /// is kept alive via Arc references in the shim and refresh task.
+    _refresh_task: tokio::task::JoinHandle<()>,
+}
+
 pub struct Node {
     pub(crate) replicas: Mutex<BTreeMap<ShardNumber, ReplicaHandle>>,
+    pub(crate) read_replicas: Mutex<BTreeMap<ShardNumber, ReadReplicaHandle>>,
     pub(crate) persist_dir: String,
     pub(crate) directory: Arc<InMemoryShardDirectory<TcpAddress>>,
     /// Holds the CachingShardDirectory alive so its background sync task
@@ -74,6 +84,7 @@ impl Node {
     pub fn new(persist_dir: String, new_rng: fn() -> crate::Rng) -> Self {
         Self {
             replicas: Mutex::new(BTreeMap::new()),
+            read_replicas: Mutex::new(BTreeMap::new()),
             persist_dir,
             directory: Arc::new(InMemoryShardDirectory::new()),
             discovery_dir: None,
@@ -98,6 +109,7 @@ impl Node {
         );
         Self {
             replicas: Mutex::new(BTreeMap::new()),
+            read_replicas: Mutex::new(BTreeMap::new()),
             persist_dir,
             directory,
             discovery_dir: Some(discovery_dir),
@@ -153,6 +165,15 @@ impl Node {
 
     pub fn shard_list(&self) -> Vec<(ShardNumber, SocketAddr)> {
         self.replicas
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(shard, handle)| (*shard, handle.listen_addr))
+            .collect()
+    }
+
+    pub fn read_replica_list(&self) -> Vec<(ShardNumber, SocketAddr)> {
+        self.read_replicas
             .lock()
             .unwrap()
             .iter()

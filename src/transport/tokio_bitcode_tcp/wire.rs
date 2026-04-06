@@ -4,7 +4,7 @@ use crate::ir::ReplicaUpcalls;
 use serde::{Deserialize, Serialize};
 
 /// Concrete IR message type for the Tokio bitcode TCP transport.
-pub(crate) type TcpIrMessage<U> = MessageImpl<
+pub type TcpIrMessage<U> = MessageImpl<
     <U as ReplicaUpcalls>::UO,
     <U as ReplicaUpcalls>::UR,
     <U as ReplicaUpcalls>::IO,

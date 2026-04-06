@@ -54,7 +54,7 @@ mod connection;
 mod listener;
 mod state;
 mod transport_impl;
-mod wire;
+pub mod wire;
 
 pub use address::TcpAddress;
 pub use state::TcpTransport;

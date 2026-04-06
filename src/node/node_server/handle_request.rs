@@ -18,17 +18,25 @@ pub async fn handle_request(node: &Node, line: &str) -> AdminResponse {
     match req.command.as_str() {
         "status" => {
             let list = node.shard_list();
+            let read_list = node.read_replica_list();
+            let total = list.len() + read_list.len();
+            let mut shards: Vec<ShardInfo> = list
+                .into_iter()
+                .map(|(shard, addr)| ShardInfo {
+                    shard: shard.0,
+                    listen_addr: addr.to_string(),
+                })
+                .collect();
+            for (shard, addr) in read_list {
+                shards.push(ShardInfo {
+                    shard: shard.0,
+                    listen_addr: format!("{addr} (read-only)"),
+                });
+            }
             AdminResponse {
                 ok: true,
-                message: Some(format!("{} replica(s) running", list.len())),
-                shards: Some(
-                    list.into_iter()
-                        .map(|(shard, addr)| ShardInfo {
-                            shard: shard.0,
-                            listen_addr: addr.to_string(),
-                        })
-                        .collect(),
-                ),
+                message: Some(format!("{total} replica(s) running")),
+                shards: Some(shards),
             }
         }
         "add_replica" => {
@@ -142,6 +150,66 @@ pub async fn handle_request(node: &Node, line: &str) -> AdminResponse {
                 Err(e) => AdminResponse {
                     ok: false,
                     message: Some(format!("add_writable_clone_from_s3 failed: {e}")),
+                    shards: None,
+                },
+            }
+        }
+        "add_read_replica_from_s3" => {
+            let Some(shard_id) = req.shard else {
+                return AdminResponse {
+                    ok: false,
+                    message: Some("missing 'shard' field".into()),
+                    shards: None,
+                };
+            };
+            let Some(ref listen_addr_str) = req.listen_addr else {
+                return AdminResponse {
+                    ok: false,
+                    message: Some("missing 'listen_addr' field".into()),
+                    shards: None,
+                };
+            };
+            let listen_addr: std::net::SocketAddr = match listen_addr_str.parse() {
+                Ok(a) => a,
+                Err(e) => {
+                    return AdminResponse {
+                        ok: false,
+                        message: Some(format!("invalid listen_addr: {e}")),
+                        shards: None,
+                    };
+                }
+            };
+            let Some(s3_src) = req.s3_source else {
+                return AdminResponse {
+                    ok: false,
+                    message: Some("missing 's3_source' field".into()),
+                    shards: None,
+                };
+            };
+            let refresh_secs = req.refresh_interval_secs.unwrap_or(30);
+            let s3_config = crate::remote_store::config::S3StorageConfig {
+                bucket: s3_src.bucket,
+                prefix: s3_src.prefix,
+                endpoint_url: s3_src.endpoint,
+                region: s3_src.region,
+            };
+            match node
+                .add_read_replica_from_s3(
+                    ShardNumber(shard_id),
+                    listen_addr,
+                    s3_config,
+                    std::time::Duration::from_secs(refresh_secs),
+                )
+                .await
+            {
+                Ok(()) => AdminResponse {
+                    ok: true,
+                    message: Some(format!("read replica for shard {shard_id} created")),
+                    shards: None,
+                },
+                Err(e) => AdminResponse {
+                    ok: false,
+                    message: Some(format!("add_read_replica_from_s3 failed: {e}")),
                     shards: None,
                 },
             }
