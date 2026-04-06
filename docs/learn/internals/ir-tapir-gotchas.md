@@ -261,3 +261,23 @@ These are pitfalls specific to our implementation's extensions beyond the origin
 2. **Commit-wait:** Before each `quorum_read`/`quorum_scan`, sleep for ε (minus any fast path delay already spent). This ensures all writes with `commit_ts <= snapshot_ts` have completed by the time the read executes.
 
 Pass `Duration::ZERO` when clocks are known to be perfectly synchronized (e.g., in-process channel transport in tests, single-node deployments). See [TrueTime Uncertainty Bound](protocol-tapir-paper-extensions-truetime.md) for the full correctness argument. Source: `tapir/client.rs` (begin_read_only, ReadOnlyTransaction::get/scan).
+
+### 21. AlignedBuf: BufferedIo writes len(), not capacity()
+
+**What the paper says:** N/A — AlignedBuf is an implementation detail for O_DIRECT support.
+
+**General implication:** `AlignedBuf` over-allocates to alignment boundaries (e.g., 4096-byte aligned). The `capacity()` exceeds `len()` by the alignment padding. When writing to disk, the correct number of bytes to write depends on the I/O backend: `BufferedIo` should write `len()` (logical data only), while `SyncDirectIo`/`UringDirectIo` must write `capacity()` (O_DIRECT requires aligned writes).
+
+**What breaks if violated:** If `BufferedIo.pwrite()` writes `capacity()` instead of `len()`, segment files contain trailing zero-padding bytes. On recovery, deserialization reads past the logical end and encounters garbage or zero bytes, causing `bitcode::Error::Eof` or corrupted entries. The bug is silent until crash recovery — normal reads use in-memory offsets that correctly bound the read.
+
+**How tapirs handles it:** `BufferedIo.pwrite()` consistently uses `&buf[..buf.len()]`. `SyncDirectIo`/`UringDirectIo` use `buf.capacity()` as the write length for O_DIRECT compliance. The `expected_size` parameter in `DiskIo::open()` carries the logical file size for S3CachingIo's ETag-based cache invalidation — other backends ignore it. Source: `mvcc/disk/disk_io.rs`.
+
+### 22. IR vlog min_vlog_size=u64::MAX disables rotation
+
+**What the paper says:** N/A — vlog segment rotation is an implementation optimization.
+
+**General implication:** `VlogLsm::seal_view()` optionally rotates the active vlog segment when it exceeds `min_vlog_size`. Setting `min_vlog_size=u64::MAX` effectively disables rotation — the active segment accumulates data across seals. This is important for IR record stores where the active segment must remain stable during view changes.
+
+**What breaks if violated:** If IR record stores rotate during `seal_view()`, the active segment ID changes. The manifest references the new segment ID, but `sync_to_remote` may have already uploaded the old active segment under its original name. A clone or read replica opening the manifest finds a segment ID that doesn't exist on S3. Additionally, the old active segment (now sealed with data) must be uploaded before any clone can access it.
+
+**How tapirs handles it:** IR record stores (`inc_lsm`, `con_lsm`) use `min_vlog_size=u64::MAX` — the same file grows via pwrite at increasing `write_offset`. TAPIR stores (`committed`, `prepared`, `mvcc`) use `min_vlog_size=0` — always rotate, creating a new sealed segment per seal. This separation ensures IR segments are stable for S3 sync while TAPIR segments are compactly sealed. Source: `unified/combined/mod.rs` (seal_tapir_side, seal_ir_side).
