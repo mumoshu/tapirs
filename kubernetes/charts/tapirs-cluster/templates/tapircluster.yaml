@@ -39,3 +39,16 @@ spec:
       name: {{ .Values.tls.issuerRef.name }}
       kind: {{ .Values.tls.issuerRef.kind }}
   {{- end }}
+  {{- if .Values.s3.bucket }}
+  s3:
+    bucket: {{ .Values.s3.bucket }}
+    {{- if .Values.s3.prefix }}
+    prefix: {{ .Values.s3.prefix }}
+    {{- end }}
+    {{- if .Values.s3.endpoint }}
+    endpoint: {{ .Values.s3.endpoint }}
+    {{- end }}
+    {{- if .Values.s3.region }}
+    region: {{ .Values.s3.region }}
+    {{- end }}
+  {{- end }}
