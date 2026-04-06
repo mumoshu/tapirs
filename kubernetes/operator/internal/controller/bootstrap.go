@@ -6,6 +6,7 @@ import (
 	"sort"
 	"time"
 
+	tapir "github.com/mumoshu/tapirs/kubernetes/operator/internal/tapir"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -28,6 +29,13 @@ type podInfo struct {
 // false if the cluster reached Running or no further action needed.
 func (r *TAPIRClusterReconciler) reconcileBootstrap(ctx context.Context, cluster *tapirv1alpha1.TAPIRCluster) (requeue bool, err error) {
 	log := logf.FromContext(ctx)
+
+	// Validate source spec early.
+	if src := cluster.Spec.Source; src != nil {
+		if src.Mode == tapirv1alpha1.SourceModeWritableClone && src.RefreshInterval != "" {
+			return false, fmt.Errorf("refreshInterval is only valid for readReplica mode, not writableClone")
+		}
+	}
 
 	switch cluster.Status.Phase {
 	case tapirv1alpha1.PhaseCreatingDiscovery:
@@ -210,8 +218,37 @@ func (r *TAPIRClusterReconciler) bootstrapReplicas(ctx context.Context, cluster 
 
 			listenAddr := fmt.Sprintf("%s:%d", p.PodIP, port)
 			log.Info("Bootstrapping data replica", "pod", p.Name, "shard", shard.Number, "listenAddr", listenAddr)
-			if err := client.AddReplica(ctx, shard.Number, listenAddr, membership, storage); err != nil {
-				return fmt.Errorf("add_replica shard %d on %s: %w", shard.Number, client.Addr, err)
+
+			if cluster.Spec.Source != nil {
+				src := cluster.Spec.Source
+				s3Source := tapir.S3SourceConfig{
+					Bucket:   src.S3.Bucket,
+					Prefix:   src.S3.Prefix,
+					Endpoint: src.S3.Endpoint,
+					Region:   src.S3.Region,
+				}
+				switch src.Mode {
+				case tapirv1alpha1.SourceModeWritableClone:
+					if err := client.AddWritableCloneFromS3(ctx, shard.Number, listenAddr, membership, storage, s3Source); err != nil {
+						return fmt.Errorf("add_writable_clone_from_s3 shard %d on %s: %w", shard.Number, client.Addr, err)
+					}
+				case tapirv1alpha1.SourceModeReadReplica:
+					refreshSecs := int64(30)
+					if src.RefreshInterval != "" {
+						d, parseErr := time.ParseDuration(src.RefreshInterval)
+						if parseErr != nil {
+							return fmt.Errorf("invalid refreshInterval %q: %w", src.RefreshInterval, parseErr)
+						}
+						refreshSecs = int64(d.Seconds())
+					}
+					if err := client.AddReadReplicaFromS3(ctx, shard.Number, listenAddr, s3Source, refreshSecs); err != nil {
+						return fmt.Errorf("add_read_replica_from_s3 shard %d on %s: %w", shard.Number, client.Addr, err)
+					}
+				}
+			} else {
+				if err := client.AddReplica(ctx, shard.Number, listenAddr, membership, storage); err != nil {
+					return fmt.Errorf("add_replica shard %d on %s: %w", shard.Number, client.Addr, err)
+				}
 			}
 		}
 	}

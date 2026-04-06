@@ -308,6 +308,17 @@ func desiredNodePoolStatefulSet(cluster *tapirv1alpha1.TAPIRCluster, pool tapirv
 	}
 	injectTLS(&container, &volumes, cluster, pool.Name)
 	injectS3(&container, cluster)
+	// Inject source S3 credentials so data nodes can download segments
+	// from the source bucket during clone/read-replica bootstrap.
+	if cluster.Spec.Source != nil && cluster.Spec.Source.S3.CredentialsSecret != "" {
+		container.EnvFrom = append(container.EnvFrom, corev1.EnvFromSource{
+			SecretRef: &corev1.SecretEnvSource{
+				LocalObjectReference: corev1.LocalObjectReference{
+					Name: cluster.Spec.Source.S3.CredentialsSecret,
+				},
+			},
+		})
+	}
 
 	replicas := pool.Replicas
 	return &appsv1.StatefulSet{
