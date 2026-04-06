@@ -866,11 +866,13 @@ cmd_up() {
         # Count manifest files (v00000001.manifest, v00000002.manifest, ...)
         local manifest_count
         manifest_count=$(echo "${versions}" | grep -c '\.manifest' || true)
-        if (( manifest_count >= 2 )); then
+        # Need >= 3: v1 (initial bootstrap), v2 (first natural view change),
+        # v3+ (post-smoke-test forced flush with "hello" data).
+        if (( manifest_count >= 3 )); then
             ok "Source data flushed to S3 (${manifest_count} manifests for shard_0)."
             break
         fi
-        info "Waiting for S3 manifest (${manifest_count} so far, need >= 2)... (${poll_elapsed}s / ${poll_timeout}s)"
+        info "Waiting for S3 manifest (${manifest_count} so far, need >= 3)... (${poll_elapsed}s / ${poll_timeout}s)"
         sleep "${poll_interval}"
         poll_elapsed=$(( poll_elapsed + poll_interval ))
     done

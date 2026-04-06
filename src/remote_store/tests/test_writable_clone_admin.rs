@@ -60,8 +60,41 @@ async fn writable_clone_via_admin_reads_source_data() {
     assert_eq!(shards[0].0, shard);
 
     // Verify the clone's IR view is accessible (replica was created successfully).
-    // Note: IR protocol view starts at 0 regardless of the manifest's current_view.
-    // The manifest's view is the storage-level view; IR consensus view advances
-    // through view changes after bootstrap.
     assert!(node.shard_view_number(shard).is_some(), "clone should have a running replica");
+
+    // Verify the clone reads source data via RequestUnlogged(GetAt) over TCP.
+    use crate::ir::message::{MessageImpl, RequestUnlogged};
+    use crate::tapir::UO;
+    use crate::transport::tokio_bitcode_tcp::TcpTransport;
+    use crate::{TcpAddress, Transport as _};
+
+    let client_addr = TcpAddress("127.0.0.1:0".parse().unwrap());
+    let client_dir = std::sync::Arc::new(crate::discovery::InMemoryShardDirectory::new());
+    let client_transport =
+        TcpTransport::<crate::store_defaults::S3BackedTapirReplica>::with_directory(
+            client_addr, client_dir,
+        );
+
+    let listen_tcp: std::net::SocketAddr = listen_addr_str.parse().unwrap();
+    let msg: MessageImpl<_, _, _, _, _, _, _, _> =
+        MessageImpl::RequestUnlogged(RequestUnlogged {
+            op: UO::GetAt {
+                key: "clone_key".to_string(),
+                timestamp: ts100,
+            },
+        });
+
+    let reply = client_transport
+        .send::<crate::ir::message::ReplyUnlogged<
+            crate::tapir::UR<String, String>,
+            TcpAddress,
+        >>(TcpAddress(listen_tcp), msg)
+        .await;
+
+    match reply.result {
+        crate::tapir::UR::GetAt(val, _ts) => {
+            assert_eq!(val.as_deref(), Some("clone_val"), "clone should read source data via TCP");
+        }
+        other => panic!("unexpected reply from clone: {other:?}"),
+    }
 }
