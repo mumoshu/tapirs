@@ -633,6 +633,56 @@ LEOF
 }
 
 # ---------------------------------------------------------------------------
+# Snapshot creation
+# ---------------------------------------------------------------------------
+SNAPSHOT_NAME=""
+
+create_snapshot() {
+    step "Creating cross-shard snapshot from source S3..."
+
+    local minio_endpoint="http://minio.${NS}.svc.cluster.local:${MINIO_PORT}"
+
+    kube delete pod tapictl-snapshot 2>/dev/null || true
+
+    cat <<SNAPEOF | kube apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: tapictl-snapshot
+  namespace: ${NS}
+spec:
+  restartPolicy: Never
+  containers:
+  - name: tapictl
+    image: ${TAPIR_IMAGE}
+    imagePullPolicy: IfNotPresent
+    command: ["tapictl"]
+    args: ["--s3-endpoint", "${minio_endpoint}",
+           "snapshot", "create",
+           "--dir", "s3://${TAPIR_S3_BUCKET}/",
+           "--shards", "0,1"]
+    envFrom:
+    - secretRef:
+        name: minio-credentials
+SNAPEOF
+
+    kube wait --for=jsonpath='{.status.phase}'=Succeeded pod/tapictl-snapshot --timeout=60s 2>/dev/null || {
+        warn "Snapshot pod did not succeed."
+        kube logs tapictl-snapshot 2>/dev/null || true
+        fail "Snapshot creation failed."
+    }
+
+    # The snapshot name is printed to stdout (first line).
+    SNAPSHOT_NAME=$(kube logs tapictl-snapshot 2>/dev/null | head -1)
+    kube delete pod tapictl-snapshot --wait=false 2>/dev/null || true
+
+    if [[ -z "${SNAPSHOT_NAME}" ]]; then
+        fail "Failed to capture snapshot name from tapictl output."
+    fi
+    ok "Snapshot created: ${SNAPSHOT_NAME}"
+}
+
+# ---------------------------------------------------------------------------
 # Clone cluster deployment
 # ---------------------------------------------------------------------------
 CLONE_CLUSTER_NAME="tapir-clone"
@@ -661,6 +711,7 @@ deploy_clone_cluster() {
         --set "source.s3.endpoint=${minio_endpoint}" \
         --set "source.s3.credentialsSecret=minio-credentials" \
         --set "source.mode=writableClone" \
+        --set "source.snapshotName=${SNAPSHOT_NAME}" \
         --set "destination.s3.bucket=${CLONE_S3_BUCKET}" \
         --set "destination.s3.endpoint=${minio_endpoint}" \
         --set "destination.s3.credentialsSecret=minio-credentials" \
@@ -883,22 +934,25 @@ cmd_up() {
     # 4. Verify S3 objects exist
     verify_s3_objects
 
-    # 4. Cluster backup to S3
+    # 5. Cluster backup to S3
     verify_cluster_backup
 
-    # 5. List backups
+    # 6. List backups
     verify_list_backups
 
-    # 6. Deploy writable clone from source S3
+    # 7. Create cross-shard snapshot for clone
+    create_snapshot
+
+    # 8. Deploy writable clone from source S3
     deploy_clone_cluster
 
-    # 7. Verify clone reads source data
+    # 9. Verify clone reads source data
     verify_clone_reads_source_data
 
-    # 8. Deploy read replica from source S3
+    # 10. Deploy read replica from source S3
     deploy_read_replica_cluster
 
-    # 9. Verify read replica reads source data
+    # 11. Verify read replica reads source data
     verify_read_replica_reads_source_data
 
     separator
