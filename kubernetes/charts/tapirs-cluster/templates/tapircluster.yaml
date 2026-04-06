@@ -76,4 +76,7 @@ spec:
     {{- with .Values.source.refreshInterval }}
     refreshInterval: {{ . }}
     {{- end }}
+    {{- with .Values.source.snapshotName }}
+    snapshotName: {{ . }}
+    {{- end }}
   {{- end }}
