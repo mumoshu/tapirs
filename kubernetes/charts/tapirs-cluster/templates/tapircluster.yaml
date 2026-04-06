@@ -56,3 +56,24 @@ spec:
       credentialsSecret: {{ .Values.destination.s3.credentialsSecret }}
       {{- end }}
   {{- end }}
+  {{- if .Values.source.enabled }}
+  source:
+    s3:
+      bucket: {{ .Values.source.s3.bucket }}
+      {{- with .Values.source.s3.prefix }}
+      prefix: {{ . }}
+      {{- end }}
+      {{- with .Values.source.s3.endpoint }}
+      endpoint: {{ . }}
+      {{- end }}
+      {{- with .Values.source.s3.region }}
+      region: {{ . }}
+      {{- end }}
+      {{- with .Values.source.s3.credentialsSecret }}
+      credentialsSecret: {{ . }}
+      {{- end }}
+    mode: {{ .Values.source.mode }}
+    {{- with .Values.source.refreshInterval }}
+    refreshInterval: {{ . }}
+    {{- end }}
+  {{- end }}

@@ -33,3 +33,17 @@ destination:
     endpoint: ""
     region: ""
     credentialsSecret: ""
+
+# source configures bootstrap from an existing S3 backup.
+# mode: "writableClone" creates an independent writable cluster via COW.
+#       "readReplica" creates a read-only cluster that auto-refreshes.
+source:
+  enabled: false
+  s3:
+    bucket: ""
+    prefix: ""
+    endpoint: ""
+    region: ""
+    credentialsSecret: ""
+  mode: writableClone
+  refreshInterval: ""
