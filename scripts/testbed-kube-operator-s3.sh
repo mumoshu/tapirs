@@ -549,7 +549,11 @@ verify_cluster_backup() {
     step "Testing cluster backup to S3..."
 
     local minio_endpoint="http://minio.${NS}.svc.cluster.local:${MINIO_PORT}"
-    local sm_url="http://${TAPIR_CLUSTER_NAME}-shard-manager.${NS}.svc.cluster.local:9001"
+    # Resolve shard-manager service to ClusterIP (the client doesn't resolve DNS).
+    local sm_ip
+    sm_ip=$(kube get svc "${TAPIR_CLUSTER_NAME}-shard-manager" -o jsonpath='{.spec.clusterIP}' 2>/dev/null)
+    local sm_url="http://${sm_ip}:9001"
+    info "Shard-manager URL: ${sm_url}"
 
     kube delete pod tapictl-backup 2>/dev/null || true
 
@@ -566,10 +570,10 @@ spec:
     image: ${TAPIR_IMAGE}
     imagePullPolicy: IfNotPresent
     command: ["tapictl"]
-    args: ["backup", "cluster",
+    args: ["--s3-endpoint", "${minio_endpoint}",
+           "backup", "cluster",
            "--shard-manager-url", "${sm_url}",
-           "--output", "s3://${TAPIR_S3_BUCKET}/backup/",
-           "--s3-endpoint", "${minio_endpoint}"]
+           "--output", "s3://${TAPIR_S3_BUCKET}/backup/"]
     envFrom:
     - secretRef:
         name: minio-credentials
@@ -605,9 +609,9 @@ spec:
     image: ${TAPIR_IMAGE}
     imagePullPolicy: IfNotPresent
     command: ["tapictl"]
-    args: ["get", "backups",
-           "--dir", "s3://${TAPIR_S3_BUCKET}/backup/",
-           "--s3-endpoint", "${minio_endpoint}"]
+    args: ["--s3-endpoint", "${minio_endpoint}",
+           "get", "backups",
+           "--dir", "s3://${TAPIR_S3_BUCKET}/backup/"]
     envFrom:
     - secretRef:
         name: minio-credentials
