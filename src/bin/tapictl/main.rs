@@ -100,6 +100,15 @@ enum Command {
         #[command(subcommand)]
         resource: RestoreResource,
     },
+    /// Create a cross-shard consistent snapshot from S3 manifests.
+    ///
+    /// Reads each shard's latest manifest from S3, computes per-shard
+    /// ceiling_ts and global cutoff_ts. Outputs JSON suitable for passing
+    /// to clone operations.
+    Snapshot {
+        #[command(subcommand)]
+        resource: SnapshotResource,
+    },
     /// Operations via direct node access (no ShardManager required).
     ///
     /// These commands communicate directly with node admin APIs to discover
@@ -109,6 +118,19 @@ enum Command {
     Solo {
         #[command(subcommand)]
         command: SoloCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum SnapshotResource {
+    /// Create a cross-shard snapshot from S3 manifests.
+    Create {
+        /// S3 URI of the source cluster's data (e.g. s3://bucket/prefix/).
+        #[arg(long)]
+        dir: String,
+        /// Comma-separated shard numbers (e.g. "0,1").
+        #[arg(long)]
+        shards: String,
     },
 }
 
@@ -646,6 +668,47 @@ fn main() {
                         .map_err(|e| format!("{e:?}"))
                         .map(|()| println!("Restore completed from {input}"))
                 }
+            })
+        }
+        Command::Snapshot {
+            resource: SnapshotResource::Create { dir, shards },
+        } => {
+            let shard_nums: Vec<u32> = shards
+                .split(',')
+                .map(|s| {
+                    s.trim()
+                        .parse()
+                        .unwrap_or_else(|e| panic!("invalid shard number '{s}': {e}"))
+                })
+                .collect();
+            let shard_names: Vec<(u32, String)> = shard_nums
+                .iter()
+                .map(|n| (*n, format!("shard_{n}")))
+                .collect();
+
+            let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");
+            rt.block_on(async {
+                use tapirs::backup::s3backup::S3BackupStorage;
+                use tapirs::backup::storage::BackupStorage;
+                use tapirs::remote_store::cross_shard_snapshot::create_cross_shard_snapshot;
+                use tapirs::remote_store::manifest_store::RemoteManifestStore;
+
+                let (bucket, prefix) =
+                    S3BackupStorage::parse_s3_uri(&dir)?;
+                let storage = S3BackupStorage::new(
+                    &bucket,
+                    &prefix,
+                    cli.s3.s3_region.as_deref(),
+                    cli.s3.s3_endpoint.as_deref(),
+                )
+                .await;
+                let man_store = RemoteManifestStore::new(storage.sub(""));
+                let snapshot =
+                    create_cross_shard_snapshot(&man_store, &shard_names).await?;
+                let json = serde_json::to_string_pretty(&snapshot)
+                    .map_err(|e| format!("serialize snapshot: {e}"))?;
+                println!("{json}");
+                Ok(())
             })
         }
     };
