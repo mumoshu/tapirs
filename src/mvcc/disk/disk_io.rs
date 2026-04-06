@@ -216,11 +216,14 @@ impl DiskIo for BufferedIo {
     }
 
     fn pwrite(&self, buf: &AlignedBuf, offset: u64) -> Self::WriteFuture {
+        // Write only the logical data (buf.len()), not the full aligned
+        // capacity. BufferedIo has no O_DIRECT alignment requirement.
+        // SyncDirectIo/UringDirectIo write capacity() for O_DIRECT.
         let n = unsafe {
             libc::pwrite(
                 self.fd.as_raw_fd(),
                 buf.as_ptr() as *const libc::c_void,
-                buf.capacity(),
+                buf.len(),
                 offset as libc::off_t,
             )
         };
