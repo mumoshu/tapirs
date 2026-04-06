@@ -840,17 +840,43 @@ cmd_up() {
     # 2. Smoke test: write + read
     smoke_test_write_read
 
-    # 3. Force view change on source nodes to flush "hello" to S3.
-    # The smoke test wrote "hello=world" which is in the active memtable.
-    # A view change flushes it to vlog, and sync_to_remote uploads to S3.
-    step "Triggering view change on source nodes to flush data to S3..."
+    # 3. Force view change and wait for S3 upload deterministically.
+    # The smoke test wrote "hello=world" in the active memtable. A view
+    # change flushes it to vlog, and sync_to_remote uploads to S3.
+    # Instead of sleeping, poll S3 for a manifest version > 1 (the initial
+    # empty-view manifest is v1; after the smoke test flush it becomes v2+).
+    step "Flushing source data to S3 (trigger view change + poll manifest)..."
     kube exec "${TAPIR_CLUSTER_NAME}-default-0" -- \
         tapi admin view-change --admin-listen-addr 127.0.0.1:9000 --shard 0 2>/dev/null || true
     kube exec "${TAPIR_CLUSTER_NAME}-default-0" -- \
         tapi admin view-change --admin-listen-addr 127.0.0.1:9000 --shard 1 2>/dev/null || true
-    # Wait for async sync_to_remote to complete after the view change.
-    info "Waiting for S3 upload..."
-    sleep 5
+
+    local minio_endpoint="http://minio.${NS}.svc.cluster.local:${MINIO_PORT}"
+    local poll_timeout=30
+    local poll_interval=2
+    local poll_elapsed=0
+    while (( poll_elapsed < poll_timeout )); do
+        local versions
+        versions=$(kube run --rm -i aws-cli-poll --restart=Never \
+            --image=amazon/aws-cli \
+            --env="AWS_ACCESS_KEY_ID=${MINIO_ACCESS_KEY}" \
+            --env="AWS_SECRET_ACCESS_KEY=${MINIO_SECRET_KEY}" \
+            -- --endpoint-url "${minio_endpoint}" s3 ls \
+            "s3://${TAPIR_S3_BUCKET}/shard_0/manifests/" 2>/dev/null) || true
+        # Count manifest files (v00000001.manifest, v00000002.manifest, ...)
+        local manifest_count
+        manifest_count=$(echo "${versions}" | grep -c '\.manifest' || true)
+        if (( manifest_count >= 2 )); then
+            ok "Source data flushed to S3 (${manifest_count} manifests for shard_0)."
+            break
+        fi
+        info "Waiting for S3 manifest (${manifest_count} so far, need >= 2)... (${poll_elapsed}s / ${poll_timeout}s)"
+        sleep "${poll_interval}"
+        poll_elapsed=$(( poll_elapsed + poll_interval ))
+    done
+    if (( poll_elapsed >= poll_timeout )); then
+        fail "Source data not flushed to S3 within ${poll_timeout}s."
+    fi
 
     # 4. Verify S3 objects exist
     verify_s3_objects

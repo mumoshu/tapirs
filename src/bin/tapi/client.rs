@@ -166,9 +166,9 @@ async fn load_discovery_json(json_path: &str) -> Vec<ShardConfig> {
 }
 
 /// Backoff constants for waiting on eventually-consistent discovery reads.
-const DISCOVERY_INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_millis(500);
-const DISCOVERY_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(5);
-const DISCOVERY_MAX_RETRIES: u32 = 20;
+const DISCOVERY_INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_millis(200);
+const DISCOVERY_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(2);
+const DISCOVERY_MAX_RETRIES: u32 = 10;
 
 /// Fetch shard topology from a TAPIR discovery cluster endpoint.
 ///
@@ -240,11 +240,26 @@ async fn load_tapir_discovery(
         let mut backoff = DISCOVERY_INITIAL_BACKOFF;
         let mut entries = Vec::new();
         for attempt in 0..=DISCOVERY_MAX_RETRIES {
-            entries = <_ as RemoteShardDirectory<TcpAddress, String>>::strong_all_active_shard_view_memberships(&dir)
-                .await
-                .unwrap_or_else(|e| {
-                    panic!("failed to fetch topology from TAPIR discovery: {e}")
-                });
+            match <_ as RemoteShardDirectory<TcpAddress, String>>::strong_all_active_shard_view_memberships(&dir).await {
+                Ok(e) => entries = e,
+                Err(e) => {
+                    // Retry on transient errors (discovery replicas may be
+                    // ViewChanging during cluster bootstrap, causing the
+                    // quorum scan to fail with Unavailable).
+                    if attempt < DISCOVERY_MAX_RETRIES {
+                        eprintln!(
+                            "warning: discovery topology scan failed (attempt {}/{}): {e:?}, \
+                             retrying in {backoff:?}...",
+                            attempt + 1,
+                            DISCOVERY_MAX_RETRIES,
+                        );
+                        tokio::time::sleep(backoff).await;
+                        backoff = (backoff * 2).min(DISCOVERY_MAX_BACKOFF);
+                        continue;
+                    }
+                    panic!("failed to fetch topology from TAPIR discovery after {} retries: {e}", DISCOVERY_MAX_RETRIES);
+                }
+            }
             if !entries.is_empty() {
                 break;
             }
