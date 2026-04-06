@@ -7,13 +7,9 @@ use crate::IrClientId;
 use super::helpers::{create_s3_stores, flush_and_upload, open_buffered_store, write_and_commit};
 
 /// refresh_once picks up new data uploaded by the source shard.
-/// Verifies range-based S3 download: segments that grew from active
-/// to sealed are updated incrementally, not re-downloaded in full.
-// TODO: ETag-based re-download works (files are refreshed) but reads
-// still fail with "entry length mismatch: header=0". Root cause TBD —
-// likely related to AlignedBuf padding (4096-byte physical vs logical
-// size) or vlog offset resolution after re-download.
-#[ignore]
+/// Verifies ETag-based S3 cache invalidation: segments that changed
+/// on S3 (e.g. active segments that grew between seals) are fully
+/// re-downloaded, ensuring the read replica sees the latest data.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn refresh_sees_new_data() {
     let (seg_store, man_store, s3_config, _storage) =
