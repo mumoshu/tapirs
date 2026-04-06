@@ -633,6 +633,165 @@ LEOF
 }
 
 # ---------------------------------------------------------------------------
+# Clone cluster deployment
+# ---------------------------------------------------------------------------
+CLONE_CLUSTER_NAME="tapir-clone"
+CLONE_S3_BUCKET="tapir-clone-data"
+
+deploy_clone_cluster() {
+    step "Deploying writable clone cluster from source S3..."
+
+    local minio_endpoint="http://minio.${NS}.svc.cluster.local:${MINIO_PORT}"
+
+    # Create a separate bucket for the clone's ongoing uploads.
+    kube delete pod aws-cli-clone-bucket 2>/dev/null || true
+    kube run aws-cli-clone-bucket --rm -i --restart=Never \
+        --image=amazon/aws-cli \
+        --env="AWS_ACCESS_KEY_ID=${MINIO_ACCESS_KEY}" \
+        --env="AWS_SECRET_ACCESS_KEY=${MINIO_SECRET_KEY}" \
+        -- --endpoint-url "${minio_endpoint}" s3 mb "s3://${CLONE_S3_BUCKET}" 2>/dev/null || true
+
+    run_cmd helm upgrade --install tapirs-clone \
+        "${PROJECT_ROOT}/kubernetes/charts/tapirs-cluster" \
+        --namespace "${NS}" \
+        --set "name=${CLONE_CLUSTER_NAME}" \
+        --set "image=${TAPIR_IMAGE}" \
+        --set "source.enabled=true" \
+        --set "source.s3.bucket=${TAPIR_S3_BUCKET}" \
+        --set "source.s3.endpoint=${minio_endpoint}" \
+        --set "source.s3.credentialsSecret=minio-credentials" \
+        --set "source.mode=writableClone" \
+        --set "destination.s3.bucket=${CLONE_S3_BUCKET}" \
+        --set "destination.s3.endpoint=${minio_endpoint}" \
+        --set "destination.s3.credentialsSecret=minio-credentials" \
+        --wait --timeout 30s
+    ok "Clone cluster chart installed."
+
+    # Wait for clone cluster to reach Running.
+    local timeout=180
+    local interval=5
+    local elapsed=0
+    step "Waiting for clone TAPIRCluster '${CLONE_CLUSTER_NAME}' to reach Running (timeout: ${timeout}s)..."
+    while (( elapsed < timeout )); do
+        local phase
+        phase=$(kube get tapircluster "${CLONE_CLUSTER_NAME}" \
+            -o jsonpath='{.status.phase}' 2>/dev/null) || true
+        if [[ "${phase}" == "Running" ]]; then
+            ok "Clone TAPIRCluster is Running."
+            return 0
+        fi
+        if [[ "${phase}" == "Failed" ]]; then
+            kube get tapircluster "${CLONE_CLUSTER_NAME}" -o yaml 2>/dev/null || true
+            fail "Clone TAPIRCluster failed."
+        fi
+        info "Phase: ${phase:-Pending} (${elapsed}s / ${timeout}s)"
+        sleep "${interval}"
+        elapsed=$(( elapsed + interval ))
+    done
+    fail "Clone TAPIRCluster did not reach Running within ${timeout}s."
+}
+
+verify_clone_reads_source_data() {
+    step "Verifying clone cluster reads source data..."
+
+    # Wait for clone's CachingShardDirectory to sync from discovery store.
+    info "Waiting for clone discovery sync..."
+    sleep 15
+
+    local disc_endpoint="srv://${CLONE_CLUSTER_NAME}-discovery.${NS}.svc.cluster.local:${DISCOVERY_TAPIR_PORT}"
+
+    kube delete pod clone-read 2>/dev/null || true
+    _smoke_pod clone-read "begin ro; get hello; abort" | \
+        sed "s|${TAPIR_CLUSTER_NAME}-discovery|${CLONE_CLUSTER_NAME}-discovery|g" | \
+        kube apply -f -
+    kube wait --for=jsonpath='{.status.phase}'=Succeeded pod/clone-read --timeout=60s 2>/dev/null || true
+    local output
+    output=$(kube logs clone-read 2>/dev/null) || true
+    kube delete pod clone-read --wait=false 2>/dev/null || true
+
+    if echo "${output}" | grep -q "world"; then
+        ok "Clone reads source data: 'world'."
+    else
+        warn "Clone read output: ${output}"
+        fail "Clone did not return expected 'world'."
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Read replica cluster deployment
+# ---------------------------------------------------------------------------
+REPLICA_CLUSTER_NAME="tapir-replica"
+
+deploy_read_replica_cluster() {
+    step "Deploying read replica cluster from source S3..."
+
+    local minio_endpoint="http://minio.${NS}.svc.cluster.local:${MINIO_PORT}"
+
+    run_cmd helm upgrade --install tapirs-replica \
+        "${PROJECT_ROOT}/kubernetes/charts/tapirs-cluster" \
+        --namespace "${NS}" \
+        --set "name=${REPLICA_CLUSTER_NAME}" \
+        --set "image=${TAPIR_IMAGE}" \
+        --set "source.enabled=true" \
+        --set "source.s3.bucket=${TAPIR_S3_BUCKET}" \
+        --set "source.s3.endpoint=${minio_endpoint}" \
+        --set "source.s3.credentialsSecret=minio-credentials" \
+        --set "source.mode=readReplica" \
+        --set "source.refreshInterval=5s" \
+        --wait --timeout 30s
+    ok "Read replica cluster chart installed."
+
+    # Wait for replica cluster to reach Running.
+    local timeout=180
+    local interval=5
+    local elapsed=0
+    step "Waiting for read replica TAPIRCluster '${REPLICA_CLUSTER_NAME}' to reach Running (timeout: ${timeout}s)..."
+    while (( elapsed < timeout )); do
+        local phase
+        phase=$(kube get tapircluster "${REPLICA_CLUSTER_NAME}" \
+            -o jsonpath='{.status.phase}' 2>/dev/null) || true
+        if [[ "${phase}" == "Running" ]]; then
+            ok "Read replica TAPIRCluster is Running."
+            return 0
+        fi
+        if [[ "${phase}" == "Failed" ]]; then
+            kube get tapircluster "${REPLICA_CLUSTER_NAME}" -o yaml 2>/dev/null || true
+            fail "Read replica TAPIRCluster failed."
+        fi
+        info "Phase: ${phase:-Pending} (${elapsed}s / ${timeout}s)"
+        sleep "${interval}"
+        elapsed=$(( elapsed + interval ))
+    done
+    fail "Read replica TAPIRCluster did not reach Running within ${timeout}s."
+}
+
+verify_read_replica_reads_source_data() {
+    step "Verifying read replica cluster reads source data..."
+
+    # Wait for replica's CachingShardDirectory to sync from discovery store.
+    info "Waiting for replica discovery sync..."
+    sleep 15
+
+    local disc_endpoint="srv://${REPLICA_CLUSTER_NAME}-discovery.${NS}.svc.cluster.local:${DISCOVERY_TAPIR_PORT}"
+
+    kube delete pod replica-read 2>/dev/null || true
+    _smoke_pod replica-read "begin ro; get hello; abort" | \
+        sed "s|${TAPIR_CLUSTER_NAME}-discovery|${REPLICA_CLUSTER_NAME}-discovery|g" | \
+        kube apply -f -
+    kube wait --for=jsonpath='{.status.phase}'=Succeeded pod/replica-read --timeout=60s 2>/dev/null || true
+    local output
+    output=$(kube logs replica-read 2>/dev/null) || true
+    kube delete pod replica-read --wait=false 2>/dev/null || true
+
+    if echo "${output}" | grep -q "world"; then
+        ok "Read replica reads source data: 'world'."
+    else
+        warn "Read replica output: ${output}"
+        fail "Read replica did not return expected 'world'."
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Status
 # ---------------------------------------------------------------------------
 cmd_status() {
@@ -700,6 +859,18 @@ cmd_up() {
     # 5. List backups
     verify_list_backups
 
+    # 6. Deploy writable clone from source S3
+    deploy_clone_cluster
+
+    # 7. Verify clone reads source data
+    verify_clone_reads_source_data
+
+    # 8. Deploy read replica from source S3
+    deploy_read_replica_cluster
+
+    # 9. Verify read replica reads source data
+    verify_read_replica_reads_source_data
+
     separator
     ok "All S3 E2E tests passed."
     separator
@@ -710,6 +881,14 @@ cmd_up() {
 # ---------------------------------------------------------------------------
 cmd_down() {
     step "Tearing down S3 operator testbed..."
+
+    # Uninstall clone and replica releases if they exist.
+    if helm status tapirs-clone --namespace "${NS}" &>/dev/null; then
+        run_cmd helm uninstall tapirs-clone --namespace "${NS}" --wait --timeout 60s || true
+    fi
+    if helm status tapirs-replica --namespace "${NS}" &>/dev/null; then
+        run_cmd helm uninstall tapirs-replica --namespace "${NS}" --wait --timeout 60s || true
+    fi
 
     uninstall_cluster
 
