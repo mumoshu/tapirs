@@ -5,6 +5,7 @@ mod test_cross_shard;
 mod test_open_lazy;
 mod test_read_replica_refresh;
 mod test_e2e_s3_lifecycle;
+mod test_clone_prepared_txns;
 mod test_clone_with_snapshot;
 mod test_stores_from_s3;
 mod test_read_replica_shim;

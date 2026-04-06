@@ -103,6 +103,51 @@ pub fn write_and_commit<DIO: DiskIo + Sync>(
     tapir.commit_txn(commit_id, txn_id, &shared_txn, commit_ts);
 }
 
+/// Prepare a transaction WITHOUT committing it.
+/// The transaction stays in "prepared" state in the OCC cache.
+pub fn prepare_only<DIO: DiskIo + Sync>(
+    record: &mut CombinedRecordHandle<String, String, DIO>,
+    tapir: &mut CombinedTapirHandle<String, String, DIO>,
+    shard: ShardNumber,
+    writes: &[(&str, &str)],
+    commit_ts: Timestamp,
+) {
+    use std::sync::Arc;
+
+    let prep_id = OpId { client_id: IrClientId(next_id()), number: next_id() };
+    let txn_id = TransactionId {
+        client_id: IrClientId(next_id()),
+        number: next_id(),
+    };
+
+    let mut txn = Transaction::<String, String, Timestamp>::default();
+    for (key, value) in writes {
+        txn.add_write(
+            crate::tapir::Sharded { shard, key: key.to_string() },
+            Some(value.to_string()),
+        );
+    }
+    let shared_txn = Arc::new(txn);
+
+    record.insert_consensus_entry(
+        prep_id,
+        RecordConsensusEntry {
+            op: CO::Prepare {
+                transaction_id: txn_id,
+                transaction: shared_txn.clone(),
+                commit: commit_ts,
+            },
+            result: CR::Prepare(PrepareResult::Ok),
+            state: RecordEntryState::Finalized(ViewNumber(0)),
+            modified_view: 0,
+        },
+    );
+
+    tapir.add_or_replace_or_finalize_prepared_txn(
+        prep_id, txn_id, shared_txn.clone(), commit_ts, true,
+    );
+}
+
 /// Flush both IR and TAPIR sides, then upload ALL files to S3.
 ///
 /// Uses upload_new_segments with the full file list from the manifest
