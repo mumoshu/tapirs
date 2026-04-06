@@ -694,9 +694,6 @@ deploy_clone_cluster() {
 verify_clone_reads_source_data() {
     step "Verifying clone cluster reads source data..."
 
-    # Wait for clone's CachingShardDirectory to sync from discovery store.
-    info "Waiting for clone discovery sync..."
-    sleep 15
 
     local disc_endpoint="srv://${CLONE_CLUSTER_NAME}-discovery.${NS}.svc.cluster.local:${DISCOVERY_TAPIR_PORT}"
 
@@ -768,9 +765,6 @@ deploy_read_replica_cluster() {
 verify_read_replica_reads_source_data() {
     step "Verifying read replica cluster reads source data..."
 
-    # Wait for replica's CachingShardDirectory to sync from discovery store.
-    info "Waiting for replica discovery sync..."
-    sleep 15
 
     local disc_endpoint="srv://${REPLICA_CLUSTER_NAME}-discovery.${NS}.svc.cluster.local:${DISCOVERY_TAPIR_PORT}"
 
