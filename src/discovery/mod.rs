@@ -355,7 +355,12 @@ where
         tokio::spawn(async move {
             let mut cycle_count = 0u64;
             loop {
-                tokio::time::sleep(sync_interval).await;
+                // Sleep between cycles, but NOT before the first cycle.
+                // This ensures the routing table is populated before any
+                // client queries, rather than waiting sync_interval.
+                if cycle_count > 0 {
+                    tokio::time::sleep(sync_interval).await;
+                }
                 let Some(dir) = weak.upgrade() else {
                     break;
                 };
