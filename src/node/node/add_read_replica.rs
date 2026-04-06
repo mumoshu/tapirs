@@ -52,7 +52,10 @@ impl Node {
         // Spawn background refresh task.
         let refresh_task = spawn_refresh_task(&replica, man_store, refresh_interval);
 
-        // Transport — listen for RequestUnlogged from clients.
+        // Transport is parameterized on ProductionTapirReplica for wire
+        // compatibility — the IR message types (UO, UR, etc.) are determined
+        // by the app type parameter. Clients send messages typed on
+        // ProductionTapirReplica, so the shim's transport must match.
         let address = TcpAddress(listen_addr);
 
         #[cfg(feature = "tls")]

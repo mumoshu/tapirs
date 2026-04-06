@@ -83,6 +83,9 @@ pub async fn clone_from_remote<S: BackupStorage>(
 /// No segment data is transferred until the clone actually reads it. The
 /// clone's new writes go to local active segments. Reads of existing data
 /// fall through to S3-backed sealed segments, cached locally on first access.
+/// `view` must come from a CrossShardSnapshot to ensure cross-shard
+/// consistency. Never pass "latest" — each shard's latest manifest is
+/// at a different point in time, producing inconsistent state.
 pub async fn clone_from_remote_lazy<S: BackupStorage>(
     manifest_store: &RemoteManifestStore<S>,
     s3_config: &S3StorageConfig,

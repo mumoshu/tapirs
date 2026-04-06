@@ -39,6 +39,11 @@ pub fn production_app_tick() -> Option<AppTickFn> {
     Some(ProductionTapirReplica::tick)
 }
 
+// S3-backed stores use BufferedIo explicitly because DefaultDiskIo is
+// MemoryIo in test builds (#[cfg(test)]), which bypasses the filesystem
+// and the S3 cache registry. BufferedIo::open() checks the process-global
+// S3CachingIo registry and downloads missing segments — MemoryIo does not.
+
 type S3TcpT = crate::transport::tokio_bitcode_tcp::TcpTransport<S3BackedTapirReplica>;
 type S3AppTickFn = fn(
     &S3BackedTapirReplica,

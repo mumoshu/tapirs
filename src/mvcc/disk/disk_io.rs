@@ -213,7 +213,11 @@ impl DiskIo for BufferedIo {
             }
             OpenMode::OpenImmutable => {
                 if !path.exists() {
-                    // Download from S3 if registered. Errors propagate — never swallowed.
+                    // Download from S3 if registered. Errors propagate as-is —
+                    // never swallowed. If the S3 registry has no config for this
+                    // directory, the call is a no-op (returns Ok). If the file
+                    // doesn't exist on S3, the error propagates and open() fails
+                    // — the caller must use CreateNew for files that don't exist yet.
                     super::s3_caching_io::try_download_from_s3(path)?;
                 }
             }

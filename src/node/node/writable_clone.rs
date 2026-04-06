@@ -65,9 +65,10 @@ impl Node {
         let persist_dir = self.persist_dir.clone();
         let dest_s3 = self.s3_config.clone();
         let shard_id = cfg.shard;
-        // Build a CrossShardSnapshot from the per-shard params.
-        // The operator created the full snapshot and sent us the shard-specific
-        // view + ghost filter boundaries.
+        // The operator sends per-shard SnapshotParams. We reconstruct the
+        // CrossShardSnapshot with just this shard's entry — the factory
+        // function requires a full snapshot for ghost filter + prepared txn
+        // cleanup, but only looks up this shard's manifest_view.
         let mut shard_map = BTreeMap::new();
         shard_map.insert(shard_id, ShardSnapshotInfo {
             manifest_view: snapshot_params.manifest_view,

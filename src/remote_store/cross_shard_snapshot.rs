@@ -33,7 +33,9 @@ pub struct ShardSnapshotInfo {
 
 impl CrossShardSnapshot {
     /// Build the ghost filter for this snapshot.
-    /// Returns None if cutoff == ceiling (no hidden range).
+    /// Returns None when cutoff_ts >= ceiling_ts (all shards at same ts,
+    /// or single shard). An empty ghost filter is a no-op — applying it
+    /// would hide nothing — so None is an optimization to skip the check.
     pub fn ghost_filter(&self) -> Option<GhostFilter> {
         let gf = GhostFilter {
             cutoff_ts: self.cutoff_ts,
