@@ -330,7 +330,6 @@ impl<K: Key + Serialize + DeserializeOwned, V: Value + Serialize + DeserializeOw
             self.occ_cache.update_max_read_time(snapshot_ts);
         }
 
-        eprintln!("[QR] key={key:?} snapshot_ts={snapshot_ts:?} write_ts={ts:?} value={value:?}");
         Ok((value, ts))
     }
 
