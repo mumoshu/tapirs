@@ -53,6 +53,45 @@ type TAPIRClusterSpec struct {
 	// manifests. When set, all replicas upload to S3 on every flush.
 	// +optional
 	Destination *DestinationSpec `json:"destination,omitempty"`
+
+	// source configures this cluster to bootstrap from an existing S3 backup.
+	// When set, data-node replicas are pre-populated with data from the source
+	// instead of starting empty. The source S3 path must contain per-shard
+	// manifests and segments uploaded by a running cluster's sync_to_remote.
+	// +optional
+	Source *SourceSpec `json:"source,omitempty"`
+}
+
+// SourceMode determines how the cluster uses the source data.
+// +kubebuilder:validation:Enum=writableClone;readReplica
+type SourceMode string
+
+const (
+	// SourceModeWritableClone creates a writable cluster pre-populated via COW.
+	// After bootstrap, the cluster is fully independent of the source.
+	SourceModeWritableClone SourceMode = "writableClone"
+	// SourceModeReadReplica creates a read-only cluster that continuously
+	// tracks the source's S3 state, auto-refreshing at the configured interval.
+	SourceModeReadReplica SourceMode = "readReplica"
+)
+
+// SourceSpec configures bootstrap from an existing S3 backup.
+type SourceSpec struct {
+	// s3 specifies the S3 location containing the source cluster's data.
+	// +required
+	S3 S3Spec `json:"s3"`
+
+	// mode determines how the source data is used.
+	// "writableClone" creates an independent writable cluster via COW.
+	// "readReplica" creates a read-only cluster that auto-refreshes.
+	// +required
+	Mode SourceMode `json:"mode"`
+
+	// refreshInterval is how often to check S3 for new manifests in
+	// readReplica mode. Example: "10s", "1m".
+	// The reconciler rejects this field for writableClone mode.
+	// +optional
+	RefreshInterval string `json:"refreshInterval,omitempty"`
 }
 
 // DestinationSpec configures where the cluster uploads segments and manifests.

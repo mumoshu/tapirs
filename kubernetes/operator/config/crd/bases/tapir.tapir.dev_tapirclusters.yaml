@@ -289,6 +289,61 @@ spec:
                   type: object
                 minItems: 1
                 type: array
+              source:
+                description: |-
+                  source configures this cluster to bootstrap from an existing S3 backup.
+                  When set, data-node replicas are pre-populated with data from the source
+                  instead of starting empty. The source S3 path must contain per-shard
+                  manifests and segments uploaded by a running cluster's sync_to_remote.
+                properties:
+                  mode:
+                    description: |-
+                      mode determines how the source data is used.
+                      "writableClone" creates an independent writable cluster via COW.
+                      "readReplica" creates a read-only cluster that auto-refreshes.
+                    enum:
+                    - writableClone
+                    - readReplica
+                    type: string
+                  refreshInterval:
+                    description: |-
+                      refreshInterval is how often to check S3 for new manifests in
+                      readReplica mode. Example: "10s", "1m".
+                      The reconciler rejects this field for writableClone mode.
+                    type: string
+                  s3:
+                    description: s3 specifies the S3 location containing the source
+                      cluster's data.
+                    properties:
+                      bucket:
+                        description: bucket is the S3 bucket name.
+                        type: string
+                      credentialsSecret:
+                        description: |-
+                          credentialsSecret is the name of a Kubernetes Secret containing
+                          AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY. When set, envFrom is
+                          added to node containers. For production use, prefer IAM roles
+                          (IRSA/pod identity) and leave this empty.
+                        type: string
+                      endpoint:
+                        description: endpoint is a custom S3-compatible endpoint URL
+                          (e.g. MinIO).
+                        type: string
+                      prefix:
+                        description: |-
+                          prefix is the cluster-level key prefix (e.g. "prod/").
+                          Each replica derives its shard prefix internally.
+                        type: string
+                      region:
+                        description: region is the AWS region.
+                        type: string
+                    required:
+                    - bucket
+                    type: object
+                required:
+                - mode
+                - s3
+                type: object
               tls:
                 description: |-
                   tls configures mutual TLS for all cluster communication. When enabled,
