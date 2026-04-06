@@ -73,6 +73,13 @@ type S3Spec struct {
 	// region is the AWS region.
 	// +optional
 	Region string `json:"region,omitempty"`
+
+	// credentialsSecret is the name of a Kubernetes Secret containing
+	// AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY. When set, envFrom is
+	// added to node containers. For production use, prefer IAM roles
+	// (IRSA/pod identity) and leave this empty.
+	// +optional
+	CredentialsSecret string `json:"credentialsSecret,omitempty"`
 }
 
 // TLSSpec configures mutual TLS for all cluster communication.

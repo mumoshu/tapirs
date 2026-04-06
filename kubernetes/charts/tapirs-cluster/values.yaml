@@ -31,3 +31,4 @@ s3:
   prefix: ""
   endpoint: ""
   region: ""
+  credentialsSecret: ""

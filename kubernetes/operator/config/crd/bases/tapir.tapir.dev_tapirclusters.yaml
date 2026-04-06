@@ -218,6 +218,13 @@ spec:
                   bucket:
                     description: bucket is the S3 bucket name.
                     type: string
+                  credentialsSecret:
+                    description: |-
+                      credentialsSecret is the name of a Kubernetes Secret containing
+                      AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY. When set, envFrom is
+                      added to node containers. For production use, prefer IAM roles
+                      (IRSA/pod identity) and leave this empty.
+                    type: string
                   endpoint:
                     description: endpoint is a custom S3-compatible endpoint URL (e.g.
                       MinIO).

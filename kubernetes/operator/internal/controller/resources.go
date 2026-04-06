@@ -331,7 +331,7 @@ func desiredNodePoolStatefulSet(cluster *tapirv1alpha1.TAPIRCluster, pool tapirv
 	}
 }
 
-// injectS3 adds S3 CLI args to a container when S3 is configured.
+// injectS3 adds S3 CLI args and optional credentials to a container when S3 is configured.
 func injectS3(container *corev1.Container, cluster *tapirv1alpha1.TAPIRCluster) {
 	if cluster.Spec.S3 == nil {
 		return
@@ -346,5 +346,12 @@ func injectS3(container *corev1.Container, cluster *tapirv1alpha1.TAPIRCluster) 
 	}
 	if s3.Region != "" {
 		container.Args = append(container.Args, fmt.Sprintf("--s3-region=%s", s3.Region))
+	}
+	if s3.CredentialsSecret != "" {
+		container.EnvFrom = append(container.EnvFrom, corev1.EnvFromSource{
+			SecretRef: &corev1.SecretEnvSource{
+				LocalObjectReference: corev1.LocalObjectReference{Name: s3.CredentialsSecret},
+			},
+		})
 	}
 }

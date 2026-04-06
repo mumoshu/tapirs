@@ -51,4 +51,7 @@ spec:
     {{- if .Values.s3.region }}
     region: {{ .Values.s3.region }}
     {{- end }}
+    {{- if .Values.s3.credentialsSecret }}
+    credentialsSecret: {{ .Values.s3.credentialsSecret }}
+    {{- end }}
   {{- end }}

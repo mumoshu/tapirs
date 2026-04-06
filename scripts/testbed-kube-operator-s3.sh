@@ -345,6 +345,7 @@ install_cluster_with_s3() {
         --set "image=${TAPIR_IMAGE}" \
         --set "s3.bucket=${TAPIR_S3_BUCKET}" \
         --set "s3.endpoint=${minio_endpoint}" \
+        --set "s3.credentialsSecret=minio-credentials" \
         --wait --timeout 30s
     ok "Cluster chart installed with S3 enabled."
 }
@@ -682,7 +683,11 @@ cmd_up() {
     # 2. Smoke test: write + read
     smoke_test_write_read
 
-    # 3. Verify S3 objects exist
+    # 3. Wait for view change + S3 upload (IR tick ~2s + upload time).
+    info "Waiting for nodes to flush and upload to S3..."
+    sleep 10
+
+    # 4. Verify S3 objects exist
     verify_s3_objects
 
     # 4. Cluster backup to S3
