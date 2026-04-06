@@ -48,6 +48,31 @@ type TAPIRClusterSpec struct {
 	// and TLS credentials are mounted into all pods.
 	// +optional
 	TLS *TLSSpec `json:"tls,omitempty"`
+
+	// s3 configures S3 backend for remote storage. When set, all replicas
+	// upload segments and manifests to S3 on every flush.
+	// +optional
+	S3 *S3Spec `json:"s3,omitempty"`
+}
+
+// S3Spec configures S3 backend for remote segment and manifest storage.
+type S3Spec struct {
+	// bucket is the S3 bucket name.
+	// +required
+	Bucket string `json:"bucket"`
+
+	// prefix is the cluster-level key prefix (e.g. "prod/").
+	// Each replica derives its shard prefix internally.
+	// +optional
+	Prefix string `json:"prefix,omitempty"`
+
+	// endpoint is a custom S3-compatible endpoint URL (e.g. MinIO).
+	// +optional
+	Endpoint string `json:"endpoint,omitempty"`
+
+	// region is the AWS region.
+	// +optional
+	Region string `json:"region,omitempty"`
 }
 
 // TLSSpec configures mutual TLS for all cluster communication.

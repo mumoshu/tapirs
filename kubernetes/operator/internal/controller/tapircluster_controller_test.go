@@ -186,6 +186,64 @@ var _ = Describe("TAPIRCluster TLS resource generation", func() {
 	})
 })
 
+var _ = Describe("TAPIRCluster S3 resource generation", func() {
+	s3Cluster := &tapirv1alpha1.TAPIRCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "s3-test",
+			Namespace: "default",
+		},
+		Spec: tapirv1alpha1.TAPIRClusterSpec{
+			Image: "tapir:latest",
+			Discovery: tapirv1alpha1.DiscoverySpec{
+				Replicas: 3,
+			},
+			NodePools: []tapirv1alpha1.NodePool{
+				{Name: "default", Replicas: 3},
+			},
+			Shards: []tapirv1alpha1.ShardSpec{
+				{Number: 0, Replicas: 3},
+			},
+			S3: &tapirv1alpha1.S3Spec{
+				Bucket:   "my-bucket",
+				Prefix:   "prod/",
+				Endpoint: "http://minio:9000",
+				Region:   "us-east-1",
+			},
+		},
+	}
+
+	It("should inject S3 args into discovery StatefulSet", func() {
+		sts := desiredDiscoveryStatefulSet(s3Cluster)
+		container := sts.Spec.Template.Spec.Containers[0]
+		Expect(container.Args).To(ContainElement("--s3-bucket=my-bucket"))
+		Expect(container.Args).To(ContainElement("--s3-prefix=prod/"))
+		Expect(container.Args).To(ContainElement("--s3-endpoint=http://minio:9000"))
+		Expect(container.Args).To(ContainElement("--s3-region=us-east-1"))
+	})
+
+	It("should inject S3 args into node pool StatefulSet", func() {
+		sts := desiredNodePoolStatefulSet(s3Cluster, s3Cluster.Spec.NodePools[0])
+		container := sts.Spec.Template.Spec.Containers[0]
+		Expect(container.Args).To(ContainElement("--s3-bucket=my-bucket"))
+		Expect(container.Args).To(ContainElement("--s3-prefix=prod/"))
+	})
+
+	It("should not inject S3 args when S3 is nil", func() {
+		plainCluster := &tapirv1alpha1.TAPIRCluster{
+			ObjectMeta: metav1.ObjectMeta{Name: "plain", Namespace: "default"},
+			Spec: tapirv1alpha1.TAPIRClusterSpec{
+				Image:     "tapir:latest",
+				Discovery: tapirv1alpha1.DiscoverySpec{Replicas: 3},
+			},
+		}
+		sts := desiredDiscoveryStatefulSet(plainCluster)
+		container := sts.Spec.Template.Spec.Containers[0]
+		for _, arg := range container.Args {
+			Expect(arg).NotTo(ContainSubstring("--s3-"), "S3 args should not exist")
+		}
+	})
+})
+
 var _ = Describe("TAPIRCluster Controller", func() {
 	Context("When reconciling a resource", func() {
 		const resourceName = "test-resource"

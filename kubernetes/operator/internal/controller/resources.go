@@ -98,6 +98,7 @@ func desiredDiscoveryStatefulSet(cluster *tapirv1alpha1.TAPIRCluster) *appsv1.St
 		{Name: "data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 	}
 	injectTLS(&container, &volumes, cluster, "discovery")
+	injectS3(&container, cluster)
 
 	return &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
@@ -186,6 +187,7 @@ func desiredShardManagerDeployment(cluster *tapirv1alpha1.TAPIRCluster) *appsv1.
 
 	var volumes []corev1.Volume
 	injectTLS(&container, &volumes, cluster, "shard-manager")
+	injectS3(&container, cluster)
 
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -304,6 +306,7 @@ func desiredNodePoolStatefulSet(cluster *tapirv1alpha1.TAPIRCluster, pool tapirv
 		{Name: "data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 	}
 	injectTLS(&container, &volumes, cluster, pool.Name)
+	injectS3(&container, cluster)
 
 	replicas := pool.Replicas
 	return &appsv1.StatefulSet{
@@ -324,5 +327,23 @@ func desiredNodePoolStatefulSet(cluster *tapirv1alpha1.TAPIRCluster, pool tapirv
 				},
 			},
 		},
+	}
+}
+
+// injectS3 adds S3 CLI args to a container when S3 is configured.
+func injectS3(container *corev1.Container, cluster *tapirv1alpha1.TAPIRCluster) {
+	if cluster.Spec.S3 == nil {
+		return
+	}
+	s3 := cluster.Spec.S3
+	container.Args = append(container.Args, fmt.Sprintf("--s3-bucket=%s", s3.Bucket))
+	if s3.Prefix != "" {
+		container.Args = append(container.Args, fmt.Sprintf("--s3-prefix=%s", s3.Prefix))
+	}
+	if s3.Endpoint != "" {
+		container.Args = append(container.Args, fmt.Sprintf("--s3-endpoint=%s", s3.Endpoint))
+	}
+	if s3.Region != "" {
+		container.Args = append(container.Args, fmt.Sprintf("--s3-region=%s", s3.Region))
 	}
 }
