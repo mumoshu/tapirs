@@ -28,14 +28,14 @@ pub struct AdminRequest {
     pub snapshot: Option<SnapshotParams>,
 }
 
-/// Per-shard snapshot parameters from a CrossShardSnapshot.
+/// Snapshot parameters from a CrossShardSnapshot.
 /// Ensures cross-shard consistency: each shard is cloned at a specific
 /// manifest view and gets a ghost filter based on cutoff_ts/ceiling_ts.
 #[derive(Deserialize)]
 pub struct SnapshotParams {
-    /// Global cutoff: min(ceiling_ts) across all shards.
+    /// Global cutoff: min(max_committed_ts) across all shards.
     pub cutoff_ts: u64,
-    /// This shard's ceiling_ts (max_committed_ts at snapshot time).
+    /// Global ceiling: max(max_committed_ts) across all shards.
     pub ceiling_ts: u64,
     /// Manifest view to clone from for this shard.
     pub manifest_view: u64,

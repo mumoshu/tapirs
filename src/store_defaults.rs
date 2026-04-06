@@ -189,7 +189,7 @@ pub fn open_production_stores_from_s3(
     .map_err(|e| format!("open CombinedStore at {base_dir}: {e}"))?;
 
     // Apply ghost filter for cross-shard consistency.
-    if let Some(gf) = snapshot.ghost_filter_for(shard_id) {
+    if let Some(gf) = snapshot.ghost_filter() {
         inner.ghost_filter = Some(gf);
     }
 
@@ -208,7 +208,7 @@ pub fn open_production_stores_from_s3(
     // on remove_prepared_txns_in_ghost_range for full safety argument.
     tapir_handle.remove_prepared_txns_in_ghost_range(
         snapshot.cutoff_ts,
-        shard_info.ceiling_ts,
+        snapshot.ceiling_ts,
     );
 
     let upcalls = crate::tapir::Replica::new_with_store(tapir_handle);

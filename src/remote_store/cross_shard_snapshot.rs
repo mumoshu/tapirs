@@ -8,31 +8,36 @@ use crate::unified::wisckeylsm::manifest::UnifiedManifest;
 use super::ghost_filter::GhostFilter;
 use super::manifest_store::RemoteManifestStore;
 
-/// Cross-shard consistent snapshot with per-shard ghost filter parameters.
+/// Cross-shard consistent snapshot.
+///
+/// `cutoff_ts = min(max_committed_ts)` across all shards — the consistent point.
+/// `ceiling_ts = max(max_committed_ts)` across all shards — the upper bound.
+/// Ghost filter hides `(cutoff_ts, ceiling_ts]` on ALL shards uniformly.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CrossShardSnapshot {
     pub timestamp: String,
-    /// Global cutoff: `min(ceiling_ts)` across all shards.
+    /// Global cutoff: `min(max_committed_ts)` across all shards.
+    /// Everything at or below is visible on all shards.
     pub cutoff_ts: u64,
-    /// Per-shard info: which manifest view to restore from, and this
-    /// shard's ceiling_ts (its max_committed_ts at backup time).
+    /// Global ceiling: `max(max_committed_ts)` across all shards.
+    /// The ghost filter hides `(cutoff_ts, ceiling_ts]` on all shards.
+    pub ceiling_ts: u64,
+    /// Per-shard info: which manifest view to clone from.
     pub shards: BTreeMap<u32, ShardSnapshotInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShardSnapshotInfo {
     pub manifest_view: u64,
-    pub ceiling_ts: u64,
 }
 
 impl CrossShardSnapshot {
-    /// Build a GhostFilter for a specific shard from this snapshot.
-    /// Returns None if the shard's ceiling equals the cutoff (no hidden range).
-    pub fn ghost_filter_for(&self, shard_id: u32) -> Option<GhostFilter> {
-        let info = self.shards.get(&shard_id)?;
+    /// Build the ghost filter for this snapshot.
+    /// Returns None if cutoff == ceiling (no hidden range).
+    pub fn ghost_filter(&self) -> Option<GhostFilter> {
         let gf = GhostFilter {
             cutoff_ts: self.cutoff_ts,
-            ceiling_ts: info.ceiling_ts,
+            ceiling_ts: self.ceiling_ts,
         };
         if gf.is_empty() { None } else { Some(gf) }
     }
@@ -41,34 +46,33 @@ impl CrossShardSnapshot {
 /// Create a cross-shard consistent snapshot from the latest manifest per shard.
 ///
 /// Reads each shard's latest manifest, extracts `max_read_time` as the
-/// shard's ceiling_ts, then computes `cutoff_ts = min(ceiling_ts)`.
+/// shard's max_committed_ts, then computes:
+/// - `cutoff_ts = min(max_committed_ts)` — the consistent point
+/// - `ceiling_ts = max(max_committed_ts)` — the upper bound
 pub async fn create_cross_shard_snapshot<S: BackupStorage>(
     manifest_store: &RemoteManifestStore<S>,
     shard_names: &[(u32, String)],
 ) -> Result<CrossShardSnapshot, String> {
     let mut shards = BTreeMap::new();
+    let mut all_ts = Vec::new();
     for (shard_id, shard_name) in shard_names {
         let (view, bytes) = manifest_store.download_latest_manifest(shard_name).await?;
         let manifest: UnifiedManifest = bitcode::deserialize(&bytes)
             .map_err(|e| format!("deserialize manifest for {shard_name}: {e}"))?;
-        let ceiling_ts = manifest
-            .max_read_time
-            .unwrap_or(0);
+        let ts = manifest.max_read_time.unwrap_or(0);
+        all_ts.push(ts);
         shards.insert(*shard_id, ShardSnapshotInfo {
             manifest_view: view,
-            ceiling_ts,
         });
     }
 
-    let cutoff_ts = shards
-        .values()
-        .map(|info| info.ceiling_ts)
-        .min()
-        .unwrap_or(0);
+    let cutoff_ts = all_ts.iter().copied().min().unwrap_or(0);
+    let ceiling_ts = all_ts.iter().copied().max().unwrap_or(0);
 
     Ok(CrossShardSnapshot {
         timestamp: crate::backup::utc_now_iso8601(),
         cutoff_ts,
+        ceiling_ts,
         shards,
     })
 }
@@ -103,28 +107,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ghost_filter_for_shard() {
+    fn ghost_filter_global() {
         let snapshot = CrossShardSnapshot {
             timestamp: "2026-01-15T10:30:00Z".into(),
             cutoff_ts: 150,
+            ceiling_ts: 200,
             shards: BTreeMap::from([
-                (0, ShardSnapshotInfo { manifest_view: 5, ceiling_ts: 200 }),
-                (1, ShardSnapshotInfo { manifest_view: 3, ceiling_ts: 150 }),
+                (0, ShardSnapshotInfo { manifest_view: 5 }),
+                (1, ShardSnapshotInfo { manifest_view: 3 }),
             ]),
         };
 
-        // Shard 0: ceiling > cutoff → has ghost filter.
-        let gf0 = snapshot.ghost_filter_for(0).unwrap();
-        assert_eq!(gf0.cutoff_ts, 150);
-        assert_eq!(gf0.ceiling_ts, 200);
-        assert!(gf0.is_hidden(160));
-        assert!(!gf0.is_hidden(150));
+        let gf = snapshot.ghost_filter().unwrap();
+        assert_eq!(gf.cutoff_ts, 150);
+        assert_eq!(gf.ceiling_ts, 200);
+        assert!(gf.is_hidden(160));
+        assert!(!gf.is_hidden(150));
+        assert!(!gf.is_hidden(201));
+    }
 
-        // Shard 1: ceiling == cutoff → no ghost filter needed.
-        assert!(snapshot.ghost_filter_for(1).is_none());
-
-        // Unknown shard → None.
-        assert!(snapshot.ghost_filter_for(99).is_none());
+    #[test]
+    fn no_ghost_filter_when_cutoff_equals_ceiling() {
+        let snapshot = CrossShardSnapshot {
+            timestamp: String::new(),
+            cutoff_ts: 100,
+            ceiling_ts: 100,
+            shards: BTreeMap::from([
+                (0, ShardSnapshotInfo { manifest_view: 1 }),
+            ]),
+        };
+        assert!(snapshot.ghost_filter().is_none());
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -138,8 +150,9 @@ mod tests {
         let snapshot = CrossShardSnapshot {
             timestamp: "2026-01-15T10:30:00Z".into(),
             cutoff_ts: 100,
+            ceiling_ts: 200,
             shards: BTreeMap::from([
-                (0, ShardSnapshotInfo { manifest_view: 2, ceiling_ts: 200 }),
+                (0, ShardSnapshotInfo { manifest_view: 2 }),
             ]),
         };
 
@@ -147,6 +160,7 @@ mod tests {
         let loaded = load_snapshot(&storage, &name).await.unwrap();
 
         assert_eq!(loaded.cutoff_ts, 100);
-        assert_eq!(loaded.shards[&0].ceiling_ts, 200);
+        assert_eq!(loaded.ceiling_ts, 200);
+        assert_eq!(loaded.shards[&0].manifest_view, 2);
     }
 }

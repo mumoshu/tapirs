@@ -87,7 +87,7 @@ async fn clone_with_snapshot_ghost_filter() {
 
     // Test 2: Ghost filter on shard 0.
     // If shard 0's ceiling > cutoff, reading at ts=200 should be ghost-filtered.
-    let gf0 = snapshot.ghost_filter_for(0);
+    let gf0 = snapshot.ghost_filter();
     if gf0.is_some() {
         // ts=200 is in the ghost range → clamped to cutoff_ts.
         // Reading at ts=200 should return the value at cutoff_ts, which is v100.
@@ -99,7 +99,6 @@ async fn clone_with_snapshot_ghost_filter() {
         );
     }
 
-    // Shard 1 should have no ghost filter (ceiling == cutoff).
-    let gf1 = snapshot.ghost_filter_for(1);
-    assert!(gf1.is_none(), "shard 1 should have no ghost filter");
+    // Ghost filter is global — same for all shards. On shard 1, the filter
+    // range (cutoff, ceiling] has no entries (shard 1's max is cutoff).
 }

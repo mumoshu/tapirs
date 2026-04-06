@@ -68,8 +68,7 @@ async fn e2e_multi_shard_s3_lifecycle() {
     assert!(snapshot.shards.contains_key(&1), "snapshot should contain shard 1");
     // Shard 0 is ahead (ts=200), shard 1 at ts=100.
     // Ghost filter hides entries above cutoff on the ahead shard.
-    let _gf0 = snapshot.ghost_filter_for(0);
-    let _gf1 = snapshot.ghost_filter_for(1);
+    let _gf = snapshot.ghost_filter();
 
     // ── Phase 3: Zero-copy clone ──
 

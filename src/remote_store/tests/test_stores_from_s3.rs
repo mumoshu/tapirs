@@ -26,10 +26,11 @@ async fn open_stores_from_s3_reads_source_data() {
     let versions = man_store.list_manifest_versions(shard_name).await.unwrap();
     let manifest_view = *versions.last().expect("no manifests uploaded");
     let mut shards_map = BTreeMap::new();
-    shards_map.insert(0u32, ShardSnapshotInfo { manifest_view, ceiling_ts: ts100.time });
+    shards_map.insert(0u32, ShardSnapshotInfo { manifest_view });
     let snapshot = CrossShardSnapshot {
         timestamp: String::new(),
         cutoff_ts: ts100.time,
+        ceiling_ts: ts100.time,
         shards: shards_map,
     };
 

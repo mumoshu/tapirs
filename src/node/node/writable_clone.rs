@@ -71,11 +71,11 @@ impl Node {
         let mut shard_map = BTreeMap::new();
         shard_map.insert(shard_id, ShardSnapshotInfo {
             manifest_view: snapshot_params.manifest_view,
-            ceiling_ts: snapshot_params.ceiling_ts,
         });
         let snapshot = CrossShardSnapshot {
             timestamp: String::new(),
             cutoff_ts: snapshot_params.cutoff_ts,
+            ceiling_ts: snapshot_params.ceiling_ts,
             shards: shard_map,
         };
         let (upcalls, ir_store) = tokio::task::block_in_place(|| {

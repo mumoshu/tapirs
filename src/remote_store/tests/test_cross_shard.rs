@@ -52,7 +52,7 @@ async fn cross_shard_snapshot_with_ghost_filter() {
     // Shard 0 additionally committed at ts=200.
     // The exact cutoff depends on what max_read_time was persisted.
     // For this test, verify shard 0's ghost filter hides ts=200 data.
-    let gf0 = snapshot.ghost_filter_for(0);
+    let gf0 = snapshot.ghost_filter();
 
     // Open shard 0 from S3 with ghost filter.
     let s0_dir = tempfile::tempdir().unwrap();
@@ -97,8 +97,7 @@ async fn cross_shard_snapshot_with_ghost_filter() {
         );
     }
 
-    // Open shard 1 — should have no ghost filter (ceiling=cutoff).
-    let gf1 = snapshot.ghost_filter_for(1);
+    // Open shard 1 — ghost filter is global, same as shard 0.
 
     let s1_dir = tempfile::tempdir().unwrap();
     let s1_view = snapshot.shards[&1].manifest_view;
@@ -124,9 +123,7 @@ async fn cross_shard_snapshot_with_ghost_filter() {
         .unwrap();
     assert_eq!(val_s1.as_deref(), Some("v100"), "ts=100 should be visible on shard 1");
 
-    // Shard 1 should have no ghost filter (its ceiling == cutoff).
-    assert!(
-        gf1.is_none(),
-        "shard 1 should have no ghost filter (ceiling=cutoff)"
-    );
+    // Ghost filter is global (same for all shards). On shard 1, the filter
+    // range (cutoff, ceiling] has no entries — shard 1's max is at cutoff.
+    // The filter is applied but is a no-op for shard 1.
 }

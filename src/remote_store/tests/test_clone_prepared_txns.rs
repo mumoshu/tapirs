@@ -40,9 +40,11 @@ async fn clone_removes_prepared_in_ghost_range_preserves_below_cutoff() {
     let v0 = *man_store.list_manifest_versions("shard_0").await.unwrap().last().unwrap();
     let v1 = *man_store.list_manifest_versions("shard_1").await.unwrap().last().unwrap();
     let mut shards = BTreeMap::new();
-    shards.insert(0, ShardSnapshotInfo { manifest_view: v0, ceiling_ts: 200 });
-    shards.insert(1, ShardSnapshotInfo { manifest_view: v1, ceiling_ts: 100 });
-    let snapshot = CrossShardSnapshot { timestamp: String::new(), cutoff_ts: 100, shards };
+    shards.insert(0, ShardSnapshotInfo { manifest_view: v0 });
+    shards.insert(1, ShardSnapshotInfo { manifest_view: v1 });
+    let snapshot = CrossShardSnapshot {
+        timestamp: String::new(), cutoff_ts: 100, ceiling_ts: 200, shards,
+    };
 
     // Clone shard 0: prepared txn at ts=200 is in ghost range → removed.
     let d0 = tempfile::tempdir().unwrap();
