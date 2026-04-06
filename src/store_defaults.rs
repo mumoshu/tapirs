@@ -193,6 +193,17 @@ pub fn open_production_stores_from_s3(
     )
     .map_err(|e| format!("open CombinedStore at {base_dir}: {e}"))?;
 
+    // Debug: log store state after clone open.
+    tracing::debug!(
+        shard = %shard_id,
+        current_view = inner.tapir_manifest.current_view,
+        mvcc_sst_count = inner.tapir_manifest.mvcc.sst_metas.len(),
+        mvcc_sealed_count = inner.tapir_manifest.mvcc.sealed_vlog_segments.len(),
+        comm_sst_count = inner.tapir_manifest.committed.sst_metas.len(),
+        comm_sealed_count = inner.tapir_manifest.committed.sealed_vlog_segments.len(),
+        "clone store opened from S3"
+    );
+
     // Apply ghost filter for cross-shard consistency.
     if let Some(gf) = snapshot.ghost_filter() {
         inner.ghost_filter = Some(gf);

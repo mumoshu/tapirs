@@ -52,6 +52,15 @@ pub async fn clone_from_remote<S: BackupStorage>(
     view: u64,
     clone_base_dir: &Path,
 ) -> Result<UnifiedManifest, String> {
+    // Validate that the requested manifest view exists before downloading.
+    let versions = manifest_store.list_manifest_versions(shard).await?;
+    if !versions.contains(&view) {
+        return Err(format!(
+            "manifest view {view} for {shard} not found in versions list {versions:?}; \
+             the snapshot may reference a pruned or not-yet-uploaded manifest"
+        ));
+    }
+
     // Download source manifest.
     let source_bytes = manifest_store.download_manifest(shard, view).await?;
     let source: UnifiedManifest = bitcode::deserialize(&source_bytes)
@@ -93,6 +102,16 @@ pub async fn clone_from_remote_lazy<S: BackupStorage>(
     view: u64,
     clone_base_dir: &Path,
 ) -> Result<UnifiedManifest, String> {
+    // Validate that the requested manifest view exists before downloading.
+    // Catches stale snapshots referencing pruned manifests with a clear error.
+    let versions = manifest_store.list_manifest_versions(shard).await?;
+    if !versions.contains(&view) {
+        return Err(format!(
+            "manifest view {view} for {shard} not found in versions list {versions:?}; \
+             the snapshot may reference a pruned or not-yet-uploaded manifest"
+        ));
+    }
+
     let source_bytes = manifest_store.download_manifest(shard, view).await?;
     let source: UnifiedManifest = bitcode::deserialize(&source_bytes)
         .map_err(|e| format!("deserialize source manifest: {e}"))?;

@@ -672,8 +672,13 @@ SNAPEOF
         fail "Snapshot creation failed."
     }
 
-    # The snapshot name is printed to stdout (first line).
-    SNAPSHOT_NAME=$(kube logs tapictl-snapshot 2>/dev/null | head -1)
+    # The snapshot filename (e.g. "2026-04-06T22:36:23Z.json") is printed to
+    # stdout. kubectl logs merges stdout+stderr, so extract the .json line.
+    # Strip the .json suffix — the CRD snapshotName is the logical name
+    # (the operator appends .json when constructing the S3 key).
+    local raw_name
+    raw_name=$(kube logs tapictl-snapshot 2>/dev/null | grep '\.json$' | head -1)
+    SNAPSHOT_NAME="${raw_name%.json}"
     kube delete pod tapictl-snapshot --wait=false 2>/dev/null || true
 
     if [[ -z "${SNAPSHOT_NAME}" ]]; then
