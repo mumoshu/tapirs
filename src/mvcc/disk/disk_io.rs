@@ -22,6 +22,24 @@ impl Default for OpenFlags {
     }
 }
 
+/// How the caller intends to use the opened file. Determines whether
+/// S3 download and ETag revalidation are attempted.
+#[derive(Debug, Clone, Copy)]
+pub enum OpenMode {
+    /// Creating a brand-new file locally. Never download from S3.
+    /// Used by: import_raw_segment, fresh vlog/SST creation.
+    CreateNew,
+    /// Opening an existing file for reading. Download from S3 if the
+    /// file is missing locally and the S3 cache is registered.
+    /// Used by: SST readers, open_from_parts.
+    Existing,
+    /// Opening a vlog segment with a known write offset. Download from
+    /// S3 if missing locally. ETag-revalidate if cached (the segment may
+    /// have grown between seals on S3).
+    /// Used by: VlogSegment::open_at for sealed and active segments.
+    Segment { write_offset: u64 },
+}
+
 /// Abstract disk I/O trait.
 ///
 /// All pread/pwrite operations require 4 KiB-aligned buffers, offsets, and sizes.
@@ -35,7 +53,7 @@ pub trait DiskIo: Clone + Send + 'static {
     type ReadFuture: Future<Output = Result<(), StorageError>> + Send;
     type WriteFuture: Future<Output = Result<(), StorageError>> + Send;
 
-    fn open(path: &Path, flags: OpenFlags, expected_size: Option<u64>) -> Result<Self, StorageError>;
+    fn open(path: &Path, flags: OpenFlags, mode: OpenMode) -> Result<Self, StorageError>;
     fn pread(&self, buf: &mut AlignedBuf, offset: u64) -> Self::ReadFuture;
     fn pwrite(&self, buf: &AlignedBuf, offset: u64) -> Self::WriteFuture;
     fn fsync(&self) -> impl Future<Output = Result<(), StorageError>> + Send;
@@ -112,7 +130,7 @@ impl DiskIo for SyncDirectIo {
     type ReadFuture = Ready<Result<(), StorageError>>;
     type WriteFuture = Ready<Result<(), StorageError>>;
 
-    fn open(path: &Path, flags: OpenFlags, _expected_size: Option<u64>) -> Result<Self, StorageError> {
+    fn open(path: &Path, flags: OpenFlags, _mode: OpenMode) -> Result<Self, StorageError> {
         let mut opts = OpenOptions::new();
         opts.read(true).write(true).create(flags.create);
         if flags.direct {
@@ -189,20 +207,25 @@ impl DiskIo for BufferedIo {
     type ReadFuture = Ready<Result<(), StorageError>>;
     type WriteFuture = Ready<Result<(), StorageError>>;
 
-    fn open(path: &Path, flags: OpenFlags, expected_size: Option<u64>) -> Result<Self, StorageError> {
-        // If the file doesn't exist locally but S3 config is registered for
-        // its directory (via clone_from_remote_lazy / register_s3_cache),
-        // try to download the segment from S3 first. This makes BufferedIo
-        // transparently S3-aware — no separate S3CachingIo type needed in
-        // the production store type stack.
-        //
-        // try_download_from_s3 is best-effort: if the file doesn't exist
-        // on S3 either (new segment being created during view change merge),
-        // it returns Ok and falls through to create(true).
-        if !path.exists() {
-            super::s3_caching_io::try_download_from_s3(path)?;
-        } else if expected_size.is_some() {
-            super::s3_caching_io::try_revalidate_from_s3(path)?;
+    fn open(path: &Path, flags: OpenFlags, mode: OpenMode) -> Result<Self, StorageError> {
+        match mode {
+            OpenMode::CreateNew => {
+                // Never download from S3 — this file is being created locally.
+            }
+            OpenMode::Existing => {
+                if !path.exists() {
+                    // Download from S3 if registered. Errors propagate — never swallowed.
+                    super::s3_caching_io::try_download_from_s3(path)?;
+                }
+            }
+            OpenMode::Segment { .. } => {
+                if !path.exists() {
+                    super::s3_caching_io::try_download_from_s3(path)?;
+                } else {
+                    // ETag revalidation for cached segments that may have grown.
+                    super::s3_caching_io::try_revalidate_from_s3(path)?;
+                }
+            }
         }
         let mut opts = OpenOptions::new();
         opts.read(true).write(true).create(flags.create);

@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use super::aligned_buf::AlignedBuf;
-use super::disk_io::{BufferedIo, DiskIo, OpenFlags};
+use super::disk_io::{BufferedIo, DiskIo, OpenFlags, OpenMode};
 use super::error::StorageError;
 
 /// S3 download configuration for a base directory.
@@ -60,21 +60,7 @@ pub fn try_download_from_s3(path: &Path) -> Result<(), StorageError> {
         && let Some(name) = path.file_name().and_then(|n| n.to_str())
     {
         tracing::debug!(file = name, "s3cache: downloading (not cached locally)");
-        match download_from_s3_blocking(&config, name, path) {
-            Ok(()) => {}
-            Err(e) => {
-                // If the file doesn't exist on S3 either, this is a new
-                // segment being created locally (e.g. import_raw_segment
-                // during view change merge, or SSTs from compaction). The
-                // caller will create it via OpenOptions::create(true).
-                let msg = format!("{e}");
-                if msg.contains("NoSuchKey") || msg.contains("service error") {
-                    tracing::debug!(file = name, "s3cache: not found on S3, will be created locally");
-                } else {
-                    return Err(e);
-                }
-            }
-        }
+        download_from_s3_blocking(&config, name, path)?;
     }
     Ok(())
 }
@@ -220,33 +206,40 @@ impl DiskIo for S3CachingIo {
     type ReadFuture = Ready<Result<(), StorageError>>;
     type WriteFuture = Ready<Result<(), StorageError>>;
 
-    fn open(path: &Path, flags: OpenFlags, expected_size: Option<u64>) -> Result<Self, StorageError> {
+    fn open(path: &Path, flags: OpenFlags, mode: OpenMode) -> Result<Self, StorageError> {
         if let Some(config) = lookup_config(path)
             && let Some(name) = path.file_name().and_then(|n| n.to_str())
         {
-            if !path.exists() {
-                // File not cached locally — full download.
-                tracing::debug!(file = name, "s3cache: downloading (not cached locally)");
-                download_from_s3_blocking(&config, name, path)?;
-            } else if expected_size.is_some() {
-                // File cached but may be stale (e.g. active segment that
-                // grew between seals). Check ETag only if we have a local
-                // .etag file (meaning the file was previously downloaded
-                // from S3, not created locally).
-                let etag_path = path.with_extension("etag");
-                if let Ok(local_etag) = std::fs::read_to_string(&etag_path) {
-                    let remote_etag = head_object_etag_blocking(&config, name)?;
-                    if remote_etag != local_etag {
-                        tracing::debug!(file = name, "s3cache: re-downloading (etag changed)");
+            match mode {
+                OpenMode::CreateNew => {}
+                OpenMode::Existing => {
+                    if !path.exists() {
+                        tracing::debug!(file = name, "s3cache: downloading (not cached locally)");
+                        download_from_s3_blocking(&config, name, path)?;
+                    }
+                }
+                OpenMode::Segment { .. } => {
+                    if !path.exists() {
+                        tracing::debug!(file = name, "s3cache: downloading (not cached locally)");
                         download_from_s3_blocking(&config, name, path)?;
                     } else {
-                        tracing::debug!(file = name, "s3cache: using cached (etag matches)");
+                        // ETag revalidation for cached segments that may have grown.
+                        let etag_path = path.with_extension("etag");
+                        if let Ok(local_etag) = std::fs::read_to_string(&etag_path) {
+                            let remote_etag = head_object_etag_blocking(&config, name)?;
+                            if remote_etag != local_etag {
+                                tracing::debug!(file = name, "s3cache: re-downloading (etag changed)");
+                                download_from_s3_blocking(&config, name, path)?;
+                            } else {
+                                tracing::debug!(file = name, "s3cache: using cached (etag matches)");
+                            }
+                        }
                     }
                 }
             }
         }
         Ok(Self {
-            inner: BufferedIo::open(path, flags, None)?,
+            inner: BufferedIo::open(path, flags, OpenMode::Existing)?,
         })
     }
 
@@ -281,7 +274,7 @@ mod tests {
         let path = dir.path().join("test.dat");
         std::fs::write(&path, b"hello").unwrap();
 
-        let io = S3CachingIo::open(&path, OpenFlags { create: false, direct: false }, None).unwrap();
+        let io = S3CachingIo::open(&path, OpenFlags { create: false, direct: false }, OpenMode::Existing).unwrap();
         let mut buf = AlignedBuf::new(4096);
         futures::executor::block_on(io.pread(&mut buf, 0)).unwrap();
         assert_eq!(&buf.as_slice()[..5], b"hello");
@@ -292,7 +285,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nonexistent.dat");
 
-        let result = S3CachingIo::open(&path, OpenFlags { create: false, direct: false }, None);
+        let result = S3CachingIo::open(&path, OpenFlags { create: false, direct: false }, OpenMode::Existing);
         assert!(result.is_err());
     }
 }

@@ -38,7 +38,7 @@ pub(crate) struct VlogSegment<IO: DiskIo> {
 impl<IO: DiskIo> VlogSegment<IO> {
     /// Open or create a segment file.
     pub fn open(id: u64, path: PathBuf, flags: super::disk_io::OpenFlags) -> Result<Self, StorageError> {
-        let io = IO::open(&path, flags, None)?;
+        let io = IO::open(&path, flags, super::disk_io::OpenMode::CreateNew)?;
         Ok(Self {
             id,
             io,
@@ -54,7 +54,7 @@ impl<IO: DiskIo> VlogSegment<IO> {
         write_offset: u64,
         flags: super::disk_io::OpenFlags,
     ) -> Result<Self, StorageError> {
-        let io = IO::open(&path, flags, Some(write_offset))?;
+        let io = IO::open(&path, flags, super::disk_io::OpenMode::Segment { write_offset })?;
         Ok(Self {
             id,
             io,

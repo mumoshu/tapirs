@@ -201,7 +201,7 @@ impl<IO: DiskIo> VlogSegment<IO> {
 
     /// Open or create a segment file.
     pub fn open(id: u64, path: PathBuf, flags: OpenFlags) -> Result<Self, StorageError> {
-        let io = IO::open(&path, flags, None)?;
+        let io = IO::open(&path, flags, crate::mvcc::disk::disk_io::OpenMode::CreateNew)?;
         Ok(Self {
             id,
             io: Some(io),
@@ -219,7 +219,7 @@ impl<IO: DiskIo> VlogSegment<IO> {
         views: Vec<ViewRange>,
         flags: OpenFlags,
     ) -> Result<Self, StorageError> {
-        let io = IO::open(&path, flags, Some(write_offset))?;
+        let io = IO::open(&path, flags, crate::mvcc::disk::disk_io::OpenMode::Segment { write_offset })?;
         Ok(Self {
             id,
             io: Some(io),

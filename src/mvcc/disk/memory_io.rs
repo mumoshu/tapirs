@@ -1,5 +1,5 @@
 use super::aligned_buf::AlignedBuf;
-use super::disk_io::{DiskIo, OpenFlags};
+use super::disk_io::{DiskIo, OpenFlags, OpenMode};
 use super::error::StorageError;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet};
@@ -75,7 +75,7 @@ impl DiskIo for MemoryIo {
     type ReadFuture = Ready<Result<(), StorageError>>;
     type WriteFuture = Ready<Result<(), StorageError>>;
 
-    fn open(path: &Path, flags: OpenFlags, _expected_size: Option<u64>) -> Result<Self, StorageError> {
+    fn open(path: &Path, flags: OpenFlags, _mode: OpenMode) -> Result<Self, StorageError> {
         let fs = get_fs();
         {
             let mut inner = fs.lock().unwrap();

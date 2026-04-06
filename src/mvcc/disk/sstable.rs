@@ -1,5 +1,5 @@
 use super::aligned_buf::{AlignedBuf, BLOCK_SIZE, round_up};
-use super::disk_io::DiskIo;
+use super::disk_io::{DiskIo, OpenMode};
 use super::error::StorageError;
 use super::memtable::{CompositeKey, LsmEntry};
 use serde::{Deserialize, Serialize};
@@ -90,7 +90,7 @@ impl SSTableWriter {
         TS: Serialize + Clone,
         IO: DiskIo,
     {
-        let io = IO::open(path, io_flags, None)?;
+        let io = IO::open(path, io_flags, OpenMode::Existing)?;
         let mut offset: u64 = 0;
         let mut index_entries: Vec<IndexEntry<K, TS>> = Vec::new();
         let mut bloom = BloomFilter::new(entries.len());
@@ -229,7 +229,7 @@ pub struct SSTableReader<IO: DiskIo> {
 impl<IO: DiskIo> SSTableReader<IO> {
     /// Open an SSTable file and read its footer.
     pub async fn open(path: PathBuf, flags: super::disk_io::OpenFlags) -> Result<Self, StorageError> {
-        let io = IO::open(&path, flags, None)?;
+        let io = IO::open(&path, flags, OpenMode::Existing)?;
 
         // Read file size to locate footer (last BLOCK_SIZE bytes).
         let file_size = io.file_len()?;
