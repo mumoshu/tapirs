@@ -52,6 +52,38 @@ fn lookup_config(path: &Path) -> Option<S3CacheConfig> {
     registry().lock().unwrap().get(dir).cloned()
 }
 
+/// Try to download a file from S3 if the registry has config for its directory.
+/// Called by BufferedIo::open when the file doesn't exist locally.
+/// No-op if no S3 config is registered (returns Ok).
+pub fn try_download_from_s3(path: &Path) -> Result<(), StorageError> {
+    if let Some(config) = lookup_config(path)
+        && let Some(name) = path.file_name().and_then(|n| n.to_str())
+    {
+        tracing::debug!(file = name, "s3cache: downloading (not cached locally)");
+        download_from_s3_blocking(&config, name, path)?;
+    }
+    Ok(())
+}
+
+/// Try to revalidate a cached file against S3 via ETag.
+/// Called by BufferedIo::open when expected_size is set (active segment may have grown).
+/// No-op if no S3 config is registered or no local .etag file exists.
+pub fn try_revalidate_from_s3(path: &Path) -> Result<(), StorageError> {
+    if let Some(config) = lookup_config(path)
+        && let Some(name) = path.file_name().and_then(|n| n.to_str())
+    {
+        let etag_path = path.with_extension("etag");
+        if let Ok(local_etag) = std::fs::read_to_string(&etag_path) {
+            let remote_etag = head_object_etag_blocking(&config, name)?;
+            if remote_etag != local_etag {
+                tracing::debug!(file = name, "s3cache: re-downloading (etag changed)");
+                download_from_s3_blocking(&config, name, path)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Download a single file from S3 to a local path.
 ///
 /// If called from within an existing tokio runtime, uses the current handle.

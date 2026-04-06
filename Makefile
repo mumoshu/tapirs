@@ -249,5 +249,5 @@ ci/test-s3:
 	  cargo clippy --all-targets -- -D warnings \
 	  && AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
 	  TAPI_TEST_S3_ENDPOINT=http://localhost:9100 \
-	  cargo test --release -- s3backup remote_store::tests::test_auto_flush remote_store::tests::test_read_replica remote_store::tests::test_e2e_s3 \
+	  cargo test --release -- s3backup remote_store::tests::test_auto_flush remote_store::tests::test_read_replica remote_store::tests::test_e2e_s3 remote_store::tests::test_stores_from_s3 \
 	  ; EXIT=$$?; docker rm -f tapi-minio; exit $$EXIT

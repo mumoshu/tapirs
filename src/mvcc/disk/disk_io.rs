@@ -189,7 +189,17 @@ impl DiskIo for BufferedIo {
     type ReadFuture = Ready<Result<(), StorageError>>;
     type WriteFuture = Ready<Result<(), StorageError>>;
 
-    fn open(path: &Path, flags: OpenFlags, _expected_size: Option<u64>) -> Result<Self, StorageError> {
+    fn open(path: &Path, flags: OpenFlags, expected_size: Option<u64>) -> Result<Self, StorageError> {
+        // If the file doesn't exist locally but S3 config is registered for
+        // its directory (via clone_from_remote_lazy / register_s3_cache),
+        // download the segment from S3 first. This makes BufferedIo
+        // transparently S3-aware — no separate S3CachingIo type needed in
+        // the production store type stack.
+        if !path.exists() {
+            super::s3_caching_io::try_download_from_s3(path)?;
+        } else if expected_size.is_some() {
+            super::s3_caching_io::try_revalidate_from_s3(path)?;
+        }
         let mut opts = OpenOptions::new();
         opts.read(true).write(true).create(flags.create);
         // No O_DIRECT — works on any filesystem (tmpfs, etc.)
