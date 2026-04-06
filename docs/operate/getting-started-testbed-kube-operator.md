@@ -77,6 +77,35 @@ $ TAPIR_KIND=1 TAPIR_TLS=1 scripts/testbed-kube-operator.sh up
 
 When TLS is enabled, the smoke test automatically uses TLS client certificates.
 
+**S3 mode with MinIO:** To test S3 remote storage locally, deploy MinIO into the cluster and configure the `TAPIRCluster` with an `S3Spec`:
+
+```bash
+# Deploy MinIO:
+kubectl create deployment minio -n tapir --image=minio/minio -- server /data
+kubectl expose deployment minio -n tapir --port=9000
+
+# Create a bucket:
+kubectl run --rm -i aws-cli -n tapir --image=amazon/aws-cli --restart=Never \
+  --env=AWS_ACCESS_KEY_ID=minioadmin --env=AWS_SECRET_ACCESS_KEY=minioadmin \
+  -- --endpoint-url http://minio.tapir.svc.cluster.local:9000 s3 mb s3://tapir-backup
+```
+
+Add `S3Spec` to the TAPIRCluster CR (or pass `--set s3.bucket=tapir-backup --set s3.endpoint=http://minio.tapir.svc.cluster.local:9000` to the Helm install):
+
+```yaml
+apiVersion: tapir.tapir.dev/v1alpha1
+kind: TAPIRCluster
+metadata:
+  name: tapir
+spec:
+  s3:
+    bucket: tapir-backup
+    endpoint: http://minio.tapir.svc.cluster.local:9000
+  # ... rest of spec
+```
+
+When S3 is configured, the operator injects `--s3-bucket` and `--s3-endpoint` flags into all pod containers. Nodes upload segments and manifests to S3 on every view change flush.
+
 **Inspect the cluster:** Check the operator-managed resources:
 
 ```
