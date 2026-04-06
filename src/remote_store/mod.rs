@@ -6,6 +6,8 @@ pub mod download;
 pub mod ghost_filter;
 pub mod manifest_store;
 pub mod open_remote;
+pub mod read_replica;
+pub mod read_replica_refresh;
 pub mod segment_store;
 pub mod sync_to_remote;
 pub mod upload;
