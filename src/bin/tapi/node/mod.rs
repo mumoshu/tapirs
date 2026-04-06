@@ -20,6 +20,7 @@ pub async fn run(
     discovery_json: Option<String>,
     discovery_tapir_endpoint: Option<String>,
     #[cfg(feature = "tls")] tls_config: Option<tapirs::tls::TlsConfig>,
+    s3_config: Option<tapirs::remote_store::config::S3StorageConfig>,
 ) {
     let persist_dir = cfg
         .persist_dir
@@ -38,6 +39,7 @@ pub async fn run(
         {
             node.set_tls_config(tls_config.clone());
         }
+        node.set_s3_config(s3_config.clone());
         Arc::new(node)
     } else if let Some(endpoint) = discovery_tapir_endpoint {
         let backend = load_tapir_discovery_backend(
@@ -53,14 +55,15 @@ pub async fn run(
         {
             node.set_tls_config(tls_config.clone());
         }
+        node.set_s3_config(s3_config.clone());
         Arc::new(node)
     } else {
-        #[allow(unused_mut)] // mutated only when tls feature is enabled
         let mut node = Node::new(persist_dir, production_rng);
         #[cfg(feature = "tls")]
         {
             node.set_tls_config(tls_config.clone());
         }
+        node.set_s3_config(s3_config);
         Arc::new(node)
     };
 

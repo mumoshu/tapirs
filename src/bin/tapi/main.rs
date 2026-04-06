@@ -74,6 +74,36 @@ impl TlsArgs {
     }
 }
 
+/// S3 configuration flags for remote storage.
+#[derive(clap::Args, Clone, Default)]
+pub struct S3Args {
+    /// S3 bucket name for remote segment/manifest storage.
+    #[arg(long)]
+    pub s3_bucket: Option<String>,
+    /// Key prefix within the bucket (e.g. "prod/").
+    #[arg(long, default_value = "")]
+    pub s3_prefix: String,
+    /// Custom S3-compatible endpoint URL (e.g. MinIO).
+    #[arg(long)]
+    pub s3_endpoint: Option<String>,
+    /// AWS region for S3 operations.
+    #[arg(long)]
+    pub s3_region: Option<String>,
+}
+
+impl S3Args {
+    pub fn to_s3_config(&self) -> Option<tapirs::remote_store::config::S3StorageConfig> {
+        self.s3_bucket.as_ref().map(|bucket| {
+            tapirs::remote_store::config::S3StorageConfig {
+                bucket: bucket.clone(),
+                prefix: self.s3_prefix.clone(),
+                endpoint_url: self.s3_endpoint.clone(),
+                region: self.s3_region.clone(),
+            }
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum StorageBackend {
     /// In-memory MVCC store (default). Fast, bounded by RAM.
@@ -119,6 +149,8 @@ enum Command {
         shard_manager_url: Option<String>,
         #[command(flatten)]
         tls: TlsArgs,
+        #[command(flatten)]
+        s3: S3Args,
     },
     /// Admin operations on a running node.
     Admin {
@@ -320,6 +352,7 @@ async fn main() {
             discovery_tapir_endpoint,
             shard_manager_url,
             tls,
+            s3,
         } => {
             tls.validate();
             let mut cfg = config_path
@@ -344,6 +377,7 @@ async fn main() {
                 discovery_tapir_endpoint,
                 #[cfg(feature = "tls")]
                 tls.to_tls_config(),
+                s3.to_s3_config(),
             )
             .await;
         }

@@ -52,6 +52,7 @@ pub fn open_production_stores(
     persist_dir: &str,
     shard_id: u32,
     linearizable: bool,
+    s3_config: Option<crate::remote_store::config::S3StorageConfig>,
 ) -> Result<(ProductionTapirReplica, ProductionIrRecordStore), String> {
     use crate::mvcc::disk::disk_io::OpenFlags;
     use crate::unified::combined::CombinedStoreInner;
@@ -62,13 +63,17 @@ pub fn open_production_stores(
         direct: false,
     };
 
-    let inner = CombinedStoreInner::<String, String, DefaultDiskIo>::open(
+    let mut inner = CombinedStoreInner::<String, String, DefaultDiskIo>::open(
         std::path::Path::new(&base_dir),
         io_flags,
         shard,
         linearizable,
     )
     .map_err(|e| format!("failed to open CombinedStore at {base_dir}: {e}"))?;
+
+    if let Some(cfg) = s3_config {
+        inner.set_s3_config(cfg);
+    }
 
     let record_handle = inner.into_record_handle();
     let tapir_handle = record_handle.tapir_handle();

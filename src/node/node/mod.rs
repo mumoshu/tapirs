@@ -34,6 +34,7 @@ pub struct Node {
     pub(crate) new_rng: fn() -> crate::Rng,
     #[cfg(feature = "tls")]
     pub(crate) tls_config: Option<crate::tls::TlsConfig>,
+    pub(crate) s3_config: Option<crate::remote_store::config::S3StorageConfig>,
 }
 
 impl Node {
@@ -47,6 +48,7 @@ impl Node {
             new_rng,
             #[cfg(feature = "tls")]
             tls_config: None,
+            s3_config: None,
         }
     }
 
@@ -70,6 +72,7 @@ impl Node {
             new_rng,
             #[cfg(feature = "tls")]
             tls_config: None,
+            s3_config: None,
         }
     }
 
@@ -91,6 +94,10 @@ impl Node {
     #[cfg(feature = "tls")]
     pub fn set_tls_config(&mut self, config: Option<crate::tls::TlsConfig>) {
         self.tls_config = config;
+    }
+
+    pub fn set_s3_config(&mut self, config: Option<crate::remote_store::config::S3StorageConfig>) {
+        self.s3_config = config;
     }
 
     pub fn force_view_change(&self, shard: ShardNumber) -> bool {
