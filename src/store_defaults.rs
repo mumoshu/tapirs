@@ -192,21 +192,7 @@ pub fn open_production_stores_from_s3(
     }
 
     let record_handle = inner.into_record_handle();
-    let mut tapir_handle = record_handle.tapir_handle();
-
-    // Clear stale OCC prepared transactions from the S3 snapshot.
-    //
-    // The clone opens with the source's state which may include prepared-
-    // but-not-committed transactions (from the source's current view at
-    // snapshot time). These cause PrepareConflict on quorum reads.
-    // All data in the S3 snapshot is committed (sync_to_remote uploads
-    // only after view change flush which resolves all pending txns),
-    // so any remaining prepared state is stale and safe to discard.
-    {
-        use crate::tapir::store::TapirStore;
-        tapir_handle.remove_all_unfinalized_prepared_txns();
-    }
-
+    let tapir_handle = record_handle.tapir_handle();
     let upcalls = crate::tapir::Replica::new_with_store(tapir_handle);
 
     Ok((upcalls, record_handle))
