@@ -201,19 +201,33 @@ impl<K: Key + Serialize + DeserializeOwned, V: Value + Serialize + DeserializeOw
     /// VlogLsm (TxnLogRef) and the IR inc_lsm (IO::Commit).
     fn resolve_value(&self, entry: &MvccIndexEntry) -> Result<Option<V>, StorageError> {
         // committed stores TxnLogRef; Committed(op_id) → inc_lsm → IO::Commit → transaction
-        if let Some(TxnLogRef::Committed { op_id, .. }) = self.committed.get(&entry.txn_id)?
-            && let Some(inc_entry) = self.ir.inc_lsm().get(&op_id)?
-            && let crate::tapir::IO::Commit { transaction, .. } = &inc_entry.op
-        {
-            let write_set: Vec<(K, Option<V>)> = transaction
-                .shard_write_set(self.shard)
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
-            return Ok(write_set
-                .get(entry.write_index as usize)
-                .and_then(|(_, v)| v.clone()));
-        }
-        Ok(None)
+        let committed_ref = self.committed.get(&entry.txn_id)?;
+        let Some(TxnLogRef::Committed { op_id, .. }) = &committed_ref else {
+            return Err(StorageError::Codec(format!(
+                "resolve_value: committed.get({:?}) = {:?}, expected TxnLogRef::Committed",
+                entry.txn_id, committed_ref
+            )));
+        };
+        let inc_entry = self.ir.inc_lsm().get(op_id)?;
+        let Some(inc_entry) = &inc_entry else {
+            return Err(StorageError::Codec(format!(
+                "resolve_value: ir.inc_lsm().get({:?}) = None for committed txn {:?}",
+                op_id, entry.txn_id
+            )));
+        };
+        let crate::tapir::IO::Commit { transaction, .. } = &inc_entry.op else {
+            return Err(StorageError::Codec(format!(
+                "resolve_value: IR entry {:?} is not IO::Commit for txn {:?}",
+                op_id, entry.txn_id
+            )));
+        };
+        let write_set: Vec<(K, Option<V>)> = transaction
+            .shard_write_set(self.shard)
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        Ok(write_set
+            .get(entry.write_index as usize)
+            .and_then(|(_, v)| v.clone()))
     }
 
     /// Resolve a prepared transaction lazily from con_lsm via PreparedRef.op_id.
