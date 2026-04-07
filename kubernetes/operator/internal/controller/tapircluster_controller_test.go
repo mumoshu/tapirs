@@ -423,8 +423,8 @@ var _ = Describe("TAPIRCluster Controller", func() {
 			}, &nodeSvc)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(nodeSvc.Spec.ClusterIP).To(Equal("None"))
-			// admin + 2 shard ports
-			Expect(nodeSvc.Spec.Ports).To(HaveLen(3))
+			// admin + metrics + 2 shard ports
+			Expect(nodeSvc.Spec.Ports).To(HaveLen(4))
 
 			By("verifying the node pool StatefulSet was created")
 			var nodeSts appsv1.StatefulSet
@@ -437,8 +437,8 @@ var _ = Describe("TAPIRCluster Controller", func() {
 			Expect(nodeSts.Spec.Template.Spec.Containers).To(HaveLen(1))
 			container := nodeSts.Spec.Template.Spec.Containers[0]
 			Expect(container.Command).To(Equal([]string{"tapi", "node"}))
-			// admin + 2 shard ports
-			Expect(container.Ports).To(HaveLen(3))
+			// admin + metrics + 2 shard ports
+			Expect(container.Ports).To(HaveLen(4))
 			// Verify it references discovery endpoint and shard-manager URL
 			Expect(container.Args).To(ContainElement(ContainSubstring("--discovery-tapir-endpoint=")))
 			Expect(container.Args).To(ContainElement(ContainSubstring("--shard-manager-url=")))

@@ -106,6 +106,28 @@ func (r *TAPIRClusterReconciler) reconcileBootstrap(ctx context.Context, cluster
 			log.Error(err, "Failed to register shards")
 			return true, nil // requeue to retry
 		}
+		return true, r.setPhase(ctx, cluster, tapirv1alpha1.PhaseWaitingForQuorum)
+
+	case tapirv1alpha1.PhaseWaitingForQuorum:
+		// Gate Running on quorum: each shard needs readyReplicas >= f+1.
+		// The data-node readiness probe is now HTTP /readyz which returns
+		// 200 only after all local shards complete their first view change,
+		// so readyReplicas reflects actual IR quorum participation.
+		for _, pool := range cluster.Spec.NodePools {
+			ready, err := r.getStatefulSetReadyReplicas(ctx, cluster.Namespace, cluster.Name+"-"+pool.Name)
+			if err != nil {
+				return false, err
+			}
+			for _, shard := range cluster.Spec.Shards {
+				f := (shard.Replicas - 1) / 3
+				quorum := f + 1
+				if ready < quorum {
+					log.Info("Waiting for quorum", "pool", pool.Name,
+						"readyReplicas", ready, "needed", quorum)
+					return true, nil
+				}
+			}
+		}
 		return true, r.setPhase(ctx, cluster, tapirv1alpha1.PhaseRunning)
 
 	case tapirv1alpha1.PhaseRunning:
@@ -507,6 +529,14 @@ func (r *TAPIRClusterReconciler) getStatefulSetPodIPs(ctx context.Context, names
 		pods = append(pods, podInfo{Name: podName, PodIP: pod.Status.PodIP, ServiceName: stsName})
 	}
 	return pods, nil
+}
+
+func (r *TAPIRClusterReconciler) getStatefulSetReadyReplicas(ctx context.Context, namespace, name string) (int32, error) {
+	var sts appsv1.StatefulSet
+	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, &sts); err != nil {
+		return 0, err
+	}
+	return sts.Status.ReadyReplicas, nil
 }
 
 func (r *TAPIRClusterReconciler) isStatefulSetReady(ctx context.Context, namespace, name string) (bool, error) {

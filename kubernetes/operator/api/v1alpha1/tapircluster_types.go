@@ -6,7 +6,7 @@ import (
 )
 
 // ClusterPhase represents the lifecycle phase of a TAPIRCluster.
-// +kubebuilder:validation:Enum=Pending;CreatingDiscovery;BootstrappingDiscovery;CreatingDataPlane;BootstrappingReplicas;RegisteringShards;Running;Updating;Failed
+// +kubebuilder:validation:Enum=Pending;CreatingDiscovery;BootstrappingDiscovery;CreatingDataPlane;BootstrappingReplicas;RegisteringShards;WaitingForQuorum;Running;Updating;Failed
 type ClusterPhase string
 
 const (
@@ -16,6 +16,7 @@ const (
 	PhaseCreatingDataPlane      ClusterPhase = "CreatingDataPlane"
 	PhaseBootstrappingReplicas  ClusterPhase = "BootstrappingReplicas"
 	PhaseRegisteringShards      ClusterPhase = "RegisteringShards"
+	PhaseWaitingForQuorum       ClusterPhase = "WaitingForQuorum"
 	PhaseRunning                ClusterPhase = "Running"
 	PhaseUpdating               ClusterPhase = "Updating"
 	PhaseFailed                 ClusterPhase = "Failed"

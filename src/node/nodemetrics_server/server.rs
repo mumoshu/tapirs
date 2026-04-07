@@ -53,12 +53,24 @@ pub async fn start<T: MetricsCollector>(addr: std::net::SocketAddr, collector: A
                             let metrics = collector.collect_metrics();
                             let body = render_metrics(&metrics);
                             (200, "text/plain; version=0.0.4; charset=utf-8", body)
+                        } else if method == "GET" && path == "/readyz" {
+                            let metrics = collector.collect_metrics();
+                            let all_ready = !metrics.is_empty()
+                                && metrics
+                                    .iter()
+                                    .all(|(_, m)| m.view_change_count >= 1);
+                            if all_ready {
+                                (200, "application/json", r#"{"ok":true}"#.to_string())
+                            } else {
+                                (503, "application/json", r#"{"ok":false}"#.to_string())
+                            }
                         } else {
                             (404, "text/plain", "Not Found\n".to_string())
                         };
 
                         let status_text = match status {
                             200 => "OK",
+                            503 => "Service Unavailable",
                             _ => "Not Found",
                         };
 

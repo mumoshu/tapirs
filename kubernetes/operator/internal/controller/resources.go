@@ -14,6 +14,7 @@ import (
 const (
 	discoveryTapirPort = 6000
 	adminPort          = 9000
+	metricsPort        = 9090
 	shardManagerPort   = 9001
 	replicaBasePort    = 6000
 )
@@ -235,8 +236,9 @@ func shardManagerHealthcheckCommand(cluster *tapirv1alpha1.TAPIRCluster) []strin
 // desiredNodePoolService returns the headless Service for a node pool.
 func desiredNodePoolService(cluster *tapirv1alpha1.TAPIRCluster, pool tapirv1alpha1.NodePool) *corev1.Service {
 	component := "node-" + pool.Name
-	ports := make([]corev1.ServicePort, 0, 1+len(cluster.Spec.Shards))
+	ports := make([]corev1.ServicePort, 0, 2+len(cluster.Spec.Shards))
 	ports = append(ports, corev1.ServicePort{Name: "admin", Port: adminPort})
+	ports = append(ports, corev1.ServicePort{Name: "metrics", Port: metricsPort})
 	for _, shard := range cluster.Spec.Shards {
 		port := int32(replicaBasePort) + shard.Number
 		ports = append(ports, corev1.ServicePort{
@@ -273,6 +275,10 @@ func desiredNodePoolStatefulSet(cluster *tapirv1alpha1.TAPIRCluster, pool tapirv
 		})
 	}
 
+	containerPorts = append(containerPorts, corev1.ContainerPort{
+		Name: "metrics", ContainerPort: metricsPort,
+	})
+
 	container := corev1.Container{
 		Name:            "tapir",
 		Image:           cluster.Spec.Image,
@@ -280,6 +286,7 @@ func desiredNodePoolStatefulSet(cluster *tapirv1alpha1.TAPIRCluster, pool tapirv
 		Command:         []string{"tapi", "node"},
 		Args: []string{
 			fmt.Sprintf("--admin-listen-addr=0.0.0.0:%d", adminPort),
+			fmt.Sprintf("--metrics-listen-addr=0.0.0.0:%d", metricsPort),
 			"--persist-dir=/data",
 			"--discovery-tapir-endpoint=" + discoveryEndpoint(cluster),
 			"--shard-manager-url=" + shardManagerURL(cluster),
@@ -293,7 +300,10 @@ func desiredNodePoolStatefulSet(cluster *tapirv1alpha1.TAPIRCluster, pool tapirv
 		Ports: containerPorts,
 		ReadinessProbe: &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
-				TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(adminPort)},
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: "/readyz",
+					Port: intstr.FromInt32(metricsPort),
+				},
 			},
 			InitialDelaySeconds: 2,
 			PeriodSeconds:       3,
