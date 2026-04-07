@@ -13,8 +13,8 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tapirs::{
-    DynamicRouter, RoutingClient, RoutingReadOnlyTransaction, RoutingTransaction, TapirClient,
-    TcpTransport, TapirReplica,
+    DynamicRouter, RoutingClient, RoutingReadOnlyTransaction, RoutingReadReplicaTransaction,
+    RoutingTransaction, TapirClient, TcpTransport, TapirReplica,
 };
 
 /// Where the REPL reads commands from.
@@ -59,9 +59,17 @@ type RoTxn = RoutingReadOnlyTransaction<
     DynamicRouter<String>,
 >;
 
+type ReplicaTxn = RoutingReadReplicaTransaction<
+    String,
+    String,
+    TcpTransport<TapirReplica<String, String>>,
+    DynamicRouter<String>,
+>;
+
 enum ActiveTxn {
     ReadWrite(Txn),
     ReadOnly(RoTxn),
+    Replica(ReplicaTxn),
 }
 
 pub async fn run(
@@ -111,6 +119,7 @@ pub async fn run(
             let prompt = match &active_txn {
                 Some(ActiveTxn::ReadWrite(_)) => "tapi:txn> ",
                 Some(ActiveTxn::ReadOnly(_)) => "tapi:ro> ",
+                Some(ActiveTxn::Replica(_)) => "tapi:replica> ",
                 None => "tapi> ",
             };
             print!("{prompt}");
@@ -144,6 +153,9 @@ pub async fn run(
                 } else if parts.get(1) == Some(&"ro") {
                     active_txn = Some(ActiveTxn::ReadOnly(client.begin_read_only(std::time::Duration::ZERO)));
                     println!("Read-only transaction started.");
+                } else if parts.get(1) == Some(&"replica") {
+                    active_txn = Some(ActiveTxn::Replica(client.begin_read_replica()));
+                    println!("Read-replica transaction started.");
                 } else {
                     active_txn = Some(ActiveTxn::ReadWrite(client.begin()));
                     println!("Transaction started.");
@@ -158,6 +170,7 @@ pub async fn run(
                 let result = match &active_txn {
                     Some(ActiveTxn::ReadWrite(txn)) => txn.get(key.clone()).await,
                     Some(ActiveTxn::ReadOnly(txn)) => txn.get(key.clone()).await,
+                    Some(ActiveTxn::Replica(txn)) => txn.get(key.clone()).await,
                     None => {
                         println!("Error: no active transaction. Use 'begin' to start one.");
                         continue;
@@ -181,7 +194,7 @@ pub async fn run(
                         txn.put(key, Some(value));
                         println!("OK (buffered in write set)");
                     }
-                    Some(ActiveTxn::ReadOnly(_)) => {
+                    Some(ActiveTxn::ReadOnly(_)) | Some(ActiveTxn::Replica(_)) => {
                         println!("Error: 'put' is not available in a read-only transaction.");
                     }
                     None => {
@@ -200,7 +213,7 @@ pub async fn run(
                         txn.put(key, None);
                         println!("OK (buffered in write set)");
                     }
-                    Some(ActiveTxn::ReadOnly(_)) => {
+                    Some(ActiveTxn::ReadOnly(_)) | Some(ActiveTxn::Replica(_)) => {
                         println!("Error: 'delete' is not available in a read-only transaction.");
                     }
                     None => {
@@ -218,6 +231,7 @@ pub async fn run(
                 let results = match &active_txn {
                     Some(ActiveTxn::ReadWrite(txn)) => txn.scan(start, end).await,
                     Some(ActiveTxn::ReadOnly(txn)) => txn.scan(start, end).await,
+                    Some(ActiveTxn::Replica(txn)) => txn.scan(start, end).await,
                     None => {
                         println!("Error: no active transaction. Use 'begin' to start one.");
                         continue;
@@ -239,7 +253,7 @@ pub async fn run(
                 }
             }
             "commit" => {
-                if matches!(&active_txn, Some(ActiveTxn::ReadOnly(_))) {
+                if matches!(&active_txn, Some(ActiveTxn::ReadOnly(_)) | Some(ActiveTxn::Replica(_))) {
                     println!("Error: read-only transactions cannot be committed. Use 'abort' to end.");
                     if !is_tty {
                         exit_code = 2;

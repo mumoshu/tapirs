@@ -1,4 +1,4 @@
-use super::{client::{ReadOnlyTransaction, Transaction}, Client, Key, Sharded, Timestamp, TransactionError, Value};
+use super::{client::{ReadOnlyTransaction, ReadReplicaTransaction, Transaction}, Client, Key, Sharded, Timestamp, TransactionError, Value};
 use crate::tapir::shard_router::ShardRouter;
 use crate::TapirTransport;
 use std::collections::BTreeMap;
@@ -149,6 +149,15 @@ impl<K: Key, V: Value, T: TapirTransport<K, V>, R: ShardRouter<K>> RoutingClient
         }
     }
 
+    pub fn begin_read_replica(&self) -> RoutingReadReplicaTransaction<K, V, T, R> {
+        RoutingReadReplicaTransaction {
+            inner: self.inner.begin_read_replica(),
+            router: Arc::clone(&self.router),
+            retry_config: self.retry_config.clone(),
+            on_retry: self.on_retry.clone(),
+        }
+    }
+
     /// Begin a time-travel query at the given timestamp.
     ///
     /// See [`crate::RoutingTimeTravelTransaction`] for full documentation on
@@ -270,6 +279,71 @@ pub struct RoutingReadOnlyTransaction<K: Key, V: Value, T: TapirTransport<K, V>,
 
 impl<K: Key, V: Value, T: TapirTransport<K, V>, R: ShardRouter<K>>
     RoutingReadOnlyTransaction<K, V, T, R>
+{
+    pub fn get(&self, key: K) -> impl Future<Output = Result<Option<V>, TransactionError>> + use<'_, K, V, T, R> {
+        let router = Arc::clone(&self.router);
+        let config = self.retry_config.clone();
+        let on_retry = self.on_retry.clone();
+
+        async move {
+            retry_transient(&config, &on_retry, "get", T::sleep, || {
+                let shard = router.route(&key);
+                let key = key.clone();
+                async move {
+                    match shard {
+                        Some(s) => self.inner.get(Sharded { shard: s, key }).await,
+                        None => Err(TransactionError::OutOfRange),
+                    }
+                }
+            })
+            .await
+        }
+    }
+
+    pub fn scan(&self, start: K, end: K) -> impl Future<Output = Result<Vec<(K, V)>, TransactionError>> + use<'_, K, V, T, R> {
+        let router = Arc::clone(&self.router);
+        let config = self.retry_config.clone();
+        let on_retry = self.on_retry.clone();
+
+        async move {
+            retry_transient(&config, &on_retry, "scan", T::sleep, || {
+                let ranges = router.scan_ranges(&start, &end);
+
+                let shard_scans: Vec<_> = ranges
+                    .into_iter()
+                    .map(|(shard, clipped_start, clipped_end)| {
+                        self.inner.scan(
+                            Sharded { shard, key: clipped_start },
+                            Sharded { shard, key: clipped_end },
+                        )
+                    })
+                    .collect();
+
+                async move {
+                    let mut merged = BTreeMap::<K, V>::new();
+                    for scan_fut in shard_scans {
+                        for (k, v) in scan_fut.await? {
+                            merged.insert(k, v);
+                        }
+                    }
+                    Ok(merged.into_iter().collect())
+                }
+            })
+            .await
+        }
+    }
+}
+
+pub struct RoutingReadReplicaTransaction<K: Key, V: Value, T: TapirTransport<K, V>, R: ShardRouter<K>>
+{
+    inner: ReadReplicaTransaction<K, V, T>,
+    router: Arc<R>,
+    retry_config: RetryConfig,
+    on_retry: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+}
+
+impl<K: Key, V: Value, T: TapirTransport<K, V>, R: ShardRouter<K>>
+    RoutingReadReplicaTransaction<K, V, T, R>
 {
     pub fn get(&self, key: K) -> impl Future<Output = Result<Option<V>, TransactionError>> + use<'_, K, V, T, R> {
         let router = Arc::clone(&self.router);

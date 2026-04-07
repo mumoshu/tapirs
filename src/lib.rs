@@ -52,7 +52,7 @@ pub use occ::{
 };
 pub use tapir::{
     Client as TapirClient, KeyRange, ReadOnlyTransaction, Replica as TapirReplica,
-    RoutingClient, RoutingReadOnlyTransaction, RoutingTimeTravelTransaction, RoutingTransaction,
+    RoutingClient, RoutingReadOnlyTransaction, RoutingReadReplicaTransaction, RoutingTimeTravelTransaction, RoutingTransaction,
     ScanChangesResult, Sharded, ShardNumber, Timestamp as TapirTimestamp, TimeTravelTransaction,
     TransactionError,
     CO as TapirCO, CR as TapirCR, IO as TapirIO,
