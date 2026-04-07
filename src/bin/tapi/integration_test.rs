@@ -111,6 +111,7 @@ async fn bootstrap_cluster(
                 shard: 0,
                 listen_addr: disc_addr.to_string(),
                 membership: disc_membership.clone(),
+                cluster_type: "discovery".into(),
             },
             listener,
         )
@@ -188,6 +189,7 @@ async fn bootstrap_cluster(
                 shard: shard_idx,
                 listen_addr: addr.to_string(),
                 membership: membership.clone(),
+                cluster_type: "data".into(),
             };
             nodes[node_idx]
                 .add_replica_with_listener(&cfg, listener)

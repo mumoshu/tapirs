@@ -9,4 +9,12 @@ pub struct ReplicaConfig {
     pub shard: u32,
     pub listen_addr: String,
     pub membership: Vec<String>,
+    /// Cluster type: "data" or "discovery". Stored in the manifest for
+    /// S3 collision detection.
+    #[serde(default = "default_cluster_type")]
+    pub cluster_type: String,
+}
+
+fn default_cluster_type() -> String {
+    "data".into()
 }

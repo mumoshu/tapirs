@@ -60,6 +60,7 @@ pub async fn bootstrap_cluster(
             shard: 0,
             listen_addr: addr.to_string(),
             membership: membership.clone(),
+            cluster_type: "data".into(),
         };
         node.add_replica_with_listener(&cfg, listener)
             .await

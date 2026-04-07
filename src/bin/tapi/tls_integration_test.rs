@@ -109,6 +109,7 @@ async fn test_tls_read_write() {
                 shard: 0,
                 listen_addr: addr.to_string(),
                 membership: membership.clone(),
+                cluster_type: "data".into(),
             },
             listener,
         )

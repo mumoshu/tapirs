@@ -1,7 +1,5 @@
 use crate::ir::IrRecordStore;
 use crate::mvcc::disk::disk_io::OpenFlags;
-use crate::mvcc::disk::s3_caching_io::S3CachingIo;
-use crate::remote_store::cow_clone::clone_from_remote_lazy;
 use crate::remote_store::cross_shard_snapshot::{CrossShardSnapshot, ShardSnapshotInfo};
 use crate::remote_store::open_remote::prepare_local_lazy;
 use crate::tapir::store::TapirStore;
@@ -122,7 +120,7 @@ async fn clone_reads_source_data_via_production_s3_path() {
 /// segment data (active segment with non-zero size).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ir_inc_segments_uploaded_after_view_changes() {
-    let (_seg_store, man_store, s3_config, storage) =
+    let (_seg_store, _man_store, s3_config, storage) =
         create_s3_stores("ir-inc-uploaded").await;
     let shard = ShardNumber(0);
     let shard_name = "shard_0";
@@ -195,8 +193,7 @@ async fn resolve_value_errors_on_broken_ir_chain() {
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
     // Clone from S3.
-    let versions = man_store.list_manifest_versions(shard_name).await.unwrap();
-    let manifest_view = *versions.last().unwrap();
+    let _versions = man_store.list_manifest_versions(shard_name).await.unwrap();
     let clone_dir = tempfile::tempdir().unwrap();
     prepare_local_lazy(&man_store, &s3_config, shard_name, clone_dir.path())
         .await

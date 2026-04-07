@@ -75,6 +75,7 @@ impl Node {
             cfg.shard,
             true,
             self.s3_config.clone(),
+            &cfg.cluster_type,
         )?;
         let replica = Arc::new_cyclic(|weak: &std::sync::Weak<TapirIrReplica>| {
             let weak = weak.clone();

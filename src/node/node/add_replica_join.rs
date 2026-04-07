@@ -16,6 +16,7 @@ impl Node {
             shard: shard.0,
             listen_addr: listen_addr.to_string(),
             membership: vec![listen_addr.to_string()],
+            cluster_type: "data".into(),
         };
         self.add_replica_no_join(&cfg).await?;
 

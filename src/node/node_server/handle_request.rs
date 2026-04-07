@@ -70,6 +70,7 @@ pub async fn handle_request(node: &Node, line: &str) -> AdminResponse {
                     shard: shard_id,
                     listen_addr: listen_addr_str.clone(),
                     membership: membership_strs,
+                    cluster_type: req.cluster_type.clone().unwrap_or_else(|| "data".into()),
                 };
                 match node.add_replica_no_join(&cfg).await {
                     Ok(()) => AdminResponse {
@@ -145,6 +146,7 @@ pub async fn handle_request(node: &Node, line: &str) -> AdminResponse {
                 shard: shard_id,
                 listen_addr: listen_addr_str.clone(),
                 membership: membership_strs,
+                cluster_type: "data".into(),
             };
             match node.add_writable_clone_from_s3(&cfg, s3_config, snapshot_params).await {
                 Ok(()) => AdminResponse {

@@ -91,6 +91,7 @@ pub fn open_production_stores(
     shard_id: u32,
     linearizable: bool,
     s3_config: Option<crate::remote_store::config::S3StorageConfig>,
+    cluster_type: &str,
 ) -> Result<(ProductionTapirReplica, ProductionIrRecordStore), String> {
     use crate::mvcc::disk::disk_io::OpenFlags;
     use crate::unified::combined::CombinedStoreInner;
@@ -108,6 +109,8 @@ pub fn open_production_stores(
         linearizable,
     )
     .map_err(|e| format!("failed to open CombinedStore at {base_dir}: {e}"))?;
+
+    inner.tapir_manifest.cluster_type = cluster_type.to_string();
 
     if let Some(cfg) = s3_config {
         inner.set_s3_config(cfg);
