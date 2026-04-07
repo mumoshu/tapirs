@@ -558,6 +558,17 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                                         .max_by_key(|v| v.number)
                                         .unwrap()
                                 ;
+                                // Reject if leader is behind the majority. A leader whose
+                                // latest_normal_view is behind has stale sealed segments and
+                                // cannot correctly compute the delta. f+1 eligible replicas
+                                // are caught up — the view change tick will pick one.
+                                if sync.latest_normal_view.number < latest_normal_view.number {
+                                    warn!(
+                                        "leader behind majority: own={:?} majority={:?}, aborting merge",
+                                        sync.latest_normal_view.number, latest_normal_view.number
+                                    );
+                                    return None;
+                                }
                                 let latest_records = matching
                                     .clone()
                                     .filter(|(_, r)| {
