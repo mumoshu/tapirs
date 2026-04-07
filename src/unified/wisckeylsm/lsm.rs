@@ -715,6 +715,38 @@ impl<K: Ord, V, IO: DiskIo, M: Memtable<K, V>> VlogLsm<K, V, IO, M> {
         self.entry_count = 0;
     }
 
+    /// Write the current in-memory index to a new SST file.
+    ///
+    /// Used after persist_sealed_segment in full-reset installs so that
+    /// clones (which rebuild the index from SSTs, not vlog scans) can
+    /// find entries from imported sealed segments.
+    pub(crate) fn flush_index_to_sst(&mut self) -> Result<(), StorageError>
+    where
+        K: Serialize + DeserializeOwned + Clone,
+    {
+        if let Some(ref idx) = self.index {
+            let snapshot = idx.clone();
+            self.write_sst(&snapshot)?;
+        }
+        Ok(())
+    }
+
+    /// Replace the active vlog with a fresh empty segment.
+    ///
+    /// Used after clear_all in full-reset installs so that stale data
+    /// in the old active segment is not uploaded to S3.
+    pub(crate) fn reset_active(&mut self) -> Result<(), StorageError> {
+        let new_id = self.next_segment_id;
+        self.next_segment_id += 1;
+        let new_path = self.vlog_path(new_id);
+        let old = std::mem::replace(
+            &mut self.active_vlog,
+            VlogSegment::<IO>::open(new_id, new_path, self.io_flags)?,
+        );
+        old.close();
+        Ok(())
+    }
+
     /// Clear the memtable.
     pub(crate) fn clear_memtable(&mut self) {
         self.memtable.mem_clear();
