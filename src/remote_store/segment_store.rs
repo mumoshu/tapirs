@@ -33,6 +33,36 @@ impl<S: BackupStorage> RemoteSegmentStore<S> {
         sub.write(segment_name, &data).await
     }
 
+    /// Atomically create a segment on S3 only if it doesn't exist.
+    /// Returns true if created, false if already exists.
+    pub async fn create_segment_if_absent(
+        &self,
+        local_path: &Path,
+        shard: &str,
+        segment_name: &str,
+    ) -> Result<bool, String> {
+        let data = std::fs::read(local_path)
+            .map_err(|e| format!("read {}: {e}", local_path.display()))?;
+        let sub = self.storage.sub(shard).sub("segments");
+        sub.init().await?;
+        sub.create_if_absent(segment_name, &data).await
+    }
+
+    /// Upload a segment only if the local copy is larger than the S3 copy.
+    /// Returns true if uploaded, false if skipped.
+    pub async fn upload_segment_if_larger(
+        &self,
+        local_path: &Path,
+        shard: &str,
+        segment_name: &str,
+    ) -> Result<bool, String> {
+        let data = std::fs::read(local_path)
+            .map_err(|e| format!("read {}: {e}", local_path.display()))?;
+        let sub = self.storage.sub(shard).sub("segments");
+        sub.init().await?;
+        sub.write_if_larger(segment_name, &data).await
+    }
+
     /// Download a segment file from S3 to a local path.
     pub async fn download_segment(
         &self,

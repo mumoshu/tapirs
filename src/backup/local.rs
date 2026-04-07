@@ -29,12 +29,48 @@ impl BackupStorage for LocalBackupStorage {
         Ok(std::path::Path::new(&self.path(name)).exists())
     }
 
+    async fn size(&self, name: &str) -> Result<Option<u64>, String> {
+        match std::fs::metadata(self.path(name)) {
+            Ok(m) => Ok(Some(m.len())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(format!("stat {name}: {e}")),
+        }
+    }
+
     async fn read(&self, name: &str) -> Result<Vec<u8>, String> {
         std::fs::read(self.path(name)).map_err(|e| format!("read {name}: {e}"))
     }
 
     async fn write(&self, name: &str, data: &[u8]) -> Result<(), String> {
         std::fs::write(self.path(name), data).map_err(|e| format!("write {name}: {e}"))
+    }
+
+    async fn create_if_absent(&self, name: &str, data: &[u8]) -> Result<bool, String> {
+        use std::io::Write;
+        let path = self.path(name);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut f) => {
+                f.write_all(data).map_err(|e| format!("write {name}: {e}"))?;
+                Ok(true)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+            Err(e) => Err(format!("create {name}: {e}")),
+        }
+    }
+
+    async fn write_if_larger(&self, name: &str, data: &[u8]) -> Result<bool, String> {
+        let path = self.path(name);
+        match std::fs::metadata(&path) {
+            Ok(m) if data.len() as u64 <= m.len() => Ok(false),
+            Ok(_) | Err(_) => {
+                std::fs::write(&path, data).map_err(|e| format!("write {name}: {e}"))?;
+                Ok(true)
+            }
+        }
     }
 
     async fn list_subdirs(&self) -> Result<Vec<String>, String> {

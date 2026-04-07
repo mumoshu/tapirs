@@ -75,9 +75,12 @@ pub async fn upload_new_segments<S: BackupStorage>(
     Ok(uploaded)
 }
 
-/// Upload segment files unconditionally (no existence check).
-/// Used for newly sealed segments that may overwrite a stale S3 copy
-/// from when they were active (smaller/empty).
+/// Upload newly sealed segments and SSTs from the manifest diff.
+///
+/// - **Vlog segments**: use `write_if_larger` because S3 may have an
+///   older smaller copy from when the segment was active.
+/// - **SST files**: use `create_if_absent` because SSTs are new files
+///   created at seal time and all replicas produce identical content.
 pub async fn upload_segments_force<S: BackupStorage>(
     segment_store: &RemoteSegmentStore<S>,
     shard: &str,
@@ -87,10 +90,24 @@ pub async fn upload_segments_force<S: BackupStorage>(
     let mut uploaded = 0;
     for name in files {
         let local_path = base_dir.join(name);
-        if local_path.exists() {
+        if !local_path.exists() {
+            return Err(format!(
+                "manifest references segment {} but file does not exist at {}",
+                name,
+                local_path.display()
+            ));
+        }
+        let is_sst = name.ends_with(".db");
+        let did_upload = if is_sst {
             segment_store
-                .upload_segment(&local_path, shard, name)
-                .await?;
+                .create_segment_if_absent(&local_path, shard, name)
+                .await?
+        } else {
+            segment_store
+                .upload_segment_if_larger(&local_path, shard, name)
+                .await?
+        };
+        if did_upload {
             uploaded += 1;
         }
     }
@@ -102,8 +119,10 @@ pub fn active_segment_files(manifest: &UnifiedManifest) -> Vec<String> {
     super::download::active_vlog_names(manifest)
 }
 
-/// Upload active segment files unconditionally. Active segments grow
-/// between seals, so we always overwrite the S3 copy.
+/// Upload active segment files using atomic write-if-larger.
+/// Multiple replicas may upload the same active segment concurrently.
+/// Only the replica with the most data (largest file) wins — active
+/// segments grow by append, so "larger" means "more up-to-date".
 pub async fn upload_active_segments<S: BackupStorage>(
     segment_store: &RemoteSegmentStore<S>,
     shard: &str,
@@ -111,7 +130,24 @@ pub async fn upload_active_segments<S: BackupStorage>(
     manifest: &UnifiedManifest,
 ) -> Result<usize, String> {
     let files = active_segment_files(manifest);
-    upload_segments_force(segment_store, shard, base_dir, &files).await
+    let mut uploaded = 0;
+    for name in &files {
+        let local_path = base_dir.join(name);
+        if !local_path.exists() {
+            return Err(format!(
+                "manifest references active segment {} but file does not exist at {}",
+                name,
+                local_path.display()
+            ));
+        }
+        if segment_store
+            .upload_segment_if_larger(&local_path, shard, name)
+            .await?
+        {
+            uploaded += 1;
+        }
+    }
+    Ok(uploaded)
 }
 
 /// Upload the manifest as a versioned snapshot.

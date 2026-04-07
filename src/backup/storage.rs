@@ -11,10 +11,31 @@ pub trait BackupStorage: Sized + Send + Sync {
     async fn init(&self) -> Result<(), String>;
     /// Check if a file exists.
     async fn exists(&self, name: &str) -> Result<bool, String>;
+    /// Get file size in bytes. Returns None if the file does not exist.
+    async fn size(&self, name: &str) -> Result<Option<u64>, String>;
     /// Read file as bytes.
     async fn read(&self, name: &str) -> Result<Vec<u8>, String>;
-    /// Write bytes to a file.
+    /// Write bytes to a file (unconditional overwrite).
     async fn write(&self, name: &str, data: &[u8]) -> Result<(), String>;
+    /// Atomically create a file only if it does not already exist.
+    ///
+    /// Returns `Ok(true)` if created, `Ok(false)` if the file already exists.
+    /// S3: PutObject with `If-None-Match: *`. Local: O_EXCL.
+    ///
+    /// Used for newly sealed segments — the first replica to upload wins.
+    async fn create_if_absent(&self, name: &str, data: &[u8]) -> Result<bool, String>;
+    /// Atomically write data only if it is larger than the current remote copy.
+    ///
+    /// Returns `Ok(true)` if written, `Ok(false)` if skipped (remote is same
+    /// size or larger). Uses compare-and-swap internally to prevent races
+    /// between concurrent writers (e.g., multiple replicas uploading the same
+    /// active segment).
+    ///
+    /// Active segments grow by append, so "larger" means "more up-to-date".
+    /// A replica with less data must not overwrite a more complete copy.
+    /// S3: HEAD for ETag+size, PutObject with `If-Match: <etag>`, CAS retry.
+    /// Local: compare file size, write if larger.
+    async fn write_if_larger(&self, name: &str, data: &[u8]) -> Result<bool, String>;
     /// List immediate subdirectories (for list_backups scanning).
     async fn list_subdirs(&self) -> Result<Vec<String>, String>;
     /// Create a sub-storage scoped to a child directory/prefix.

@@ -1,7 +1,17 @@
 use aws_sdk_s3::Client;
+use aws_sdk_s3::operation::put_object::PutObjectError;
 use aws_sdk_s3::primitives::ByteStream;
+use aws_sdk_s3::error::ProvideErrorMetadata;
 
 use super::storage::BackupStorage;
+
+/// Check if a PutObject error is an HTTP 412 PreconditionFailed.
+/// S3 returns this for If-None-Match / If-Match precondition failures.
+/// The SDK maps it to the error's metadata code.
+fn is_precondition_failed(err: &PutObjectError) -> bool {
+    let code = err.code().unwrap_or("");
+    code == "PreconditionFailed" || code == "ConditionalRequestConflict"
+}
 
 /// S3-compatible backup storage backend.
 ///
@@ -108,6 +118,25 @@ impl BackupStorage for S3BackupStorage {
         }
     }
 
+    async fn size(&self, name: &str) -> Result<Option<u64>, String> {
+        match self.client.head_object()
+            .bucket(&self.bucket)
+            .key(self.key(name))
+            .send()
+            .await
+        {
+            Ok(resp) => Ok(Some(resp.content_length().unwrap_or(0) as u64)),
+            Err(err) => {
+                let svc_err = err.into_service_error();
+                if svc_err.is_not_found() {
+                    Ok(None)
+                } else {
+                    Err(format!("S3 HeadObject {name}: {svc_err}"))
+                }
+            }
+        }
+    }
+
     async fn read(&self, name: &str) -> Result<Vec<u8>, String> {
         let resp = self.client.get_object()
             .bucket(&self.bucket)
@@ -130,6 +159,81 @@ impl BackupStorage for S3BackupStorage {
             .await
             .map_err(|e| format!("S3 PutObject {name}: {e}"))?;
         Ok(())
+    }
+
+    async fn create_if_absent(&self, name: &str, data: &[u8]) -> Result<bool, String> {
+        match self.client.put_object()
+            .bucket(&self.bucket)
+            .key(self.key(name))
+            .if_none_match("*")
+            .body(ByteStream::from(data.to_vec()))
+            .send()
+            .await
+        {
+            Ok(_) => Ok(true),
+            Err(err) => {
+                let svc_err = err.into_service_error();
+                // HTTP 412 PreconditionFailed means the object already exists.
+                // The SDK maps this to Unhandled — check the error code.
+                if is_precondition_failed(&svc_err) {
+                    Ok(false)
+                } else {
+                    Err(format!("S3 PutObject (create_if_absent) {name}: {svc_err}"))
+                }
+            }
+        }
+    }
+
+    async fn write_if_larger(&self, name: &str, data: &[u8]) -> Result<bool, String> {
+        let local_size = data.len() as u64;
+        loop {
+            // HEAD to get current size + ETag.
+            let (remote_size, etag) = match self.client.head_object()
+                .bucket(&self.bucket)
+                .key(self.key(name))
+                .send()
+                .await
+            {
+                Ok(resp) => {
+                    let size = resp.content_length().unwrap_or(0) as u64;
+                    let etag = resp.e_tag().unwrap_or("").to_string();
+                    (size, etag)
+                }
+                Err(err) => {
+                    let svc_err = err.into_service_error();
+                    if svc_err.is_not_found() {
+                        // Object doesn't exist — unconditional write.
+                        self.write(name, data).await?;
+                        return Ok(true);
+                    }
+                    return Err(format!("S3 HeadObject (write_if_larger) {name}: {svc_err}"));
+                }
+            };
+
+            if local_size <= remote_size {
+                return Ok(false);
+            }
+
+            // CAS: PUT with If-Match to ensure no concurrent write.
+            match self.client.put_object()
+                .bucket(&self.bucket)
+                .key(self.key(name))
+                .if_match(&etag)
+                .body(ByteStream::from(data.to_vec()))
+                .send()
+                .await
+            {
+                Ok(_) => return Ok(true),
+                Err(err) => {
+                    let svc_err = err.into_service_error();
+                    if is_precondition_failed(&svc_err) {
+                        // Another writer changed the object — retry CAS loop.
+                        continue;
+                    }
+                    return Err(format!("S3 PutObject (write_if_larger) {name}: {svc_err}"));
+                }
+            }
+        }
     }
 
     async fn list_subdirs(&self) -> Result<Vec<String>, String> {
