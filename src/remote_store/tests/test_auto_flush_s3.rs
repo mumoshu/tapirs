@@ -7,7 +7,7 @@ use crate::tapir::store::TapirStore;
 use crate::unified::combined::CombinedStoreInner;
 use crate::IrClientId;
 
-use super::helpers::{create_s3_stores, write_and_commit};
+use super::helpers::{create_s3_stores, poll_manifest_versions, write_and_commit};
 
 /// Setting s3_config on CombinedStoreInner causes seal_tapir_side to
 /// automatically upload segments and manifest to S3.
@@ -35,15 +35,8 @@ async fn auto_flush_uploads_to_s3() {
     record.flush();
     tapir.flush();
 
-    // Wait for the spawned upload task to complete.
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-
-    // Verify manifest was uploaded.
-    let versions = man_store
-        .list_manifest_versions(shard_name)
-        .await
-        .unwrap();
-    assert!(!versions.is_empty(), "manifest should be uploaded to S3");
+    // Poll for S3 upload — the spawned sync_to_remote task is fire-and-forget.
+    poll_manifest_versions(&man_store, shard_name, 1, 10).await;
 
     // Open read replica from S3 and verify data.
     let new_dir = tempfile::tempdir().unwrap();

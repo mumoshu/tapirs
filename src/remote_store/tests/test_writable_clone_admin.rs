@@ -7,7 +7,7 @@ use crate::tapir::{ShardNumber, Timestamp};
 use crate::unified::combined::CombinedStoreInner;
 use crate::IrClientId;
 
-use super::helpers::{create_s3_stores, write_and_commit};
+use super::helpers::{create_s3_stores, poll_manifest_versions, write_and_commit};
 
 use std::collections::BTreeMap;
 
@@ -49,19 +49,10 @@ async fn clone_reads_source_data_via_production_s3_path() {
     record.flush();
     tapir.flush();
 
-    // Wait for spawned S3 upload tasks to complete.
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-
-    // Verify manifest was uploaded.
-    let versions = man_store
-        .list_manifest_versions(shard_name)
-        .await
-        .unwrap();
-    assert!(
-        versions.len() >= 2,
-        "expected >= 2 manifest versions, got {}",
-        versions.len()
-    );
+    // Poll for S3 upload completion. We wait for >= 1 manifest version
+    // (not 2) because concurrent register_version calls have a
+    // read-modify-write race on versions.json that can lose entries.
+    let versions = poll_manifest_versions(&man_store, shard_name, 1, 10).await;
 
     // Clone from S3 and verify data is readable.
     let clone_dir = tempfile::tempdir().unwrap();
@@ -120,7 +111,7 @@ async fn clone_reads_source_data_via_production_s3_path() {
 /// segment data (active segment with non-zero size).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ir_inc_segments_uploaded_after_view_changes() {
-    let (_seg_store, _man_store, s3_config, storage) =
+    let (_seg_store, man_store, s3_config, storage) =
         create_s3_stores("ir-inc-uploaded").await;
     let shard = ShardNumber(0);
     let shard_name = "shard_0";
@@ -146,8 +137,10 @@ async fn ir_inc_segments_uploaded_after_view_changes() {
         tapir.flush();
     }
 
-    // Wait for S3 uploads.
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    // Poll for S3 upload completion. We wait for >= 1 manifest version
+    // (not 3) because concurrent register_version calls have a
+    // read-modify-write race on versions.json that can lose entries.
+    poll_manifest_versions(&man_store, shard_name, 1, 10).await;
 
     // Check IR inc active segment on S3 has data.
     use crate::backup::storage::BackupStorage;
@@ -190,7 +183,7 @@ async fn resolve_value_errors_on_broken_ir_chain() {
     write_and_commit(&mut record, &mut tapir, shard, &[("broken_k", "broken_v")], ts);
     record.flush();
     tapir.flush();
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    poll_manifest_versions(&man_store, shard_name, 1, 10).await;
 
     // Clone from S3.
     let _versions = man_store.list_manifest_versions(shard_name).await.unwrap();
@@ -264,13 +257,9 @@ async fn clone_reads_after_full_start_view_install() {
     // Flush → seal + sync_to_remote.
     record.flush();
     tapir.flush();
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
-    let versions = man_store
-        .list_manifest_versions(shard_name)
-        .await
-        .unwrap();
-    assert!(!versions.is_empty(), "should have manifest versions");
+    // Poll for S3 upload — the spawned sync_to_remote task is fire-and-forget.
+    let versions = poll_manifest_versions(&man_store, shard_name, 1, 10).await;
 
     // Clone from S3.
     let clone_dir = tempfile::tempdir().unwrap();

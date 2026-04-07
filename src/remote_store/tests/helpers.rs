@@ -176,6 +176,33 @@ pub async fn flush_and_upload(
     .unwrap();
 }
 
+/// Poll `list_manifest_versions` until at least `min_count` versions exist,
+/// retrying up to `max_secs` seconds. Returns the version list on success,
+/// panics on timeout.
+pub async fn poll_manifest_versions(
+    man_store: &RemoteManifestStore<S3BackupStorage>,
+    shard_name: &str,
+    min_count: usize,
+    max_secs: u64,
+) -> Vec<u64> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(max_secs);
+    loop {
+        let versions = man_store
+            .list_manifest_versions(shard_name)
+            .await
+            .unwrap();
+        if versions.len() >= min_count {
+            return versions;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for >= {min_count} manifest versions, got {}",
+            versions.len()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+}
+
 /// Create S3 stores from a MinIO test bucket.
 pub async fn create_s3_stores(
     test_name: &str,
