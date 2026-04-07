@@ -353,6 +353,13 @@ impl<K: Key, V: Value, DIO: DiskIo> CombinedStoreInner<K, V, DIO> {
             &manifest_before,
             &self.tapir_manifest,
         );
+        tracing::debug!(
+            shard = self.shard.0,
+            view = self.tapir_view,
+            new_files = ?new_files,
+            ir_inc_offset = self.tapir_manifest.ir_inc.active_write_offset,
+            "seal completed"
+        );
 
         // Fire-and-forget S3 upload if configured.
         if let Some(ref s3_cfg) = self.s3_config {

@@ -510,21 +510,13 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                 None
             }
             IO::QuorumRead { key, timestamp } => {
-                eprintln!("[exec_inconsistent] QuorumRead key={key:?} ts={timestamp:?}");
                 if let Some(range) = &self.key_range
                     && !range.contains(key) {
-                        eprintln!("[exec_inconsistent] OutOfRange for key={key:?}");
                         return Some(IR::OutOfRange);
                     }
                 match self.store.do_committed_get(key.clone(), *timestamp) {
-                    Ok((value, write_ts)) => {
-                        eprintln!("[exec_inconsistent] QuorumRead result: value={} write_ts={write_ts:?}", if value.is_some() { "Some" } else { "None" });
-                        Some(IR::QuorumRead(value, write_ts))
-                    }
-                    Err(_) => {
-                        eprintln!("[exec_inconsistent] PrepareConflict for key={key:?}");
-                        Some(IR::PrepareConflict)
-                    }
+                    Ok((value, write_ts)) => Some(IR::QuorumRead(value, write_ts)),
+                    Err(_) => Some(IR::PrepareConflict),
                 }
             }
             IO::QuorumScan {

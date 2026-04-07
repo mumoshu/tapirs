@@ -269,19 +269,11 @@ impl<K: Key + Serialize + DeserializeOwned, V: Value + Serialize + DeserializeOw
         // Ghost filter: clamp ts to skip entries in the cross-shard inconsistent
         // range. Without this, a restored shard could return values that other
         // shards in the cluster don't have.
-        let effective_ts = self.effective_snapshot_ts(ts);
-        eprintln!(
-            "[combined::snapshot_get_at] key={key:?} ts={ts:?} effective_ts={effective_ts:?} ghost_filter={:?}",
-            self.ghost_filter
-        );
-        let search = CompositeKey::new(key.clone(), effective_ts);
+        let ts = self.effective_snapshot_ts(ts);
+        let search = CompositeKey::new(key.clone(), ts);
         if let Some((ck, entry)) = self.mvcc.range_get_first(&search)?
             && ck.key == *key
         {
-            eprintln!(
-                "[combined::snapshot_get_at] found: ck.key={:?} ck.ts={:?}",
-                ck.key, ck.timestamp
-            );
             return Ok((self.resolve_value(&entry)?, ck.timestamp.0));
         }
         Ok((None, Timestamp::default()))
