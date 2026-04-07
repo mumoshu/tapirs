@@ -25,10 +25,10 @@ pub async fn refresh_once(
     manifest_store: &RemoteManifestStore<S3BackupStorage>,
 ) -> Result<bool, String> {
     let current = replica.current_view();
-    let versions = manifest_store
-        .list_manifest_versions(replica.shard_name())
-        .await?;
-    let latest = versions.last().copied().unwrap_or(0);
+    let latest = manifest_store
+        .latest_manifest_view(replica.shard_name())
+        .await?
+        .unwrap_or(0);
 
     if latest <= current {
         return Ok(false);

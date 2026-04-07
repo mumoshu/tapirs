@@ -24,10 +24,9 @@ pub async fn create_backup<S: BackupStorage>(
 ) -> Result<BackupDescriptor, String> {
     let mut shards = BTreeMap::new();
     for (shard_id, shard_name) in shard_names {
-        let versions = manifest_store.list_manifest_versions(shard_name).await?;
-        let view = versions
-            .last()
-            .copied()
+        let view = manifest_store
+            .latest_manifest_view(shard_name)
+            .await?
             .ok_or_else(|| format!("no manifests for shard {shard_name}"))?;
         shards.insert(*shard_id, view);
     }

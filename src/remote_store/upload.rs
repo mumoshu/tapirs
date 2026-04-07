@@ -151,6 +151,10 @@ pub async fn upload_active_segments<S: BackupStorage>(
 }
 
 /// Upload the manifest as a versioned snapshot.
+///
+/// The manifest file name encodes the view number (`v{view:08}.manifest`),
+/// so no separate version index is needed — `list_manifest_versions` and
+/// `latest_manifest_view` discover versions by listing manifest files.
 pub async fn upload_manifest_snapshot<S: BackupStorage>(
     manifest_store: &RemoteManifestStore<S>,
     shard: &str,
@@ -159,8 +163,7 @@ pub async fn upload_manifest_snapshot<S: BackupStorage>(
 ) -> Result<(), String> {
     manifest_store
         .upload_manifest(shard, view, manifest_bytes)
-        .await?;
-    manifest_store.register_version(shard, view).await
+        .await
 }
 
 #[cfg(test)]

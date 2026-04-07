@@ -200,7 +200,6 @@ mod tests {
 
         let manifest_bytes = bitcode::serialize(&manifest).unwrap();
         man_store.upload_manifest("shard_0", 1, &manifest_bytes).await.unwrap();
-        man_store.register_version("shard_0", 1).await.unwrap();
 
         // Download to local dir.
         let result = prepare_local_from_remote(

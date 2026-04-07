@@ -47,35 +47,52 @@ impl<S: BackupStorage> RemoteManifestStore<S> {
         sub.read(&Self::manifest_key(view)).await
     }
 
+    /// Parse a manifest filename like "v00000003.manifest" into a view number.
+    fn parse_manifest_view(filename: &str) -> Option<u64> {
+        let stem = filename.strip_prefix('v')?.strip_suffix(".manifest")?;
+        stem.parse().ok()
+    }
+
     /// List all manifest versions available for a shard, sorted ascending.
+    ///
+    /// Enumerates `v*.manifest` files in the shard's manifests directory.
+    /// For long-running clusters with many views, prefer `latest_manifest_view`
+    /// when only the latest version is needed.
     pub async fn list_manifest_versions(
         &self,
         shard: &str,
     ) -> Result<Vec<u64>, String> {
-        let sub = self.storage.sub(shard).sub("manifests");
-        let entries = sub.list_subdirs().await;
-        // list_subdirs returns prefixes; for manifest files we need to
-        // list objects. Use a convention: write a marker in each manifest
-        // "directory" or parse the flat listing.
-        // Since BackupStorage only has list_subdirs, we need to work with
-        // the flat file listing. For now, use exists() to probe known views.
-        // TODO: add list_files() to BackupStorage for proper enumeration.
-        //
-        // Alternative: store a version index file. Simpler and more reliable.
-        // Write "versions.json" listing all uploaded views.
-        let _ = entries;
-        let versions_key = "versions.json";
-        let versions_sub = self.manifests_sub(shard).await?;
-        match versions_sub.read(versions_key).await {
-            Ok(data) => {
-                let text = String::from_utf8(data)
-                    .map_err(|e| format!("invalid UTF-8 in versions.json: {e}"))?;
-                let versions: Vec<u64> = serde_json::from_str(&text)
-                    .map_err(|e| format!("parse versions.json: {e}"))?;
-                Ok(versions)
-            }
-            Err(_) => Ok(Vec::new()), // No versions yet.
-        }
+        let sub = self.manifests_sub(shard).await?;
+        let files = sub.list_files("v").await?;
+        let mut versions: Vec<u64> = files
+            .iter()
+            .filter_map(|f| Self::parse_manifest_view(f))
+            .collect();
+        versions.sort();
+        Ok(versions)
+    }
+
+    /// Get the latest manifest view number for a shard.
+    ///
+    /// Uses reverse listing to avoid enumerating all versions.
+    /// Returns None if no manifests exist.
+    pub async fn latest_manifest_view(
+        &self,
+        shard: &str,
+    ) -> Result<Option<u64>, String> {
+        let sub = self.manifests_sub(shard).await?;
+        let files = sub.list_files_reverse("v", 1).await?;
+        Ok(files.first().and_then(|f| Self::parse_manifest_view(f)))
+    }
+
+    /// Check whether a specific manifest view exists for a shard.
+    pub async fn manifest_exists(
+        &self,
+        shard: &str,
+        view: u64,
+    ) -> Result<bool, String> {
+        let sub = self.manifests_sub(shard).await?;
+        sub.exists(&Self::manifest_key(view)).await
     }
 
     /// Download the latest manifest for a shard.
@@ -84,31 +101,12 @@ impl<S: BackupStorage> RemoteManifestStore<S> {
         &self,
         shard: &str,
     ) -> Result<(u64, Vec<u8>), String> {
-        let versions = self.list_manifest_versions(shard).await?;
-        let view = versions
-            .last()
-            .copied()
+        let view = self
+            .latest_manifest_view(shard)
+            .await?
             .ok_or_else(|| format!("no manifests found for {shard}"))?;
         let data = self.download_manifest(shard, view).await?;
         Ok((view, data))
-    }
-
-    /// Update the version index after uploading a manifest.
-    /// Appends the new view to the sorted list.
-    pub async fn register_version(
-        &self,
-        shard: &str,
-        view: u64,
-    ) -> Result<(), String> {
-        let mut versions = self.list_manifest_versions(shard).await?;
-        if !versions.contains(&view) {
-            versions.push(view);
-            versions.sort();
-        }
-        let json = serde_json::to_string(&versions)
-            .map_err(|e| format!("serialize versions: {e}"))?;
-        let sub = self.manifests_sub(shard).await?;
-        sub.write("versions.json", json.as_bytes()).await
     }
 }
 
@@ -126,7 +124,6 @@ mod tests {
 
         let manifest_bytes = b"manifest-v1-data";
         store.upload_manifest("shard_0", 1, manifest_bytes).await.unwrap();
-        store.register_version("shard_0", 1).await.unwrap();
 
         let data = store.download_manifest("shard_0", 1).await.unwrap();
         assert_eq!(data, manifest_bytes);
@@ -141,31 +138,24 @@ mod tests {
 
         // No versions yet.
         assert!(store.list_manifest_versions("shard_0").await.unwrap().is_empty());
+        assert!(store.latest_manifest_view("shard_0").await.unwrap().is_none());
 
         // Upload two versions.
         store.upload_manifest("shard_0", 1, b"v1").await.unwrap();
-        store.register_version("shard_0", 1).await.unwrap();
         store.upload_manifest("shard_0", 3, b"v3").await.unwrap();
-        store.register_version("shard_0", 3).await.unwrap();
 
         let versions = store.list_manifest_versions("shard_0").await.unwrap();
         assert_eq!(versions, vec![1, 3]);
 
+        assert_eq!(store.latest_manifest_view("shard_0").await.unwrap(), Some(3));
+
         let (view, data) = store.download_latest_manifest("shard_0").await.unwrap();
         assert_eq!(view, 3);
         assert_eq!(data, b"v3");
-    }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn register_version_idempotent() {
-        let dir = tempfile::tempdir().unwrap();
-        let storage = LocalBackupStorage::new(dir.path().join("remote").to_str().unwrap());
-        storage.init().await.unwrap();
-        let store = RemoteManifestStore::new(storage);
-
-        store.register_version("shard_0", 5).await.unwrap();
-        store.register_version("shard_0", 5).await.unwrap();
-        let versions = store.list_manifest_versions("shard_0").await.unwrap();
-        assert_eq!(versions, vec![5]);
+        // manifest_exists
+        assert!(store.manifest_exists("shard_0", 1).await.unwrap());
+        assert!(store.manifest_exists("shard_0", 3).await.unwrap());
+        assert!(!store.manifest_exists("shard_0", 2).await.unwrap());
     }
 }

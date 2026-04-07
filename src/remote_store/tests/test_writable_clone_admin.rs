@@ -49,9 +49,7 @@ async fn clone_reads_source_data_via_production_s3_path() {
     record.flush();
     tapir.flush();
 
-    // Poll for S3 upload completion. We wait for >= 1 manifest version
-    // (not 2) because concurrent register_version calls have a
-    // read-modify-write race on versions.json that can lose entries.
+    // Poll for S3 upload completion (fire-and-forget sync_to_remote tasks).
     let versions = poll_manifest_versions(&man_store, shard_name, 1, 10).await;
 
     // Clone from S3 and verify data is readable.
@@ -137,9 +135,7 @@ async fn ir_inc_segments_uploaded_after_view_changes() {
         tapir.flush();
     }
 
-    // Poll for S3 upload completion. We wait for >= 1 manifest version
-    // (not 3) because concurrent register_version calls have a
-    // read-modify-write race on versions.json that can lose entries.
+    // Poll for S3 upload completion (fire-and-forget sync_to_remote tasks).
     poll_manifest_versions(&man_store, shard_name, 1, 10).await;
 
     // Check IR inc active segment on S3 has data.

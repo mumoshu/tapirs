@@ -236,6 +236,37 @@ impl BackupStorage for S3BackupStorage {
         }
     }
 
+    async fn list_files(&self, prefix: &str) -> Result<Vec<String>, String> {
+        let full_prefix = format!("{}{prefix}", self.prefix);
+        let mut files = Vec::new();
+        let mut continuation_token: Option<String> = None;
+        loop {
+            let mut req = self.client.list_objects_v2()
+                .bucket(&self.bucket)
+                .prefix(&full_prefix);
+            if let Some(ref token) = continuation_token {
+                req = req.continuation_token(token);
+            }
+            let resp = req.send().await
+                .map_err(|e| format!("S3 ListObjectsV2 (list_files): {e}"))?;
+            if let Some(contents) = resp.contents {
+                for obj in contents {
+                    if let Some(key) = obj.key {
+                        let relative = key.strip_prefix(&self.prefix).unwrap_or(&key);
+                        files.push(relative.to_string());
+                    }
+                }
+            }
+            if resp.is_truncated.unwrap_or(false) {
+                continuation_token = resp.next_continuation_token;
+            } else {
+                break;
+            }
+        }
+        files.sort();
+        Ok(files)
+    }
+
     async fn list_subdirs(&self) -> Result<Vec<String>, String> {
         let resp = self.client.list_objects_v2()
             .bucket(&self.bucket)
@@ -262,10 +293,15 @@ impl BackupStorage for S3BackupStorage {
     }
 
     fn sub(&self, name: &str) -> Self {
+        let prefix = if name.is_empty() {
+            self.prefix.clone()
+        } else {
+            format!("{}{name}/", self.prefix)
+        };
         Self {
             client: self.client.clone(),
             bucket: self.bucket.clone(),
-            prefix: format!("{}{name}/", self.prefix),
+            prefix,
         }
     }
 

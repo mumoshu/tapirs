@@ -73,6 +73,26 @@ impl BackupStorage for LocalBackupStorage {
         }
     }
 
+    async fn list_files(&self, prefix: &str) -> Result<Vec<String>, String> {
+        let entries = match std::fs::read_dir(&self.base_path) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(format!("read dir: {e}")),
+        };
+        let mut files = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("read entry: {e}"))?;
+            if entry.file_type().is_ok_and(|ft| ft.is_file())
+                && let Some(name) = entry.file_name().to_str()
+                && name.starts_with(prefix)
+            {
+                files.push(name.to_string());
+            }
+        }
+        files.sort();
+        Ok(files)
+    }
+
     async fn list_subdirs(&self) -> Result<Vec<String>, String> {
         let entries =
             std::fs::read_dir(&self.base_path).map_err(|e| format!("read dir: {e}"))?;
@@ -89,7 +109,11 @@ impl BackupStorage for LocalBackupStorage {
     }
 
     fn sub(&self, name: &str) -> Self {
-        Self::new(&self.path(name))
+        if name.is_empty() {
+            Self::new(&self.base_path)
+        } else {
+            Self::new(&self.path(name))
+        }
     }
 
     fn display_path(&self) -> String {

@@ -56,10 +56,9 @@ pub async fn clone_from_remote_lazy<S: BackupStorage>(
 ) -> Result<UnifiedManifest, String> {
     // Validate that the requested manifest view exists before downloading.
     // Catches stale snapshots referencing pruned manifests with a clear error.
-    let versions = manifest_store.list_manifest_versions(shard).await?;
-    if !versions.contains(&view) {
+    if !manifest_store.manifest_exists(shard, view).await? {
         return Err(format!(
-            "manifest view {view} for {shard} not found in versions list {versions:?}; \
+            "manifest view {view} for {shard} not found on S3; \
              the snapshot may reference a pruned or not-yet-uploaded manifest"
         ));
     }
@@ -184,7 +183,7 @@ mod tests {
         manifest.current_view = 1;
         let bytes = bitcode::serialize(&manifest).unwrap();
         man_store.upload_manifest("shard_0", 1, &bytes).await.unwrap();
-        man_store.register_version("shard_0", 1).await.unwrap();
+
 
         let s3_config = crate::remote_store::config::S3StorageConfig {
             bucket: String::new(),
@@ -221,7 +220,7 @@ mod tests {
         manifest.current_view = 1;
         let bytes = bitcode::serialize(&manifest).unwrap();
         man_store.upload_manifest("shard_0", 1, &bytes).await.unwrap();
-        man_store.register_version("shard_0", 1).await.unwrap();
+
 
         let s3_config = crate::remote_store::config::S3StorageConfig {
             bucket: String::new(),

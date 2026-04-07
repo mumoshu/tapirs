@@ -38,6 +38,26 @@ pub trait BackupStorage: Sized + Send + Sync {
     async fn write_if_larger(&self, name: &str, data: &[u8]) -> Result<bool, String>;
     /// List immediate subdirectories (for list_backups scanning).
     async fn list_subdirs(&self) -> Result<Vec<String>, String>;
+    /// List files matching a name prefix, sorted ascending.
+    ///
+    /// Returns relative file names (not full paths/keys).
+    /// S3: ListObjectsV2 with prefix, pages through all results.
+    /// Local: read_dir + filter by prefix.
+    async fn list_files(&self, prefix: &str) -> Result<Vec<String>, String>;
+    /// List the last `limit` files matching a name prefix (descending order).
+    ///
+    /// Equivalent to `list_files(prefix)` sorted descending, truncated to `limit`.
+    /// Used for O(1)-ish "latest version" lookups.
+    ///
+    /// Current S3 impl lists all matching files and takes the last N — O(n)
+    /// where n is the total number of matching files. A future implementation
+    /// could use a dedicated metadata store for O(1) reverse lookups.
+    async fn list_files_reverse(&self, prefix: &str, limit: usize) -> Result<Vec<String>, String> {
+        let mut files = self.list_files(prefix).await?;
+        files.reverse();
+        files.truncate(limit);
+        Ok(files)
+    }
     /// Create a sub-storage scoped to a child directory/prefix.
     fn sub(&self, name: &str) -> Self;
     /// Human-readable display path (e.g. "/tmp/backup" or "s3://bucket/prefix/").
