@@ -755,9 +755,11 @@ verify_clone_reads_source_data() {
     # recover_coordination has a 5s timeout). With N prepared txns from
     # N view changes, worst case is N * (1s tick + 5s recovery).
     # The source typically has 3-5 view changes worth of prepared txns,
-    # so 15s covers the worst case.
-    info "Waiting 15s for backup coordinator to resolve inherited prepared txns..."
-    sleep 15
+    # so 15s covers the worst case. Additionally, clone replicas need
+    # ~20s after pod startup to complete their first view change and
+    # establish quorum for serving reads.
+    info "Waiting 30s for clone quorum + prepared txn resolution..."
+    sleep 30
 
     kube delete pod clone-read 2>/dev/null || true
     _smoke_pod clone-read "begin ro; get hello; abort" | \
