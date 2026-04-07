@@ -193,16 +193,35 @@ pub fn open_production_stores_from_s3(
     )
     .map_err(|e| format!("open CombinedStore at {base_dir}: {e}"))?;
 
-    // Debug: log store state after clone open.
-    tracing::debug!(
-        shard = %shard_id,
-        current_view = inner.tapir_manifest.current_view,
-        mvcc_sst_count = inner.tapir_manifest.mvcc.sst_metas.len(),
-        mvcc_sealed_count = inner.tapir_manifest.mvcc.sealed_vlog_segments.len(),
-        comm_sst_count = inner.tapir_manifest.committed.sst_metas.len(),
-        comm_sealed_count = inner.tapir_manifest.committed.sealed_vlog_segments.len(),
-        "clone store opened from S3"
+    // Log store state after clone open (eprintln to ensure visibility without RUST_LOG).
+    eprintln!(
+        "[clone] shard={} view={} mvcc_sst={} mvcc_sealed={} comm_sst={} comm_sealed={} prep_sst={} prep_sealed={}",
+        shard_id,
+        inner.tapir_manifest.current_view,
+        inner.tapir_manifest.mvcc.sst_metas.len(),
+        inner.tapir_manifest.mvcc.sealed_vlog_segments.len(),
+        inner.tapir_manifest.committed.sst_metas.len(),
+        inner.tapir_manifest.committed.sealed_vlog_segments.len(),
+        inner.tapir_manifest.prepared.sst_metas.len(),
+        inner.tapir_manifest.prepared.sealed_vlog_segments.len(),
     );
+
+    // Debug: test MVCC get before ghost filter.
+    {
+        use crate::mvcc::disk::memtable::{CompositeKey, MaxValue};
+        let search = CompositeKey::new("hello".to_string(), crate::tapir::Timestamp::max_value());
+        match inner.mvcc.range_get_first(&search) {
+            Ok(Some((ck, _entry))) => {
+                eprintln!("[clone] mvcc range_get_first('hello') found: key={:?} ts={:?}", ck.key, ck.timestamp);
+            }
+            Ok(None) => {
+                eprintln!("[clone] mvcc range_get_first('hello') = None");
+            }
+            Err(e) => {
+                eprintln!("[clone] mvcc range_get_first('hello') error: {e:?}");
+            }
+        }
+    }
 
     // Apply ghost filter for cross-shard consistency.
     if let Some(gf) = snapshot.ghost_filter() {

@@ -25,6 +25,9 @@ type AdminClient struct {
 	TLSConfig *tls.Config
 }
 
+// DefaultStorage is the default storage backend for replicas.
+const DefaultStorage = "memory"
+
 // S3SourceConfig matches the Rust S3SourceConfig in admin request types.
 type S3SourceConfig struct {
 	Bucket   string `json:"bucket"`
@@ -47,7 +50,7 @@ type adminRequest struct {
 	ListenAddr          string          `json:"listen_addr,omitempty"`
 	Storage             string          `json:"storage,omitempty"`
 	Membership          []string        `json:"membership,omitempty"`
-	S3Source            *S3SourceConfig  `json:"s3_source,omitempty"`
+	S3Source            *S3SourceConfig `json:"s3_source,omitempty"`
 	RefreshIntervalSecs *int64          `json:"refresh_interval_secs,omitempty"`
 	Snapshot            *SnapshotParams `json:"snapshot,omitempty"`
 }
@@ -146,7 +149,7 @@ func (c *AdminClient) Status(ctx context.Context) (*AdminResponse, error) {
 // dynamically join via the shard-manager (used for runtime scaling).
 func (c *AdminClient) AddReplica(ctx context.Context, shard int32, listenAddr string, membership []string, storage string) error {
 	if storage == "" {
-		storage = "memory"
+		storage = DefaultStorage
 	}
 	_, err := c.do(ctx, adminRequest{
 		Command:    "add_replica",
@@ -183,7 +186,7 @@ func (c *AdminClient) Leave(ctx context.Context, shard int32) error {
 // consensus normally and is fully independent of the source.
 func (c *AdminClient) AddWritableCloneFromS3(ctx context.Context, shard int32, listenAddr string, membership []string, storage string, s3Source S3SourceConfig, snapshot SnapshotParams) error {
 	if storage == "" {
-		storage = "memory"
+		storage = DefaultStorage
 	}
 	_, err := c.do(ctx, adminRequest{
 		Command:    "add_writable_clone_from_s3",
@@ -205,7 +208,7 @@ func (c *AdminClient) AddReadReplicaFromS3(ctx context.Context, shard int32, lis
 		Command:             "add_read_replica_from_s3",
 		Shard:               &shard,
 		ListenAddr:          listenAddr,
-		S3Source:             &s3Source,
+		S3Source:            &s3Source,
 		RefreshIntervalSecs: &refreshIntervalSecs,
 	})
 	return err

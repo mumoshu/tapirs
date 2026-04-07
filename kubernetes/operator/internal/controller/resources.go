@@ -98,7 +98,10 @@ func desiredDiscoveryStatefulSet(cluster *tapirv1alpha1.TAPIRCluster) *appsv1.St
 		{Name: "data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 	}
 	injectTLS(&container, &volumes, cluster, "discovery")
-	injectS3(&container, cluster)
+	// Discovery does NOT get S3 args. Discovery is in-memory only and must
+	// not upload to the same S3 bucket as data nodes — their shard_0/
+	// prefixes would collide, causing clones to read discovery manifests
+	// instead of data manifests.
 
 	return &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{

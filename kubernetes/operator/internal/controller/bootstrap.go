@@ -41,6 +41,14 @@ func (r *TAPIRClusterReconciler) reconcileBootstrap(ctx context.Context, cluster
 		if src.Mode == tapirv1alpha1.SourceModeWritableClone && src.RefreshInterval != "" {
 			return false, fmt.Errorf("refreshInterval is only valid for readReplica mode, not writableClone")
 		}
+		// Reject source == destination: cloning from your own bucket
+		// would read back your own discovery data or cause cycles.
+		if dst := cluster.Spec.Destination; dst != nil {
+			if src.S3.Bucket == dst.S3.Bucket && src.S3.Prefix == dst.S3.Prefix {
+				return false, fmt.Errorf("source and destination S3 bucket/prefix must differ; "+
+					"source bucket=%q prefix=%q matches destination", src.S3.Bucket, src.S3.Prefix)
+			}
+		}
 	}
 
 	switch cluster.Status.Phase {
@@ -161,7 +169,7 @@ func (r *TAPIRClusterReconciler) bootstrapDiscovery(ctx context.Context, cluster
 
 		listenAddr := fmt.Sprintf("%s:%d", p.PodIP, discoveryTapirPort)
 		log.Info("Bootstrapping discovery replica", "pod", p.Name, "listenAddr", listenAddr)
-		if err := client.AddReplica(ctx, 0, listenAddr, membership, "memory"); err != nil {
+		if err := client.AddReplica(ctx, 0, listenAddr, membership, tapir.DefaultStorage); err != nil {
 			return fmt.Errorf("add_replica on %s: %w", client.Addr, err)
 		}
 	}
@@ -278,7 +286,7 @@ func (r *TAPIRClusterReconciler) bootstrapReplicas(ctx context.Context, cluster 
 		port := int32(replicaBasePort) + shard.Number
 		storage := shard.Storage
 		if storage == "" {
-			storage = "memory"
+			storage = tapir.DefaultStorage
 		}
 
 		// Placement: first shard.Replicas pods (round-robin)

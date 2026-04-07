@@ -214,13 +214,14 @@ var _ = Describe("TAPIRCluster S3 resource generation", func() {
 		},
 	}
 
-	It("should inject S3 args into discovery StatefulSet", func() {
+	It("should NOT inject S3 args into discovery StatefulSet", func() {
 		sts := desiredDiscoveryStatefulSet(s3Cluster)
 		container := sts.Spec.Template.Spec.Containers[0]
-		Expect(container.Args).To(ContainElement("--s3-bucket=my-bucket"))
-		Expect(container.Args).To(ContainElement("--s3-prefix=prod/"))
-		Expect(container.Args).To(ContainElement("--s3-endpoint=http://minio:9000"))
-		Expect(container.Args).To(ContainElement("--s3-region=us-east-1"))
+		// Discovery must not upload to S3 — its shard_0/ prefix would
+		// collide with data nodes, causing clones to read discovery
+		// manifests instead of data manifests.
+		Expect(container.Args).NotTo(ContainElement(ContainSubstring("--s3-bucket")))
+		Expect(container.Args).NotTo(ContainElement(ContainSubstring("--s3-prefix")))
 	})
 
 	It("should inject S3 args into node pool StatefulSet", func() {

@@ -750,6 +750,12 @@ deploy_clone_cluster() {
 verify_clone_reads_source_data() {
     step "Verifying clone cluster reads source data..."
 
+    # The clone inherits prepared transactions from the source. The backup
+    # coordinator resolves them: app_tick fires every 1s (ir/replica.rs:282),
+    # recover_coordination has a 5s timeout (replica.rs:901). So prepared
+    # txns are resolved within 1s (first tick) + 5s (recovery) = 6s.
+    info "Waiting 6s for backup coordinator to resolve inherited prepared txns..."
+    sleep 6
 
     local disc_endpoint="srv://${CLONE_CLUSTER_NAME}-discovery.${NS}.svc.cluster.local:${DISCOVERY_TAPIR_PORT}"
 
@@ -896,39 +902,52 @@ cmd_up() {
     # 2. Smoke test: write + read
     smoke_test_write_read
 
-    # 3. Force view change and wait for S3 upload deterministically.
-    # The smoke test wrote "hello=world" in the active memtable. A view
-    # change flushes it to vlog, and sync_to_remote uploads to S3.
-    # Instead of sleeping, poll S3 for a manifest version > 1 (the initial
-    # empty-view manifest is v1; after the smoke test flush it becomes v2+).
+    # 3. Force view change and wait for S3 upload of the NEW manifest.
+    # The smoke test wrote "hello=world" in the active memtable. A forced
+    # view change flushes it to vlog+SST, sync_to_remote uploads to S3.
+    # Record the current manifest count BEFORE the forced VC, then poll
+    # until BOTH shards have at least one more manifest uploaded.
     step "Flushing source data to S3 (trigger view change + poll manifest)..."
+
+    local minio_endpoint="http://minio.${NS}.svc.cluster.local:${MINIO_PORT}"
+
+    # Helper: count manifests for a shard on S3.
+    _s3_manifest_count() {
+        local shard_name="$1"
+        local out
+        out=$(kube run --rm -i "aws-cli-count-${shard_name}" --restart=Never \
+            --image=amazon/aws-cli \
+            --env="AWS_ACCESS_KEY_ID=${MINIO_ACCESS_KEY}" \
+            --env="AWS_SECRET_ACCESS_KEY=${MINIO_SECRET_KEY}" \
+            -- --endpoint-url "${minio_endpoint}" s3 ls \
+            "s3://${TAPIR_S3_BUCKET}/${shard_name}/manifests/" 2>/dev/null) || true
+        echo "${out}" | grep -c '\.manifest' || echo 0
+    }
+
+    # Record baseline manifest counts before the forced view change.
+    local s0_before s1_before
+    s0_before=$(_s3_manifest_count shard_0)
+    s1_before=$(_s3_manifest_count shard_1)
+    info "Manifest counts before forced VC: shard_0=${s0_before}, shard_1=${s1_before}"
+
     kube exec "${TAPIR_CLUSTER_NAME}-default-0" -- \
         tapi admin view-change --admin-listen-addr 127.0.0.1:9000 --shard 0 2>/dev/null || true
     kube exec "${TAPIR_CLUSTER_NAME}-default-0" -- \
         tapi admin view-change --admin-listen-addr 127.0.0.1:9000 --shard 1 2>/dev/null || true
 
-    local minio_endpoint="http://minio.${NS}.svc.cluster.local:${MINIO_PORT}"
+    # Poll until both shards have at least one more manifest than before.
     local poll_timeout=30
     local poll_interval=2
     local poll_elapsed=0
     while (( poll_elapsed < poll_timeout )); do
-        local versions
-        versions=$(kube run --rm -i aws-cli-poll --restart=Never \
-            --image=amazon/aws-cli \
-            --env="AWS_ACCESS_KEY_ID=${MINIO_ACCESS_KEY}" \
-            --env="AWS_SECRET_ACCESS_KEY=${MINIO_SECRET_KEY}" \
-            -- --endpoint-url "${minio_endpoint}" s3 ls \
-            "s3://${TAPIR_S3_BUCKET}/shard_0/manifests/" 2>/dev/null) || true
-        # Count manifest files (v00000001.manifest, v00000002.manifest, ...)
-        local manifest_count
-        manifest_count=$(echo "${versions}" | grep -c '\.manifest' || true)
-        # Need >= 3: v1 (initial bootstrap), v2 (first natural view change),
-        # v3+ (post-smoke-test forced flush with "hello" data).
-        if (( manifest_count >= 3 )); then
-            ok "Source data flushed to S3 (${manifest_count} manifests for shard_0)."
+        local s0_now s1_now
+        s0_now=$(_s3_manifest_count shard_0)
+        s1_now=$(_s3_manifest_count shard_1)
+        if (( s0_now > s0_before && s1_now > s1_before )); then
+            ok "Source data flushed to S3 (shard_0: ${s0_before}→${s0_now}, shard_1: ${s1_before}→${s1_now})."
             break
         fi
-        info "Waiting for S3 manifest (${manifest_count} so far, need >= 3)... (${poll_elapsed}s / ${poll_timeout}s)"
+        info "Waiting for post-VC manifests (s0: ${s0_now}/${s0_before}+1, s1: ${s1_now}/${s1_before}+1)... (${poll_elapsed}s / ${poll_timeout}s)"
         sleep "${poll_interval}"
         poll_elapsed=$(( poll_elapsed + poll_interval ))
     done

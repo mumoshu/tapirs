@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	tapir "github.com/mumoshu/tapirs/kubernetes/operator/internal/tapir"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	tapirv1alpha1 "github.com/mumoshu/tapirs/kubernetes/operator/api/v1alpha1"
@@ -34,7 +35,7 @@ func (r *TAPIRClusterReconciler) reconcileScaleUp(ctx context.Context, cluster *
 		port := int32(replicaBasePort) + shard.Number
 		storage := shard.Storage
 		if storage == "" {
-			storage = "memory"
+			storage = tapir.DefaultStorage
 		}
 
 		// Target pods for this shard (round-robin placement)
