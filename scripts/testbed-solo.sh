@@ -179,7 +179,7 @@ start_nodes() {
             break
         fi
         sleep 1
-        (( waited++ ))
+        (( waited++ )) || true
     done
 
     if (( waited >= max_wait )); then
