@@ -619,10 +619,10 @@ where
         con_segments: &[Vec<u8>],
     ) -> Result<(), StorageError> {
         for bytes in inc_segments {
-            self.inc_lsm.import_raw_segment(bytes, op_id_from_raw)?;
+            self.inc_lsm.persist_sealed_segment(bytes, op_id_from_raw)?;
         }
         for bytes in con_segments {
-            self.con_lsm.import_raw_segment(bytes, op_id_from_raw)?;
+            self.con_lsm.persist_sealed_segment(bytes, op_id_from_raw)?;
         }
         Ok(())
     }
@@ -776,12 +776,12 @@ where
         // Only import the delta bytes — sealed segments stay untouched.
         if !delta_inc.is_empty() {
             self.inc_lsm
-                .import_raw_segment(&delta_inc, op_id_from_raw)
+                .persist_sealed_segment(&delta_inc, op_id_from_raw)
                 .expect("install_start_view_delta: import inc failed");
         }
         if !delta_con.is_empty() {
             self.con_lsm
-                .import_raw_segment(&delta_con, op_id_from_raw)
+                .persist_sealed_segment(&delta_con, op_id_from_raw)
                 .expect("install_start_view_delta: import con failed");
         }
         let import_ms = iw.elapsed().as_millis();
@@ -1097,12 +1097,12 @@ where
         self.con_lsm.clear_all();
         if !inc_bytes.is_empty() {
             self.inc_lsm
-                .import_raw_segment(&inc_bytes, op_id_from_raw)
+                .persist_sealed_segment(&inc_bytes, op_id_from_raw)
                 .expect("install_merged: import inc failed");
         }
         if !con_bytes.is_empty() {
             self.con_lsm
-                .import_raw_segment(&con_bytes, op_id_from_raw)
+                .persist_sealed_segment(&con_bytes, op_id_from_raw)
                 .expect("install_merged: import con failed");
         }
         self.base_view = new_view;

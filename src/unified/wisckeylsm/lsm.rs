@@ -592,17 +592,30 @@ impl<K: Ord, V, IO: DiskIo, M: Memtable<K, V>> VlogLsm<K, V, IO, M> {
     ///
     /// `key_fn` reconstructs `K` from a raw vlog entry's header fields.
     /// Returns `None` to skip entries (e.g., wrong entry type).
-    pub(crate) fn import_raw_segment<F>(
+    /// Persist raw vlog entry bytes as a new sealed segment file.
+    ///
+    /// Used for sealed segments received via StartView payloads during
+    /// view change. Creates a new sealed segment file on disk, adds
+    /// entries to the in-memory index, and returns metadata for manifest
+    /// registration.
+    ///
+    /// Does NOT touch the memtable or active segment. Those are for:
+    /// - Live write path: `put()` → memtable → `seal_view()` → active segment
+    /// - Delta appendum: `append_to_active()` → active segment
+    ///
+    /// Callers MUST push the returned `VlogSegmentMeta` into the manifest's
+    /// `sealed_vlog_segments` so `sync_to_remote` uploads the segment to S3.
+    pub(crate) fn persist_sealed_segment<F>(
         &mut self,
         bytes: &[u8],
         key_fn: F,
-    ) -> Result<(), StorageError>
+    ) -> Result<Option<VlogSegmentMeta>, StorageError>
     where
         K: Clone,
         F: Fn(&RawVlogEntry) -> Option<K>,
     {
         if bytes.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
         let id = self.next_segment_id;
         self.next_segment_id += 1;
@@ -617,7 +630,7 @@ impl<K: Ord, V, IO: DiskIo, M: Memtable<K, V>> VlogLsm<K, V, IO, M> {
         io.close();
         // Open as sealed segment
         let seg = VlogSegment::<IO>::open_at(
-            id, path, bytes.len() as u64, Vec::new(), self.io_flags,
+            id, path.clone(), bytes.len() as u64, Vec::new(), self.io_flags,
         )?;
         // Scan entries and rebuild index
         if let Some(ref mut idx) = self.index {
@@ -634,7 +647,12 @@ impl<K: Ord, V, IO: DiskIo, M: Memtable<K, V>> VlogLsm<K, V, IO, M> {
             }
         }
         self.sealed_segments.insert(id, seg);
-        Ok(())
+        Ok(Some(VlogSegmentMeta {
+            segment_id: id,
+            path,
+            views: Vec::new(),
+            total_size: bytes.len() as u64,
+        }))
     }
 
     /// Append pre-encoded raw vlog entry bytes to the active segment.
