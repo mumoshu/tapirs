@@ -485,17 +485,32 @@ verify_s3_args_in_statefulset() {
 smoke_test_write_read() {
     step "Running smoke test: write + read..."
 
-    local disc_endpoint="srv://${TAPIR_CLUSTER_NAME}-discovery.${NS}.svc.cluster.local:${DISCOVERY_TAPIR_PORT}"
+    # Retry loop: the operator sets TAPIRCluster to Running when
+    # StatefulSets are ready, but TAPIR replicas may still be
+    # establishing IR quorum. Retry the write until it succeeds.
+    local attempt
+    for attempt in 1 2 3 4; do
+        info "Write attempt ${attempt}/4..."
+        kube delete pod smoke-write 2>/dev/null || true
+        _smoke_pod smoke-write "begin; put hello world; commit" | kube apply -f -
+        kube wait --for=jsonpath='{.status.phase}'=Succeeded pod/smoke-write --timeout=30s 2>/dev/null || true
+        local write_output
+        write_output=$(kube logs smoke-write 2>/dev/null) || true
+        kube delete pod smoke-write --wait=false 2>/dev/null || true
 
-    kube delete pod smoke-write smoke-read 2>/dev/null || true
-
-    info "Writing key 'hello' with value 'world'..."
-    _smoke_pod smoke-write "begin; put hello world; commit" | kube apply -f -
-    kube wait --for=jsonpath='{.status.phase}'=Succeeded pod/smoke-write --timeout=60s 2>/dev/null || true
-    kube logs smoke-write 2>/dev/null || true
-    kube delete pod smoke-write --wait=false 2>/dev/null || true
+        if echo "${write_output}" | grep -q "Committed"; then
+            break
+        fi
+        if [ "${attempt}" -eq 4 ]; then
+            warn "Write output: ${write_output}"
+            fail "Smoke test write failed after 4 attempts."
+        fi
+        info "Write not ready, waiting 10s..."
+        sleep 10
+    done
 
     info "Reading key 'hello' back..."
+    kube delete pod smoke-read 2>/dev/null || true
     _smoke_pod smoke-read "begin ro; get hello; abort" | kube apply -f -
     kube wait --for=jsonpath='{.status.phase}'=Succeeded pod/smoke-read --timeout=60s 2>/dev/null || true
     local output
