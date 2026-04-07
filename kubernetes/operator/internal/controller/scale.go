@@ -65,7 +65,7 @@ func (r *TAPIRClusterReconciler) reconcileScaleUp(ctx context.Context, cluster *
 			listenAddr := fmt.Sprintf("%s:%d", p.PodIP, port)
 			log.Info("Scaling up: adding replica via dynamic join",
 				"pod", p.Name, "shard", shard.Number, "listenAddr", listenAddr)
-			if err := client.AddReplica(ctx, shard.Number, listenAddr, nil, storage); err != nil {
+			if err := client.AddReplica(ctx, shard.Number, listenAddr, nil, storage, "data"); err != nil {
 				return fmt.Errorf("add_replica shard %d on %s: %w", shard.Number, client.Addr, err)
 			}
 

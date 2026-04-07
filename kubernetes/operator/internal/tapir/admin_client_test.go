@@ -104,7 +104,7 @@ func TestAdminClient_AddReplica_WithMembership(t *testing.T) {
 
 	client := &AdminClient{Addr: addr, Timeout: 2 * time.Second}
 	err := client.AddReplica(context.Background(), 0, "10.0.0.1:6000",
-		[]string{"10.0.0.1:6000", "10.0.0.2:6000", "10.0.0.3:6000"}, "memory")
+		[]string{"10.0.0.1:6000", "10.0.0.2:6000", "10.0.0.3:6000"}, "memory", "data")
 	if err != nil {
 		t.Fatalf("AddReplica() error: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestAdminClient_AddReplica_WithoutMembership(t *testing.T) {
 	})
 
 	client := &AdminClient{Addr: addr, Timeout: 2 * time.Second}
-	err := client.AddReplica(context.Background(), 0, "10.0.0.1:6000", nil, "memory")
+	err := client.AddReplica(context.Background(), 0, "10.0.0.1:6000", nil, "memory", "data")
 	if err != nil {
 		t.Fatalf("AddReplica() error: %v", err)
 	}

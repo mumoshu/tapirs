@@ -53,6 +53,7 @@ type adminRequest struct {
 	S3Source            *S3SourceConfig `json:"s3_source,omitempty"`
 	RefreshIntervalSecs *int64          `json:"refresh_interval_secs,omitempty"`
 	Snapshot            *SnapshotParams `json:"snapshot,omitempty"`
+	ClusterType         string          `json:"cluster_type,omitempty"`
 }
 
 // AdminResponse is the JSON response from the admin server.
@@ -147,16 +148,17 @@ func (c *AdminClient) Status(ctx context.Context) (*AdminResponse, error) {
 // If membership is non-empty, the replica is created with static membership
 // (used during initial bootstrap). If membership is nil, the node will
 // dynamically join via the shard-manager (used for runtime scaling).
-func (c *AdminClient) AddReplica(ctx context.Context, shard int32, listenAddr string, membership []string, storage string) error {
+func (c *AdminClient) AddReplica(ctx context.Context, shard int32, listenAddr string, membership []string, storage string, clusterType string) error {
 	if storage == "" {
 		storage = DefaultStorage
 	}
 	_, err := c.do(ctx, adminRequest{
-		Command:    "add_replica",
-		Shard:      &shard,
-		ListenAddr: listenAddr,
-		Storage:    storage,
-		Membership: membership,
+		Command:     "add_replica",
+		Shard:       &shard,
+		ListenAddr:  listenAddr,
+		Storage:     storage,
+		Membership:  membership,
+		ClusterType: clusterType,
 	})
 	return err
 }

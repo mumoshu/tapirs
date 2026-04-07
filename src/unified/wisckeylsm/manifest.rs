@@ -67,6 +67,9 @@ pub struct UnifiedManifest {
     /// IR consensus entries VlogLsm metadata (PersistentIrRecordStore).
     #[serde(default = "LsmManifestData::new")]
     pub ir_con: LsmManifestData,
+    /// Cluster type: "data" for data shards, "discovery" for discovery shards.
+    /// Prevents S3 prefix collisions — clone_from_remote_lazy validates this.
+    pub cluster_type: String,
     /// CRC32 checksum.
     pub checksum: u32,
 }
@@ -87,6 +90,7 @@ impl UnifiedManifest {
             replay_start_offset: 0,
             ir_inc: LsmManifestData::new(),
             ir_con: LsmManifestData::new(),
+            cluster_type: "data".into(),
             checksum: 0,
         }
     }
@@ -142,5 +146,34 @@ impl UnifiedManifest {
         }
 
         Ok(Some(manifest))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manifest_cluster_type_roundtrip() {
+        let m = UnifiedManifest::new();
+        assert_eq!(m.cluster_type, "data");
+
+        let bytes = bitcode::serialize(&m).unwrap();
+        let loaded: UnifiedManifest = bitcode::deserialize(&bytes).unwrap();
+        assert_eq!(loaded.cluster_type, "data");
+    }
+
+    #[test]
+    fn manifest_without_cluster_type_fails_to_deserialize() {
+        // Serialize a manifest, then truncate to simulate an old format
+        // that lacks the cluster_type field. bitcode is positional — the
+        // shorter bytes will fail to deserialize.
+        let m = UnifiedManifest::new();
+        let bytes = bitcode::serialize(&m).unwrap();
+
+        // Truncate by a few bytes to simulate missing field.
+        let truncated = &bytes[..bytes.len() - 10];
+        let result = bitcode::deserialize::<UnifiedManifest>(truncated);
+        assert!(result.is_err(), "old manifest without cluster_type should fail");
     }
 }

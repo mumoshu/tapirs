@@ -26,6 +26,10 @@ pub struct AdminRequest {
     /// The operator creates the snapshot and passes per-shard info.
     #[serde(default)]
     pub snapshot: Option<SnapshotParams>,
+    /// Cluster type: "data" or "discovery". Stored in the manifest for
+    /// S3 collision detection.
+    #[serde(default)]
+    pub cluster_type: Option<String>,
 }
 
 /// Snapshot parameters from a CrossShardSnapshot.

@@ -169,7 +169,7 @@ func (r *TAPIRClusterReconciler) bootstrapDiscovery(ctx context.Context, cluster
 
 		listenAddr := fmt.Sprintf("%s:%d", p.PodIP, discoveryTapirPort)
 		log.Info("Bootstrapping discovery replica", "pod", p.Name, "listenAddr", listenAddr)
-		if err := client.AddReplica(ctx, 0, listenAddr, membership, tapir.DefaultStorage); err != nil {
+		if err := client.AddReplica(ctx, 0, listenAddr, membership, tapir.DefaultStorage, "discovery"); err != nil {
 			return fmt.Errorf("add_replica on %s: %w", client.Addr, err)
 		}
 	}
@@ -360,7 +360,7 @@ func (r *TAPIRClusterReconciler) bootstrapReplicas(ctx context.Context, cluster 
 					}
 				}
 			} else {
-				if err := client.AddReplica(ctx, shard.Number, listenAddr, membership, storage); err != nil {
+				if err := client.AddReplica(ctx, shard.Number, listenAddr, membership, storage, "data"); err != nil {
 					return fmt.Errorf("add_replica shard %d on %s: %w", shard.Number, client.Addr, err)
 				}
 			}
