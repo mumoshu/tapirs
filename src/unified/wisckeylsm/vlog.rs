@@ -69,7 +69,7 @@ impl<IO: DiskIo> VlogSegment<IO> {
         raw
     }
 
-    fn decode_raw_entry(
+    pub(crate) fn decode_raw_entry(
         path: &Path,
         offset: u64,
         raw: &[u8],
@@ -157,6 +157,47 @@ impl<IO: DiskIo> VlogSegment<IO> {
                 length,
             })
             .collect())
+    }
+
+    /// Append pre-encoded raw vlog bytes to this segment.
+    ///
+    /// Returns (base_offset, entries) where entries are parsed from the
+    /// appended bytes. Each entry is (file_offset, entry_length, decoded).
+    /// Used by VlogLsm::append_to_active for the view-change delta path.
+    pub(crate) fn append_raw_bytes(
+        &mut self,
+        bytes: &[u8],
+    ) -> Result<(u64, Vec<(u64, u32, RawVlogEntry)>), StorageError> {
+        if bytes.is_empty() {
+            return Ok((self.write_offset, Vec::new()));
+        }
+        let base_offset = self.write_offset;
+        let mut buf = AlignedBuf::new(bytes.len());
+        buf.as_full_slice_mut()[..bytes.len()].copy_from_slice(bytes);
+        buf.set_len(bytes.len());
+        IO::block_on(self.io.as_ref().unwrap().pwrite(&buf, base_offset))?;
+        self.write_offset += bytes.len() as u64;
+
+        // Parse entries from the appended bytes.
+        let mut entries = Vec::new();
+        let mut local_off = 0usize;
+        while local_off + MIN_ENTRY_SIZE <= bytes.len() {
+            let entry_len = u32::from_le_bytes([
+                bytes[local_off + 1],
+                bytes[local_off + 2],
+                bytes[local_off + 3],
+                bytes[local_off + 4],
+            ]) as usize;
+            if entry_len < MIN_ENTRY_SIZE || local_off + entry_len > bytes.len() {
+                break;
+            }
+            let file_offset = base_offset + local_off as u64;
+            let entry_bytes = &bytes[local_off..local_off + entry_len];
+            let raw = Self::decode_raw_entry(&self.path, file_offset, entry_bytes)?;
+            entries.push((file_offset, entry_len as u32, raw));
+            local_off += entry_len;
+        }
+        Ok((base_offset, entries))
     }
 
     /// Read and verify a protocol-agnostic entry at the given pointer.

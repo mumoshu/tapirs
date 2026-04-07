@@ -637,6 +637,50 @@ impl<K: Ord, V, IO: DiskIo, M: Memtable<K, V>> VlogLsm<K, V, IO, M> {
         Ok(())
     }
 
+    /// Append pre-encoded raw vlog entry bytes to the active segment.
+    ///
+    /// Used by the IR record view-change path to append delta entries
+    /// received from the leader. The bytes are already in wire format
+    /// (produced by `encode_raw_entry` / `encode_memtable_as_segment`).
+    ///
+    /// This does NOT touch the memtable or sealed segments:
+    /// - Memtable is for the live write path (`put()` → `seal_view()`)
+    /// - Sealed segments are for persisted view-change payloads
+    ///   (`persist_sealed_segment`)
+    /// - This method appends to the active vlog, which is tracked by
+    ///   the manifest's `active_write_offset` and uploaded by
+    ///   `upload_active_segments` in `sync_to_remote`
+    ///
+    /// `key_fn` reconstructs `K` from raw entry headers for index rebuild.
+    pub(crate) fn append_to_active<F>(
+        &mut self,
+        bytes: &[u8],
+        key_fn: F,
+    ) -> Result<(), StorageError>
+    where
+        K: Clone,
+        F: Fn(&RawVlogEntry) -> Option<K>,
+    {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        let segment_id = self.active_vlog.id;
+        let (_base, entries) = self.active_vlog.append_raw_bytes(bytes)?;
+        if let Some(ref mut idx) = self.index {
+            for (file_offset, entry_len, raw) in entries {
+                if let Some(key) = key_fn(&raw) {
+                    let ptr = VlogPtr {
+                        segment_id,
+                        offset: file_offset,
+                        length: entry_len,
+                    };
+                    idx.insert(key, ptr);
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Clear all data: index, sealed segments, and SSTs.
     ///
     /// Used before full payload installs to release old segment memory.
@@ -996,5 +1040,51 @@ mod tests {
         let dir = MemoryIo::temp_path();
         let lsm = open_test_lsm_sst_only(&dir);
         let _ = lsm.index();
+    }
+
+    #[test]
+    fn append_to_active_after_seal() {
+        let dir = MemoryIo::temp_path();
+        let mut lsm = open_test_lsm(&dir);
+
+        // Write via memtable + seal (normal path).
+        lsm.put("k_a".into(), "val_a".into());
+        lsm.seal_view(0, test_header_fn).unwrap();
+        lsm.start_view(1);
+        assert_eq!(lsm.get(&"k_a".into()).unwrap(), Some("val_a".into()));
+
+        // Encode a new entry as raw bytes (simulating delta from view change).
+        let raw_bytes = VlogSegment::<MemoryIo>::encode_raw_entry(
+            0x80, 1, 42,
+            &bitcode::serialize(&"val_appended".to_string()).unwrap(),
+        );
+
+        // Append to active segment.
+        let offset_before = lsm.active_write_offset();
+        lsm.append_to_active(&raw_bytes, |raw| {
+            // Reconstruct key from the entry — use a fixed key for this test.
+            if raw.id_number == 42 {
+                Some("k_appended".to_string())
+            } else {
+                None
+            }
+        })
+        .unwrap();
+
+        // active_write_offset advanced.
+        assert!(
+            lsm.active_write_offset() > offset_before,
+            "active_write_offset should advance after append"
+        );
+
+        // The appended entry is findable via index.
+        let idx = lsm.index();
+        assert!(
+            idx.contains_key(&"k_appended".to_string()),
+            "appended key should be in the index"
+        );
+
+        // The sealed entry from the first view is still findable.
+        assert_eq!(lsm.get(&"k_a".into()).unwrap(), Some("val_a".into()));
     }
 }
