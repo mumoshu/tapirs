@@ -5,9 +5,7 @@ use crate::mvcc::disk::s3_caching_io::{S3CacheConfig, register_s3_cache};
 use crate::unified::wisckeylsm::manifest::{LsmManifestData, UnifiedManifest};
 
 use super::config::S3StorageConfig;
-use super::download::download_all_files;
 use super::manifest_store::RemoteManifestStore;
-use super::segment_store::RemoteSegmentStore;
 
 /// Rewrite a manifest for a COW clone: keep sealed segments unchanged
 /// (they reference the same S3 files), but assign fresh active segment
@@ -37,52 +35,6 @@ fn rewrite_lsm_active(label: &str, data: &mut LsmManifestData) {
     data.active_segment_id = data.next_segment_id;
     data.next_segment_id += 1;
     data.active_write_offset = 0;
-}
-
-/// Clone a shard from S3: download the source manifest and segments,
-/// rewrite the manifest for COW (fresh active segments), create empty
-/// active segment files, and save the manifest locally.
-///
-/// After this, `CombinedStoreInner::open()` will find the manifest and
-/// open with shared sealed segments + empty active segments.
-pub async fn clone_from_remote<S: BackupStorage>(
-    segment_store: &RemoteSegmentStore<S>,
-    manifest_store: &RemoteManifestStore<S>,
-    shard: &str,
-    view: u64,
-    clone_base_dir: &Path,
-) -> Result<UnifiedManifest, String> {
-    // Validate that the requested manifest view exists before downloading.
-    let versions = manifest_store.list_manifest_versions(shard).await?;
-    if !versions.contains(&view) {
-        return Err(format!(
-            "manifest view {view} for {shard} not found in versions list {versions:?}; \
-             the snapshot may reference a pruned or not-yet-uploaded manifest"
-        ));
-    }
-
-    // Download source manifest.
-    let source_bytes = manifest_store.download_manifest(shard, view).await?;
-    let source: UnifiedManifest = bitcode::deserialize(&source_bytes)
-        .map_err(|e| format!("deserialize source manifest: {e}"))?;
-
-    // Ensure clone directory exists.
-    std::fs::create_dir_all(clone_base_dir)
-        .map_err(|e| format!("create_dir_all {}: {e}", clone_base_dir.display()))?;
-
-    // Download all sealed segments and SSTs from source.
-    download_all_files(segment_store, shard, clone_base_dir, &source).await?;
-
-    // Rewrite manifest: fresh active segments, reset offsets.
-    let mut cloned = rewrite_manifest_for_clone(&source);
-    super::open_remote::rebase_manifest_paths(&mut cloned, clone_base_dir);
-
-    // Save clone manifest locally.
-    cloned
-        .save::<crate::mvcc::disk::disk_io::BufferedIo>(clone_base_dir)
-        .map_err(|e| format!("save clone manifest: {e}"))?;
-
-    Ok(cloned)
 }
 
 /// Zero-copy clone: download only the manifest from S3, rewrite it for

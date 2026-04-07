@@ -34,7 +34,7 @@ fn registry() -> &'static Mutex<BTreeMap<PathBuf, S3CacheConfig>> {
 }
 
 /// Register S3 config for a base directory. Called by CombinedStore open paths
-/// that use S3-backed storage (open_from_remote, clone_from_remote).
+/// that use S3-backed storage (open_from_remote, clone_from_remote_lazy).
 pub fn register_s3_cache(base_dir: &Path, config: S3CacheConfig) {
     registry()
         .lock()
