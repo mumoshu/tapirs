@@ -1481,4 +1481,43 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].1.op, "test");
     }
+
+    #[test]
+    fn ir_inc_manifest_tracks_segments_after_full_install() {
+        let mut store = make_store();
+        store.insert_inconsistent_entry(op_id(1, 1), fin_inc_entry("op1", 0));
+        store.insert_consensus_entry(op_id(1, 2), fin_con_entry("cop1", "r1", 0));
+        store.seal(1).unwrap();
+
+        // Non-consecutive view → Full payload (base_view=None)
+        let payload = store.build_view_change_payload(5);
+        assert!(
+            payload.base_view().is_none(),
+            "should be Full for non-consecutive view"
+        );
+
+        // Install on fresh store → install_start_view_full path
+        let mut store2 = make_store();
+        let result = store2.install_start_view_payload(payload, 2);
+        assert!(result.is_some());
+
+        // Entries accessible
+        assert!(store2.get_inconsistent_entry(&op_id(1, 1)).is_some());
+        assert!(store2.get_consensus_entry(&op_id(1, 2)).is_some());
+
+        // Manifest must track the imported sealed segments.
+        // On the buggy code, import_segments() discards VlogSegmentMeta,
+        // so the manifest stays empty while the LSM has sealed segments.
+        let inc_lsm_sealed = store2.inc_lsm.sealed_segments_ref().len();
+        let manifest_sealed = store2.manifest.ir_inc.sealed_vlog_segments.len();
+        assert_eq!(
+            manifest_sealed, inc_lsm_sealed,
+            "manifest sealed_vlog_segments ({manifest_sealed}) must match \
+             LSM sealed segments ({inc_lsm_sealed})"
+        );
+
+        // After flush, entries should still be accessible
+        store2.flush();
+        assert!(store2.get_inconsistent_entry(&op_id(1, 1)).is_some());
+    }
 }

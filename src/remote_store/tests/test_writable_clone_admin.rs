@@ -226,3 +226,96 @@ async fn resolve_value_errors_on_broken_ir_chain() {
         result
     );
 }
+
+/// After a full StartView install followed by S3 upload, a clone must
+/// be able to read the data. This fails on the buggy code because
+/// install_start_view_full doesn't update the manifest.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clone_reads_after_full_start_view_install() {
+    let (_seg_store, man_store, s3_config, _storage) =
+        create_s3_stores("clone-full-sv-install").await;
+    let shard = ShardNumber(0);
+    let shard_name = "shard_0";
+    let ts100 = Timestamp { time: 100, client_id: IrClientId(1) };
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut inner =
+        CombinedStoreInner::<String, String, crate::mvcc::disk::disk_io::BufferedIo>::open(
+            dir.path(),
+            OpenFlags { create: true, direct: false },
+            shard,
+            true,
+        )
+        .unwrap();
+    inner.set_s3_config(s3_config.clone());
+    let mut record = inner.into_record_handle();
+    let mut tapir = record.tapir_handle();
+
+    // Write data and flush (establishes base_view=1).
+    write_and_commit(&mut record, &mut tapir, shard, &[("hello", "world")], ts100);
+    record.flush();
+    tapir.flush();
+
+    // Simulate receiving a Full StartView payload.
+    let full_payload = record.build_start_view_payload(None);
+    let result = record.install_start_view_payload(full_payload, 2);
+    assert!(result.is_some(), "full install should succeed");
+
+    // Flush → seal + sync_to_remote.
+    record.flush();
+    tapir.flush();
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+    let versions = man_store
+        .list_manifest_versions(shard_name)
+        .await
+        .unwrap();
+    assert!(!versions.is_empty(), "should have manifest versions");
+
+    // Clone from S3.
+    let clone_dir = tempfile::tempdir().unwrap();
+    let manifest_view = *versions.last().unwrap();
+    let mut shards = BTreeMap::new();
+    shards.insert(
+        0u32,
+        ShardSnapshotInfo { manifest_view },
+    );
+    let snapshot = CrossShardSnapshot {
+        timestamp: String::new(),
+        cutoff_ts: ts100.time,
+        ceiling_ts: ts100.time,
+        shards,
+    };
+    tokio::task::block_in_place(|| {
+        crate::store_defaults::open_production_stores_from_s3(
+            shard,
+            clone_dir.path().to_str().unwrap(),
+            0,
+            true,
+            &s3_config,
+            &snapshot,
+            None,
+        )
+    })
+    .unwrap();
+
+    let clone_inner =
+        CombinedStoreInner::<String, String, crate::mvcc::disk::disk_io::BufferedIo>::open(
+            &clone_dir.path().join("shard_0"),
+            OpenFlags { create: true, direct: false },
+            shard,
+            true,
+        )
+        .unwrap();
+    let clone_record = clone_inner.into_record_handle();
+    let clone_tapir = clone_record.tapir_handle();
+
+    let (val, _) = clone_tapir
+        .do_uncommitted_get_at(&"hello".to_string(), ts100)
+        .unwrap();
+    assert_eq!(
+        val.as_deref(),
+        Some("world"),
+        "clone should read data after full StartView install + S3 upload"
+    );
+}
