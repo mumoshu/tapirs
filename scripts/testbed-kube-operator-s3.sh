@@ -757,8 +757,6 @@ verify_clone_reads_source_data() {
     info "Waiting 6s for backup coordinator to resolve inherited prepared txns..."
     sleep 6
 
-    local disc_endpoint="srv://${CLONE_CLUSTER_NAME}-discovery.${NS}.svc.cluster.local:${DISCOVERY_TAPIR_PORT}"
-
     kube delete pod clone-read 2>/dev/null || true
     _smoke_pod clone-read "begin ro; get hello; abort" | \
         sed "s|${TAPIR_CLUSTER_NAME}-discovery|${CLONE_CLUSTER_NAME}-discovery|g" | \
@@ -914,14 +912,19 @@ cmd_up() {
     # Helper: count manifests for a shard on S3.
     _s3_manifest_count() {
         local shard_name="$1"
-        local out
-        out=$(kube run --rm -i "aws-cli-count-${shard_name}" --restart=Never \
+        local pod_name="aws-cli-count-${shard_name//_/-}"
+        local out count
+        kube delete pod "${pod_name}" 2>/dev/null || true
+        out=$(kube run --rm -i "${pod_name}" --restart=Never \
             --image=amazon/aws-cli \
             --env="AWS_ACCESS_KEY_ID=${MINIO_ACCESS_KEY}" \
             --env="AWS_SECRET_ACCESS_KEY=${MINIO_SECRET_KEY}" \
             -- --endpoint-url "${minio_endpoint}" s3 ls \
             "s3://${TAPIR_S3_BUCKET}/${shard_name}/manifests/" 2>/dev/null) || true
-        echo "${out}" | grep -c '\.manifest' || echo 0
+        # Debug to stderr (not stdout) so it doesn't pollute the return value.
+        echo "  _s3_manifest_count(${shard_name}) raw: $(echo "${out}" | head -3)" >&2
+        count=$(echo "${out}" | grep -c '\.manifest') || true
+        echo "${count:-0}"
     }
 
     # Record baseline manifest counts before the forced view change.

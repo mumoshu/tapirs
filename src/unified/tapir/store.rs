@@ -661,12 +661,29 @@ impl<
 
     pub(crate) fn snapshot_get_at(&self, key: &K, ts: Timestamp) -> Result<(Option<V>, Timestamp), StorageError> {
         let search = CompositeKey::new(key.clone(), ts);
-        if let Some((ck, entry)) = self.mvcc.range_get_first(&search)?
-            && ck.key == *key
-        {
-            return Ok((self.resolve_value(&entry)?, ck.timestamp.0));
+        match self.mvcc.range_get_first(&search)? {
+            Some((ck, entry)) if ck.key == *key => {
+                eprintln!(
+                    "[snapshot_get_at] key={:?} ts={:?} → found ck.key={:?} ck.ts={:?}",
+                    key, ts, ck.key, ck.timestamp
+                );
+                Ok((self.resolve_value(&entry)?, ck.timestamp.0))
+            }
+            Some((ck, _)) => {
+                eprintln!(
+                    "[snapshot_get_at] key={:?} ts={:?} → range_get_first returned different key={:?}",
+                    key, ts, ck.key
+                );
+                Ok((None, Timestamp::default()))
+            }
+            None => {
+                eprintln!(
+                    "[snapshot_get_at] key={:?} ts={:?} → range_get_first returned None (mvcc empty or all keys < search)",
+                    key, ts
+                );
+                Ok((None, Timestamp::default()))
+            }
         }
-        Ok((None, Timestamp::default()))
     }
 
     pub(crate) fn snapshot_scan(
