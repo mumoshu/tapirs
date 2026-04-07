@@ -1090,20 +1090,39 @@ where
             ((0, full_record), None, None)
         };
 
-        // Install: encode merged Indexed → segment bytes → import
-        let (inc_bytes, con_bytes) =
-            Self::encode_indexed_as_segments(&merged).expect("install_merged: encode failed");
-        self.inc_lsm.clear_all();
-        self.con_lsm.clear_all();
-        if !inc_bytes.is_empty() {
-            self.inc_lsm
-                .persist_sealed_segment(&inc_bytes, op_id_from_raw)
-                .expect("install_merged: import inc failed");
-        }
-        if !con_bytes.is_empty() {
-            self.con_lsm
-                .persist_sealed_segment(&con_bytes, op_id_from_raw)
-                .expect("install_merged: import con failed");
+        // Install the merged record into the VlogLsms.
+        if self.base_view > 0 {
+            // Delta path: keep existing sealed segments, append only the
+            // delta (new entries) to the active segment. The active segment
+            // is tracked by the manifest and uploaded by sync_to_remote.
+            let sealed_base_for_install = self.sealed_record();
+            let delta_for_install = merged.delta_from(&sealed_base_for_install);
+            let (delta_inc, delta_con) =
+                Self::encode_indexed_as_segments(&delta_for_install)
+                    .expect("install_merged: encode delta failed");
+            self.inc_lsm.append_to_active(&delta_inc, op_id_from_raw)
+                .expect("install_merged: append inc delta failed");
+            self.con_lsm.append_to_active(&delta_con, op_id_from_raw)
+                .expect("install_merged: append con delta failed");
+            self.inc_lsm.clear_memtable();
+            self.con_lsm.clear_memtable();
+        } else {
+            // First view change: no sealed base, do full import.
+            let (inc_bytes, con_bytes) =
+                Self::encode_indexed_as_segments(&merged)
+                    .expect("install_merged: encode failed");
+            self.inc_lsm.clear_all();
+            self.con_lsm.clear_all();
+            if !inc_bytes.is_empty() {
+                self.inc_lsm
+                    .persist_sealed_segment(&inc_bytes, op_id_from_raw)
+                    .expect("install_merged: import inc failed");
+            }
+            if !con_bytes.is_empty() {
+                self.con_lsm
+                    .persist_sealed_segment(&con_bytes, op_id_from_raw)
+                    .expect("install_merged: import con failed");
+            }
         }
         self.base_view = new_view;
         self.inc_lsm.start_view(new_view);
