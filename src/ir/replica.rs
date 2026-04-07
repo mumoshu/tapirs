@@ -733,7 +733,7 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                             sync.record.flush();
                             sync.upcalls.flush();
                             let leader_addr = self.inner.transport.address();
-                            eprintln!("[ir-leader-{leader_addr}] merged view {:?} has_delta={} prev_base={:?}",
+                            tracing::debug!("[ir-leader-{leader_addr}] merged view {:?} has_delta={} prev_base={:?}",
                                 msg_view_number, merge_result.start_view_delta.is_some(), merge_result.previous_base_view);
                             let _ = merge_wall;
 
@@ -778,7 +778,7 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                                 } else {
                                     full_payload.clone()
                                 };
-                                eprintln!("[ir-leader-{leader_addr}] → {address:?} view {:?} delta={recipient_same_base} {delta_reason}",
+                                tracing::debug!("[ir-leader-{leader_addr}] → {address:?} view {:?} delta={recipient_same_base} {delta_reason}",
                                     msg_view_number);
                                 let sv = StartView::new(
                                     payload,
@@ -807,10 +807,10 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                 {
                     let sv_wall = std::time::Instant::now();
                     let sv_addr = self.inner.transport.address();
-                    eprintln!("[ir-replica-{sv_addr}] starting view {:?} (was {:?} in {:?})",
+                    tracing::debug!("[ir-replica-{sv_addr}] starting view {:?} (was {:?} in {:?})",
                         view.number, sync.status, sync.view.number);
                     let Some(result) = sync.record.install_start_view_payload(payload, view.number.0) else {
-                        eprintln!("[ir-replica-{sv_addr}] REJECTED StartView v={:?}: payload validation failed (delta base mismatch)",
+                        tracing::debug!("[ir-replica-{sv_addr}] REJECTED StartView v={:?}: payload validation failed (delta base mismatch)",
                             view.number);
                         debug_assert!(false, "StartView payload validation failed (delta base mismatch)");
                         warn!("ignoring StartView: payload validation failed (delta base mismatch)");
@@ -827,7 +827,7 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                     sync.upcalls.flush();
                     let upcalls_flush_ms = sv_wall.elapsed().as_millis();
                     if upcalls_flush_ms > 10 {
-                        eprintln!("[ir-replica-{sv_addr}] view {:?} wall: install={}ms sync={}ms rec_flush={}ms upcalls_flush={}ms",
+                        tracing::debug!("[ir-replica-{sv_addr}] view {:?} wall: install={}ms sync={}ms rec_flush={}ms upcalls_flush={}ms",
                             view.number, install_ms, sync_ms - install_ms, rec_flush_ms - sync_ms, upcalls_flush_ms - rec_flush_ms);
                     }
 
@@ -871,7 +871,7 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                 let dominated_by_self = address == self.inner.transport.address();
                 let is_normal = sync.status.is_normal();
                 let in_membership = sync.view.membership.get_index(address).is_some();
-                eprintln!("[ir.remove_member] me={:?} removing={address:?} is_normal={is_normal} in_membership={in_membership} self_skip={dominated_by_self} view={}", self.inner.transport.address(), sync.view.number.0);
+                tracing::debug!("[ir.remove_member] me={:?} removing={address:?} is_normal={is_normal} in_membership={in_membership} self_skip={dominated_by_self} view={}", self.inner.transport.address(), sync.view.number.0);
                 if is_normal && in_membership && sync.view.membership.len() > 1 && !dominated_by_self {
                     if !sync.view.membership.contains(self.inner.transport.address()) {
                         return None;
@@ -894,7 +894,7 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
             }
             Message::<U, T>::Reconfigure(Reconfigure { config }) => {
                 if sync.status.is_normal() {
-                    eprintln!("[ir-replica-{}] reconfiguring with {} bytes (view={:?})",
+                    tracing::debug!("[ir-replica-{}] reconfiguring with {} bytes (view={:?})",
                         self.inner.transport.address(), config.len(), sync.view.number);
                     info!("reconfiguring with {} bytes", config.len());
                     sync.view.make_mut().app_config = Some(config);

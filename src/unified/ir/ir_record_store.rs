@@ -452,7 +452,7 @@ where
         let active_id = self.inc_lsm.active_vlog_id();
         let active_offset = self.inc_lsm.active_write_offset();
         let memtable_len = self.inc_lsm.memtable_len();
-        eprintln!(
+        tracing::debug!(
             "[ir_inc_state] {label}: sealed_ids={sealed_ids:?} active_id={active_id} active_offset={active_offset} memtable={memtable_len} base_view={}",
             self.base_view
         );
@@ -820,7 +820,7 @@ where
 
         let total_ms = iw.elapsed().as_millis();
         if total_ms > 10 {
-            eprintln!("[install_sv] view={new_view} full_reset={is_full_reset} total={total_ms}ms");
+            tracing::debug!("[install_sv] view={new_view} full_reset={is_full_reset} total={total_ms}ms");
         }
 
         Some(ViewInstallResult {
