@@ -68,6 +68,14 @@ pub async fn clone_from_remote_lazy<S: BackupStorage>(
     let source: UnifiedManifest = bitcode::deserialize(&source_bytes)
         .map_err(|e| format!("deserialize source manifest: {e}"))?;
 
+    if source.cluster_type != "data" {
+        return Err(format!(
+            "manifest for {shard} at view {view} has cluster_type={:?}, expected \"data\"; \
+             this may be a discovery cluster manifest due to S3 prefix collision",
+            source.cluster_type
+        ));
+    }
+
     std::fs::create_dir_all(clone_base_dir)
         .map_err(|e| format!("create_dir_all {}: {e}", clone_base_dir.display()))?;
 
@@ -157,5 +165,75 @@ mod tests {
         assert_eq!(cloned.mvcc.next_segment_id, 6);
         assert_eq!(cloned.ir_inc.active_segment_id, 2);
         assert_eq!(cloned.ir_inc.next_segment_id, 3);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn clone_rejects_discovery_manifest() {
+        use crate::backup::local::LocalBackupStorage;
+        use crate::backup::storage::BackupStorage;
+        use crate::remote_store::manifest_store::RemoteManifestStore;
+
+        let dir = tempfile::tempdir().unwrap();
+        let storage = LocalBackupStorage::new(dir.path().join("remote").to_str().unwrap());
+        storage.init().await.unwrap();
+        let man_store = RemoteManifestStore::new(storage.sub(""));
+
+        // Upload a discovery manifest.
+        let mut manifest = UnifiedManifest::new();
+        manifest.cluster_type = "discovery".into();
+        manifest.current_view = 1;
+        let bytes = bitcode::serialize(&manifest).unwrap();
+        man_store.upload_manifest("shard_0", 1, &bytes).await.unwrap();
+        man_store.register_version("shard_0", 1).await.unwrap();
+
+        let s3_config = crate::remote_store::config::S3StorageConfig {
+            bucket: String::new(),
+            prefix: String::new(),
+            endpoint_url: None,
+            region: None,
+        };
+
+        let clone_dir = tempfile::tempdir().unwrap();
+        let result = clone_from_remote_lazy(
+            &man_store, &s3_config, "shard_0", 1, clone_dir.path(),
+        ).await;
+        assert!(result.is_err(), "should reject discovery manifest");
+        assert!(
+            result.unwrap_err().contains("discovery"),
+            "error should mention cluster_type"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn clone_accepts_data_manifest() {
+        use crate::backup::local::LocalBackupStorage;
+        use crate::backup::storage::BackupStorage;
+        use crate::remote_store::manifest_store::RemoteManifestStore;
+
+        let dir = tempfile::tempdir().unwrap();
+        let storage = LocalBackupStorage::new(dir.path().join("remote").to_str().unwrap());
+        storage.init().await.unwrap();
+        let man_store = RemoteManifestStore::new(storage.sub(""));
+
+        // Upload a data manifest.
+        let mut manifest = UnifiedManifest::new();
+        assert_eq!(manifest.cluster_type, "data");
+        manifest.current_view = 1;
+        let bytes = bitcode::serialize(&manifest).unwrap();
+        man_store.upload_manifest("shard_0", 1, &bytes).await.unwrap();
+        man_store.register_version("shard_0", 1).await.unwrap();
+
+        let s3_config = crate::remote_store::config::S3StorageConfig {
+            bucket: String::new(),
+            prefix: String::new(),
+            endpoint_url: None,
+            region: None,
+        };
+
+        let clone_dir = tempfile::tempdir().unwrap();
+        let result = clone_from_remote_lazy(
+            &man_store, &s3_config, "shard_0", 1, clone_dir.path(),
+        ).await;
+        assert!(result.is_ok(), "should accept data manifest: {:?}", result);
     }
 }
