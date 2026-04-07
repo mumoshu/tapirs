@@ -6,13 +6,14 @@ use super::{Key, Timestamp, TransactionError, Value, IR};
 /// responses carry `QuorumRead` data. Returns `Err(OutOfRange)` when all
 /// responses are `OutOfRange`, or `Err(PrepareConflict)` when fewer than
 /// `f_plus_one` responses carry data due to prepared-but-uncommitted writes.
+/// Returns `Err(Unavailable)` when no responses were received (e.g. deadline).
 pub(crate) fn merge_quorum_read_results<K: Key, V: Value>(
     results: Vec<IR<K, V>>,
     f_plus_one: usize,
 ) -> Result<(Option<V>, Timestamp), TransactionError> {
     let mut best: Option<(Option<V>, Timestamp)> = None;
     let mut ok_count = 0usize;
-    let mut all_out_of_range = true;
+    let mut all_out_of_range = !results.is_empty();
     let mut has_prepare_conflict = false;
 
     for ir in results {
@@ -58,7 +59,7 @@ pub(crate) fn merge_quorum_scan_results<K: Key, V: Value>(
 ) -> Result<Vec<(K, Option<V>, Timestamp)>, TransactionError> {
     let mut merged = std::collections::BTreeMap::<K, (Option<V>, Timestamp)>::new();
     let mut ok_count = 0usize;
-    let mut all_out_of_range = true;
+    let mut all_out_of_range = !results.is_empty();
     let mut has_prepare_conflict = false;
 
     for ir in results {
@@ -254,5 +255,19 @@ mod tests {
         let results: Vec<IR<i64, i64>> = vec![IR::OutOfRange, IR::OutOfRange];
         let r = merge_quorum_scan_results(results, 2);
         assert!(matches!(r, Err(TransactionError::OutOfRange)));
+    }
+
+    #[test]
+    fn quorum_read_empty_results_is_unavailable() {
+        let results: Vec<IR<i64, i64>> = vec![];
+        let r = merge_quorum_read_results(results, 2);
+        assert!(matches!(r, Err(TransactionError::Unavailable)));
+    }
+
+    #[test]
+    fn quorum_scan_empty_results_is_unavailable() {
+        let results: Vec<IR<i64, i64>> = vec![];
+        let r = merge_quorum_scan_results(results, 2);
+        assert!(matches!(r, Err(TransactionError::Unavailable)));
     }
 }
