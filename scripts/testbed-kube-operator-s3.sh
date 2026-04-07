@@ -754,28 +754,32 @@ verify_clone_reads_source_data() {
     # coordinator resolves them one per tick (app_tick fires every 1s,
     # recover_coordination has a 5s timeout). With N prepared txns from
     # N view changes, worst case is N * (1s tick + 5s recovery).
-    # The source typically has 3-5 view changes worth of prepared txns,
-    # so 15s covers the worst case. Additionally, clone replicas need
-    # ~20s after pod startup to complete their first view change and
-    # establish quorum for serving reads.
-    info "Waiting 30s for clone quorum + prepared txn resolution..."
-    sleep 30
+    # The clone inherits prepared txns and needs time for:
+    # 1. Prepared txn resolution: N * (1s tick + 5s recovery) ≈ 15s
+    # 2. Quorum establishment: clone replicas need to complete their
+    #    first view change before they can serve reads (~10-20s)
+    # Retry the read up to 4 times (15s apart) to handle both.
+    local attempt
+    for attempt in 1 2 3 4; do
+        info "Clone read attempt ${attempt}/4 (waiting 15s)..."
+        sleep 15
 
-    kube delete pod clone-read 2>/dev/null || true
-    _smoke_pod clone-read "begin ro; get hello; abort" | \
-        sed "s|${TAPIR_CLUSTER_NAME}-discovery|${CLONE_CLUSTER_NAME}-discovery|g" | \
-        kube apply -f -
-    kube wait --for=jsonpath='{.status.phase}'=Succeeded pod/clone-read --timeout=60s 2>/dev/null || true
-    local output
-    output=$(kube logs clone-read 2>/dev/null) || true
-    kube delete pod clone-read --wait=false 2>/dev/null || true
+        kube delete pod clone-read 2>/dev/null || true
+        _smoke_pod clone-read "begin ro; get hello; abort" | \
+            sed "s|${TAPIR_CLUSTER_NAME}-discovery|${CLONE_CLUSTER_NAME}-discovery|g" | \
+            kube apply -f -
+        kube wait --for=jsonpath='{.status.phase}'=Succeeded pod/clone-read --timeout=60s 2>/dev/null || true
+        local output
+        output=$(kube logs clone-read 2>/dev/null) || true
+        kube delete pod clone-read --wait=false 2>/dev/null || true
 
-    if echo "${output}" | grep -q "world"; then
-        ok "Clone reads source data: 'world'."
-    else
-        warn "Clone read output: ${output}"
-        fail "Clone did not return expected 'world'."
-    fi
+        if echo "${output}" | grep -q "world"; then
+            ok "Clone reads source data: 'world'."
+            return 0
+        fi
+        warn "Clone read attempt ${attempt}: ${output}"
+    done
+    fail "Clone did not return expected 'world' after 4 attempts."
 }
 
 # ---------------------------------------------------------------------------
