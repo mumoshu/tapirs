@@ -456,6 +456,18 @@ where
         &self.manifest
     }
 
+    /// Log diagnostic state of ir_inc VlogLsm for debugging.
+    pub(crate) fn log_ir_inc_state(&self, label: &str) {
+        let sealed_ids: Vec<u64> = self.inc_lsm.sealed_segments_ref().keys().copied().collect();
+        let active_id = self.inc_lsm.active_vlog_id();
+        let active_offset = self.inc_lsm.active_write_offset();
+        let memtable_len = self.inc_lsm.memtable_len();
+        eprintln!(
+            "[ir_inc_state] {label}: sealed_ids={sealed_ids:?} active_id={active_id} active_offset={active_offset} memtable={memtable_len} base_view={}",
+            self.base_view
+        );
+    }
+
     /// Borrow the inconsistent-op VlogLsm (for lazy resolution by CombinedTapirHandle).
     pub(crate) fn inc_lsm(&self) -> &VlogLsm<OpId, InconsistentEntry<IO>, DIO> {
         &self.inc_lsm
@@ -731,6 +743,7 @@ where
         payload: PersistentPayload<IO, CO, CR>,
         new_view: u64,
     ) -> Option<ViewInstallResult<PersistentRecord<IO, CO, CR>>> {
+        self.log_ir_inc_state(&format!("install_sv_delta BEFORE view={new_view}"));
         let iw = std::time::Instant::now();
 
         // Build previous_record from existing data (segments + memtable).
@@ -791,6 +804,7 @@ where
         self.base_view = new_view;
         self.inc_lsm.start_view(new_view);
         self.con_lsm.start_view(new_view);
+        self.log_ir_inc_state(&format!("install_sv_delta AFTER view={new_view}"));
 
         let total_ms = iw.elapsed().as_millis();
         if total_ms > 10 {
@@ -813,6 +827,7 @@ where
         payload: PersistentPayload<IO, CO, CR>,
         new_view: u64,
     ) -> Option<ViewInstallResult<PersistentRecord<IO, CO, CR>>> {
+        self.log_ir_inc_state(&format!("install_sv_full BEFORE view={new_view}"));
         let iw = std::time::Instant::now();
 
         // Build previous_record from existing data.
@@ -864,6 +879,7 @@ where
         self.base_view = new_view;
         self.inc_lsm.start_view(new_view);
         self.con_lsm.start_view(new_view);
+        self.log_ir_inc_state(&format!("install_sv_full AFTER view={new_view}"));
 
         let total_ms = iw.elapsed().as_millis();
         if total_ms > 10 {
@@ -1050,6 +1066,7 @@ where
         merged: Self::Record,
         new_view: u64,
     ) -> MergeInstallResult<Self::Record, Self::Payload> {
+        self.log_ir_inc_state(&format!("install_merged_record BEFORE view={new_view}"));
         // Compute CDC transition: only entries in merged that differ from the base.
         let (transition, start_view_delta, previous_base_view) = if self.base_view > 0 {
             // The sealed record = checkpoint from the previous view change.
@@ -1127,6 +1144,7 @@ where
         self.base_view = new_view;
         self.inc_lsm.start_view(new_view);
         self.con_lsm.start_view(new_view);
+        self.log_ir_inc_state(&format!("install_merged_record AFTER view={new_view}"));
 
         MergeInstallResult {
             transition,
