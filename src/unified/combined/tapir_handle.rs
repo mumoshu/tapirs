@@ -332,7 +332,13 @@ impl<K: Key + Serialize + DeserializeOwned, V: Value + Serialize + DeserializeOw
 
         let (value, ts) = self
             .snapshot_get_at(key, snapshot_ts)
-            .map_err(|_| PrepareConflict)?;
+            .map_err(|e| {
+                tracing::error!(
+                    ?key, ?snapshot_ts, error = %e,
+                    "snapshot_get_protected: StorageError converted to PrepareConflict — this hides the real error"
+                );
+                PrepareConflict
+            })?;
 
         if self.linearizable {
             if value.is_some() {
@@ -359,7 +365,13 @@ impl<K: Key + Serialize + DeserializeOwned, V: Value + Serialize + DeserializeOw
 
         let results = self
             .snapshot_scan(start, end, snapshot_ts)
-            .map_err(|_| PrepareConflict)?;
+            .map_err(|e| {
+                tracing::error!(
+                    ?start, ?end, ?snapshot_ts, error = %e,
+                    "snapshot_scan_protected: StorageError converted to PrepareConflict — this hides the real error"
+                );
+                PrepareConflict
+            })?;
 
         if self.linearizable {
             self.occ_cache
