@@ -179,6 +179,9 @@ pub async fn run(
                 match result {
                     Ok(Some(val)) => println!("{key} = \"{val}\""),
                     Ok(None) => println!("{key} = (not found)"),
+                    Err(tapirs::TransactionError::OutOfRange) if matches!(&active_txn, Some(ActiveTxn::ReadOnly(_))) => {
+                        println!("{key} = (error: OutOfRange — if this is a read replica cluster, use 'begin replica' instead of 'begin ro')");
+                    }
                     Err(e) => println!("{key} = (error: {e:?})"),
                 }
             }
