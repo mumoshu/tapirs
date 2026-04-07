@@ -751,11 +751,13 @@ verify_clone_reads_source_data() {
     step "Verifying clone cluster reads source data..."
 
     # The clone inherits prepared transactions from the source. The backup
-    # coordinator resolves them: app_tick fires every 1s (ir/replica.rs:282),
-    # recover_coordination has a 5s timeout (replica.rs:901). So prepared
-    # txns are resolved within 1s (first tick) + 5s (recovery) = 6s.
-    info "Waiting 6s for backup coordinator to resolve inherited prepared txns..."
-    sleep 6
+    # coordinator resolves them one per tick (app_tick fires every 1s,
+    # recover_coordination has a 5s timeout). With N prepared txns from
+    # N view changes, worst case is N * (1s tick + 5s recovery).
+    # The source typically has 3-5 view changes worth of prepared txns,
+    # so 15s covers the worst case.
+    info "Waiting 15s for backup coordinator to resolve inherited prepared txns..."
+    sleep 15
 
     kube delete pod clone-read 2>/dev/null || true
     _smoke_pod clone-read "begin ro; get hello; abort" | \
@@ -829,7 +831,7 @@ verify_read_replica_reads_source_data() {
     local disc_endpoint="srv://${REPLICA_CLUSTER_NAME}-discovery.${NS}.svc.cluster.local:${DISCOVERY_TAPIR_PORT}"
 
     kube delete pod replica-read 2>/dev/null || true
-    _smoke_pod replica-read "begin ro; get hello; abort" | \
+    _smoke_pod replica-read "begin replica; get hello; abort" | \
         sed "s|${TAPIR_CLUSTER_NAME}-discovery|${REPLICA_CLUSTER_NAME}-discovery|g" | \
         kube apply -f -
     kube wait --for=jsonpath='{.status.phase}'=Succeeded pod/replica-read --timeout=60s 2>/dev/null || true
