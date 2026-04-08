@@ -21,22 +21,21 @@ What every replica builds and exchanges during an IR view change, with Big-O com
 |---|------|-----------|-----------------|-----------------|
 | 1 | SharedView | all replicas | O(1) | O(f) |
 | 2 | DVC addendum (delta) | sender → leader | O(D) | O(D) |
-| 3 | DVC addendum (full) | sender → leader | O(N log N + S) | O(N) |
+| 3 | DVC addendum (full) | sender → leader | O(S) reads | O(N) |
 | 4 | latest_normal_view | sender | O(1) | O(f) |
-| 5 | Resolved record | leader, per addendum | O(N + S) each, O(f(N+S)) total | O(N) each |
-| 6 | Merged record R | leader | O(f · N · log M) | O(M) |
-| 7 | entries_by_opid | leader | O(f · N) | O(f · U) |
-| 8 | d and u sets | leader | O(U · f²) | O(\|d\| + \|u\|) |
-| 9 | merge() result | leader (TAPIR) | O((\|d\|+\|u\|) · log T) | O(\|d\|+\|u\|) |
-| 10 | install_merged_record | leader | O(M + S) | O(\|delta\|) new |
-| 11 | StartView (full) | leader → lagging | O(S) reads | O(N) |
-| 12 | StartView (delta) | leader → caught-up | O(1) Arc clone | O(\|delta\|) |
-| 13 | Routing decision | leader | O(f) | — |
-| 14 | install_start_view | non-leader | O(N log N + S) | O(N) indexed |
-| 15 | sync() | all replicas (TAPIR) | O(M · log N) | — |
-| 16 | CDC delta | all replicas (TAPIR) | O(\|delta\| · W) | O(\|delta\| · W) |
-| 17 | flush/seal | all replicas | O(D + S) | O(D) disk |
-| 18 | S3 sync | all replicas (async) | O(\|new bytes\|) net | O(\|new bytes\|) |
+| 5 | Merged record R | leader | O(N log N + S + f·D·log M) | O(M) |
+| 6 | entries_by_opid | leader | O(f · D) | O(f · U) |
+| 7 | d and u sets | leader | O(U · f²) | O(\|d\| + \|u\|) |
+| 8 | merge() result | leader (TAPIR) | O((\|d\|+\|u\|) · log T) | O(\|d\|+\|u\|) |
+| 9 | install_merged_record | leader | O(M + S) | O(\|delta\|) new |
+| 10 | StartView (full) | leader → lagging | O(S) reads | O(N) |
+| 11 | StartView (delta) | leader → caught-up | O(1) Arc clone | O(\|delta\|) |
+| 12 | Routing decision | leader | O(f) | — |
+| 13 | install_start_view | non-leader | O(N log N + S) | O(N) indexed |
+| 14 | sync() | all replicas (TAPIR) | O(M · log N) | — |
+| 15 | CDC delta | all replicas (TAPIR) | O(\|delta\| · W) | O(\|delta\| · W) |
+| 16 | flush/seal | all replicas | O(D + S) | O(D) disk |
+| 17 | S3 sync | all replicas (async) | O(\|new bytes\|) net | O(\|new bytes\|) |
 
 ## Phase 1: DoViewChange (each replica → new leader)
 
@@ -62,11 +61,9 @@ Sent when `base_view + 1 == next_view` AND all peers confirmed latest normal vie
 
 Sent when there is a view gap or peers have not confirmed latest normal view.
 
-- **Source**: `src/ir/replica.rs:328` — `make_full_payload(full_record())`
-- **How**:
-  1. `full_record()` at `src/unified/ir/ir_record_store.rs:916-939`: calls `all_segment_bytes()` to read S sealed segments from disk (O(S) disk reads, O(N) bytes), then `memtable_bytes()` for D current entries, then `into_indexed()` which deserializes all bytes and inserts into BTreeMaps.
-  2. `make_full_payload` at line 994-1045: re-serializes the Indexed record back to vlog-format segment bytes.
-- **Build**: O(N log N + S) — dominated by `into_indexed()` building BTreeMaps from N entries.
+- **Source**: `src/ir/replica.rs:328` — `build_full_view_change_payload()`
+- **How**: Reads all sealed segment bytes with ViewRange metadata via `all_segment_bytes_with_views()`, appends memtable bytes, wraps as `PersistentPayload::full`. No deserialization or re-serialization round-trip.
+- **Build**: O(S) disk reads, O(N) bytes.
 - **Size**: O(N) bytes.
 
 ### 4. latest_normal_view
@@ -79,38 +76,27 @@ Piggybacked on the addendum. Clone of the replica's existing `SharedView`.
 
 ## Phase 2: Leader Merge
 
-### 5. Resolved record (per addendum)
+### 5. Merged record R
 
-The leader resolves each DoViewChange addendum payload into a full record for merging.
-
-- **Source**: `src/unified/ir/ir_record_store.rs:1220-1242` — `resolve_do_view_change_payload`
-- **How**: Each call exports the leader's own base via `all_segment_bytes()` (O(S) disk reads, O(N) bytes). Then `payload.resolve(base)` concatenates delta segments onto the base (O(D) for delta, O(1) for full). Returns `PersistentRecord::Raw`.
-- **Called**: f+1 times (once per addendum).
-- **Build**: O(N + S) per call. **O(f · (N + S)) total**.
-- **Size**: O(N) per resolved record.
-- **Note**: The base is re-exported from disk for each call. Caching would reduce total disk I/O from O(f · S) to O(S).
-
-### 6. Merged record R
-
-BTreeMap union of all entries from f+1 resolved records.
+BTreeMap union of leader's record plus peer payload entries.
 
 - **Source**: `src/ir/replica.rs:602-658`
-- **How**: For each of f+1 resolved Raw records, iterates entries via `scan_entries()` (O(N) deserialization per record). Each entry is inserted into R's BTreeMap (O(log M) per insert).
-  - **Inconsistent entries** (lines 608-631): If entry already in R, keeps the one with higher finalization view. Otherwise marks as Finalized in new view.
-  - **Consensus entries** (lines 632-658): Finalized entries go directly into R. Tentative entries are collected into `entries_by_opid` for majority voting.
-- **Build**: **O(f · N · log M)**.
+- **How**: The leader builds its own `full_record()` once (O(N log N + S): reads all sealed segments via `all_segment_bytes_with_views`, strips views, adds memtable, deserializes via `into_indexed`). R is initialized from this record. Then for each of f peers' DVC payloads, entries are scanned from the payload segments directly via `as_unresolved_record()` and merged into R. Delta payloads contribute only O(D) entries each; full payloads contribute O(N) but base entries are harmless duplicates.
+  - **Inconsistent entries**: If entry already in R, keeps the one with higher finalization view. Otherwise marks as Finalized in new view.
+  - **Consensus entries**: Finalized entries go directly into R. Tentative entries are collected into `entries_by_opid` for majority voting.
+- **Build**: **O(N log N + S + f · D · log M)** — one base read, f delta scans.
 - **Size**: O(M) entries.
 
-### 7. entries_by_opid
+### 6. entries_by_opid
 
 Tentative consensus entries grouped by OpId, collected during the merge loop.
 
 - **Source**: `src/ir/replica.rs:649-655`
 - **How**: O(1) per tentative entry to push into the Vec for that OpId.
-- **Build**: O(f · N) amortized (built in the same pass as R).
+- **Build**: O(f · D) amortized (built in the same pass as R; only delta entries are tentative).
 - **Size**: O(f · U) — up to f+1 entries per undecided OpId.
 
-### 8. d (majority-decided) and u (undecided)
+### 7. d (majority-decided) and u (undecided)
 
 Partition of tentative consensus entries based on majority voting.
 
@@ -119,7 +105,7 @@ Partition of tentative consensus entries based on majority voting.
 - **Build**: **O(U · f²)** — nested comparison. With f typically 1-2, effectively O(U).
 - **Size**: O(|d| + |u|).
 
-### 9. merge() result (TAPIR upcall)
+### 8. merge() result (TAPIR upcall)
 
 The TAPIR application layer decides the final result for all undecided operations.
 
@@ -131,7 +117,7 @@ The TAPIR application layer decides the final result for all undecided operation
 - **Build**: **O((|d| + |u|) · log T)**.
 - **Size**: O(|d| + |u|) result map.
 
-### 10. install_merged_record
+### 9. install_merged_record
 
 Persists the merged record and produces delta for StartView.
 
@@ -150,16 +136,16 @@ Persists the merged record and produces delta for StartView.
 
 ## Phase 3: StartView Broadcast (leader → all replicas)
 
-### 11. StartView payload (full)
+### 10. StartView payload (full)
 
 Sent to recipients whose latest_normal_view does NOT match the leader's previous base view.
 
 - **Source**: `src/ir/replica.rs:773` — `build_start_view_payload(None)`
-- **How**: `src/unified/ir/ir_record_store.rs:985-991` — reads all sealed segment bytes with ViewRange metadata via `all_segment_bytes_with_views()`.
+- **How**: `src/unified/ir/ir_record_store.rs` — reads all sealed segment bytes with ViewRange metadata.
 - **Build**: O(S) disk reads. Built **once**, then Arc-cloned O(1) per additional recipient.
 - **Size**: O(N) bytes.
 
-### 12. StartView payload (delta)
+### 11. StartView payload (delta)
 
 Sent to recipients whose latest_normal_view matches the leader's previous base view.
 
@@ -168,7 +154,7 @@ Sent to recipients whose latest_normal_view matches the leader's previous base v
 - **Build**: **O(1)**.
 - **Size**: O(|delta|) bytes.
 
-### 13. Per-recipient routing decision
+### 12. Per-recipient routing decision
 
 Determines whether each recipient gets a full or delta StartView.
 
@@ -178,7 +164,7 @@ Determines whether each recipient gets a full or delta StartView.
 
 ## Phase 4: install_start_view (non-leader replicas)
 
-### 14. install_start_view_unified
+### 13. install_start_view_unified
 
 Installs the StartView payload, producing three records for upcalls.
 
@@ -193,7 +179,7 @@ Installs the StartView payload, producing three records for upcalls.
 - **Build**: **O(N log N + S)** — dominated by the three `into_indexed()` calls.
 - **Produces**: `ViewInstallResult` with previous_record, transition, new_record.
 
-### 15. sync() (TAPIR upcall)
+### 14. sync() (TAPIR upcall)
 
 Synchronizes local TAPIR state with the leader's merged record.
 
@@ -208,7 +194,7 @@ Synchronizes local TAPIR state with the leader's merged record.
   - Calls `gc_stale_state()` at end.
 - **Build**: **O(M · log N)**.
 
-### 16. CDC delta (on_install_leader_record_delta)
+### 15. CDC delta (on_install_leader_record_delta)
 
 Extracts committed write-set changes for change data capture.
 
@@ -219,7 +205,7 @@ Extracts committed write-set changes for change data capture.
 
 ## Phase 5: Post-View-Change (all replicas)
 
-### 17. flush/seal
+### 16. flush/seal
 
 Seals VlogLsm memtables and saves manifest to disk.
 
@@ -230,7 +216,7 @@ Seals VlogLsm memtables and saves manifest to disk.
 - **Build**: **O(D + S)**.
 - **Disk bytes**: O(D).
 
-### 18. S3 sync (async, fire-and-forget)
+### 17. S3 sync (async, fire-and-forget)
 
 Uploads new segments and manifest to S3 after view change.
 
@@ -244,11 +230,9 @@ Uploads new segments and manifest to S3 after view change.
 
 ## Observations
 
-### 1. Leader merge is the bottleneck
+### 1. Leader merge reads base once
 
-The dominant cost is on the leader: **O(f · N · log M + f · S)**.
-
-`resolve_do_view_change_payload` (line 1230) re-exports the base sealed segments via `all_segment_bytes()` for each of f+1 addenda. This means O(f · S) disk reads. Caching the base bytes across calls would reduce this to O(S).
+The leader builds its own `full_record()` once (O(N log N + S)), initializes R from it, then scans only delta entries from each peer's DVC payload. The dominant cost is **O(N log N + S + f · D · log M)**. Previously `resolve_do_view_change_payload` re-read the base for each of f+1 payloads — O(f · (N + S)) — which was eliminated by scanning payload segments directly.
 
 ### 2. Delta optimization is critical
 
@@ -262,10 +246,6 @@ The IR record accumulates entries across all views. There is no pruning or compa
 
 Lines 831, 839, and 851 each call `into_indexed()` which is O(N log N). `previous_record` and `new_record` share most of their segments — a single-pass overlay approach could reduce the total to O(N log N) once plus O(|delta| log |delta|).
 
-### 5. Redundant base export in resolve
-
-`resolve_do_view_change_payload` at line 1230-1237 re-reads all sealed segments for each of f+1 payloads. Caching the byte export across calls would reduce O(f · S) disk reads to O(S).
-
-### 6. Quadratic majority detection
+### 5. Quadratic majority detection
 
 The d/u computation at lines 675-686 is O(f²) per undecided OpId due to the nested filter. With f typically 1-2 in production, this is not a practical concern but is theoretically quadratic in f.
