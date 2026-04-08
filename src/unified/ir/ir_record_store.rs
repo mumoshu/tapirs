@@ -595,13 +595,6 @@ where
         Ok(())
     }
 
-    /// Build segment bytes for all sealed + active vlog data.
-    fn all_segment_bytes(&self) -> Result<(Vec<Vec<u8>>, Vec<Vec<u8>>), StorageError> {
-        let inc = self.inc_lsm.export_segment_bytes()?;
-        let con = self.con_lsm.export_segment_bytes()?;
-        Ok((inc, con))
-    }
-
     /// Build segment bytes paired with ViewRange metadata for all sealed + active vlog data.
     fn all_segment_bytes_with_views(
         &self,
@@ -895,17 +888,19 @@ where
     }
 
     fn full_record(&self) -> Self::Record {
-        let (inc, con) = self
-            .all_segment_bytes()
-            .expect("full_record: export_segment_bytes failed");
+        let (inc_with_views, con_with_views) = self
+            .all_segment_bytes_with_views()
+            .expect("full_record: export_segment_bytes_with_views failed");
+        let mut inc_segments: Vec<Vec<u8>> =
+            inc_with_views.into_iter().map(|(_, bytes)| bytes).collect();
+        let mut con_segments: Vec<Vec<u8>> =
+            con_with_views.into_iter().map(|(_, bytes)| bytes).collect();
         let (inc_mem, con_mem) = self
             .memtable_bytes()
             .expect("full_record: memtable_bytes failed");
-        let mut inc_segments = inc;
         if !inc_mem.is_empty() {
             inc_segments.push(inc_mem);
         }
-        let mut con_segments = con;
         if !con_mem.is_empty() {
             con_segments.push(con_mem);
         }

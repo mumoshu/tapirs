@@ -545,22 +545,6 @@ impl<K: Ord, V, IO: DiskIo, M: Memtable<K, V>> VlogLsm<K, V, IO, M> {
         self.memtable.mem_len()
     }
 
-    /// Read raw bytes from all sealed + active vlog segments.
-    pub(crate) fn export_segment_bytes(&self) -> Result<Vec<Vec<u8>>, StorageError> {
-        let mut result = Vec::new();
-        for seg in self.sealed_segments.values() {
-            let bytes = seg.read_all_bytes()?;
-            if !bytes.is_empty() {
-                result.push(bytes);
-            }
-        }
-        let active_bytes = self.active_vlog.read_all_bytes()?;
-        if !active_bytes.is_empty() {
-            result.push(active_bytes);
-        }
-        Ok(result)
-    }
-
     /// Export all segment bytes paired with their ViewRange metadata.
     ///
     /// Each sealed segment is paired with its `views` from the VlogSegment.
