@@ -173,14 +173,6 @@ where
             .install_merged_record(merged, new_view, best_payload, resolved_ops)
     }
 
-    fn resolve_do_view_change_payload(&self, payload: &Self::Payload) -> Self::Record {
-        self.inner
-            .lock()
-            .unwrap()
-            .ir
-            .resolve_do_view_change_payload(payload)
-    }
-
     fn flush(&mut self) {
         // Delegates to PersistentIrRecordStore::flush which seals inc_lsm + con_lsm.
         self.inner.lock().unwrap().ir.flush();

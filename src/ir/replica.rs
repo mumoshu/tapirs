@@ -569,17 +569,25 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                                     );
                                     return None;
                                 }
-                                let latest_records = matching
+                                // Build the leader's own record once (reads base
+                                // segments once). Peers' payloads are scanned
+                                // directly — no base re-read, no resolve step.
+                                let leader_record = sync.record.full_record();
+
+                                // Collect peer payload records (delta entries only
+                                // for delta payloads, all entries for full payloads).
+                                // Excludes the leader — its entries are in leader_record.
+                                let peer_records: Vec<_> = matching
                                     .clone()
-                                    .filter(|(_, r)| {
-                                        r.addendum.as_ref().unwrap().latest_normal_view.number
-                                            == latest_normal_view.number
+                                    .filter(|(addr, r)| {
+                                        **addr != my_address
+                                            && r.addendum.as_ref().unwrap().latest_normal_view.number
+                                                == latest_normal_view.number
                                     })
                                     .map(|(_, r)| {
-                                        let addendum = r.addendum.as_ref().unwrap();
-                                        sync.record.resolve_do_view_change_payload(&addendum.payload)
+                                        sync.record.payload_as_record(&r.addendum.as_ref().unwrap().payload)
                                     })
-                                    .collect::<Vec<_>>();
+                                    .collect();
 
                                 if tracing::enabled!(tracing::Level::TRACE) {
                                     let dvc_debug: Vec<_> = sync
@@ -593,8 +601,8 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                                         )
                                         .collect();
                                     trace!(
-                                        "have {} latest records ({:?})",
-                                        latest_records.len(),
+                                        "have 1 leader + {} peer records ({:?})",
+                                        peer_records.len(),
                                         dvc_debug
                                     );
                                 }
@@ -604,7 +612,9 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                                 let mut entries_by_opid =
                                     BTreeMap::<OpId, Vec<RecordConsensusEntry<U::CO, U::CR>>>::new();
                                 let mut finalized = HashSet::new();
-                                for r in latest_records {
+
+                                // Merge helper: process one record's entries into R.
+                                let mut merge_record = |r: &R::Record| {
                                     for (op_id, entry) in r.inconsistent_entries() {
                                         if let Some(existing) = R.get_inconsistent(&op_id) {
                                             // Already in R — only update if incoming has a
@@ -656,6 +666,12 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                                             }
                                         }
                                     }
+                                };
+
+                                // Leader's record (base + memtable) first, then peer deltas.
+                                merge_record(&leader_record);
+                                for r in &peer_records {
+                                    merge_record(r);
                                 }
 
                                 // build d and u
@@ -706,9 +722,8 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                                     .next();
 
                                 {
-                                    let old_record = sync.record.full_record();
                                     let sync = &mut *sync;
-                                    sync.upcalls.sync(&old_record, &R);
+                                    sync.upcalls.sync(&leader_record, &R);
                                 }
 
                                 let results_by_opid =

@@ -105,9 +105,12 @@ where
         resolved_ops: &BTreeSet<OpId>,
     ) -> MergeInstallResult<Self::Record, Self::Payload>;
 
-    /// Resolve a DoViewChange addendum payload. Validates delta base internally
-    /// (panics on mismatch). Returns the resolved full record for merging.
-    fn resolve_do_view_change_payload(&self, payload: &Self::Payload) -> Self::Record;
+    /// Return a Record containing only the payload's own segment entries,
+    /// without resolving against a base. For delta payloads this contains
+    /// only the delta entries; for full payloads, all entries.
+    fn payload_as_record(&self, payload: &Self::Payload) -> Self::Record {
+        payload.as_unresolved_record()
+    }
 
     /// Seal VlogLsm memtables to durable storage and save manifest.
     fn flush(&mut self);

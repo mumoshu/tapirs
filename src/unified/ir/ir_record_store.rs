@@ -386,43 +386,24 @@ where
 {
     type Record = PersistentRecord<IO, CO, CR>;
 
-    fn resolve(self, base: Option<&Self::Record>) -> Self::Record {
+    fn base_view(&self) -> Option<ViewNumber> {
+        let PayloadInner::Delta { base_view, .. } = self.inner.as_ref();
+        Some(*base_view)
+    }
+
+    fn as_unresolved_record(&self) -> Self::Record {
         let PayloadInner::Delta {
-            base_view,
             inc_segments,
             con_segments,
+            ..
         } = self.inner.as_ref();
         let strip = |segs: &[(Vec<ViewRange>, Vec<u8>)]| -> Vec<Vec<u8>> {
             segs.iter().map(|(_, bytes)| bytes.clone()).collect()
         };
-        if base_view.0 == 0 {
-            PersistentRecord::Raw {
-                inc_segments: strip(inc_segments),
-                con_segments: strip(con_segments),
-            }
-        } else {
-            let base = base.expect("delta requires matching base");
-            let (mut all_inc, mut all_con) = match base {
-                PersistentRecord::Raw {
-                    inc_segments: bi,
-                    con_segments: bc,
-                } => (bi.clone(), bc.clone()),
-                PersistentRecord::Indexed { .. } => {
-                    panic!("delta resolve on Indexed base")
-                }
-            };
-            all_inc.extend(strip(inc_segments));
-            all_con.extend(strip(con_segments));
-            PersistentRecord::Raw {
-                inc_segments: all_inc,
-                con_segments: all_con,
-            }
+        PersistentRecord::Raw {
+            inc_segments: strip(inc_segments),
+            con_segments: strip(con_segments),
         }
-    }
-
-    fn base_view(&self) -> Option<ViewNumber> {
-        let PayloadInner::Delta { base_view, .. } = self.inner.as_ref();
-        Some(*base_view)
     }
 }
 
@@ -1221,30 +1202,6 @@ where
         }
     }
 
-    fn resolve_do_view_change_payload(&self, payload: &Self::Payload) -> Self::Record {
-        if let Some(bv) = payload.base_view()
-            && bv.0 > 0
-        {
-            assert!(
-                self.base_view > 0 && ViewNumber(self.base_view) == bv,
-                "Delta addendum base_view={bv:?} mismatches coordinator base={:?}",
-                (self.base_view > 0).then_some(ViewNumber(self.base_view)),
-            );
-        }
-        let base = if self.base_view > 0 {
-            let (inc, con) = self
-                .all_segment_bytes()
-                .expect("resolve_do_view_change: export failed");
-            Some(PersistentRecord::Raw {
-                inc_segments: inc,
-                con_segments: con,
-            })
-        } else {
-            None
-        };
-        payload.clone().resolve(base.as_ref())
-    }
-
     fn flush(&mut self) {
         // seal() flushes both VlogLsm memtables and saves the manifest.
         // Pass current base_view — flush must NOT advance the base view.
@@ -1519,8 +1476,8 @@ mod tests {
     }
 
     #[test]
-    fn resolve_do_view_change_full() {
-        let store = make_store();
+    fn as_unresolved_record_full() {
+        let _store = make_store();
         // Create a full payload with some entries
         let op = op_id(1, 1);
         let entry = fin_inc_entry("test", 0);
@@ -1531,9 +1488,10 @@ mod tests {
             op.number,
             &payload_bytes,
         );
-        let payload = PersistentPayload::full(vec![(Vec::new(), raw)], Vec::new());
+        let payload: PersistentPayload<String, String, String> =
+            PersistentPayload::full(vec![(Vec::new(), raw)], Vec::new());
 
-        let record = store.resolve_do_view_change_payload(&payload);
+        let record = payload.as_unresolved_record();
         let entries: Vec<_> = record.inconsistent_entries().collect();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].1.op, "test");
