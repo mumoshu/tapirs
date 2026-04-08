@@ -516,9 +516,12 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                     }
                 match self.store.do_committed_get(key.clone(), *timestamp) {
                     Ok((value, write_ts)) => Some(IR::QuorumRead(value, write_ts)),
-                    Err(e) => {
-                        tracing::error!(?key, ?timestamp, error = ?e, "QuorumRead: do_committed_get failed");
+                    Err(crate::occ::CommittedReadError::PrepareConflict) => {
                         Some(IR::PrepareConflict)
+                    }
+                    Err(crate::occ::CommittedReadError::StorageError(e)) => {
+                        tracing::error!(?key, ?timestamp, error = %e, "QuorumRead: StorageError (NOT a prepare conflict — check IR inc_lsm data)");
+                        Some(IR::InternalError)
                     }
                 }
             }
@@ -539,9 +542,12 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
                 }
                 match self.store.do_committed_scan(start_key.clone(), end_key.clone(), *snapshot_ts) {
                     Ok(results) => Some(IR::QuorumScan(results)),
-                    Err(e) => {
-                        tracing::error!(?start_key, ?end_key, ?snapshot_ts, error = ?e, "QuorumScan: do_committed_scan failed");
+                    Err(crate::occ::CommittedReadError::PrepareConflict) => {
                         Some(IR::PrepareConflict)
+                    }
+                    Err(crate::occ::CommittedReadError::StorageError(e)) => {
+                        tracing::error!(?start_key, ?end_key, ?snapshot_ts, error = %e, "QuorumScan: StorageError (NOT a prepare conflict — check IR inc_lsm data)");
+                        Some(IR::InternalError)
                     }
                 }
             }

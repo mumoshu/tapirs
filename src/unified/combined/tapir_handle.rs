@@ -3,7 +3,7 @@ use crate::mvcc::disk::disk_io::DiskIo;
 use crate::mvcc::disk::error::StorageError;
 use crate::mvcc::disk::memtable::{CompositeKey, MaxValue};
 use crate::occ::{
-    PrepareConflict, PrepareResult, SharedTransaction,
+    PrepareResult, SharedTransaction,
     Transaction as OccTransaction, TransactionId,
 };
 use crate::tapir::{Key, LeaderRecordDelta, ShardNumber, Timestamp, Value};
@@ -325,20 +325,14 @@ impl<K: Key + Serialize + DeserializeOwned, V: Value + Serialize + DeserializeOw
         &mut self,
         key: &K,
         snapshot_ts: Timestamp,
-    ) -> Result<(Option<V>, Timestamp), PrepareConflict> {
+    ) -> Result<(Option<V>, Timestamp), crate::occ::CommittedReadError> {
         if self.occ_cache.check_get_conflict(key, snapshot_ts) {
-            return Err(PrepareConflict);
+            return Err(crate::occ::CommittedReadError::PrepareConflict);
         }
 
         let (value, ts) = self
             .snapshot_get_at(key, snapshot_ts)
-            .map_err(|e| {
-                tracing::error!(
-                    ?key, ?snapshot_ts, error = %e,
-                    "snapshot_get_protected: StorageError converted to PrepareConflict — this hides the real error"
-                );
-                PrepareConflict
-            })?;
+            .map_err(crate::occ::CommittedReadError::StorageError)?;
 
         if self.linearizable {
             if value.is_some() {
@@ -358,20 +352,14 @@ impl<K: Key + Serialize + DeserializeOwned, V: Value + Serialize + DeserializeOw
         start: &K,
         end: &K,
         snapshot_ts: Timestamp,
-    ) -> Result<Vec<(K, Option<V>, Timestamp)>, PrepareConflict> {
+    ) -> Result<Vec<(K, Option<V>, Timestamp)>, crate::occ::CommittedReadError> {
         if self.occ_cache.check_scan_conflict(start, end, snapshot_ts) {
-            return Err(PrepareConflict);
+            return Err(crate::occ::CommittedReadError::PrepareConflict);
         }
 
         let results = self
             .snapshot_scan(start, end, snapshot_ts)
-            .map_err(|e| {
-                tracing::error!(
-                    ?start, ?end, ?snapshot_ts, error = %e,
-                    "snapshot_scan_protected: StorageError converted to PrepareConflict — this hides the real error"
-                );
-                PrepareConflict
-            })?;
+            .map_err(crate::occ::CommittedReadError::StorageError)?;
 
         if self.linearizable {
             self.occ_cache
@@ -833,7 +821,7 @@ where
         &mut self,
         key: K,
         ts: Timestamp,
-    ) -> Result<(Option<V>, Timestamp), PrepareConflict> {
+    ) -> Result<(Option<V>, Timestamp), crate::occ::CommittedReadError> {
         self.inner.lock().unwrap().snapshot_get_protected(&key, ts)
     }
 
@@ -842,7 +830,7 @@ where
         start: K,
         end: K,
         ts: Timestamp,
-    ) -> Result<Vec<(K, Option<V>, Timestamp)>, PrepareConflict> {
+    ) -> Result<Vec<(K, Option<V>, Timestamp)>, crate::occ::CommittedReadError> {
         self.inner
             .lock()
             .unwrap()

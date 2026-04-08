@@ -1,6 +1,6 @@
 use crate::ir::OpId;
 use crate::mvcc::disk::error::StorageError;
-use crate::occ::{PrepareConflict, PrepareResult, SharedTransaction, Transaction, TransactionId};
+use crate::occ::{PrepareResult, SharedTransaction, Transaction, TransactionId};
 use crate::tapir::{Key, LeaderRecordDelta, ShardNumber, Timestamp, Value};
 
 /// Result of checking the current status of a transaction for prepare decisions.
@@ -292,7 +292,7 @@ pub trait TapirStore<K: Key, V: Value>: Send + Sync + 'static {
         &mut self,
         key: K,
         ts: Timestamp,
-    ) -> Result<(Option<V>, Timestamp), PrepareConflict>;
+    ) -> Result<(Option<V>, Timestamp), crate::occ::CommittedReadError>;
 
     /// Scan `[start, end]` (inclusive) at snapshot `ts` with conflict
     /// detection and range-level read protection.
@@ -347,7 +347,7 @@ pub trait TapirStore<K: Key, V: Value>: Send + Sync + 'static {
         start: K,
         end: K,
         ts: Timestamp,
-    ) -> Result<Vec<(K, Option<V>, Timestamp)>, PrepareConflict>;
+    ) -> Result<Vec<(K, Option<V>, Timestamp)>, crate::occ::CommittedReadError>;
 
     // === Uncommitted Validated Reads ===
 

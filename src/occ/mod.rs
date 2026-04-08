@@ -31,10 +31,14 @@ pub enum PrepareResult<TS: Timestamp> {
     OutOfRange,
 }
 
-/// Returned by quorum read/scan when the read conflicts with a
-/// prepared-but-uncommitted write at `commit_ts <= snapshot_ts`.
+/// Error from `do_committed_get` / `do_committed_scan`.
 #[derive(Debug)]
-pub struct PrepareConflict;
+pub enum CommittedReadError {
+    /// A prepared-but-uncommitted write conflicts with this read.
+    PrepareConflict,
+    /// Internal storage error (e.g. missing IR inc segment, corrupt data).
+    StorageError(crate::mvcc::disk::StorageError),
+}
 
 impl<TS: Timestamp> PrepareResult<TS> {
     pub fn is_ok(&self) -> bool {

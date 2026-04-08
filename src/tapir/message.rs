@@ -354,7 +354,7 @@ pub enum IR<K, V> {
     ),
     OutOfRange,
     /// QuorumRead or QuorumScan conflicted with a prepared-but-uncommitted
-    /// write at `commit_ts <= snapshot_ts` (see [`crate::occ::PrepareConflict`]).
+    /// write at `commit_ts <= snapshot_ts` (see [`crate::occ::CommittedReadError`]).
     ///
     /// This is a tapirs extension to TAPIR, not an original TAPIR primitive.
     /// The original paper relies on piggybacking Finalize on the next Propose,
@@ -363,4 +363,7 @@ pub enum IR<K, V> {
     /// the replica, and the ShardClient retries with exponential backoff until
     /// the prepare resolves (committed to MVCC or aborted).
     PrepareConflict,
+    /// Internal storage error on this replica (e.g. missing IR inc segment).
+    /// NOT a prepare conflict — the replica cannot serve this read.
+    InternalError,
 }
