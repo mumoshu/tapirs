@@ -1245,20 +1245,6 @@ where
         payload.clone().resolve(base.as_ref())
     }
 
-    fn checkpoint_record(&self) -> Option<Self::Record> {
-        if self.base_view > 0 {
-            let (inc, con) = self
-                .all_segment_bytes()
-                .expect("checkpoint_record: export failed");
-            Some(PersistentRecord::Raw {
-                inc_segments: inc,
-                con_segments: con,
-            })
-        } else {
-            None
-        }
-    }
-
     fn flush(&mut self) {
         // seal() flushes both VlogLsm memtables and saves the manifest.
         // Pass current base_view — flush must NOT advance the base view.

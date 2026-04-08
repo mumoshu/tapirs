@@ -181,10 +181,6 @@ where
             .resolve_do_view_change_payload(payload)
     }
 
-    fn checkpoint_record(&self) -> Option<Self::Record> {
-        self.inner.lock().unwrap().ir.checkpoint_record()
-    }
-
     fn flush(&mut self) {
         // Delegates to PersistentIrRecordStore::flush which seals inc_lsm + con_lsm.
         self.inner.lock().unwrap().ir.flush();

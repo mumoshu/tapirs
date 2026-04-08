@@ -932,9 +932,10 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                 }
             }
             Message::<U, T>::FetchLeaderRecord(_) => {
-                let (payload, view) = match sync.record.checkpoint_record() {
-                    Some(r) => (Some(R::make_full_payload(r)), sync.record_base_view.clone()),
-                    None => (None, None),
+                let (payload, view) = if sync.record_base_view.is_some() {
+                    (Some(sync.record.build_start_view_payload(None)), sync.record_base_view.clone())
+                } else {
+                    (None, None)
                 };
                 return Some(Message::<U, T>::LeaderRecordReply(LeaderRecordReply { payload, view }));
             }
