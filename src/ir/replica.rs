@@ -325,7 +325,7 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                         let payload = if peers_confirmed {
                             sync.record.build_view_change_payload(sync.view.number.0)
                         } else {
-                            R::make_full_payload(sync.record.full_record())
+                            sync.record.build_full_view_change_payload()
                         };
                         ViewChangeAddendum::new(
                             payload,

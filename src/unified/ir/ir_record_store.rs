@@ -965,21 +965,25 @@ where
                 }],
             )
         } else {
-            // Full: all segment bytes with views + memtable
-            let (mut inc, mut con) = self
-                .all_segment_bytes_with_views()
-                .expect("build_view_change_payload: export failed");
-            let (inc_mem, con_mem) = self
-                .memtable_bytes()
-                .expect("build_view_change_payload: memtable_bytes failed");
-            if !inc_mem.is_empty() {
-                inc.push((Vec::new(), inc_mem));
-            }
-            if !con_mem.is_empty() {
-                con.push((Vec::new(), con_mem));
-            }
-            PersistentPayload::full(inc, con)
+            self.build_full_view_change_payload()
         }
+    }
+
+    fn build_full_view_change_payload(&self) -> Self::Payload {
+        // Full: all segment bytes with views + memtable
+        let (mut inc, mut con) = self
+            .all_segment_bytes_with_views()
+            .expect("build_full_view_change_payload: export failed");
+        let (inc_mem, con_mem) = self
+            .memtable_bytes()
+            .expect("build_full_view_change_payload: memtable_bytes failed");
+        if !inc_mem.is_empty() {
+            inc.push((Vec::new(), inc_mem));
+        }
+        if !con_mem.is_empty() {
+            con.push((Vec::new(), con_mem));
+        }
+        PersistentPayload::full(inc, con)
     }
 
     fn build_start_view_payload(&self, delta: Option<&Self::Payload>) -> Self::Payload {
