@@ -632,7 +632,7 @@ impl<K: Ord, V, IO: DiskIo, M: Memtable<K, V>> VlogLsm<K, V, IO, M> {
         views: Vec<ViewRange>,
     ) -> Result<Option<VlogSegmentMeta>, StorageError>
     where
-        K: Clone,
+        K: Serialize + DeserializeOwned + Clone,
         F: Fn(&RawVlogEntry) -> Option<K>,
     {
         if bytes.is_empty() {
@@ -653,21 +653,26 @@ impl<K: Ord, V, IO: DiskIo, M: Memtable<K, V>> VlogLsm<K, V, IO, M> {
         let seg = VlogSegment::<IO>::open_at(
             id, path.clone(), bytes.len() as u64, views.clone(), self.io_flags,
         )?;
-        // Scan entries and rebuild index
+        // Scan entries and rebuild index + SST
+        let mut new_entries: BTreeMap<K, VlogPtr> = BTreeMap::new();
+        for (offset, raw) in seg.iter_raw_entries()? {
+            if let Some(key) = key_fn(&raw) {
+                let ptr = VlogPtr {
+                    segment_id: id,
+                    offset,
+                    length: raw.payload.len() as u32
+                        + super::vlog::VLOG_RAW_ENTRY_OVERHEAD as u32,
+                };
+                new_entries.insert(key, ptr);
+            }
+        }
         if let Some(ref mut idx) = self.index {
-            for (offset, raw) in seg.iter_raw_entries()? {
-                if let Some(key) = key_fn(&raw) {
-                    let ptr = VlogPtr {
-                        segment_id: id,
-                        offset,
-                        length: raw.payload.len() as u32
-                            + super::vlog::VLOG_RAW_ENTRY_OVERHEAD as u32,
-                    };
-                    idx.insert(key, ptr);
-                }
+            for (key, ptr) in &new_entries {
+                idx.insert(key.clone(), *ptr);
             }
         }
         self.sealed_segments.insert(id, seg);
+        self.write_sst(&new_entries)?;
         Ok(Some(VlogSegmentMeta {
             segment_id: id,
             path,
