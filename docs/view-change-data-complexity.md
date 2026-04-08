@@ -249,3 +249,35 @@ Lines 831, 839, and 851 each call `into_indexed()` which is O(N log N). `previou
 ### 5. Quadratic majority detection
 
 The d/u computation at lines 675-686 is O(f²) per undecided OpId due to the nested filter. With f typically 1-2 in production, this is not a practical concern but is theoretically quadratic in f.
+
+### 6. Remaining read-and-deserialize-all-segments sites
+
+Three places still read and deserialize all segment bytes into Indexed (BTreeMap) records:
+
+**1. `full_record()`** — `ir_record_store.rs:914`
+
+Reads all sealed segments via `all_segment_bytes_with_views()` + memtable → `into_indexed()`. Called once per view change on the leader (for merge + sync).
+
+**2. `install_start_view_unified()`** — 3 calls at lines 805, 813, 825
+
+Builds three Indexed records from segment bytes:
+
+- `previous_record` (line 805): existing segments + memtable → `into_indexed()` — O((N_existing + D) log(N_existing + D))
+- `transition` (line 813): new segments only → `into_indexed()` — O(|delta| log |delta|)
+- `new_record` (line 825): ALL segments (existing + new) → `into_indexed()` — O(N log N)
+
+`previous_record` and `new_record` share most of their segments — observation #4 notes a single-pass overlay approach could reduce this to O(N log N) once + O(|delta| log |delta|).
+
+**3. `RecordView` methods on `PersistentRecord::Raw`** — lines 222, 233, 244, 256
+
+When `consensus_entries()`, `inconsistent_entries()`, `get_consensus()`, `get_inconsistent()` are called on a Raw record, they call `scan_entries()` which deserializes all segment bytes. This happens when the merge loop iterates peer payload records (via `as_unresolved_record()` → Raw → iterator). Those are only delta-sized though, not the full record.
+
+**Summary:**
+
+| Site | Reads | Deserializes | When |
+|------|-------|-------------|------|
+| `full_record()` | all sealed segments + memtable | O(N log N) via `into_indexed` | leader merge (once per VC) |
+| `install_start_view_unified` ×3 | existing + new segment bytes | O(N log N) × 3 | non-leader install (per VC) |
+| `RecordView` on Raw | already in memory | O(D) per scan | merge loop (peer deltas) |
+
+The biggest remaining opportunity is `install_start_view_unified` with its triple `into_indexed()`. The `full_record()` in the leader path reads all segments once — that's harder to avoid since the `sync()` upcall needs O(log n) lookups on the full record.
