@@ -491,9 +491,6 @@ verify_s3_args_in_statefulset() {
 smoke_test_write_read() {
     step "Running smoke test: write + read..."
 
-    # Retry loop: the operator sets TAPIRCluster to Running when
-    # StatefulSets are ready, but TAPIR replicas may still be
-    # establishing IR quorum. Retry the write until it succeeds.
     local attempt
     for attempt in 1 2 3 4; do
         info "Write attempt ${attempt}/4..."
@@ -511,8 +508,8 @@ smoke_test_write_read() {
             warn "Write output: ${write_output}"
             fail "Smoke test write failed after 4 attempts."
         fi
-        info "Write not ready, waiting 10s..."
-        sleep 10
+        info "Write not ready, retrying..."
+        sleep 5
     done
 
     info "Reading key 'hello' back..."
@@ -771,19 +768,11 @@ deploy_clone_cluster() {
 verify_clone_reads_source_data() {
     step "Verifying clone cluster reads source data..."
 
-    # The clone inherits prepared transactions from the source. The backup
-    # coordinator resolves them one per tick (app_tick fires every 1s,
-    # recover_coordination has a 5s timeout). With N prepared txns from
-    # N view changes, worst case is N * (1s tick + 5s recovery).
-    # The clone inherits prepared txns and needs time for:
-    # 1. Prepared txn resolution: N * (1s tick + 5s recovery) ≈ 15s
-    # 2. Quorum establishment: clone replicas need to complete their
-    #    first view change before they can serve reads (~10-20s)
-    # Retry the read up to 4 times (15s apart) to handle both.
+    # The clone cluster is Running (quorum established). Retry on transient
+    # failures (e.g. prepared txn resolution still in progress).
     local attempt
     for attempt in 1 2 3 4; do
-        info "Clone read attempt ${attempt}/4 (waiting 15s)..."
-        sleep 15
+        info "Clone read attempt ${attempt}/4..."
 
         kube delete pod clone-read 2>/dev/null || true
         _smoke_pod clone-read "begin ro; get hello; abort" | \
@@ -799,6 +788,7 @@ verify_clone_reads_source_data() {
             return 0
         fi
         warn "Clone read attempt ${attempt}: ${output}"
+        sleep 5
     done
     fail "Clone did not return expected 'world' after 4 attempts."
 }
@@ -806,12 +796,9 @@ verify_clone_reads_source_data() {
 verify_clone_accepts_writes() {
     step "Verifying clone cluster accepts read-write transactions..."
 
-    # Same retry strategy as verify_clone_reads_source_data: backup
-    # coordinator may still be resolving inherited prepared txns.
     local attempt
     for attempt in 1 2 3 4; do
-        info "Clone write attempt ${attempt}/4 (waiting 15s)..."
-        sleep 15
+        info "Clone write attempt ${attempt}/4..."
 
         kube delete pod clone-write 2>/dev/null || true
         _smoke_pod clone-write "begin; put clone-key clone-value; commit" | \
@@ -844,6 +831,7 @@ verify_clone_accepts_writes() {
             fi
         fi
         warn "Clone write attempt ${attempt}: ${write_output}"
+        sleep 5
     done
     fail "Clone did not accept write after 4 attempts."
 }
