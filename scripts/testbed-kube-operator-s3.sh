@@ -803,6 +803,51 @@ verify_clone_reads_source_data() {
     fail "Clone did not return expected 'world' after 4 attempts."
 }
 
+verify_clone_accepts_writes() {
+    step "Verifying clone cluster accepts read-write transactions..."
+
+    # Same retry strategy as verify_clone_reads_source_data: backup
+    # coordinator may still be resolving inherited prepared txns.
+    local attempt
+    for attempt in 1 2 3 4; do
+        info "Clone write attempt ${attempt}/4 (waiting 15s)..."
+        sleep 15
+
+        kube delete pod clone-write 2>/dev/null || true
+        _smoke_pod clone-write "begin; put clone-key clone-value; commit" | \
+            sed "s|${TAPIR_CLUSTER_NAME}-discovery|${CLONE_CLUSTER_NAME}-discovery|g" | \
+            kube apply -f -
+        kube wait --for=jsonpath='{.status.phase}'=Succeeded pod/clone-write --timeout=60s 2>/dev/null || true
+        local write_output
+        write_output=$(kube logs clone-write 2>/dev/null) || true
+        kube delete pod clone-write --wait=false 2>/dev/null || true
+
+        if echo "${write_output}" | grep -q "Committed"; then
+            ok "Clone accepted write: 'clone-key=clone-value'."
+
+            # Read the written key back in a separate read-only transaction.
+            kube delete pod clone-read-back 2>/dev/null || true
+            _smoke_pod clone-read-back "begin ro; get clone-key; abort" | \
+                sed "s|${TAPIR_CLUSTER_NAME}-discovery|${CLONE_CLUSTER_NAME}-discovery|g" | \
+                kube apply -f -
+            kube wait --for=jsonpath='{.status.phase}'=Succeeded pod/clone-read-back --timeout=60s 2>/dev/null || true
+            local read_output
+            read_output=$(kube logs clone-read-back 2>/dev/null) || true
+            kube delete pod clone-read-back --wait=false 2>/dev/null || true
+
+            if echo "${read_output}" | grep -q "clone-value"; then
+                ok "Clone read-back confirmed: 'clone-value'."
+                return 0
+            else
+                warn "Clone read-back output: ${read_output}"
+                fail "Clone read-back did not return expected 'clone-value'."
+            fi
+        fi
+        warn "Clone write attempt ${attempt}: ${write_output}"
+    done
+    fail "Clone did not accept write after 4 attempts."
+}
+
 # ---------------------------------------------------------------------------
 # Read replica cluster deployment
 # ---------------------------------------------------------------------------
@@ -1004,6 +1049,9 @@ cmd_up() {
 
     # 9. Verify clone reads source data
     verify_clone_reads_source_data
+
+    # 9b. Verify clone accepts new writes (read-write transaction)
+    verify_clone_accepts_writes
 
     # 10. Deploy read replica from source S3
     deploy_read_replica_cluster
