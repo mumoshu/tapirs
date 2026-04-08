@@ -198,4 +198,8 @@ impl super::nodemetrics_server::MetricsCollector for Node {
     fn collect_metrics(&self) -> Vec<(ShardNumber, IrReplicaMetrics)> {
         Node::collect_metrics(self)
     }
+
+    fn read_replica_count(&self) -> usize {
+        self.read_replicas.lock().unwrap().len()
+    }
 }

@@ -55,11 +55,13 @@ pub async fn start<T: MetricsCollector>(addr: std::net::SocketAddr, collector: A
                             (200, "text/plain; version=0.0.4; charset=utf-8", body)
                         } else if method == "GET" && path == "/readyz" {
                             let metrics = collector.collect_metrics();
-                            let all_ready = !metrics.is_empty()
+                            let writable_replicas_ready = !metrics.is_empty()
                                 && metrics
                                     .iter()
                                     .all(|(_, m)| m.view_change_count >= 1);
-                            if all_ready {
+                            let read_replicas_ready =
+                                metrics.is_empty() && collector.read_replica_count() > 0;
+                            if writable_replicas_ready || read_replicas_ready {
                                 (200, "application/json", r#"{"ok":true}"#.to_string())
                             } else {
                                 (503, "application/json", r#"{"ok":false}"#.to_string())

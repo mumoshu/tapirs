@@ -97,6 +97,11 @@ pub(crate) const APP_METRICS: &[MetricDesc] = &[
 /// Trait for types that can provide per-shard IR replica metrics.
 pub trait MetricsCollector: Send + Sync + 'static {
     fn collect_metrics(&self) -> Vec<(ShardNumber, IrReplicaMetrics)>;
+
+    /// Returns the number of read replica shards on this node.
+    /// Read replicas don't participate in IR consensus, so they have
+    /// no `IrReplicaMetrics`. This count is used by the readiness check.
+    fn read_replica_count(&self) -> usize;
 }
 
 pub use render::render_metrics;
