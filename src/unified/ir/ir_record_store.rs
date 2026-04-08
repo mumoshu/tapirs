@@ -356,6 +356,23 @@ impl<IO, CO, CR> PersistentPayload<IO, CO, CR> {
     }
 }
 
+impl<IO, CO, CR> PersistentPayload<IO, CO, CR> {
+    /// Access the raw (ViewRange, bytes) segments in this payload.
+    pub(crate) fn raw_segments(
+        &self,
+    ) -> (
+        &[(Vec<ViewRange>, Vec<u8>)],
+        &[(Vec<ViewRange>, Vec<u8>)],
+    ) {
+        let PayloadInner::Delta {
+            inc_segments,
+            con_segments,
+            ..
+        } = self.inner.as_ref();
+        (inc_segments, con_segments)
+    }
+}
+
 impl<IO, CO, CR> IrPayload for PersistentPayload<IO, CO, CR>
 where
     IO: Clone + Debug + DeserializeOwned + Send + 'static,
@@ -1013,98 +1030,135 @@ where
         &mut self,
         merged: Self::Record,
         new_view: u64,
+        best_payload: Option<&Self::Payload>,
+        resolved_ops: &std::collections::BTreeSet<OpId>,
     ) -> MergeInstallResult<Self::Record, Self::Payload> {
         self.log_ir_inc_state(&format!("install_merged_record BEFORE view={new_view}"));
-        // Compute CDC transition: only entries in merged that differ from the base.
-        let (transition, start_view_delta, previous_base_view) = if self.base_view > 0 {
-            // The sealed record = checkpoint from the previous view change.
-            // The merged record = leader's new authoritative state.
-            // Delta = entries in merged whose OpId is not in the sealed base.
-            let sealed_base = self.sealed_record();
-            let delta_indexed = merged.delta_from(&sealed_base);
-
-            // Encode merged into segment bytes for the StartView wire payload.
-            let (merged_inc, merged_con) =
-                Self::encode_indexed_as_segments(&merged)
-                    .expect("install_merged: encode merged failed");
-
-            let prev_bv = ViewNumber(self.base_view);
-            let delta_payload =
-                PersistentPayload::delta(prev_bv, merged_inc, merged_con);
-
-            (
-                (self.base_view, delta_indexed),
-                Some(delta_payload),
-                Some(prev_bv),
-            )
+        let previous_base_view = if self.base_view > 0 {
+            Some(ViewNumber(self.base_view))
         } else {
-            let (inc, con) =
-                Self::encode_indexed_as_segments(&merged).expect("install_merged: encode failed");
-            let full_record = PersistentRecord::Raw {
-                inc_segments: if inc.is_empty() {
-                    Vec::new()
-                } else {
-                    vec![inc.clone()]
-                },
-                con_segments: if con.is_empty() {
-                    Vec::new()
-                } else {
-                    vec![con.clone()]
-                },
+            None
+        };
+        let from_view = self.base_view;
+
+        // --- Step 1: Import raw segments from best_payload ---
+        // Segments whose max view > self.base_view are new — import them.
+        // This preserves byte identity (no re-encoding).
+        if let Some(payload) = best_payload {
+            let (inc_segs, con_segs) = payload.raw_segments();
+
+            // Helper: max view in a ViewRange list.
+            let max_view = |views: &[ViewRange]| -> u64 {
+                views.iter().map(|v| v.view).max().unwrap_or(0)
             };
-            ((0, full_record), None, None)
+
+            for (views, bytes) in inc_segs {
+                if !bytes.is_empty() && max_view(views) > self.base_view
+                    && let Some(meta) = self
+                        .inc_lsm
+                        .persist_sealed_segment(bytes, op_id_from_raw, views.clone())
+                        .expect("install_merged: import inc seg failed")
+                {
+                    self.manifest.ir_inc.sealed_vlog_segments.push(meta);
+                }
+            }
+            for (views, bytes) in con_segs {
+                if !bytes.is_empty() && max_view(views) > self.base_view
+                    && let Some(meta) = self
+                        .con_lsm
+                        .persist_sealed_segment(bytes, op_id_from_raw, views.clone())
+                        .expect("install_merged: import con seg failed")
+                {
+                    self.manifest.ir_con.sealed_vlog_segments.push(meta);
+                }
+            }
+        }
+
+        // --- Step 2: Compute delta ---
+        // Delta = entries in merged R whose OpId is NOT in the VlogLsm index
+        // (new from other replicas) OR whose OpId is in resolved_ops (merge
+        // changed the result).
+        let delta = match &merged {
+            PersistentRecord::Indexed {
+                inconsistent,
+                consensus,
+            } => {
+                let delta_inc: BTreeMap<OpId, InconsistentEntry<IO>> = inconsistent
+                    .iter()
+                    .filter(|(id, _)| {
+                        !self.inc_lsm.index_contains(id) || resolved_ops.contains(id)
+                    })
+                    .map(|(id, e)| (*id, e.clone()))
+                    .collect();
+                let delta_con: BTreeMap<OpId, ConsensusEntry<CO, CR>> = consensus
+                    .iter()
+                    .filter(|(id, _)| {
+                        !self.con_lsm.index_contains(id) || resolved_ops.contains(id)
+                    })
+                    .map(|(id, e)| (*id, e.clone()))
+                    .collect();
+                PersistentRecord::Indexed {
+                    inconsistent: delta_inc,
+                    consensus: delta_con,
+                }
+            }
+            PersistentRecord::Raw { .. } => {
+                panic!("install_merged_record: merged must be Indexed");
+            }
         };
 
-        // Install the merged record into the VlogLsms.
-        if self.base_view > 0 {
-            // Delta path: keep existing sealed segments, append only the
-            // delta (new entries) to the active segment. The active segment
-            // is tracked by the manifest and uploaded by sync_to_remote.
-            let sealed_base_for_install = self.sealed_record();
-            let delta_for_install = merged.delta_from(&sealed_base_for_install);
-            let (delta_inc, delta_con) =
-                Self::encode_indexed_as_segments(&delta_for_install)
-                    .expect("install_merged: encode delta failed");
-            self.inc_lsm.append_to_active(&delta_inc, op_id_from_raw)
-                .expect("install_merged: append inc delta failed");
-            self.con_lsm.append_to_active(&delta_con, op_id_from_raw)
-                .expect("install_merged: append con delta failed");
-            self.inc_lsm.clear_memtable();
-            self.con_lsm.clear_memtable();
-        } else {
-            // First view change: no sealed base, do full import.
-            let (inc_bytes, con_bytes) =
-                Self::encode_indexed_as_segments(&merged)
-                    .expect("install_merged: encode failed");
-            self.inc_lsm.clear_all();
-            self.con_lsm.clear_all();
-            self.inc_lsm.reset_active().expect("install_merged: reset inc active failed");
-            self.con_lsm.reset_active().expect("install_merged: reset con active failed");
-            self.manifest.ir_inc.sealed_vlog_segments.clear();
-            self.manifest.ir_con.sealed_vlog_segments.clear();
-            if !inc_bytes.is_empty()
-                && let Some(meta) = self
-                    .inc_lsm
-                    .persist_sealed_segment(&inc_bytes, op_id_from_raw, Vec::new())
-                    .expect("install_merged: import inc failed")
-            {
-                self.manifest.ir_inc.sealed_vlog_segments.push(meta);
-            }
-            if !con_bytes.is_empty()
-                && let Some(meta) = self
-                    .con_lsm
-                    .persist_sealed_segment(&con_bytes, op_id_from_raw, Vec::new())
-                    .expect("install_merged: import con failed")
-            {
-                self.manifest.ir_con.sealed_vlog_segments.push(meta);
-            }
-            self.inc_lsm.flush_index_to_sst().expect("install_merged: flush inc sst failed");
-            self.con_lsm.flush_index_to_sst().expect("install_merged: flush con sst failed");
+        // --- Step 3: Encode and persist delta as a sealed segment ---
+        let (delta_inc_bytes, delta_con_bytes) =
+            Self::encode_indexed_as_segments(&delta)
+                .expect("install_merged: encode delta failed");
+
+        let new_view_range = vec![ViewRange {
+            view: new_view,
+            start_offset: 0,
+            end_offset: 0,
+            num_entries: 0,
+        }];
+
+        if !delta_inc_bytes.is_empty()
+            && let Some(meta) = self
+                .inc_lsm
+                .persist_sealed_segment(
+                    &delta_inc_bytes,
+                    op_id_from_raw,
+                    new_view_range.clone(),
+                )
+                .expect("install_merged: persist inc delta failed")
+        {
+            self.manifest.ir_inc.sealed_vlog_segments.push(meta);
         }
+        if !delta_con_bytes.is_empty()
+            && let Some(meta) = self
+                .con_lsm
+                .persist_sealed_segment(
+                    &delta_con_bytes,
+                    op_id_from_raw,
+                    new_view_range,
+                )
+                .expect("install_merged: persist con delta failed")
+        {
+            self.manifest.ir_con.sealed_vlog_segments.push(meta);
+        }
+
+        // --- Step 4: Finalize state ---
+        self.inc_lsm.clear_memtable();
+        self.con_lsm.clear_memtable();
         self.base_view = new_view;
         self.inc_lsm.start_view(new_view);
         self.con_lsm.start_view(new_view);
         self.log_ir_inc_state(&format!("install_merged_record AFTER view={new_view}"));
+
+        // Build start_view_delta for same-base recipients.
+        let start_view_delta = previous_base_view.map(|prev_bv| {
+            PersistentPayload::delta(prev_bv, delta_inc_bytes.clone(), delta_con_bytes.clone())
+        });
+
+        // Transition = the delta entries from this view change.
+        let transition = (from_view, delta);
 
         MergeInstallResult {
             transition,
@@ -1397,7 +1451,7 @@ mod tests {
         merged.insert_inconsistent(op_id(1, 1), fin_inc_entry("op1", 0));
         merged.insert_consensus(op_id(1, 2), fin_con_entry("cop1", "r1", 0));
 
-        let result = store.install_merged_record(merged, 1);
+        let result = store.install_merged_record(merged, 1, None, &std::collections::BTreeSet::new());
         assert!(result.start_view_delta.is_none()); // no base yet
         assert_eq!(store.base_view, 1);
 

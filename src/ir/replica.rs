@@ -694,6 +694,17 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                                     }
                                 }
 
+                                // Extract best DoViewChange payload (first replica with highest LNV).
+                                // Clone it before the mutable sync borrows below.
+                                let best_payload: Option<U::Payload> = matching
+                                    .clone()
+                                    .filter(|(_, r)| {
+                                        r.addendum.as_ref().unwrap().latest_normal_view.number
+                                            == latest_normal_view.number
+                                    })
+                                    .map(|(_, r)| r.addendum.as_ref().unwrap().payload.clone())
+                                    .next();
+
                                 {
                                     let old_record = sync.record.full_record();
                                     let sync = &mut *sync;
@@ -705,7 +716,9 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
 
                                 debug_assert_eq!(results_by_opid.len(), entries_by_opid.len());
 
+                                let mut resolved_ops = BTreeSet::<OpId>::new();
                                 for (op_id, result) in results_by_opid {
+                                    resolved_ops.insert(op_id);
                                     let entries = entries_by_opid.get(&op_id).unwrap();
                                     let entry = &entries[0];
                                     sync.upcalls.finalize_consensus(&op_id, &entry.op, &result);
@@ -720,9 +733,10 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                                     );
                                 }
 
-                                // Install merged record — computes CDC and delta payload internally.
+                                // Install merged record — imports raw segments from best payload,
+                                // persists only the resolved delta as a new sealed segment.
                                 let merge_result: MergeInstallResult<R::Record, U::Payload> =
-                                    sync.record.install_merged_record(R, msg_view_number.0);
+                                    sync.record.install_merged_record(R, msg_view_number.0, best_payload.as_ref(), &resolved_ops);
                                 let (from_view, ref changes) = merge_result.transition;
                                 sync.upcalls.on_install_leader_record_delta(from_view, msg_view_number.0, changes);
 

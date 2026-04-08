@@ -6,6 +6,7 @@ use crate::mvcc::disk::disk_io::DiskIo;
 use crate::unified::ir::ir_record_store::{PersistentPayload, PersistentRecord};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use std::collections::BTreeSet;
 use std::fmt::Debug;
 use std::sync::{Arc, Mutex};
 
@@ -154,12 +155,14 @@ where
         &mut self,
         merged: Self::Record,
         new_view: u64,
+        best_payload: Option<&Self::Payload>,
+        resolved_ops: &BTreeSet<OpId>,
     ) -> MergeInstallResult<Self::Record, Self::Payload> {
         self.inner
             .lock()
             .unwrap()
             .ir
-            .install_merged_record(merged, new_view)
+            .install_merged_record(merged, new_view, best_payload, resolved_ops)
     }
 
     fn resolve_do_view_change_payload(&self, payload: &Self::Payload) -> Self::Record {

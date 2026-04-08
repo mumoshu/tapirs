@@ -1,6 +1,7 @@
 use super::payload::IrPayload;
 use super::record::{ConsensusEntry, InconsistentEntry, RecordBuilder, RecordView};
 use super::{OpId, ViewNumber};
+use std::collections::BTreeSet;
 use std::fmt::Debug;
 
 /// Result of install_start_view_payload — data the replica needs for upcalls.
@@ -82,8 +83,19 @@ where
 
     /// Install a merged record (leader path) in place.
     /// Returns MergeInstallResult with CDC data, delta payload, and previous base view.
+    ///
+    /// `best_payload` is the DoViewChange payload from the replica with the
+    /// highest latest_normal_view — its raw segments are imported directly
+    /// to preserve byte identity (no re-encoding).
+    ///
+    /// `resolved_ops` contains OpIds whose consensus results were changed by
+    /// the merge (TAPIR's `merge(d, u)` upcall). These entries must be
+    /// included in the delta segment even if their OpId already exists in
+    /// the VlogLsm index, because the result value changed.
     fn install_merged_record(
         &mut self, merged: Self::Record, new_view: u64,
+        best_payload: Option<&Self::Payload>,
+        resolved_ops: &BTreeSet<OpId>,
     ) -> MergeInstallResult<Self::Record, Self::Payload>;
 
     /// Resolve a DoViewChange addendum payload. Validates delta base internally
