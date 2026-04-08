@@ -8,6 +8,7 @@ use crate::mvcc::disk::disk_io::{DiskIo, OpenFlags};
 use crate::mvcc::disk::error::StorageError;
 use crate::unified::wisckeylsm::lsm::{IndexMode, VlogLsm};
 use crate::unified::wisckeylsm::manifest::UnifiedManifest;
+use crate::unified::wisckeylsm::types::ViewRange;
 use crate::unified::wisckeylsm::vlog::{RawVlogEntry, VlogSegment, VLOG_RAW_ENTRY_OVERHEAD};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -308,8 +309,8 @@ pub struct PersistentPayload<IO, CO, CR> {
 enum PayloadInner {
     Delta {
         base_view: ViewNumber,
-        inc_segments: Vec<Vec<u8>>,
-        con_segments: Vec<Vec<u8>>,
+        inc_segments: Vec<(Vec<ViewRange>, Vec<u8>)>,
+        con_segments: Vec<(Vec<ViewRange>, Vec<u8>)>,
     },
 }
 
@@ -330,7 +331,7 @@ impl<'de, IO, CO, CR> Deserialize<'de> for PersistentPayload<IO, CO, CR> {
 }
 
 impl<IO, CO, CR> PersistentPayload<IO, CO, CR> {
-    fn full(inc_segments: Vec<Vec<u8>>, con_segments: Vec<Vec<u8>>) -> Self {
+    fn full(inc_segments: Vec<(Vec<ViewRange>, Vec<u8>)>, con_segments: Vec<(Vec<ViewRange>, Vec<u8>)>) -> Self {
         Self {
             inner: Arc::new(PayloadInner::Delta {
                 base_view: ViewNumber(0),
@@ -342,8 +343,8 @@ impl<IO, CO, CR> PersistentPayload<IO, CO, CR> {
     }
 
     fn delta(base_view: ViewNumber, inc_bytes: Vec<u8>, con_bytes: Vec<u8>) -> Self {
-        let inc_segments = if inc_bytes.is_empty() { vec![] } else { vec![inc_bytes] };
-        let con_segments = if con_bytes.is_empty() { vec![] } else { vec![con_bytes] };
+        let inc_segments = if inc_bytes.is_empty() { vec![] } else { vec![(Vec::new(), inc_bytes)] };
+        let con_segments = if con_bytes.is_empty() { vec![] } else { vec![(Vec::new(), con_bytes)] };
         Self {
             inner: Arc::new(PayloadInner::Delta {
                 base_view,
@@ -369,10 +370,13 @@ where
             inc_segments,
             con_segments,
         } = self.inner.as_ref();
+        let strip = |segs: &[(Vec<ViewRange>, Vec<u8>)]| -> Vec<Vec<u8>> {
+            segs.iter().map(|(_, bytes)| bytes.clone()).collect()
+        };
         if base_view.0 == 0 {
             PersistentRecord::Raw {
-                inc_segments: inc_segments.clone(),
-                con_segments: con_segments.clone(),
+                inc_segments: strip(inc_segments),
+                con_segments: strip(con_segments),
             }
         } else {
             let base = base.expect("delta requires matching base");
@@ -385,8 +389,8 @@ where
                     panic!("delta resolve on Indexed base")
                 }
             };
-            all_inc.extend(inc_segments.iter().cloned());
-            all_con.extend(con_segments.iter().cloned());
+            all_inc.extend(strip(inc_segments));
+            all_con.extend(strip(con_segments));
             PersistentRecord::Raw {
                 inc_segments: all_inc,
                 con_segments: all_con,
@@ -607,6 +611,15 @@ where
         Ok((inc, con))
     }
 
+    /// Build segment bytes paired with ViewRange metadata for all sealed + active vlog data.
+    fn all_segment_bytes_with_views(
+        &self,
+    ) -> Result<(Vec<(Vec<ViewRange>, Vec<u8>)>, Vec<(Vec<ViewRange>, Vec<u8>)>), StorageError> {
+        let inc = self.inc_lsm.export_segment_bytes_with_views()?;
+        let con = self.con_lsm.export_segment_bytes_with_views()?;
+        Ok((inc, con))
+    }
+
     /// Encode current memtable as vlog-format bytes.
     fn memtable_bytes(&self) -> Result<(Vec<u8>, Vec<u8>), StorageError> {
         let inc = self.inc_lsm.encode_memtable_as_segment(inc_header_fn)?;
@@ -664,7 +677,11 @@ where
             PersistentRecord::Raw {
                 inc_segments,
                 con_segments,
-            } => PersistentPayload::full(inc_segments, con_segments),
+            } => {
+                let inc = inc_segments.into_iter().map(|b| (Vec::new(), b)).collect();
+                let con = con_segments.into_iter().map(|b| (Vec::new(), b)).collect();
+                PersistentPayload::full(inc, con)
+            }
             PersistentRecord::Indexed {
                 ref inconsistent,
                 ref consensus,
@@ -696,12 +713,12 @@ where
                 let inc = if inc_bytes.is_empty() {
                     Vec::new()
                 } else {
-                    vec![inc_bytes]
+                    vec![(Vec::new(), inc_bytes)]
                 };
                 let con = if con_bytes.is_empty() {
                     Vec::new()
                 } else {
-                    vec![con_bytes]
+                    vec![(Vec::new(), con_bytes)]
                 };
                 PersistentPayload::full(inc, con)
             }
@@ -743,19 +760,19 @@ where
             self.con_lsm.reset_active().expect("install_sv: reset con active failed");
             self.manifest.ir_inc.sealed_vlog_segments.clear();
             self.manifest.ir_con.sealed_vlog_segments.clear();
-            for bytes in inc_segments {
+            for (views, bytes) in inc_segments {
                 if let Some(meta) = self
                     .inc_lsm
-                    .persist_sealed_segment(bytes, op_id_from_raw, Vec::new())
+                    .persist_sealed_segment(bytes, op_id_from_raw, views.clone())
                     .expect("install_sv: import inc failed")
                 {
                     self.manifest.ir_inc.sealed_vlog_segments.push(meta);
                 }
             }
-            for bytes in con_segments {
+            for (views, bytes) in con_segments {
                 if let Some(meta) = self
                     .con_lsm
-                    .persist_sealed_segment(bytes, op_id_from_raw, Vec::new())
+                    .persist_sealed_segment(bytes, op_id_from_raw, views.clone())
                     .expect("install_sv: import con failed")
                 {
                     self.manifest.ir_con.sealed_vlog_segments.push(meta);
@@ -767,21 +784,21 @@ where
             self.con_lsm.flush_index_to_sst().expect("install_sv: flush con sst failed");
         } else {
             // True delta: keep existing sealed segments, import only new ones.
-            for bytes in inc_segments {
+            for (views, bytes) in inc_segments {
                 if !bytes.is_empty()
                     && let Some(meta) = self
                         .inc_lsm
-                        .persist_sealed_segment(bytes, op_id_from_raw, Vec::new())
+                        .persist_sealed_segment(bytes, op_id_from_raw, views.clone())
                         .expect("install_sv_delta: import inc failed")
                 {
                     self.manifest.ir_inc.sealed_vlog_segments.push(meta);
                 }
             }
-            for bytes in con_segments {
+            for (views, bytes) in con_segments {
                 if !bytes.is_empty()
                     && let Some(meta) = self
                         .con_lsm
-                        .persist_sealed_segment(bytes, op_id_from_raw, Vec::new())
+                        .persist_sealed_segment(bytes, op_id_from_raw, views.clone())
                         .expect("install_sv_delta: import con failed")
                 {
                     self.manifest.ir_con.sealed_vlog_segments.push(meta);
@@ -900,18 +917,18 @@ where
                 .expect("build_view_change_payload: memtable_bytes failed");
             PersistentPayload::delta(ViewNumber(self.base_view), inc_bytes, con_bytes)
         } else {
-            // Full: all segment bytes + memtable
+            // Full: all segment bytes with views + memtable
             let (mut inc, mut con) = self
-                .all_segment_bytes()
+                .all_segment_bytes_with_views()
                 .expect("build_view_change_payload: export failed");
             let (inc_mem, con_mem) = self
                 .memtable_bytes()
                 .expect("build_view_change_payload: memtable_bytes failed");
             if !inc_mem.is_empty() {
-                inc.push(inc_mem);
+                inc.push((Vec::new(), inc_mem));
             }
             if !con_mem.is_empty() {
-                con.push(con_mem);
+                con.push((Vec::new(), con_mem));
             }
             PersistentPayload::full(inc, con)
         }
@@ -920,7 +937,7 @@ where
     fn build_start_view_payload(&self, delta: Option<&Self::Payload>) -> Self::Payload {
         delta.cloned().unwrap_or_else(|| {
             let (inc, con) = self
-                .all_segment_bytes()
+                .all_segment_bytes_with_views()
                 .expect("build_start_view_payload: export failed");
             PersistentPayload::full(inc, con)
         })
@@ -931,7 +948,12 @@ where
             PersistentRecord::Raw {
                 inc_segments,
                 con_segments,
-            } => PersistentPayload::full(inc_segments, con_segments),
+            } => {
+                // Wrap raw segments with empty ViewRange vecs
+                let inc = inc_segments.into_iter().map(|b| (Vec::new(), b)).collect();
+                let con = con_segments.into_iter().map(|b| (Vec::new(), b)).collect();
+                PersistentPayload::full(inc, con)
+            }
             PersistentRecord::Indexed {
                 inconsistent,
                 consensus,
@@ -962,12 +984,12 @@ where
                 let inc = if inc_bytes.is_empty() {
                     Vec::new()
                 } else {
-                    vec![inc_bytes]
+                    vec![(Vec::new(), inc_bytes)]
                 };
                 let con = if con_bytes.is_empty() {
                     Vec::new()
                 } else {
-                    vec![con_bytes]
+                    vec![(Vec::new(), con_bytes)]
                 };
                 PersistentPayload::full(inc, con)
             }
@@ -1387,7 +1409,7 @@ mod tests {
     #[test]
     fn persistent_payload_serde_round_trip() {
         let payload: PersistentPayload<String, String, String> =
-            PersistentPayload::full(vec![vec![1, 2, 3]], vec![vec![4, 5]]);
+            PersistentPayload::full(vec![(Vec::new(), vec![1, 2, 3])], vec![(Vec::new(), vec![4, 5])]);
         let bytes = bitcode::serialize(&payload).unwrap();
         let decoded: PersistentPayload<String, String, String> =
             bitcode::deserialize(&bytes).unwrap();
@@ -1415,7 +1437,7 @@ mod tests {
             op.number,
             &payload_bytes,
         );
-        let payload = PersistentPayload::full(vec![raw], Vec::new());
+        let payload = PersistentPayload::full(vec![(Vec::new(), raw)], Vec::new());
 
         let record = store.resolve_do_view_change_payload(&payload);
         let entries: Vec<_> = record.inconsistent_entries().collect();

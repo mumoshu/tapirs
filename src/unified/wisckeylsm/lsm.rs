@@ -561,6 +561,27 @@ impl<K: Ord, V, IO: DiskIo, M: Memtable<K, V>> VlogLsm<K, V, IO, M> {
         Ok(result)
     }
 
+    /// Export all segment bytes paired with their ViewRange metadata.
+    ///
+    /// Each sealed segment is paired with its `views` from the VlogSegment.
+    /// The active segment is paired with its accumulated views.
+    pub(crate) fn export_segment_bytes_with_views(
+        &self,
+    ) -> Result<Vec<(Vec<ViewRange>, Vec<u8>)>, StorageError> {
+        let mut result = Vec::new();
+        for seg in self.sealed_segments.values() {
+            let bytes = seg.read_all_bytes()?;
+            if !bytes.is_empty() {
+                result.push((seg.views.clone(), bytes));
+            }
+        }
+        let active_bytes = self.active_vlog.read_all_bytes()?;
+        if !active_bytes.is_empty() {
+            result.push((self.active_vlog.views.clone(), active_bytes));
+        }
+        Ok(result)
+    }
+
     /// Serialize current memtable entries into vlog binary format.
     ///
     /// `header_fn` returns `Some((entry_type, client_id, number))` to include
