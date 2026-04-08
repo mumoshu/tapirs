@@ -848,6 +848,58 @@ verify_clone_accepts_writes() {
     fail "Clone did not accept write after 4 attempts."
 }
 
+verify_clone_rw_transaction() {
+    step "Verifying clone handles read-write transaction (read source + clone data, write new key)..."
+
+    # A read-write transaction that reads both source-originated data (hello)
+    # and clone-written data (clone-key), then writes a new key. OCC validates
+    # the read set at commit time — if either key has broken OCC state, the
+    # commit fails with PrepareConflict or TooLate.
+    # No retry needed: the clone is already Running and prepared txns were
+    # resolved during verify_clone_reads_source_data.
+    kube delete pod clone-rw 2>/dev/null || true
+    _smoke_pod clone-rw "begin; get hello; get clone-key; put rw-combined source-and-clone; commit" | \
+        sed "s|${TAPIR_CLUSTER_NAME}-discovery|${CLONE_CLUSTER_NAME}-discovery|g" | \
+        kube apply -f -
+    kube wait --for=jsonpath='{.status.phase}'=Succeeded pod/clone-rw --timeout=60s 2>/dev/null || true
+    local rw_output
+    rw_output=$(kube logs clone-rw 2>/dev/null) || true
+    kube delete pod clone-rw --wait=false 2>/dev/null || true
+
+    if ! echo "${rw_output}" | grep -q "Committed"; then
+        warn "RW txn output: ${rw_output}"
+        fail "Clone RW transaction did not commit."
+    fi
+
+    # Verify both reads returned expected values within the RW txn.
+    if ! echo "${rw_output}" | grep -q '"world"'; then
+        warn "RW txn output: ${rw_output}"
+        fail "RW txn did not read source key 'hello' = 'world'."
+    fi
+    if ! echo "${rw_output}" | grep -q '"clone-value"'; then
+        warn "RW txn output: ${rw_output}"
+        fail "RW txn did not read clone key 'clone-key' = 'clone-value'."
+    fi
+    ok "RW txn committed: read source + clone data, wrote rw-combined."
+
+    # Read back the written key to confirm persistence.
+    kube delete pod clone-rw-read 2>/dev/null || true
+    _smoke_pod clone-rw-read "begin ro; get rw-combined; abort" | \
+        sed "s|${TAPIR_CLUSTER_NAME}-discovery|${CLONE_CLUSTER_NAME}-discovery|g" | \
+        kube apply -f -
+    kube wait --for=jsonpath='{.status.phase}'=Succeeded pod/clone-rw-read --timeout=60s 2>/dev/null || true
+    local read_output
+    read_output=$(kube logs clone-rw-read 2>/dev/null) || true
+    kube delete pod clone-rw-read --wait=false 2>/dev/null || true
+
+    if echo "${read_output}" | grep -q "source-and-clone"; then
+        ok "RW txn read-back confirmed: 'rw-combined' = 'source-and-clone'."
+    else
+        warn "RW txn read-back output: ${read_output}"
+        fail "RW txn read-back did not return expected 'source-and-clone'."
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # Read replica cluster deployment
 # ---------------------------------------------------------------------------
@@ -1050,8 +1102,11 @@ cmd_up() {
     # 9. Verify clone reads source data
     verify_clone_reads_source_data
 
-    # 9b. Verify clone accepts new writes (read-write transaction)
+    # 9b. Verify clone accepts new writes (write-only transaction)
     verify_clone_accepts_writes
+
+    # 9c. Verify clone handles RW txn reading source + clone data
+    verify_clone_rw_transaction
 
     # 10. Deploy read replica from source S3
     deploy_read_replica_cluster
