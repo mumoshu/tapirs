@@ -9,7 +9,7 @@ use crate::mvcc::disk::disk_io::{DiskIo, OpenFlags};
 use crate::mvcc::disk::error::StorageError;
 use crate::unified::wisckeylsm::manifest::LsmManifestData;
 use crate::unified::wisckeylsm::sst::{SstMeta, SSTableReader, SSTableWriter};
-use crate::unified::wisckeylsm::types::{VlogPtr, VlogSegmentMeta};
+use crate::unified::wisckeylsm::types::{ViewRange, VlogPtr, VlogSegmentMeta};
 use crate::mvcc::disk::aligned_buf::AlignedBuf;
 use crate::unified::wisckeylsm::vlog::{RawVlogEntry, VlogSegment};
 
@@ -609,6 +609,7 @@ impl<K: Ord, V, IO: DiskIo, M: Memtable<K, V>> VlogLsm<K, V, IO, M> {
         &mut self,
         bytes: &[u8],
         key_fn: F,
+        views: Vec<ViewRange>,
     ) -> Result<Option<VlogSegmentMeta>, StorageError>
     where
         K: Clone,
@@ -630,7 +631,7 @@ impl<K: Ord, V, IO: DiskIo, M: Memtable<K, V>> VlogLsm<K, V, IO, M> {
         io.close();
         // Open as sealed segment
         let seg = VlogSegment::<IO>::open_at(
-            id, path.clone(), bytes.len() as u64, Vec::new(), self.io_flags,
+            id, path.clone(), bytes.len() as u64, views.clone(), self.io_flags,
         )?;
         // Scan entries and rebuild index
         if let Some(ref mut idx) = self.index {
@@ -650,7 +651,7 @@ impl<K: Ord, V, IO: DiskIo, M: Memtable<K, V>> VlogLsm<K, V, IO, M> {
         Ok(Some(VlogSegmentMeta {
             segment_id: id,
             path,
-            views: Vec::new(),
+            views,
             total_size: bytes.len() as u64,
         }))
     }

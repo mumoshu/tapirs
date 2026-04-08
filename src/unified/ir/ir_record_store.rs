@@ -746,7 +746,7 @@ where
             for bytes in inc_segments {
                 if let Some(meta) = self
                     .inc_lsm
-                    .persist_sealed_segment(bytes, op_id_from_raw)
+                    .persist_sealed_segment(bytes, op_id_from_raw, Vec::new())
                     .expect("install_sv: import inc failed")
                 {
                     self.manifest.ir_inc.sealed_vlog_segments.push(meta);
@@ -755,7 +755,7 @@ where
             for bytes in con_segments {
                 if let Some(meta) = self
                     .con_lsm
-                    .persist_sealed_segment(bytes, op_id_from_raw)
+                    .persist_sealed_segment(bytes, op_id_from_raw, Vec::new())
                     .expect("install_sv: import con failed")
                 {
                     self.manifest.ir_con.sealed_vlog_segments.push(meta);
@@ -771,7 +771,7 @@ where
                 if !bytes.is_empty()
                     && let Some(meta) = self
                         .inc_lsm
-                        .persist_sealed_segment(bytes, op_id_from_raw)
+                        .persist_sealed_segment(bytes, op_id_from_raw, Vec::new())
                         .expect("install_sv_delta: import inc failed")
                 {
                     self.manifest.ir_inc.sealed_vlog_segments.push(meta);
@@ -781,7 +781,7 @@ where
                 if !bytes.is_empty()
                     && let Some(meta) = self
                         .con_lsm
-                        .persist_sealed_segment(bytes, op_id_from_raw)
+                        .persist_sealed_segment(bytes, op_id_from_raw, Vec::new())
                         .expect("install_sv_delta: import con failed")
                 {
                     self.manifest.ir_con.sealed_vlog_segments.push(meta);
@@ -1063,7 +1063,7 @@ where
             if !inc_bytes.is_empty()
                 && let Some(meta) = self
                     .inc_lsm
-                    .persist_sealed_segment(&inc_bytes, op_id_from_raw)
+                    .persist_sealed_segment(&inc_bytes, op_id_from_raw, Vec::new())
                     .expect("install_merged: import inc failed")
             {
                 self.manifest.ir_inc.sealed_vlog_segments.push(meta);
@@ -1071,7 +1071,7 @@ where
             if !con_bytes.is_empty()
                 && let Some(meta) = self
                     .con_lsm
-                    .persist_sealed_segment(&con_bytes, op_id_from_raw)
+                    .persist_sealed_segment(&con_bytes, op_id_from_raw, Vec::new())
                     .expect("install_merged: import con failed")
             {
                 self.manifest.ir_con.sealed_vlog_segments.push(meta);
