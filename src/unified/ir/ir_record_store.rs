@@ -779,7 +779,7 @@ where
                 if let Some(meta) = self
                     .inc_lsm
                     .persist_sealed_segment(bytes, op_id_from_raw, views.clone())
-                    .expect("install_sv: import inc failed")
+                    .unwrap_or_else(|e| panic!("install_sv: import inc failed: {e}"))
                 {
                     self.manifest.ir_inc.sealed_vlog_segments.push(meta);
                 }
@@ -793,7 +793,7 @@ where
                 if let Some(meta) = self
                     .con_lsm
                     .persist_sealed_segment(bytes, op_id_from_raw, views.clone())
-                    .expect("install_sv: import con failed")
+                    .unwrap_or_else(|e| panic!("install_sv: import con failed: {e}"))
                 {
                     self.manifest.ir_con.sealed_vlog_segments.push(meta);
                 }
@@ -1091,7 +1091,7 @@ where
                     && let Some(meta) = self
                         .inc_lsm
                         .persist_sealed_segment(bytes, op_id_from_raw, views.clone())
-                        .expect("install_merged: import inc seg failed")
+                        .unwrap_or_else(|e| panic!("install_merged: import inc seg failed: {e}"))
                 {
                     self.manifest.ir_inc.sealed_vlog_segments.push(meta);
                 }
@@ -1101,7 +1101,7 @@ where
                     && let Some(meta) = self
                         .con_lsm
                         .persist_sealed_segment(bytes, op_id_from_raw, views.clone())
-                        .expect("install_merged: import con seg failed")
+                        .unwrap_or_else(|e| panic!("install_merged: import con seg failed: {e}"))
                 {
                     self.manifest.ir_con.sealed_vlog_segments.push(meta);
                 }
@@ -1165,7 +1165,7 @@ where
                     op_id_from_raw,
                     new_view_range.clone(),
                 )
-                .expect("install_merged: persist inc delta failed")
+                .unwrap_or_else(|e| panic!("install_merged: persist inc delta failed: {e}"))
         {
             self.manifest.ir_inc.sealed_vlog_segments.push(meta);
         }
@@ -1177,7 +1177,7 @@ where
                     op_id_from_raw,
                     new_view_range.clone(),
                 )
-                .expect("install_merged: persist con delta failed")
+                .unwrap_or_else(|e| panic!("install_merged: persist con delta failed: {e}"))
         {
             self.manifest.ir_con.sealed_vlog_segments.push(meta);
         }

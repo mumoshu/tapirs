@@ -340,7 +340,7 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
     pub fn receive(&self, address: T::Address, message: Message<U, T>) -> Option<Message<U, T>> {
         let _span = trace_span!("recv", address = ?self.address()).entered();
 
-        let mut sync = self.inner.sync.lock().unwrap();
+        let mut sync = self.inner.sync.lock().unwrap_or_else(|e| panic!("ir::Replica sync mutex poisoned — a prior operation panicked while holding the lock. Original panic: {e}"));
         let sync = &mut *sync;
 
         if sync.view.membership.get_index(address).is_some() {
@@ -976,7 +976,7 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
     /// change *coordinator* (collecting addenda and running sync/merge),
     /// NOT as the initiator.
     pub fn force_view_change(&self) {
-        let mut sync = self.inner.sync.lock().unwrap();
+        let mut sync = self.inner.sync.lock().unwrap_or_else(|e| panic!("ir::Replica sync mutex poisoned — a prior operation panicked while holding the lock. Original panic: {e}"));
         if sync.view.membership.len() == 1 {
             // Single-replica: view change without membership change would hang
             // because there are no peers to exchange DoViewChange messages with.
@@ -995,7 +995,7 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
     /// AddMember/RemoveMember/DoViewChange is received, before the view
     /// change completes (i.e., during ViewChanging status).
     pub fn view_number(&self) -> u64 {
-        self.inner.sync.lock().unwrap().view.number.0
+        self.inner.sync.lock().unwrap_or_else(|e| panic!("ir::Replica sync mutex poisoned — a prior operation panicked while holding the lock. Original panic: {e}")).view.number.0
     }
 
     /// Snapshot IR-level and application-level metrics for Prometheus exposition.
