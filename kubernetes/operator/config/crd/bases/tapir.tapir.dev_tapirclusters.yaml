@@ -508,6 +508,7 @@ spec:
                 - CreatingDataPlane
                 - BootstrappingReplicas
                 - RegisteringShards
+                - WaitingForQuorum
                 - Running
                 - Updating
                 - Failed

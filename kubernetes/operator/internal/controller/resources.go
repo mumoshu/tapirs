@@ -343,7 +343,12 @@ func desiredNodePoolStatefulSet(cluster *tapirv1alpha1.TAPIRCluster, pool tapirv
 		Spec: appsv1.StatefulSetSpec{
 			ServiceName: cluster.Name + "-" + pool.Name,
 			Replicas:    &replicas,
-			Selector:    &metav1.LabelSelector{MatchLabels: labels(cluster, component)},
+			// Parallel: all pods start simultaneously so IR quorum can
+			// form. OrderedReady deadlocks because pod-0 needs quorum
+			// (f+1 replicas) to pass /readyz, but pod-1 won't start
+			// until pod-0 is Ready.
+			PodManagementPolicy: appsv1.ParallelPodManagement,
+			Selector:            &metav1.LabelSelector{MatchLabels: labels(cluster, component)},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels(cluster, component)},
 				Spec: corev1.PodSpec{

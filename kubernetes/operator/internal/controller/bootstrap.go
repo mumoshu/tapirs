@@ -81,14 +81,17 @@ func (r *TAPIRClusterReconciler) reconcileBootstrap(ctx context.Context, cluster
 			log.Info("Waiting for shard-manager Deployment to be ready")
 			return true, nil
 		}
-		// Check all node pool StatefulSets ready
+		// Check all node pool StatefulSets have all pods running (not
+		// necessarily Ready — pods need shard registration + view change
+		// before the /readyz probe passes). Full readiness is checked
+		// later in WaitingForQuorum.
 		for _, pool := range cluster.Spec.NodePools {
-			ready, err := r.isStatefulSetReady(ctx, cluster.Namespace, cluster.Name+"-"+pool.Name)
+			running, err := r.isStatefulSetRunning(ctx, cluster.Namespace, cluster.Name+"-"+pool.Name)
 			if err != nil {
 				return false, err
 			}
-			if !ready {
-				log.Info("Waiting for node pool StatefulSet to be ready", "pool", pool.Name)
+			if !running {
+				log.Info("Waiting for node pool StatefulSet pods to be running", "pool", pool.Name)
 				return true, nil
 			}
 		}
@@ -548,6 +551,20 @@ func (r *TAPIRClusterReconciler) isStatefulSetReady(ctx context.Context, namespa
 		return false, nil
 	}
 	return sts.Status.ReadyReplicas == *sts.Spec.Replicas, nil
+}
+
+// isStatefulSetRunning checks that all pods in the StatefulSet are created
+// and running (but not necessarily Ready). Used during CreatingDataPlane
+// where pods need shard registration before the /readyz probe passes.
+func (r *TAPIRClusterReconciler) isStatefulSetRunning(ctx context.Context, namespace, name string) (bool, error) {
+	var sts appsv1.StatefulSet
+	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, &sts); err != nil {
+		return false, err
+	}
+	if sts.Spec.Replicas == nil {
+		return false, nil
+	}
+	return sts.Status.Replicas == *sts.Spec.Replicas, nil
 }
 
 func (r *TAPIRClusterReconciler) isDeploymentReady(ctx context.Context, namespace, name string) (bool, error) {

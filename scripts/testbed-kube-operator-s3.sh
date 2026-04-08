@@ -197,6 +197,12 @@ build_and_load_images() {
             "${PROJECT_ROOT}"
         ok "TAPIR image built."
 
+        step "Generating CRD manifests..."
+        (cd "${PROJECT_ROOT}/kubernetes/operator" && make manifests)
+        cp "${PROJECT_ROOT}/kubernetes/operator/config/crd/bases/tapir.tapir.dev_tapirclusters.yaml" \
+            "${PROJECT_ROOT}/kubernetes/charts/tapirs-operator/templates/crd.yaml"
+        ok "CRD manifests generated and copied to Helm chart."
+
         step "Building operator image '${TAPIR_OPERATOR_IMAGE}'..."
         run_cmd docker build -t "${TAPIR_OPERATOR_IMAGE}" \
             -f "${PROJECT_ROOT}/kubernetes/operator/Dockerfile" \
