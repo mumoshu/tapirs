@@ -745,7 +745,7 @@ deploy_clone_cluster() {
     ok "Clone cluster chart installed."
 
     # Wait for clone cluster to reach Running.
-    local timeout=180
+    local timeout=10
     local interval=5
     local elapsed=0
     step "Waiting for clone TAPIRCluster '${CLONE_CLUSTER_NAME}' to reach Running (timeout: ${timeout}s)..."
@@ -828,7 +828,7 @@ deploy_read_replica_cluster() {
     ok "Read replica cluster chart installed."
 
     # Wait for replica cluster to reach Running.
-    local timeout=180
+    local timeout=10
     local interval=5
     local elapsed=0
     step "Waiting for read replica TAPIRCluster '${REPLICA_CLUSTER_NAME}' to reach Running (timeout: ${timeout}s)..."
