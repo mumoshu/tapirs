@@ -342,9 +342,14 @@ impl<IO, CO, CR> PersistentPayload<IO, CO, CR> {
         }
     }
 
-    fn delta(base_view: ViewNumber, inc_bytes: Vec<u8>, con_bytes: Vec<u8>) -> Self {
-        let inc_segments = if inc_bytes.is_empty() { vec![] } else { vec![(Vec::new(), inc_bytes)] };
-        let con_segments = if con_bytes.is_empty() { vec![] } else { vec![(Vec::new(), con_bytes)] };
+    fn delta(
+        base_view: ViewNumber,
+        inc_bytes: Vec<u8>,
+        con_bytes: Vec<u8>,
+        views: Vec<ViewRange>,
+    ) -> Self {
+        let inc_segments = if inc_bytes.is_empty() { vec![] } else { vec![(views.clone(), inc_bytes)] };
+        let con_segments = if con_bytes.is_empty() { vec![] } else { vec![(views, con_bytes)] };
         Self {
             inner: Arc::new(PayloadInner::Delta {
                 base_view,
@@ -609,18 +614,6 @@ where
         Ok(())
     }
 
-    /// Return the sealed-only record as Indexed (excluding memtable).
-    /// This represents the checkpoint after the previous view change.
-    fn sealed_record(&self) -> PersistentRecord<IO, CO, CR> {
-        let (inc, con) = self.all_segment_bytes()
-            .expect("sealed_record: export_segment_bytes failed");
-        PersistentRecord::Raw {
-            inc_segments: inc,
-            con_segments: con,
-        }
-        .into_indexed()
-    }
-
     /// Build segment bytes for all sealed + active vlog data.
     fn all_segment_bytes(&self) -> Result<(Vec<Vec<u8>>, Vec<Vec<u8>>), StorageError> {
         let inc = self.inc_lsm.export_segment_bytes()?;
@@ -742,42 +735,47 @@ where
         }
     }
 
-    /// Delta fast path for install_start_view_payload.
+    /// Always-delta install path for StartView payloads.
     ///
-    /// The sealed segments are already in the VlogLsm from the previous view.
-    /// Unified install path for StartView payloads.
+    /// For each segment in the payload, segments whose max view <= self.base_view
+    /// are skipped (already present locally). All others are imported. This works
+    /// because segments are immutable and tagged with their view number. When
+    /// base_view==0, all segments have view > 0, so all are imported — no special
+    /// case needed.
     ///
-    /// Handles both full-reset (base_view==0) and true-delta (base_view>0).
-    /// Always tracks VlogSegmentMeta in the manifest to keep S3 uploads consistent.
+    /// Records are built from payload data already in memory — no disk re-reads.
     fn install_start_view_unified(
         &mut self,
         payload: PersistentPayload<IO, CO, CR>,
         new_view: u64,
     ) -> Option<ViewInstallResult<PersistentRecord<IO, CO, CR>>> {
         self.log_ir_inc_state(&format!("install_sv BEFORE view={new_view}"));
+        tracing::debug!("[install_sv] ENTER view={new_view} base_view={}", self.base_view);
         let iw = std::time::Instant::now();
 
-        let previous_record = self.full_record();
-        let sealed_base = self.sealed_record();
-
         let PayloadInner::Delta {
-            base_view: payload_bv,
             inc_segments,
             con_segments,
+            ..
         } = payload.inner.as_ref();
-        let is_full_reset = self.base_view == 0 || payload_bv.0 == 0;
 
-        if is_full_reset {
-            // Full reset: clear everything, reimport all segments, track in manifest.
-            // reset_active replaces the active vlog with a fresh empty segment so
-            // stale data from the old active is not uploaded to S3.
-            self.inc_lsm.clear_all();
-            self.con_lsm.clear_all();
-            self.inc_lsm.reset_active().expect("install_sv: reset inc active failed");
-            self.con_lsm.reset_active().expect("install_sv: reset con active failed");
-            self.manifest.ir_inc.sealed_vlog_segments.clear();
-            self.manifest.ir_con.sealed_vlog_segments.clear();
-            for (views, bytes) in inc_segments {
+        // Helper: max view in a ViewRange list, or None if empty (unknown provenance).
+        let max_view = |views: &[ViewRange]| -> Option<u64> {
+            views.iter().map(|v| v.view).max()
+        };
+
+        // --- Step 1: Partition payload segments into existing (skip) vs new (import) ---
+        // A segment is "existing" only if it has view metadata AND max(view) <= base_view.
+        // Segments with empty ViewRange (e.g. memtable bytes) are always imported.
+        let mut existing_inc_bytes: Vec<Vec<u8>> = Vec::new();
+        let mut new_inc_bytes: Vec<Vec<u8>> = Vec::new();
+        let mut existing_con_bytes: Vec<Vec<u8>> = Vec::new();
+        let mut new_con_bytes: Vec<Vec<u8>> = Vec::new();
+
+        for (views, bytes) in inc_segments {
+            if max_view(views).is_some_and(|mv| mv <= self.base_view) {
+                existing_inc_bytes.push(bytes.clone());
+            } else if !bytes.is_empty() {
                 if let Some(meta) = self
                     .inc_lsm
                     .persist_sealed_segment(bytes, op_id_from_raw, views.clone())
@@ -785,8 +783,13 @@ where
                 {
                     self.manifest.ir_inc.sealed_vlog_segments.push(meta);
                 }
+                new_inc_bytes.push(bytes.clone());
             }
-            for (views, bytes) in con_segments {
+        }
+        for (views, bytes) in con_segments {
+            if max_view(views).is_some_and(|mv| mv <= self.base_view) {
+                existing_con_bytes.push(bytes.clone());
+            } else if !bytes.is_empty() {
                 if let Some(meta) = self
                     .con_lsm
                     .persist_sealed_segment(bytes, op_id_from_raw, views.clone())
@@ -794,48 +797,66 @@ where
                 {
                     self.manifest.ir_con.sealed_vlog_segments.push(meta);
                 }
-            }
-            // Write SSTs so clones (which rebuild the index from SSTs) can
-            // find entries from imported sealed segments.
-            self.inc_lsm.flush_index_to_sst().expect("install_sv: flush inc sst failed");
-            self.con_lsm.flush_index_to_sst().expect("install_sv: flush con sst failed");
-        } else {
-            // True delta: keep existing sealed segments, import only new ones.
-            for (views, bytes) in inc_segments {
-                if !bytes.is_empty()
-                    && let Some(meta) = self
-                        .inc_lsm
-                        .persist_sealed_segment(bytes, op_id_from_raw, views.clone())
-                        .expect("install_sv_delta: import inc failed")
-                {
-                    self.manifest.ir_inc.sealed_vlog_segments.push(meta);
-                }
-            }
-            for (views, bytes) in con_segments {
-                if !bytes.is_empty()
-                    && let Some(meta) = self
-                        .con_lsm
-                        .persist_sealed_segment(bytes, op_id_from_raw, views.clone())
-                        .expect("install_sv_delta: import con failed")
-                {
-                    self.manifest.ir_con.sealed_vlog_segments.push(meta);
-                }
+                new_con_bytes.push(bytes.clone());
             }
         }
 
-        // Build new_record from all current segment data.
-        let (all_inc, all_con) = self
-            .all_segment_bytes()
-            .expect("install_sv: export failed");
-        let new_record_indexed = PersistentRecord::Raw {
+        tracing::debug!(
+            "[install_sv] view={new_view} skipped_inc={} imported_inc={} skipped_con={} imported_con={}",
+            existing_inc_bytes.len(),
+            new_inc_bytes.len(),
+            existing_con_bytes.len(),
+            new_con_bytes.len(),
+        );
+
+        let sv_import_ms = iw.elapsed().as_millis();
+        // --- Step 2: Build records from payload data in memory (no disk re-reads) ---
+
+        // previous_record: existing (skipped) segments + memtable bytes
+        let (inc_mem, con_mem) = self
+            .memtable_bytes()
+            .expect("install_sv: memtable_bytes failed");
+        let mut prev_inc = existing_inc_bytes.clone();
+        if !inc_mem.is_empty() {
+            prev_inc.push(inc_mem);
+        }
+        let mut prev_con = existing_con_bytes.clone();
+        if !con_mem.is_empty() {
+            prev_con.push(con_mem);
+        }
+        let previous_record = PersistentRecord::Raw {
+            inc_segments: prev_inc,
+            con_segments: prev_con,
+        }
+        .into_indexed();
+
+        // transition: bytes from imported (new) segments only
+        let from_view = if self.base_view > 0 { self.base_view } else { 0 };
+        let transition_record = PersistentRecord::Raw {
+            inc_segments: new_inc_bytes.clone(),
+            con_segments: new_con_bytes.clone(),
+        }
+        .into_indexed();
+        let transition = (from_view, transition_record);
+
+        // new_record: ALL payload segments
+        let mut all_inc: Vec<Vec<u8>> = existing_inc_bytes;
+        all_inc.extend(new_inc_bytes);
+        let mut all_con: Vec<Vec<u8>> = existing_con_bytes;
+        all_con.extend(new_con_bytes);
+        let new_record = PersistentRecord::Raw {
             inc_segments: all_inc,
             con_segments: all_con,
         }
         .into_indexed();
 
-        let from_view = if self.base_view > 0 { self.base_view } else { 0 };
-        let transition = (from_view, new_record_indexed.delta_from(&sealed_base));
+        let sv_build_ms = iw.elapsed().as_millis();
+        tracing::debug!(
+            "[install_sv] view={new_view} base={} import={sv_import_ms}ms build={sv_build_ms}ms",
+            from_view,
+        );
 
+        // --- Step 3: Update state ---
         self.inc_lsm.clear_memtable();
         self.con_lsm.clear_memtable();
         self.base_view = new_view;
@@ -854,13 +875,13 @@ where
 
         let total_ms = iw.elapsed().as_millis();
         if total_ms > 10 {
-            tracing::debug!("[install_sv] view={new_view} full_reset={is_full_reset} total={total_ms}ms");
+            tracing::debug!("[install_sv] view={new_view} total={total_ms}ms");
         }
 
         Some(ViewInstallResult {
             previous_record,
             transition,
-            new_record: new_record_indexed,
+            new_record,
         })
     }
 }
@@ -932,7 +953,17 @@ where
             let (inc_bytes, con_bytes) = self
                 .memtable_bytes()
                 .expect("build_view_change_payload: memtable_bytes failed");
-            PersistentPayload::delta(ViewNumber(self.base_view), inc_bytes, con_bytes)
+            PersistentPayload::delta(
+                ViewNumber(self.base_view),
+                inc_bytes,
+                con_bytes,
+                vec![ViewRange {
+                    view: self.base_view,
+                    start_offset: 0,
+                    end_offset: 0,
+                    num_entries: 0,
+                }],
+            )
         } else {
             // Full: all segment bytes with views + memtable
             let (mut inc, mut con) = self
@@ -1021,8 +1052,10 @@ where
         let bv = payload.base_view().expect("all payloads have base_view");
         // Reject delta if base doesn't match (but allow base_view=0 aka full reset).
         if bv.0 > 0 && (self.base_view == 0 || ViewNumber(self.base_view) != bv) {
+            tracing::debug!("[install_sv_payload] REJECTED view={new_view} bv={bv:?} self.base_view={}", self.base_view);
             return None;
         }
+        tracing::debug!("[install_sv_payload] ACCEPTED view={new_view} bv={bv:?} self.base_view={}", self.base_view);
         self.install_start_view_unified(payload, new_view)
     }
 
@@ -1034,6 +1067,7 @@ where
         resolved_ops: &std::collections::BTreeSet<OpId>,
     ) -> MergeInstallResult<Self::Record, Self::Payload> {
         self.log_ir_inc_state(&format!("install_merged_record BEFORE view={new_view}"));
+        let iw = std::time::Instant::now();
         let previous_base_view = if self.base_view > 0 {
             Some(ViewNumber(self.base_view))
         } else {
@@ -1074,6 +1108,8 @@ where
             }
         }
 
+        let import_ms = iw.elapsed().as_millis();
+
         // --- Step 2: Compute delta ---
         // Delta = entries in merged R whose OpId is NOT in the VlogLsm index
         // (new from other replicas) OR whose OpId is in resolved_ops (merge
@@ -1107,6 +1143,8 @@ where
             }
         };
 
+        let delta_ms = iw.elapsed().as_millis();
+
         // --- Step 3: Encode and persist delta as a sealed segment ---
         let (delta_inc_bytes, delta_con_bytes) =
             Self::encode_indexed_as_segments(&delta)
@@ -1137,12 +1175,14 @@ where
                 .persist_sealed_segment(
                     &delta_con_bytes,
                     op_id_from_raw,
-                    new_view_range,
+                    new_view_range.clone(),
                 )
                 .expect("install_merged: persist con delta failed")
         {
             self.manifest.ir_con.sealed_vlog_segments.push(meta);
         }
+
+        let persist_ms = iw.elapsed().as_millis();
 
         // --- Step 4: Finalize state ---
         self.inc_lsm.clear_memtable();
@@ -1152,9 +1192,19 @@ where
         self.con_lsm.start_view(new_view);
         self.log_ir_inc_state(&format!("install_merged_record AFTER view={new_view}"));
 
+        let total_ms = iw.elapsed().as_millis();
+        tracing::debug!(
+            "[install_merged] view={new_view} base={from_view} import={import_ms}ms delta={delta_ms}ms persist={persist_ms}ms total={total_ms}ms",
+        );
+
         // Build start_view_delta for same-base recipients.
         let start_view_delta = previous_base_view.map(|prev_bv| {
-            PersistentPayload::delta(prev_bv, delta_inc_bytes.clone(), delta_con_bytes.clone())
+            PersistentPayload::delta(
+                prev_bv,
+                delta_inc_bytes.clone(),
+                delta_con_bytes.clone(),
+                new_view_range.clone(),
+            )
         });
 
         // Transition = the delta entries from this view change.
@@ -1471,7 +1521,7 @@ mod tests {
         assert_eq!(decoded.base_view(), Some(ViewNumber(0)));
 
         let delta: PersistentPayload<String, String, String> =
-            PersistentPayload::delta(ViewNumber(5), vec![10, 20], vec![30]);
+            PersistentPayload::delta(ViewNumber(5), vec![10, 20], vec![30], Vec::new());
         let bytes2 = bitcode::serialize(&delta).unwrap();
         let decoded2: PersistentPayload<String, String, String> =
             bitcode::deserialize(&bytes2).unwrap();
