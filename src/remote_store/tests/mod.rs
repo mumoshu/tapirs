@@ -12,3 +12,4 @@ mod test_read_replica_shim;
 mod test_upload_flush;
 mod test_writable_clone_admin;
 mod test_clone_view_change_occ;
+mod test_delta_view_change_partition;
