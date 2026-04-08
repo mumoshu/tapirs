@@ -848,7 +848,7 @@ verify_clone_accepts_writes() {
     fail "Clone did not accept write after 4 attempts."
 }
 
-verify_clone_rw_transaction() {
+verify_clone_accepts_rw_txn() {
     step "Verifying clone handles read-write transaction (read source + clone data, write new key)..."
 
     # A read-write transaction that reads both source-originated data (hello)
@@ -1106,7 +1106,7 @@ cmd_up() {
     verify_clone_accepts_writes
 
     # 9c. Verify clone handles RW txn reading source + clone data
-    verify_clone_rw_transaction
+    verify_clone_accepts_rw_txn
 
     # 10. Deploy read replica from source S3
     deploy_read_replica_cluster
