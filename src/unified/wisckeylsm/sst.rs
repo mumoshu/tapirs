@@ -101,7 +101,7 @@ impl SSTableWriter {
         V: Serialize + Clone,
         IO: DiskIo,
     {
-        let io = IO::open(path, io_flags, crate::mvcc::disk::disk_io::OpenMode::OpenImmutable)?;
+        let io = IO::open(path, io_flags, crate::mvcc::disk::disk_io::OpenMode::CreateNew)?;
         let mut offset: u64 = 0;
         let mut index_entries: Vec<IndexEntry<K>> = Vec::new();
         let mut bloom = BloomFilter::new(entries.len());
