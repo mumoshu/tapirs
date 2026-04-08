@@ -1587,4 +1587,108 @@ mod tests {
         store2.flush();
         assert!(store2.get_inconsistent_entry(&op_id(1, 1)).is_some());
     }
+
+    #[test]
+    fn always_delta_install_on_established_recipient() {
+        // View 1: Leader installs merged record with initial entries
+        let mut leader = make_store();
+        let mut merged_v1: PersistentRecord<String, String, String> =
+            PersistentRecord::default();
+        merged_v1.insert_inconsistent(op_id(1, 1), fin_inc_entry("op1", 0));
+        merged_v1.insert_consensus(op_id(1, 2), fin_con_entry("cop1", "r1", 0));
+        leader.install_merged_record(merged_v1, 1, None, &std::collections::BTreeSet::new());
+
+        // Leader sends StartView payload to recipient B
+        let payload_v1 = leader.build_start_view_payload(None);
+        let mut store_b = make_store();
+        let result1 = store_b.install_start_view_payload(payload_v1, 1);
+        assert!(result1.is_some());
+        assert_eq!(store_b.base_view, 1);
+        let b_sealed_v1 = store_b.manifest.ir_inc.sealed_vlog_segments.len();
+        assert!(b_sealed_v1 > 0, "B should have sealed segments after first install");
+
+        // View 2: Leader installs merged record with more entries
+        let mut merged_v2: PersistentRecord<String, String, String> =
+            PersistentRecord::default();
+        merged_v2.insert_inconsistent(op_id(1, 1), fin_inc_entry("op1", 0));
+        merged_v2.insert_consensus(op_id(1, 2), fin_con_entry("cop1", "r1", 0));
+        merged_v2.insert_inconsistent(op_id(2, 1), fin_inc_entry("op2", 1));
+        merged_v2.insert_consensus(op_id(2, 2), fin_con_entry("cop2", "r2", 1));
+        leader.install_merged_record(merged_v2, 2, None, &std::collections::BTreeSet::new());
+
+        // Leader sends full StartView payload (non-same-base)
+        let payload_v2 = leader.build_start_view_payload(None);
+        let result2 = store_b.install_start_view_payload(payload_v2, 2);
+        let result2 = result2.expect("install should succeed");
+        assert_eq!(store_b.base_view, 2);
+
+        // ALL entries accessible
+        assert!(store_b.get_inconsistent_entry(&op_id(1, 1)).is_some(), "old entry missing");
+        assert!(store_b.get_inconsistent_entry(&op_id(2, 1)).is_some(), "new entry missing");
+        assert!(store_b.get_consensus_entry(&op_id(1, 2)).is_some(), "old con entry missing");
+        assert!(store_b.get_consensus_entry(&op_id(2, 2)).is_some(), "new con entry missing");
+
+        // Manifest sealed count matches LSM sealed count
+        let inc_lsm_sealed = store_b.inc_lsm.sealed_segments_ref().len();
+        let manifest_sealed = store_b.manifest.ir_inc.sealed_vlog_segments.len();
+        assert_eq!(
+            manifest_sealed, inc_lsm_sealed,
+            "manifest ({manifest_sealed}) must match LSM ({inc_lsm_sealed})"
+        );
+
+        // previous_record should contain only old entries
+        let prev_inc: Vec<_> = result2.previous_record.inconsistent_entries().collect();
+        assert_eq!(prev_inc.len(), 1, "previous_record should have 1 inc entry (old)");
+        assert_eq!(prev_inc[0].1.op, "op1");
+
+        // transition should contain only new entries
+        let (from_view, ref delta) = result2.transition;
+        assert_eq!(from_view, 1);
+        let delta_inc: Vec<_> = delta.inconsistent_entries().collect();
+        assert!(delta_inc.iter().any(|(_, e)| e.op == "op2"), "delta should contain new entry");
+    }
+
+    #[test]
+    fn always_delta_leader_unknown_recipient_lnv() {
+        // View 1: Leader installs merged with v1 entry
+        let mut leader = make_store();
+        let mut merged_v1: PersistentRecord<String, String, String> =
+            PersistentRecord::default();
+        merged_v1.insert_inconsistent(op_id(1, 1), fin_inc_entry("v1_op", 0));
+        leader.install_merged_record(merged_v1, 1, None, &std::collections::BTreeSet::new());
+
+        // Recipient B installs from view 1
+        let payload_v1 = leader.build_start_view_payload(None);
+        let mut store_b = make_store();
+        let r = store_b.install_start_view_payload(payload_v1, 1);
+        assert!(r.is_some());
+        assert_eq!(store_b.base_view, 1);
+
+        // View 2+3: Leader installs more merged records
+        let mut merged_v2: PersistentRecord<String, String, String> =
+            PersistentRecord::default();
+        merged_v2.insert_inconsistent(op_id(1, 1), fin_inc_entry("v1_op", 0));
+        merged_v2.insert_inconsistent(op_id(2, 1), fin_inc_entry("v2_op", 1));
+        leader.install_merged_record(merged_v2, 2, None, &std::collections::BTreeSet::new());
+
+        let mut merged_v3: PersistentRecord<String, String, String> =
+            PersistentRecord::default();
+        merged_v3.insert_inconsistent(op_id(1, 1), fin_inc_entry("v1_op", 0));
+        merged_v3.insert_inconsistent(op_id(2, 1), fin_inc_entry("v2_op", 1));
+        merged_v3.insert_inconsistent(op_id(3, 1), fin_inc_entry("v3_op", 2));
+        leader.install_merged_record(merged_v3, 3, None, &std::collections::BTreeSet::new());
+
+        // Leader sends full payload for view 3 to B (doesn't know B's LNV)
+        let payload_v3 = leader.build_start_view_payload(None);
+
+        // B installs: skips view-1 segments, imports view-2 and view-3 segments
+        let result = store_b.install_start_view_payload(payload_v3, 3);
+        assert!(result.is_some());
+        assert_eq!(store_b.base_view, 3);
+
+        // B has all entries from views 1-3
+        assert!(store_b.get_inconsistent_entry(&op_id(1, 1)).is_some(), "v1 entry missing");
+        assert!(store_b.get_inconsistent_entry(&op_id(2, 1)).is_some(), "v2 entry missing");
+        assert!(store_b.get_inconsistent_entry(&op_id(3, 1)).is_some(), "v3 entry missing");
+    }
 }
