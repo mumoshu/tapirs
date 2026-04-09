@@ -59,8 +59,7 @@ where
     ///
     /// Only reads memtable O(D), not sealed segments. Used on the leader
     /// merge path where all replicas share identical sealed segments
-    /// (same latest_normal_view). Sealed entries from missed views are
-    /// handled separately via payload_as_record_since.
+    /// (same latest_normal_view).
     fn memtable_record(&self) -> Self::Record;
 
     /// Total number of unique inconsistent entries.
@@ -108,20 +107,6 @@ where
     /// only the delta entries; for full payloads, all entries.
     fn payload_as_record(&self, payload: &Self::Payload) -> Self::Record {
         payload.as_unresolved_record()
-    }
-
-    /// Return a Record containing only payload segments newer than base_view.
-    /// Used by the leader to extract missed-view sealed entries from peer
-    /// full payloads without loading segments the leader already has.
-    fn payload_as_record_since(&self, payload: &Self::Payload, base_view: u64) -> Self::Record {
-        payload.as_record_since(base_view)
-    }
-
-    /// Return a Record containing only memtable segments from the payload.
-    /// For delta payloads, the entire payload is the memtable.
-    /// For full payloads, only segments with empty ViewRange are included.
-    fn payload_as_memtable_record(&self, payload: &Self::Payload) -> Self::Record {
-        payload.as_memtable_record()
     }
 
     /// Seal VlogLsm memtables to durable storage and save manifest.

@@ -389,59 +389,6 @@ where
         }
     }
 
-    fn as_record_since(&self, base_view: u64) -> Self::Record {
-        let PayloadInner::Delta {
-            inc_segments,
-            con_segments,
-            ..
-        } = self.inner.as_ref();
-        let max_view = |views: &[ViewRange]| -> u64 {
-            views.iter().map(|v| v.view).max().unwrap_or(0)
-        };
-        let filter = |segs: &[(Vec<ViewRange>, Vec<u8>)]| -> Vec<Vec<u8>> {
-            segs.iter()
-                .filter(|(views, _)| max_view(views) > base_view)
-                .map(|(_, bytes)| bytes.clone())
-                .collect()
-        };
-        PersistentRecord::Raw {
-            inc_segments: filter(inc_segments),
-            con_segments: filter(con_segments),
-        }
-    }
-
-    fn as_memtable_record(&self) -> Self::Record {
-        let PayloadInner::Delta {
-            base_view: payload_base,
-            inc_segments,
-            con_segments,
-        } = self.inner.as_ref();
-        // Delta payloads (base_view > 0) are entirely memtable — the single
-        // segment contains only memtable bytes from build_view_change_payload.
-        // Full payloads (base_view == 0) mix sealed + memtable segments;
-        // memtable segments have empty ViewRange (appended by
-        // build_full_view_change_payload with Vec::new() as the view key).
-        if payload_base.0 > 0 {
-            let strip = |segs: &[(Vec<ViewRange>, Vec<u8>)]| -> Vec<Vec<u8>> {
-                segs.iter().map(|(_, bytes)| bytes.clone()).collect()
-            };
-            PersistentRecord::Raw {
-                inc_segments: strip(inc_segments),
-                con_segments: strip(con_segments),
-            }
-        } else {
-            let filter = |segs: &[(Vec<ViewRange>, Vec<u8>)]| -> Vec<Vec<u8>> {
-                segs.iter()
-                    .filter(|(views, _)| views.is_empty())
-                    .map(|(_, bytes)| bytes.clone())
-                    .collect()
-            };
-            PersistentRecord::Raw {
-                inc_segments: filter(inc_segments),
-                con_segments: filter(con_segments),
-            }
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
