@@ -1910,17 +1910,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "io-uring"
-version = "0.7.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fdd7bddefd0a8833b88a4b68f90dae22c7450d11b354198baee3874fd811b344"
-dependencies = [
- "bitflags 2.6.0",
- "cfg-if",
- "libc",
-]
-
-[[package]]
 name = "is-terminal"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3161,7 +3150,6 @@ dependencies = [
  "crc32fast",
  "derive_more",
  "futures",
- "io-uring",
  "libc",
  "pin-project-lite",
  "pprof",
@@ -3172,7 +3160,6 @@ dependencies = [
  "rustls-pemfile 2.2.0",
  "serde",
  "serde_json",
- "socket2 0.5.7",
  "tempfile",
  "tikv-client",
  "tokio",

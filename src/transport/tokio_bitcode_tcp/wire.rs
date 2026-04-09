@@ -17,11 +17,7 @@ pub type TcpIrMessage<U> = MessageImpl<
 
 /// Wire-level message envelope for the Tokio bitcode TCP transport.
 ///
-/// Same structure as the uring transport's WireMessage — both use
-/// length-prefixed bitcode encoding over TCP. Since TcpAddress and
-/// UringAddress are both newtypes around SocketAddr, the on-the-wire
-/// bytes are identical (bitcode serializes through newtypes
-/// transparently), making the two transports wire-compatible.
+/// Uses length-prefixed bitcode encoding over TCP.
 #[derive(Serialize, Deserialize)]
 pub(crate) enum WireMessage<U: ReplicaUpcalls> {
     Request {

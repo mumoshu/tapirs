@@ -8,8 +8,7 @@
 //! - **Runtime**: Tokio (epoll-based async reactor on Linux)
 //! - **Codec**: Bitcode binary encoding (~10x faster than JSON)
 //! - **Framing**: 4-byte LE u32 length prefix + bitcode payload (max 16 MB)
-//! - **Request-reply**: oneshot channels for pending replies (not Waker-based
-//!   like the uring transport)
+//! - **Request-reply**: oneshot channels for pending replies
 //! - **Connection model**: `TcpStream::into_split()` for full-duplex — read and
 //!   write halves run as independent async tasks on separate Tokio tasks
 //! - **Inbound dispatch**: The receive callback (`IrReplica::receive()`) is
@@ -34,19 +33,10 @@
 //! prepare + commit across f+1 replicas), not transport encoding or syscall
 //! overhead.
 //!
-//! ## vs uring transport
+//! ## Wire format
 //!
-//! This transport trades the uring transport's thread-per-core completion-based
-//! I/O (io_uring, Rc/RefCell, CPU-pinned threads) for Tokio compatibility —
-//! needed for the admin API, client REPL, and interactive use. For maximum
-//! throughput, the `uring` transport remains available.
-//!
-//! ## Wire compatibility
-//!
-//! Both transports use length-prefixed bitcode encoding over TCP. Since
-//! `TcpAddress` and `UringAddress` are both newtypes around `SocketAddr`,
-//! and bitcode serializes through newtypes transparently, the on-the-wire
-//! bytes are identical — making the two transports wire-compatible.
+//! Length-prefixed bitcode encoding over TCP. `TcpAddress` is a newtype
+//! around `SocketAddr`; bitcode serializes through newtypes transparently.
 
 mod address;
 mod codec;

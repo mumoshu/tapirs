@@ -41,9 +41,7 @@ pub use mvcc::disk::disk_io::{BufferedIo, OpenFlags as DiskOpenFlags};
 pub use mvcc::disk::memory_io::MemoryIo;
 #[cfg(test)]
 pub use mvcc::disk::memory_io::MemoryIo as DefaultDiskIo;
-#[cfg(all(not(test), target_os = "linux", feature = "io-uring"))]
-pub use transport::uring::UringDirectIo as DefaultDiskIo;
-#[cfg(all(not(test), not(all(target_os = "linux", feature = "io-uring"))))]
+#[cfg(not(test))]
 pub use mvcc::disk::disk_io::BufferedIo as DefaultDiskIo;
 pub use occ::{
     PrepareResult as OccPrepareResult, ScanEntry as OccScanEntry,
@@ -66,9 +64,3 @@ pub use transport::{
     Transport,
 };
 pub use transport::tokio_bitcode_tcp::{TcpAddress, TcpTransport};
-
-#[cfg(all(target_os = "linux", feature = "io-uring"))]
-pub use transport::uring::{
-    CoreConfig, CoreLauncher, ShardAssignment, UringAddress, UringDirectIo, UringError,
-    UringSleep, UringTransport,
-};
