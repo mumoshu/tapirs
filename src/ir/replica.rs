@@ -150,8 +150,6 @@ struct SyncInner<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::
     outstanding_do_view_changes: BTreeMap<T::Address, DoViewChange<U::IO, U::CO, U::CR, T::Address, U::Payload>>,
     /// Last time received message from each peer replica.
     peer_liveness: BTreeMap<T::Address, Instant>,
-    /// Latest normal-view number confirmed by each peer via periodic status broadcasts.
-    peer_normal_views: BTreeMap<T::Address, ViewNumber>,
 }
 
 impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload = U::Payload>> Replica<U, T, R> {
@@ -200,7 +198,6 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                     record_base_view: None,
                     outstanding_do_view_changes: BTreeMap::new(),
                     peer_liveness: BTreeMap::new(),
-                    peer_normal_views: BTreeMap::new(),
                 }),
             }),
         };
@@ -231,9 +228,6 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                 let sync = &mut *sync;
 
                 sync.peer_liveness
-                    .retain(|a, _| sync.view.membership.contains(*a));
-
-                sync.peer_normal_views
                     .retain(|a, _| sync.view.membership.contains(*a));
 
                 if sync.status.is_normal() {
@@ -315,18 +309,7 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                     view: sync.view.clone(),
                     from_client: false,
                     addendum: (address == sync.view.leader()).then(|| {
-                        let peers_confirmed = sync.latest_normal_view.number.0 + 1 == sync.view.number.0
-                            && sync.latest_normal_view.membership.iter()
-                                .filter(|a| *a != transport.address())
-                                .all(|a| {
-                                    sync.peer_normal_views.get(&a)
-                                        .is_some_and(|v| *v >= sync.latest_normal_view.number)
-                                });
-                        let payload = if peers_confirmed {
-                            sync.record.build_view_change_payload(sync.view.number.0)
-                        } else {
-                            sync.record.build_full_view_change_payload()
-                        };
+                        let payload = sync.record.build_view_change_payload(sync.view.number.0);
                         ViewChangeAddendum::new(
                             payload,
                             sync.latest_normal_view.clone(),
@@ -997,11 +980,10 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                     )),
                 );
             }
-            Message::<U, T>::StatusBroadcast(StatusBroadcast { latest_normal_view }) => {
-                let entry = sync.peer_normal_views.entry(address).or_insert(ViewNumber(0));
-                if latest_normal_view > *entry {
-                    *entry = latest_normal_view;
-                }
+            Message::<U, T>::StatusBroadcast(StatusBroadcast { .. }) => {
+                // Status broadcasts are used for liveness detection (peer_liveness
+                // updated at the top of receive()). The per-peer LNV tracking was
+                // removed — DVC payloads are always delta (memtable-only).
             }
             Message::<U, T>::FinalizeInconsistentReply(_) => {
                 // Handled by the client via transport.send() future resolution.
