@@ -15,7 +15,7 @@
       |
       v
   +-----------+
-  | Transport |  Channels / TCP / io_uring
+  | Transport |  Channels / TCP
   +-----------+
 ```
 

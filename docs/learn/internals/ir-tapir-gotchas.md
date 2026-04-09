@@ -266,11 +266,11 @@ Pass `Duration::ZERO` when clocks are known to be perfectly synchronized (e.g., 
 
 **What the paper says:** N/A — AlignedBuf is an implementation detail for O_DIRECT support.
 
-**General implication:** `AlignedBuf` over-allocates to alignment boundaries (e.g., 4096-byte aligned). The `capacity()` exceeds `len()` by the alignment padding. When writing to disk, the correct number of bytes to write depends on the I/O backend: `BufferedIo` should write `len()` (logical data only), while `SyncDirectIo`/`UringDirectIo` must write `capacity()` (O_DIRECT requires aligned writes).
+**General implication:** `AlignedBuf` over-allocates to alignment boundaries (e.g., 4096-byte aligned). The `capacity()` exceeds `len()` by the alignment padding. When writing to disk, the correct number of bytes to write depends on the I/O backend: `BufferedIo` should write `len()` (logical data only), while `SyncDirectIo` must write `capacity()` (O_DIRECT requires aligned writes).
 
 **What breaks if violated:** If `BufferedIo.pwrite()` writes `capacity()` instead of `len()`, segment files contain trailing zero-padding bytes. On recovery, deserialization reads past the logical end and encounters garbage or zero bytes, causing `bitcode::Error::Eof` or corrupted entries. The bug is silent until crash recovery — normal reads use in-memory offsets that correctly bound the read.
 
-**How tapirs handles it:** `BufferedIo.pwrite()` consistently uses `&buf[..buf.len()]`. `SyncDirectIo`/`UringDirectIo` use `buf.capacity()` as the write length for O_DIRECT compliance. The `expected_size` parameter in `DiskIo::open()` carries the logical file size for S3CachingIo's ETag-based cache invalidation — other backends ignore it. Source: `mvcc/disk/disk_io.rs`.
+**How tapirs handles it:** `BufferedIo.pwrite()` consistently uses `&buf[..buf.len()]`. `SyncDirectIo` uses `buf.capacity()` as the write length for O_DIRECT compliance. The `expected_size` parameter in `DiskIo::open()` carries the logical file size for S3CachingIo's ETag-based cache invalidation — other backends ignore it. Source: `mvcc/disk/disk_io.rs`.
 
 ### 22. IR vlog min_vlog_size=u64::MAX disables rotation
 

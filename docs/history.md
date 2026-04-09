@@ -49,7 +49,7 @@ See the table below for what came from tapi-rs and what tapirs added.
 | Transactions | Get, put, prepare, commit, abort | Range scan, phantom protection, coordinator recovery, read-only fast path, backup/restore |
 | Storage | MVCC memory store | WiscKey-inspired replica storage (LSM + value log), crash-safe compaction, vlog GC |
 | Sharding | Static shard routing | Online split/merge/compact, CDC view-based cursors, prepared-drain |
-| Transport | In-process channel | Tokio TCP (default), io_uring TCP + O_DIRECT disk (optional), fault-injecting channel |
+| Transport | In-process channel | Tokio TCP (default), fault-injecting channel |
 | Discovery | — | Static JSON, DNS, TAPIR-backed self-discovery |
 | Operations | — | CLI (tapi/tapictl/tapiadm), Docker Compose, backup/restore, REPL |
 | Kubernetes | — | Go operator (CRD, phase-based reconciler, Helm charts, Kind E2E) |

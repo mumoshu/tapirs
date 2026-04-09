@@ -31,7 +31,7 @@
 address = "0.0.0.0:9000"
 data_dir = "/var/lib/tapirs/data"
 replication_factor = 3
-transport = "tcp"            # "tcp" or "uring"
+transport = "tcp"
 
 [discovery]
 url = "tapirs://discovery.tapirs.svc:9100"

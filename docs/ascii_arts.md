@@ -64,7 +64,7 @@
                          |
          .───────────────v───────────────────.
         ;         Transport Layer              :
-        ;   Channel | TCP+Bitcode | io_uring   :
+        ;   Channel | TCP+Bitcode              :
          `───────────────┬───────────────────'
                          |
          .───────────────v───────────────────.
@@ -714,12 +714,12 @@
   In-process, instant,              Real network, serialized
   deterministic.                    with bitcode (compact binary).
 
-  FaultyChannel (fuzz tests)        io_uring (linux, optional)
-  ==========================        ==========================
+  FaultyChannel (fuzz tests)
+  ==========================
 
-  Same as Channel, but randomly:    Kernel-bypassing async I/O
-  - drops messages                  for disk + network.
-  - delays messages                 Zero-copy, batch submissions.
+  Same as Channel, but randomly:
+  - drops messages
+  - delays messages
   - reorders messages
   - duplicates messages
 
@@ -775,7 +775,6 @@
    |    +-- channel.rs        in-process (tests)
    |    +-- faulty_channel.rs fault injection (fuzz)
    |    +-- tokio_bitcode_tcp/  production TCP
-   |    +-- uring/            io_uring (optional)
    |
    +-- discovery/           Shard directory & routing
    +-- tls/                 mTLS support (optional)

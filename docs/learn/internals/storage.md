@@ -48,7 +48,7 @@ Write Path                          Read Path
 | LSM | `mvcc/disk/lsm.rs` | Two-level merge tree (L0 unsorted, L1 sorted) |
 | Value Log | `mvcc/disk/vlog.rs` | Append-only value storage with CRC |
 | Manifest | `mvcc/disk/manifest.rs` | Crash-recovery metadata |
-| DiskIo trait | `mvcc/disk/disk_io.rs` | Pluggable I/O (tokio default, io_uring optional) |
+| DiskIo trait | `mvcc/disk/disk_io.rs` | Pluggable I/O (BufferedIo default, MemoryIo for tests) |
 
 ## S3 Remote Storage Layer
 
@@ -79,7 +79,7 @@ Write Path (flush)              Read Path (lazy download)
 
 **ETag cache invalidation:** On download, S3CachingIo saves a `.etag` sidecar file alongside each segment. On re-open with `expected_size` set (from `VlogSegment::open_at`), if the `.etag` file exists, a HEAD request compares ETags. On mismatch, the segment is fully re-downloaded. Sealed segments are immutable so their ETag never changes. Active segments grow between seals so `sync_to_remote` overwrites them on S3.
 
-**BufferedIo len vs capacity:** `AlignedBuf` over-allocates to alignment boundaries. `BufferedIo.pwrite()` writes `buf.len()` bytes (logical data only). `SyncDirectIo`/`UringDirectIo` write `buf.capacity()` bytes (O_DIRECT requires aligned writes). Files on disk match logical size for BufferedIo.
+**BufferedIo len vs capacity:** `AlignedBuf` over-allocates to alignment boundaries. `BufferedIo.pwrite()` writes `buf.len()` bytes (logical data only). `SyncDirectIo` writes `buf.capacity()` bytes (O_DIRECT requires aligned writes). Files on disk match logical size for BufferedIo.
 
 | Component | Key file | Description |
 |-----------|----------|-------------|
