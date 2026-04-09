@@ -20,19 +20,20 @@ What every replica builds and exchanges during an IR view change, with Big-O com
 | # | Data | Who Builds | Build Complexity | Wire/Memory Size |
 |---|------|-----------|-----------------|-----------------|
 | 1 | SharedView | all replicas | O(1) | O(f) |
-| 2 | DVC addendum (delta) | sender → leader | O(D) | O(D) |
-| 3 | DVC addendum (full) | sender → leader | O(S) reads | O(N) |
+| 2 | DVC addendum (always delta) | sender → leader | O(D) | O(D) |
+| 3 | ~~DVC addendum (full)~~ | ~~sender → leader~~ | ~~O(S) reads~~ | ~~O(N)~~ **REMOVED** |
 | 4 | latest_normal_view | sender | O(1) | O(f) |
-| 5 | Merged record R | leader | O(N log N + S + f·D·log M) | O(M) |
+| 5 | Merged record R | leader | **O(f · D · log M)** | O(f · D) |
 | 6 | entries_by_opid | leader | O(f · D) | O(f · U) |
 | 7 | d and u sets | leader | O(U · f²) | O(\|d\| + \|u\|) |
 | 8 | merge() result | leader (TAPIR) | O((\|d\|+\|u\|) · log T) | O(\|d\|+\|u\|) |
-| 9 | install_merged_record | leader | O(M + S) | O(\|delta\|) new |
+| 9 | install_merged_record | leader | **O(\|R\|)** encode + persist | O(\|R\|) new |
 | 10 | StartView (full) | leader → lagging | O(S) reads | O(N) |
 | 11 | StartView (delta) | leader → caught-up | O(1) Arc clone | O(\|delta\|) |
 | 12 | Routing decision | leader | O(f) | — |
-| 13 | install_start_view | non-leader | O(N log N + S) | O(N) indexed |
-| 14 | sync() | all replicas (TAPIR) | O(M · log N) | — |
+| 13 | install_start_view | non-leader | **O(N log N) ×3** + O(S) | O(N) indexed |
+| 14a | sync() leader | leader (TAPIR) | **O(f·D · log D)** | — |
+| 14b | sync() non-leader | non-leader (TAPIR) | **O(N · log N)** | — |
 | 15 | CDC delta | all replicas (TAPIR) | O(\|delta\| · W) | O(\|delta\| · W) |
 | 16 | flush/seal | all replicas | O(D + S) | O(D) disk |
 | 17 | S3 sync | all replicas (async) | O(\|new bytes\|) net | O(\|new bytes\|) |
@@ -47,24 +48,22 @@ View number + membership struct.
 - **Build**: O(1) — clone of existing struct.
 - **Size**: O(f) — membership list of 2f+1 addresses.
 
-### 2. DVC addendum payload (delta)
+### 2. DVC addendum payload (always delta)
 
-Sent when `base_view + 1 == next_view` AND all peers confirmed latest normal view via periodic status broadcasts.
+Always memtable-only. DVC payloads never carry sealed segments — all peers
+with matching LNV have identical sealed data (see `view-change-unneeded-doviewchange-full-payload.md`).
 
-- **Source**: `src/unified/ir/ir_record_store.rs:950-966` — `build_view_change_payload`
-- **How**: Calls `memtable_bytes()` which serializes D memtable entries to vlog-format bytes, then wraps as `PersistentPayload::delta`.
-- **Decision logic**: `src/ir/replica.rs:318-326` — checks `peer_normal_views` for all peers: O(f) lookups.
+- **Source**: `src/unified/ir/ir_record_store.rs` — `build_view_change_payload`
+- **How**: Calls `memtable_bytes()` which serializes D memtable entries to vlog-format bytes, wraps as `PersistentPayload::delta`.
 - **Build**: O(D).
 - **Size**: O(D) bytes.
 
-### 3. DVC addendum payload (full)
+### ~~3. DVC addendum payload (full) — REMOVED~~
 
-Sent when there is a view gap or peers have not confirmed latest normal view.
-
-- **Source**: `src/ir/replica.rs:328` — `build_full_view_change_payload()`
-- **How**: Reads all sealed segment bytes with ViewRange metadata via `all_segment_bytes_with_views()`, appends memtable bytes, wraps as `PersistentPayload::full`. No deserialization or re-serialization round-trip.
-- **Build**: O(S) disk reads, O(N) bytes.
-- **Size**: O(N) bytes.
+Previously sent when there was a view gap or peers hadn't confirmed LNV.
+Removed: three independent filters (leader rejection guard, peer LNV matching,
+best_payload LNV matching) proved sealed segments in DVC were never consumed
+by the leader merge. See `view-change-unneeded-doviewchange-full-payload.md`.
 
 ### 4. latest_normal_view
 
@@ -81,11 +80,11 @@ Piggybacked on the addendum. Clone of the replica's existing `SharedView`.
 BTreeMap union of leader's record plus peer payload entries.
 
 - **Source**: `src/ir/replica.rs:602-658`
-- **How**: The leader builds its own `memtable_record()` once (O(D): reads memtable bytes only). R is initialized from this record. Then for each of f peers' DVC payloads, only memtable entries are extracted (via `as_memtable_record()`) and merged into R. Missed-view sealed segments (view > leader's base_view) bypass merge — they are already the output of a prior leader's merge and are synced separately to apply TAPIR side-effects.
+- **How**: The leader builds its own `memtable_record()` once (O(D): reads memtable bytes only). R is initialized from this record. Then for each of f peers' DVC payloads (always delta, memtable-only), entries are scanned via `payload_as_record()` and merged into R.
   - **Inconsistent entries**: If entry already in R, keeps the one with higher finalization view. Otherwise marks as Finalized in new view.
   - **Consensus entries**: Finalized entries go directly into R. Tentative entries are collected into `entries_by_opid` for majority voting.
 - **Build**: **O(f · D · log M)** — f memtable scans merged into R.
-- **Size**: O(M) entries.
+- **Size**: O(f · D) entries (memtable-only, no sealed entries).
 
 ### 6. entries_by_opid
 
@@ -119,20 +118,16 @@ The TAPIR application layer decides the final result for all undecided operation
 
 ### 9. install_merged_record
 
-Persists the merged record and produces delta for StartView.
+Persists the merged record as a sealed segment.
 
-- **Source**: `src/unified/ir/ir_record_store.rs:1062-1218`
-- **How**:
-  1. **Import best_payload segments** (lines 1081-1108): For each segment from the best DoViewChange payload, if max(view) > base_view, import via `persist_sealed_segment`. O(S) segment operations.
-  2. **Compute delta** (lines 1117-1144): Iterate merged BTreeMap; entries whose OpId is not in the VlogLsm index OR is in `resolved_ops` form the delta. O(M) iteration with O(1) amortized index check.
-  3. **Encode and persist delta** (lines 1148-1183): Serialize delta entries to vlog-format bytes, write as sealed segment. O(|delta|).
-  4. **Finalize state** (lines 1187-1193): Clear memtable, update base_view, start new view.
-- **Build**: **O(M + S)**.
+- **Source**: `src/unified/ir/ir_record_store.rs` — `install_merged_record`
+- **How**: R IS the delta — it contains only merged memtable entries (none are in the VlogLsm sealed index). Encode R as vlog-format bytes, persist as sealed segment, clear memtable, advance base_view.
+- **Build**: **O(|R|)** encode + persist. No segment import, no delta computation.
 - **Produces**:
-  - `transition`: (from_view, delta record) — for CDC.
+  - `transition`: (from_view, R) — for CDC.
   - `start_view_delta`: Optional delta payload for same-base recipients.
   - `previous_base_view`: For StartView routing decisions.
-- **New disk bytes**: O(|delta|).
+- **New disk bytes**: O(|R|).
 
 ## Phase 3: StartView Broadcast (leader → all replicas)
 
@@ -179,20 +174,28 @@ Installs the StartView payload, producing three records for upcalls.
 - **Build**: **O(N log N + S)** — dominated by the three `into_indexed()` calls.
 - **Produces**: `ViewInstallResult` with previous_record, transition, new_record.
 
-### 14. sync() (TAPIR upcall)
+### 14a. sync() — leader path (TAPIR upcall)
 
-Synchronizes local TAPIR state with the leader's merged record.
+Synchronizes leader's TAPIR state with the merged memtable record.
 
 - **Source**: `src/tapir/replica.rs:642-732`
-- **How**:
-  - Iterates all consensus entries in the leader's record (new_record). For each:
-    - Looks up local record (previous_record) via `get_consensus`: O(log N) on Indexed BTreeMap.
-    - If not locally finalized with same result: syncs prepared txn state via `add_or_replace_or_finalize_prepared_txn` (O(log T)).
-  - Iterates all inconsistent entries. For each:
-    - Looks up local record: O(log N).
-    - If not locally finalized: calls `exec_inconsistent`.
+- **Called with**: `sync(&leader_record, &R)` at `replica.rs:711`
+- **How**: Iterates R (merged memtable entries, O(f·D)), looks up each in leader_record (memtable, O(log D)). Skips the leader's own entries, processes peer entries.
+- **Build**: **O(f·D · log D)** — already optimized (R is memtable-only).
+
+### 14b. sync() — non-leader path (TAPIR upcall)
+
+Synchronizes follower's TAPIR state with the leader's full record.
+
+- **Source**: `src/tapir/replica.rs:642-732`
+- **Called with**: `sync(&previous_record, &new_record)` at `replica.rs:834`
+- **How**: Iterates all N entries in `new_record` (the full record from `install_start_view_unified`). For each:
+  - Looks up `previous_record` via `get_consensus`/`get_inconsistent`: O(log N).
+  - If already finalized with same result: skip (O(1)).
+  - Otherwise: syncs prepared txn state or calls `exec_inconsistent`.
   - Calls `gc_stale_state()` at end.
-- **Build**: **O(M · log N)**.
+- **Build**: **O(N · log N)** — dominated by iterating all N entries even though most are skipped.
+- **Next action**: Pass `transition` (delta-only) instead of `new_record` to reduce to O(|delta| · log N). See observation #6.
 
 ### 15. CDC delta (on_install_leader_record_delta)
 
@@ -234,9 +237,12 @@ Uploads new segments and manifest to S3 after view change.
 
 The leader builds its own `memtable_record()` once (O(D)), initializes R from it, then merges only memtable entries from each peer's DVC payload. The dominant cost is **O(f · D · log M)**. Missed-view sealed entries bypass merge and go directly through sync(). All replicas in the merge share the same latest_normal_view, so their sealed segments are identical — only memtable entries differ.
 
-### 2. Delta optimization is critical
+### 2. DVC always delta, StartView delta on common path
 
-On consecutive views (the common case), the DVC payload shrinks from O(N) to O(D), StartView from O(N) to O(|delta|), and the expensive `into_indexed()` O(N log N) is avoided on the sender side. The `peers_confirmed` check at `replica.rs:318-324` gates this optimization.
+DVC payloads are always O(D) (memtable-only). The full payload path was removed
+after analysis proved sealed segments in DVC were never consumed (see
+`view-change-unneeded-doviewchange-full-payload.md`). StartView shrinks from
+O(N) to O(|delta|) on consecutive views (same-base recipients).
 
 ### 3. N grows without bound
 
@@ -250,34 +256,44 @@ Lines 831, 839, and 851 each call `into_indexed()` which is O(N log N). `previou
 
 The d/u computation at lines 675-686 is O(f²) per undecided OpId due to the nested filter. With f typically 1-2 in production, this is not a practical concern but is theoretically quadratic in f.
 
-### 6. Remaining read-and-deserialize-all-segments sites
+### 6. Remaining O(N) sites and next actions
 
-Three places still read and deserialize all segment bytes into Indexed (BTreeMap) records:
+Two hot-path O(N) sites remain. The leader merge path is fully optimized to O(D).
 
-**1. `memtable_record()`** — `ir_record_store.rs`
-
-Reads only memtable bytes O(D) → `into_indexed()`. Called once per view change on the leader for merge. Sealed segments are not read — all replicas with the same latest_normal_view share identical sealed data. Missed-view sealed entries from peer full payloads are extracted via `as_record_since(base_view)` and synced separately without going through merge.
-
-**2. `install_start_view_unified()`** — 3 calls at lines 805, 813, 825
+**1. `install_start_view_unified()` — triple `into_indexed()`** [HOT, every non-leader VC]
 
 Builds three Indexed records from segment bytes:
 
-- `previous_record` (line 805): existing segments + memtable → `into_indexed()` — O((N_existing + D) log(N_existing + D))
-- `transition` (line 813): new segments only → `into_indexed()` — O(|delta| log |delta|)
-- `new_record` (line 825): ALL segments (existing + new) → `into_indexed()` — O(N log N)
+- `previous_record`: existing segments + memtable → `into_indexed()` — O((N_existing + D) log(N_existing + D))
+- `transition`: new segments only → `into_indexed()` — O(|delta| log |delta|)
+- `new_record`: ALL segments (existing + new) → `into_indexed()` — O(N log N)
 
-`previous_record` and `new_record` share most of their segments — observation #4 notes a single-pass overlay approach could reduce this to O(N log N) once + O(|delta| log |delta|).
+`previous_record` and `new_record` share most of their segments — observation #4 notes a single-pass overlay approach could reduce to O(N log N) once + O(|delta| log |delta|).
 
-**3. `RecordView` methods on `PersistentRecord::Raw`** — lines 222, 233, 244, 256
+**Next action**: Build only `new_record` via `into_indexed()` once. Derive `previous_record` by filtering `new_record` entries with `modified_view <= base_view` (O(N) scan, no sort). Derive `transition` by filtering with `modified_view > base_view` (O(|delta|) scan). Total: O(N log N) once instead of ×3.
 
-When `consensus_entries()`, `inconsistent_entries()`, `get_consensus()`, `get_inconsistent()` are called on a Raw record, they call `scan_entries()` which deserializes all segment bytes. This happens when the merge loop iterates peer payload records (via `as_unresolved_record()` → Raw → iterator). Those are only delta-sized though, not the full record.
+**2. `sync()` on non-leader path iterates full record** [HOT, every non-leader VC]
+
+`tapir/replica.rs:642-732` — iterates all entries in the second argument (`leader` record), doing O(log N) lookup per entry in the first argument (`local` record).
+
+- **Leader path** (`replica.rs:711`): `sync(&leader_record, &R)` — R is memtable-only O(f·D). **Already optimized.**
+- **Non-leader path** (`replica.rs:834`): `sync(&previous_record, &new_record)` — `new_record` is the full O(N) record built by `install_start_view_unified`. The skip check (local already finalized → continue) means most entries are skipped in O(1), but the iteration itself is O(N).
+
+**Next action**: This is coupled to the triple `into_indexed()` problem. If `install_start_view_unified` passes the `transition` record (delta-only, O(|delta|)) to sync instead of the full `new_record`, sync becomes O(|delta| · log N). The `transition` record already exists — it just needs to be used as the sync target. `previous_record` would still serve as `local` for the skip check.
+
+**3. `RecordView` on Raw peer records** [WARM, bounded by O(D)]
+
+Merge loop iterates peer DVC payload records via `as_unresolved_record()` → Raw → `scan_entries()`. Since DVC payloads are always delta (memtable-only), each scan is O(D). Total: O(f · D). Acceptable.
 
 **Summary:**
 
-| Site | Reads | Deserializes | When |
-|------|-------|-------------|------|
-| `memtable_record()` | memtable only | O(D) via `into_indexed` | leader merge (once per VC) |
-| `install_start_view_unified` ×3 | existing + new segment bytes | O(N log N) × 3 | non-leader install (per VC) |
-| `RecordView` on Raw | already in memory | O(D) per scan | merge loop (peer deltas) |
-
-The biggest remaining opportunity is `install_start_view_unified` with its triple `into_indexed()`. The `memtable_record()` in the leader path now reads only memtable O(D) — the sealed-segment read was eliminated.
+| Site | Complexity | When | Status |
+|------|-----------|------|--------|
+| `memtable_record()` | O(D) | leader merge | **Optimized** |
+| `install_merged_record` | O(\|R\|) | leader merge | **Optimized** (was O(M + S)) |
+| DVC payload | O(D) | every VC sender | **Optimized** (was O(N) for full) |
+| `install_start_view_unified` ×3 | O(N log N) ×3 | non-leader install | **Next target** |
+| `sync()` non-leader | O(N · log N) | non-leader install | **Next target** (coupled to above) |
+| `sync()` leader | O(f·D · log D) | leader merge | **Optimized** |
+| `build_start_view_payload` full | O(S) reads | leader, lagging followers only | Cold path, necessary |
+| `list_files_reverse` | O(manifests) | read replica refresh (async) | Cold path, documented caveat |
