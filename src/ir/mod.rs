@@ -14,7 +14,7 @@ mod view;
 mod tests;
 
 pub use client::{Client, ClientConfig, Id as ClientId};
-pub use ir_record_store::{IrRecordStore, MergeInstallResult, ViewInstallResult};
+pub use ir_record_store::{IrRecordStore, MergeInstallResult, PreparedInstall};
 pub use payload::IrPayload;
 pub use membership::{Membership, Size as MembershipSize};
 pub use message::{

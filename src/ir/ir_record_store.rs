@@ -3,15 +3,64 @@ use super::record::{ConsensusEntry, InconsistentEntry, RecordBuilder, RecordView
 use super::{OpId, ViewNumber};
 use std::fmt::Debug;
 
-/// Result of install_start_view_payload — data the replica needs for upcalls.
-#[derive(Clone)]
-pub struct ViewInstallResult<R> {
-    /// Full record before the install (for upcalls.sync).
-    pub previous_record: R,
-    /// CDC: (from_view, changes). The replica adds new_view from context.
-    pub transition: (u64, R),
-    /// Full record after the install — avoids caller needing a second full_record() call.
-    pub new_record: R,
+/// Result of prepare_start_view_install — transition record + opaque data
+/// for complete_start_view_install.
+pub struct PreparedInstall<R, P> {
+    /// CDC transition: (from_view, delta_record).
+    pub(crate) transition: (u64, R),
+    /// The original payload, returned for complete_start_view_install to
+    /// import segments.
+    pub(crate) payload: P,
+    pub(crate) new_view: u64,
+}
+
+impl<R, P> PreparedInstall<R, P> {
+    /// CDC transition: (from_view, delta_record).
+    pub fn transition(&self) -> &(u64, R) {
+        &self.transition
+    }
+}
+
+/// Adapter: presents an [`IrRecordStore`] as a [`RecordView`] for lookups.
+///
+/// Used as the `local` argument to `Upcalls::sync` on the non-leader path,
+/// where only `get_consensus`/`get_inconsistent` are called (O(log N) via
+/// VlogLsm index). Iteration methods return empty — the `leader` argument
+/// (a different RecordView impl) handles iteration.
+pub struct RecordStoreView<'a, IO: Clone, CO: Clone, CR: Clone, R: IrRecordStore<IO, CO, CR>>(
+    &'a R,
+    std::marker::PhantomData<fn() -> (IO, CO, CR)>,
+);
+
+impl<'a, IO: Clone, CO: Clone, CR: Clone, R: IrRecordStore<IO, CO, CR>> RecordStoreView<'a, IO, CO, CR, R> {
+    pub fn new(store: &'a R) -> Self {
+        Self(store, std::marker::PhantomData)
+    }
+}
+
+impl<IO, CO, CR, R> RecordView for RecordStoreView<'_, IO, CO, CR, R>
+where
+    IO: Clone,
+    CO: Clone,
+    CR: Clone,
+    R: IrRecordStore<IO, CO, CR>,
+{
+    type IO = IO;
+    type CO = CO;
+    type CR = CR;
+
+    fn consensus_entries(&self) -> impl Iterator<Item = (OpId, ConsensusEntry<CO, CR>)> {
+        std::iter::empty()
+    }
+    fn inconsistent_entries(&self) -> impl Iterator<Item = (OpId, InconsistentEntry<IO>)> {
+        std::iter::empty()
+    }
+    fn get_consensus(&self, op_id: &OpId) -> Option<ConsensusEntry<CO, CR>> {
+        self.0.get_consensus_entry(op_id)
+    }
+    fn get_inconsistent(&self, op_id: &OpId) -> Option<InconsistentEntry<IO>> {
+        self.0.get_inconsistent_entry(op_id)
+    }
 }
 
 /// Result of install_merged_record.
@@ -81,12 +130,34 @@ where
     /// Wrap an external record as a full payload (bootstrap).
     fn make_full_payload(record: Self::Record) -> Self::Payload;
 
-    /// Resolve a received StartView payload, validate delta base, install in place.
-    /// Returns None if delta validation fails (bad base_view).
-    /// Returns ViewInstallResult with previous_record (for sync) and CDC transition.
+    /// Phase 1: partition segments and build transition record.
+    ///
+    /// Does NOT modify VlogLsm state — the store's `get_*` methods still
+    /// reflect pre-install state, enabling O(log N) sync lookups via
+    /// [`RecordStoreView`].
+    fn prepare_start_view_install(
+        &self, payload: Self::Payload, new_view: u64,
+    ) -> Option<PreparedInstall<Self::Record, Self::Payload>>;
+
+    /// Phase 2: import segments, clear memtable, advance base_view.
+    fn complete_start_view_install(
+        &mut self, prepared: PreparedInstall<Self::Record, Self::Payload>,
+    );
+
+    /// Combined prepare + complete for callers that don't need VlogLsm
+    /// lookups between the two phases. Returns (from_view, transition_record).
     fn install_start_view_payload(
         &mut self, payload: Self::Payload, new_view: u64,
-    ) -> Option<ViewInstallResult<Self::Record>>;
+    ) -> Option<(u64, Self::Record)> {
+        let prepared = self.prepare_start_view_install(payload, new_view)?;
+        let (from_view, transition) = prepared.transition;
+        self.complete_start_view_install(PreparedInstall {
+            transition: (from_view, Self::Record::default()),
+            payload: prepared.payload,
+            new_view: prepared.new_view,
+        });
+        Some((from_view, transition))
+    }
 
     /// Install a merged record (leader path) in place.
     /// Returns MergeInstallResult with CDC data, delta payload, and previous base view.

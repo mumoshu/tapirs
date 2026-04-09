@@ -1,6 +1,7 @@
 use crate::ir::{
-    IrRecordStore, MergeInstallResult, OpId, RecordConsensusEntry as ConsensusEntry,
-    RecordInconsistentEntry as InconsistentEntry, ViewInstallResult,
+    IrRecordStore, MergeInstallResult, OpId, PreparedInstall,
+    RecordConsensusEntry as ConsensusEntry,
+    RecordInconsistentEntry as InconsistentEntry,
 };
 use crate::mvcc::disk::disk_io::DiskIo;
 use crate::unified::ir::ir_record_store::{PersistentPayload, PersistentRecord};
@@ -142,16 +143,27 @@ where
         >::make_full_payload_static(record)
     }
 
-    fn install_start_view_payload(
-        &mut self,
+    fn prepare_start_view_install(
+        &self,
         payload: Self::Payload,
         new_view: u64,
-    ) -> Option<ViewInstallResult<Self::Record>> {
+    ) -> Option<PreparedInstall<Self::Record, Self::Payload>> {
         self.inner
             .lock()
             .unwrap()
             .ir
-            .install_start_view_payload(payload, new_view)
+            .prepare_start_view_install(payload, new_view)
+    }
+
+    fn complete_start_view_install(
+        &mut self,
+        prepared: PreparedInstall<Self::Record, Self::Payload>,
+    ) {
+        self.inner
+            .lock()
+            .unwrap()
+            .ir
+            .complete_start_view_install(prepared);
     }
 
     fn install_merged_record(

@@ -1,6 +1,6 @@
 
 use super::{
-    ir_record_store::MergeInstallResult,
+    ir_record_store::{MergeInstallResult, RecordStoreView},
     message::{BootstrapRecord, FinalizeInconsistentReply, LeaderRecordReply, Reconfigure, StatusBroadcast, ViewChangeAddendum},
     shared_view::SharedView, AddMember, Confirm, DoViewChange,
     FinalizeConsensus, FinalizeInconsistent, Membership, Message, OpId, ProposeConsensus,
@@ -822,26 +822,37 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                     let sv_addr = self.inner.transport.address();
                     tracing::debug!("[ir-replica-{sv_addr}] starting view {:?} (was {:?} in {:?})",
                         view.number, sync.status, sync.view.number);
-                    let Some(result) = sync.record.install_start_view_payload(payload, view.number.0) else {
+                    // Phase 1: partition segments and build transition.
+                    // VlogLsm is NOT modified yet — get_* still returns pre-install state.
+                    let Some(prepared) = sync.record.prepare_start_view_install(payload, view.number.0) else {
                         tracing::debug!("[ir-replica-{sv_addr}] REJECTED StartView v={:?}: payload validation failed (delta base mismatch)",
                             view.number);
                         debug_assert!(false, "StartView payload validation failed (delta base mismatch)");
                         warn!("ignoring StartView: payload validation failed (delta base mismatch)");
                         return None;
                     };
-                    let install_ms = sv_wall.elapsed().as_millis();
-                    let (from_view, ref changes) = result.transition;
+                    let prepare_ms = sv_wall.elapsed().as_millis();
+                    // CDC and sync run BEFORE complete — VlogLsm still has
+                    // pre-install state, so RecordStoreView provides O(log N)
+                    // skip-check lookups for sync's local argument.
+                    let (from_view, ref changes) = *prepared.transition();
                     sync.upcalls.on_install_leader_record_delta(from_view, view.number.0, changes);
-                    sync.upcalls.sync(&result.previous_record, &result.new_record);
+                    {
+                        let sync = &mut *sync;
+                        let local = RecordStoreView::new(&sync.record);
+                        sync.upcalls.sync(&local, &prepared.transition().1);
+                    }
                     let sync_ms = sv_wall.elapsed().as_millis();
+                    // Phase 2: import segments, clear memtable, advance base_view.
+                    sync.record.complete_start_view_install(prepared);
                     // Persist resolved state before transitioning to Normal.
                     sync.record.flush();
                     let rec_flush_ms = sv_wall.elapsed().as_millis();
                     sync.upcalls.flush();
                     let upcalls_flush_ms = sv_wall.elapsed().as_millis();
                     if upcalls_flush_ms > 10 {
-                        tracing::debug!("[ir-replica-{sv_addr}] view {:?} wall: install={}ms sync={}ms rec_flush={}ms upcalls_flush={}ms",
-                            view.number, install_ms, sync_ms - install_ms, rec_flush_ms - sync_ms, upcalls_flush_ms - rec_flush_ms);
+                        tracing::debug!("[ir-replica-{sv_addr}] view {:?} wall: prepare={}ms sync={}ms rec_flush={}ms upcalls_flush={}ms",
+                            view.number, prepare_ms, sync_ms - prepare_ms, rec_flush_ms - sync_ms, upcalls_flush_ms - rec_flush_ms);
                     }
 
                     sync.record_base_view = Some(view.clone());
