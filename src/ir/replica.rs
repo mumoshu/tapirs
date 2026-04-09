@@ -64,10 +64,11 @@ pub trait Upcalls: Sized + Send + 'static {
     /// In addition to the IR spec, this must not rely on the existence
     /// of any ancient records (from before the last view change) in the
     /// leader's record.
-    fn sync<Rec: RecordView<IO = Self::IO, CO = Self::CO, CR = Self::CR>>(
+    fn sync<L: RecordView<IO = Self::IO, CO = Self::CO, CR = Self::CR>,
+            R: RecordView<IO = Self::IO, CO = Self::CO, CR = Self::CR>>(
         &mut self,
-        local: &Rec,
-        leader: &Rec,
+        local: &L,
+        leader: &R,
     );
     fn merge(
         &mut self,

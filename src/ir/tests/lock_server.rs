@@ -123,7 +123,7 @@ async fn lock_server(num_replicas: usize) {
             }
         }
 
-        fn sync<Rec: IrRecordView<IO = Self::IO, CO = Self::CO, CR = Self::CR>>(&mut self, _: &Rec, record: &Rec) {
+        fn sync<L: IrRecordView<IO = Self::IO, CO = Self::CO, CR = Self::CR>, R: IrRecordView<IO = Self::IO, CO = Self::CO, CR = Self::CR>>(&mut self, _: &L, record: &R) {
             self.locked = None;
 
             let mut locked = BTreeSet::<IrClientId>::new();

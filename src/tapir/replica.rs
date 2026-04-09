@@ -639,10 +639,11 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
         }
     }
 
-    fn sync<Rec: IrRecordView<IO = Self::IO, CO = Self::CO, CR = Self::CR>>(
+    fn sync<L: IrRecordView<IO = Self::IO, CO = Self::CO, CR = Self::CR>,
+            R: IrRecordView<IO = Self::IO, CO = Self::CO, CR = Self::CR>>(
         &mut self,
-        local: &Rec,
-        leader: &Rec,
+        local: &L,
+        leader: &R,
     ) {
         let sync_wall = std::time::Instant::now();
         let mut con_count = 0u64;
