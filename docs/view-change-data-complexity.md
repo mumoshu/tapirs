@@ -81,10 +81,10 @@ Piggybacked on the addendum. Clone of the replica's existing `SharedView`.
 BTreeMap union of leader's record plus peer payload entries.
 
 - **Source**: `src/ir/replica.rs:602-658`
-- **How**: The leader builds its own `full_record()` once (O(N log N + S): reads all sealed segments via `all_segment_bytes_with_views`, strips views, adds memtable, deserializes via `into_indexed`). R is initialized from this record. Then for each of f peers' DVC payloads, entries are scanned from the payload segments directly via `as_unresolved_record()` and merged into R. Delta payloads contribute only O(D) entries each; full payloads contribute O(N) but base entries are harmless duplicates.
+- **How**: The leader builds its own `memtable_record()` once (O(D): reads memtable bytes only). R is initialized from this record. Then for each of f peers' DVC payloads, only memtable entries are extracted (via `as_memtable_record()`) and merged into R. Missed-view sealed segments (view > leader's base_view) bypass merge — they are already the output of a prior leader's merge and are synced separately to apply TAPIR side-effects.
   - **Inconsistent entries**: If entry already in R, keeps the one with higher finalization view. Otherwise marks as Finalized in new view.
   - **Consensus entries**: Finalized entries go directly into R. Tentative entries are collected into `entries_by_opid` for majority voting.
-- **Build**: **O(N log N + S + f · D · log M)** — one base read, f delta scans.
+- **Build**: **O(f · D · log M)** — f memtable scans merged into R.
 - **Size**: O(M) entries.
 
 ### 6. entries_by_opid
@@ -230,9 +230,9 @@ Uploads new segments and manifest to S3 after view change.
 
 ## Observations
 
-### 1. Leader merge reads base once
+### 1. Leader merge reads memtable only
 
-The leader builds its own `full_record()` once (O(N log N + S)), initializes R from it, then scans only delta entries from each peer's DVC payload. The dominant cost is **O(N log N + S + f · D · log M)**. Previously `resolve_do_view_change_payload` re-read the base for each of f+1 payloads — O(f · (N + S)) — which was eliminated by scanning payload segments directly.
+The leader builds its own `memtable_record()` once (O(D)), initializes R from it, then merges only memtable entries from each peer's DVC payload. The dominant cost is **O(f · D · log M)**. Missed-view sealed entries bypass merge and go directly through sync(). All replicas in the merge share the same latest_normal_view, so their sealed segments are identical — only memtable entries differ.
 
 ### 2. Delta optimization is critical
 
@@ -254,9 +254,9 @@ The d/u computation at lines 675-686 is O(f²) per undecided OpId due to the nes
 
 Three places still read and deserialize all segment bytes into Indexed (BTreeMap) records:
 
-**1. `full_record()`** — `ir_record_store.rs:914`
+**1. `memtable_record()`** — `ir_record_store.rs`
 
-Reads all sealed segments via `all_segment_bytes_with_views()` + memtable → `into_indexed()`. Called once per view change on the leader (for merge + sync).
+Reads only memtable bytes O(D) → `into_indexed()`. Called once per view change on the leader for merge. Sealed segments are not read — all replicas with the same latest_normal_view share identical sealed data. Missed-view sealed entries from peer full payloads are extracted via `as_record_since(base_view)` and synced separately without going through merge.
 
 **2. `install_start_view_unified()`** — 3 calls at lines 805, 813, 825
 
@@ -276,8 +276,8 @@ When `consensus_entries()`, `inconsistent_entries()`, `get_consensus()`, `get_in
 
 | Site | Reads | Deserializes | When |
 |------|-------|-------------|------|
-| `full_record()` | all sealed segments + memtable | O(N log N) via `into_indexed` | leader merge (once per VC) |
+| `memtable_record()` | memtable only | O(D) via `into_indexed` | leader merge (once per VC) |
 | `install_start_view_unified` ×3 | existing + new segment bytes | O(N log N) × 3 | non-leader install (per VC) |
 | `RecordView` on Raw | already in memory | O(D) per scan | merge loop (peer deltas) |
 
-The biggest remaining opportunity is `install_start_view_unified` with its triple `into_indexed()`. The `full_record()` in the leader path reads all segments once — that's harder to avoid since the `sync()` upcall needs O(log n) lookups on the full record.
+The biggest remaining opportunity is `install_start_view_unified` with its triple `into_indexed()`. The `memtable_record()` in the leader path now reads only memtable O(D) — the sealed-segment read was eliminated.
