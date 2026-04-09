@@ -950,43 +950,24 @@ where
         self.con_lsm.memtable_len()
     }
 
-    fn build_view_change_payload(&self, next_view: u64) -> Self::Payload {
-        if self.base_view > 0 && self.base_view + 1 == next_view {
-            // Delta: just the memtable entries from the current view
-            let (inc_bytes, con_bytes) = self
-                .memtable_bytes()
-                .expect("build_view_change_payload: memtable_bytes failed");
-            PersistentPayload::delta(
-                ViewNumber(self.base_view),
-                inc_bytes,
-                con_bytes,
-                vec![ViewRange {
-                    view: self.base_view,
-                    start_offset: 0,
-                    end_offset: 0,
-                    num_entries: 0,
-                }],
-            )
-        } else {
-            self.build_full_view_change_payload()
-        }
-    }
-
-    fn build_full_view_change_payload(&self) -> Self::Payload {
-        // Full: all segment bytes with views + memtable
-        let (mut inc, mut con) = self
-            .all_segment_bytes_with_views()
-            .expect("build_full_view_change_payload: export failed");
-        let (inc_mem, con_mem) = self
+    fn build_view_change_payload(&self) -> Self::Payload {
+        // DVC payloads are always memtable-only delta. Sealed segments
+        // are never sent — all peers with matching LNV have identical
+        // sealed data.
+        let (inc_bytes, con_bytes) = self
             .memtable_bytes()
-            .expect("build_full_view_change_payload: memtable_bytes failed");
-        if !inc_mem.is_empty() {
-            inc.push((Vec::new(), inc_mem));
-        }
-        if !con_mem.is_empty() {
-            con.push((Vec::new(), con_mem));
-        }
-        PersistentPayload::full(inc, con)
+            .expect("build_view_change_payload: memtable_bytes failed");
+        PersistentPayload::delta(
+            ViewNumber(self.base_view),
+            inc_bytes,
+            con_bytes,
+            vec![ViewRange {
+                view: self.base_view,
+                start_offset: 0,
+                end_offset: 0,
+                num_entries: 0,
+            }],
+        )
     }
 
     fn build_start_view_payload(&self, delta: Option<&Self::Payload>) -> Self::Payload {
@@ -1355,7 +1336,7 @@ mod tests {
     }
 
     #[test]
-    fn build_view_change_payload_delta_vs_full() {
+    fn build_view_change_payload_always_delta() {
         let mut store = make_store();
         // Insert and seal to establish base
         store.insert_inconsistent_entry(op_id(1, 1), fin_inc_entry("op1", 0));
@@ -1364,25 +1345,21 @@ mod tests {
         // Add overlay entry
         store.insert_inconsistent_entry(op_id(2, 1), inc_entry("op2", 1));
 
-        // Delta: base_view=1, next_view=2
-        let delta = store.build_view_change_payload(2);
-        assert!(delta.base_view().is_some());
-        assert_eq!(delta.base_view().unwrap(), ViewNumber(1));
-
-        // Full: non-consecutive view
-        let full = store.build_view_change_payload(5);
-        assert_eq!(full.base_view(), Some(ViewNumber(0)));
+        // Always delta with base_view = store's base_view
+        let payload = store.build_view_change_payload();
+        assert_eq!(payload.base_view(), Some(ViewNumber(1)));
     }
 
     #[test]
     fn install_start_view_roundtrip() {
         let mut store = make_store();
-        // Insert entries
+        // Insert entries and seal (simulating a completed view change)
         store.insert_inconsistent_entry(op_id(1, 1), fin_inc_entry("op1", 0));
         store.insert_consensus_entry(op_id(1, 2), fin_con_entry("cop1", "r1", 0));
+        store.seal(1).unwrap();
 
-        // Build full payload
-        let payload = store.build_view_change_payload(1);
+        // Build full StartView payload (not DVC — StartView carries sealed segments)
+        let payload = store.build_start_view_payload(None);
 
         // Create a new store and install
         let mut store2 = make_store();
@@ -1460,14 +1437,15 @@ mod tests {
         store.insert_consensus_entry(op_id(1, 2), fin_con_entry("cop1", "r1", 0));
         store.seal(1).unwrap();
 
-        // Non-consecutive view → Full payload (base_view=None)
-        let payload = store.build_view_change_payload(5);
-        assert!(
-            payload.base_view() == Some(ViewNumber(0)),
-            "should be full-reset (base_view=0) for non-consecutive view"
+        // Full StartView payload for lagging followers
+        let payload = store.build_start_view_payload(None);
+        assert_eq!(
+            payload.base_view(),
+            Some(ViewNumber(0)),
+            "full StartView payload has base_view=0"
         );
 
-        // Install on fresh store → install_start_view_full path
+        // Install on fresh store
         let mut store2 = make_store();
         let result = store2.install_start_view_payload(payload, 2);
         assert!(result.is_some());

@@ -309,7 +309,7 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                     view: sync.view.clone(),
                     from_client: false,
                     addendum: (address == sync.view.leader()).then(|| {
-                        let payload = sync.record.build_view_change_payload(sync.view.number.0);
+                        let payload = sync.record.build_view_change_payload();
                         ViewChangeAddendum::new(
                             payload,
                             sync.latest_normal_view.clone(),
@@ -515,7 +515,7 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                             view: sync.view.clone(),
                             from_client: false,
                             addendum: Some(ViewChangeAddendum::new(
-                                sync.record.build_view_change_payload(sync.view.number.0),
+                                sync.record.build_view_change_payload(),
                                 sync.latest_normal_view.clone(),
                             )),
                         };

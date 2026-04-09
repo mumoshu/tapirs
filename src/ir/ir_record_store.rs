@@ -69,15 +69,12 @@ where
     /// Total number of unique consensus entries.
     fn consensus_len(&self) -> usize;
 
-    /// Build a view-change addendum payload (full vs delta decided internally).
-    fn build_view_change_payload(&self, next_view: u64) -> Self::Payload;
-
-    /// Build a full (non-delta) view-change addendum payload.
+    /// Build a DoViewChange addendum payload (memtable-only delta).
     ///
-    /// Always includes all sealed segments with ViewRange metadata plus
-    /// the current memtable. Used when peers have not confirmed
-    /// latest_normal_view, so a delta payload would be unsafe.
-    fn build_full_view_change_payload(&self) -> Self::Payload;
+    /// DVC payloads always contain only memtable entries — sealed segments
+    /// are never sent in DVC because all peers with matching LNV have
+    /// identical sealed data.
+    fn build_view_change_payload(&self) -> Self::Payload;
 
     /// Build a StartView payload. If delta is Some, clones it; else builds full.
     fn build_start_view_payload(&self, delta: Option<&Self::Payload>) -> Self::Payload;

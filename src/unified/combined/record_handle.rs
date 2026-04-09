@@ -116,20 +116,12 @@ where
         self.inner.lock().unwrap().ir.consensus_len()
     }
 
-    fn build_view_change_payload(&self, next_view: u64) -> Self::Payload {
+    fn build_view_change_payload(&self) -> Self::Payload {
         self.inner
             .lock()
             .unwrap()
             .ir
-            .build_view_change_payload(next_view)
-    }
-
-    fn build_full_view_change_payload(&self) -> Self::Payload {
-        self.inner
-            .lock()
-            .unwrap()
-            .ir
-            .build_full_view_change_payload()
+            .build_view_change_payload()
     }
 
     fn build_start_view_payload(&self, delta: Option<&Self::Payload>) -> Self::Payload {
