@@ -1,7 +1,6 @@
 use super::payload::IrPayload;
 use super::record::{ConsensusEntry, InconsistentEntry, RecordBuilder, RecordView};
 use super::{OpId, ViewNumber};
-use std::collections::BTreeSet;
 use std::fmt::Debug;
 
 /// Result of install_start_view_payload — data the replica needs for upcalls.
@@ -56,8 +55,13 @@ where
     /// Insert or overwrite a consensus entry.
     fn insert_consensus_entry(&mut self, op_id: OpId, entry: ConsensusEntry<CO, CR>);
 
-    /// Returns all entries (sealed + current view) merged into a single record.
-    fn full_record(&self) -> Self::Record;
+    /// Returns current-view (memtable) entries as a record.
+    ///
+    /// Only reads memtable O(D), not sealed segments. Used on the leader
+    /// merge path where all replicas share identical sealed segments
+    /// (same latest_normal_view). Sealed entries from missed views are
+    /// handled separately via payload_as_record_since.
+    fn memtable_record(&self) -> Self::Record;
 
     /// Total number of unique inconsistent entries.
     fn inconsistent_len(&self) -> usize;
@@ -91,18 +95,17 @@ where
     /// Install a merged record (leader path) in place.
     /// Returns MergeInstallResult with CDC data, delta payload, and previous base view.
     ///
-    /// `best_payload` is the DoViewChange payload from the replica with the
-    /// highest latest_normal_view — its raw segments are imported directly
-    /// to preserve byte identity (no re-encoding).
+    /// `merged` contains only memtable entries from the current view — the
+    /// output of merge_record + merge(d,u). Since these entries are not in
+    /// the VlogLsm sealed index, the entire merged record IS the delta and
+    /// is persisted directly as a new sealed segment.
     ///
-    /// `resolved_ops` contains OpIds whose consensus results were changed by
-    /// the merge (TAPIR's `merge(d, u)` upcall). These entries must be
-    /// included in the delta segment even if their OpId already exists in
-    /// the VlogLsm index, because the result value changed.
+    /// `best_payload` is the DoViewChange payload from the replica with the
+    /// highest latest_normal_view — its raw segments with view > base_view
+    /// are imported directly to preserve byte identity (no re-encoding).
     fn install_merged_record(
         &mut self, merged: Self::Record, new_view: u64,
         best_payload: Option<&Self::Payload>,
-        resolved_ops: &BTreeSet<OpId>,
     ) -> MergeInstallResult<Self::Record, Self::Payload>;
 
     /// The highest view whose entries have been sealed to durable storage.

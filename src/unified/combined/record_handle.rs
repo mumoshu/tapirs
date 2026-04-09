@@ -6,7 +6,6 @@ use crate::mvcc::disk::disk_io::DiskIo;
 use crate::unified::ir::ir_record_store::{PersistentPayload, PersistentRecord};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use std::collections::BTreeSet;
 use std::fmt::Debug;
 use std::sync::{Arc, Mutex};
 
@@ -105,8 +104,8 @@ where
         self.inner.lock().unwrap().ir.base_view()
     }
 
-    fn full_record(&self) -> Self::Record {
-        self.inner.lock().unwrap().ir.full_record()
+    fn memtable_record(&self) -> Self::Record {
+        self.inner.lock().unwrap().ir.memtable_record()
     }
 
     fn inconsistent_len(&self) -> usize {
@@ -168,13 +167,12 @@ where
         merged: Self::Record,
         new_view: u64,
         best_payload: Option<&Self::Payload>,
-        resolved_ops: &BTreeSet<OpId>,
     ) -> MergeInstallResult<Self::Record, Self::Payload> {
         self.inner
             .lock()
             .unwrap()
             .ir
-            .install_merged_record(merged, new_view, best_payload, resolved_ops)
+            .install_merged_record(merged, new_view, best_payload)
     }
 
     fn flush(&mut self) {

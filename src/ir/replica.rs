@@ -569,24 +569,42 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                                     );
                                     return None;
                                 }
-                                // Build the leader's own record once (reads base
-                                // segments once). Peers' payloads are scanned
-                                // directly — no base re-read, no resolve step.
-                                let leader_record = sync.record.full_record();
+                                // Build the leader's memtable record — O(D) not O(N).
+                                // Sealed segments are identical across all replicas
+                                // with the same latest_normal_view; only current-view
+                                // memtable entries differ.
+                                let leader_record = sync.record.memtable_record();
 
-                                // Collect peer payload records (delta entries only
-                                // for delta payloads, all entries for full payloads).
-                                // Excludes the leader — its entries are in leader_record.
-                                let peer_records: Vec<_> = matching
+                                // Separate peer payloads into memtable vs missed-view.
+                                //
+                                // (a) Memtable entries from all replicas are inconsistent
+                                //     — not yet merged by any leader. They go through
+                                //     merge_record → d/u → merge(d,u) → sync().
+                                //
+                                // (b) Missed-view sealed entries (segments with view >
+                                //     leader's base_view) are already the output of a
+                                //     prior leader's merge. They are already finalized
+                                //     and only need sync() to apply TAPIR side-effects.
+                                let base_view = sync.record.base_view();
+
+                                let peer_payloads: Vec<_> = matching
                                     .clone()
                                     .filter(|(addr, r)| {
                                         **addr != my_address
                                             && r.addendum.as_ref().unwrap().latest_normal_view.number
                                                 == latest_normal_view.number
                                     })
-                                    .map(|(_, r)| {
-                                        sync.record.payload_as_record(&r.addendum.as_ref().unwrap().payload)
-                                    })
+                                    .map(|(_, r)| &r.addendum.as_ref().unwrap().payload)
+                                    .collect();
+
+                                let peer_memtable_records: Vec<_> = peer_payloads
+                                    .iter()
+                                    .map(|p| sync.record.payload_as_memtable_record(p))
+                                    .collect();
+
+                                let missed_sealed_records: Vec<_> = peer_payloads
+                                    .iter()
+                                    .map(|p| sync.record.payload_as_record_since(p, base_view))
                                     .collect();
 
                                 if tracing::enabled!(tracing::Level::TRACE) {
@@ -601,8 +619,9 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                                         )
                                         .collect();
                                     trace!(
-                                        "have 1 leader + {} peer records ({:?})",
-                                        peer_records.len(),
+                                        "have 1 leader + {} peer memtable + {} missed sealed ({:?})",
+                                        peer_memtable_records.len(),
+                                        missed_sealed_records.len(),
                                         dvc_debug
                                     );
                                 }
@@ -668,9 +687,10 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                                     }
                                 };
 
-                                // Leader's record (base + memtable) first, then peer deltas.
+                                // Leader's memtable entries first, then peer memtable entries.
+                                // R stays at O(f·D) — no sealed entries from any replica.
                                 merge_record(&leader_record);
-                                for r in &peer_records {
+                                for r in &peer_memtable_records {
                                     merge_record(r);
                                 }
 
@@ -723,6 +743,21 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
 
                                 {
                                     let sync = &mut *sync;
+                                    // Phase 1: Sync missed-view sealed entries.
+                                    // These are already finalized by a prior leader's
+                                    // merge — they only need TAPIR side-effect
+                                    // application (commit_txn, etc.). All entries are
+                                    // new to this leader, so local is empty: every
+                                    // get_inconsistent/get_consensus returns None and
+                                    // sync processes every entry unconditionally.
+                                    let empty_local = R::Record::default();
+                                    for r in &missed_sealed_records {
+                                        sync.upcalls.sync(&empty_local, r);
+                                    }
+                                    // Phase 2: Sync merged memtable entries.
+                                    // leader_record (memtable-only) serves as local:
+                                    // the leader's own entries are skipped (already
+                                    // applied), peer entries are processed.
                                     sync.upcalls.sync(&leader_record, &R);
                                 }
 
@@ -731,9 +766,7 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
 
                                 debug_assert_eq!(results_by_opid.len(), entries_by_opid.len());
 
-                                let mut resolved_ops = BTreeSet::<OpId>::new();
                                 for (op_id, result) in results_by_opid {
-                                    resolved_ops.insert(op_id);
                                     let entries = entries_by_opid.get(&op_id).unwrap();
                                     let entry = &entries[0];
                                     sync.upcalls.finalize_consensus(&op_id, &entry.op, &result);
@@ -748,10 +781,11 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                                     );
                                 }
 
-                                // Install merged record — imports raw segments from best payload,
-                                // persists only the resolved delta as a new sealed segment.
+                                // Install merged record — imports raw segments from
+                                // best payload, persists R directly as sealed segment
+                                // (R is memtable-only, so delta = R).
                                 let merge_result: MergeInstallResult<R::Record, U::Payload> =
-                                    sync.record.install_merged_record(R, msg_view_number.0, best_payload.as_ref(), &resolved_ops);
+                                    sync.record.install_merged_record(R, msg_view_number.0, best_payload.as_ref());
                                 let (from_view, ref changes) = merge_result.transition;
                                 sync.upcalls.on_install_leader_record_delta(from_view, msg_view_number.0, changes);
 

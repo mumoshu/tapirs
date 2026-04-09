@@ -665,12 +665,6 @@ impl<K: Ord, V, IO: DiskIo, M: Memtable<K, V>> VlogLsm<K, V, IO, M> {
         }))
     }
 
-    /// Check if a key exists in the in-memory index (O(log n), no disk reads).
-    /// Returns false in SstOnly mode (no in-memory index).
-    pub(crate) fn index_contains(&self, key: &K) -> bool {
-        self.index.as_ref().is_some_and(|idx| idx.contains_key(key))
-    }
-
     /// Clear the memtable.
     pub(crate) fn clear_memtable(&mut self) {
         self.memtable.mem_clear();

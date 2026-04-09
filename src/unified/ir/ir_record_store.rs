@@ -945,26 +945,12 @@ where
         self.base_view
     }
 
-    fn full_record(&self) -> Self::Record {
-        let (inc_with_views, con_with_views) = self
-            .all_segment_bytes_with_views()
-            .expect("full_record: export_segment_bytes_with_views failed");
-        let mut inc_segments: Vec<Vec<u8>> =
-            inc_with_views.into_iter().map(|(_, bytes)| bytes).collect();
-        let mut con_segments: Vec<Vec<u8>> =
-            con_with_views.into_iter().map(|(_, bytes)| bytes).collect();
+    fn memtable_record(&self) -> Self::Record {
         let (inc_mem, con_mem) = self
             .memtable_bytes()
-            .expect("full_record: memtable_bytes failed");
-        if !inc_mem.is_empty() {
-            inc_segments.push(inc_mem);
-        }
-        if !con_mem.is_empty() {
-            con_segments.push(con_mem);
-        }
-        // Return Indexed (BTreeMap) instead of Raw to avoid O(n) linear scans
-        // in get_consensus/get_inconsistent. The sync() path calls get_consensus
-        // for every entry, making Raw records O(n²).
+            .expect("memtable_record: memtable_bytes failed");
+        let inc_segments = if inc_mem.is_empty() { vec![] } else { vec![inc_mem] };
+        let con_segments = if con_mem.is_empty() { vec![] } else { vec![con_mem] };
         PersistentRecord::Raw {
             inc_segments,
             con_segments,
@@ -1102,7 +1088,6 @@ where
         merged: Self::Record,
         new_view: u64,
         best_payload: Option<&Self::Payload>,
-        resolved_ops: &std::collections::BTreeSet<OpId>,
     ) -> MergeInstallResult<Self::Record, Self::Payload> {
         self.log_ir_inc_state(&format!("install_merged_record BEFORE view={new_view}"));
         let iw = std::time::Instant::now();
@@ -1148,45 +1133,20 @@ where
 
         let import_ms = iw.elapsed().as_millis();
 
-        // --- Step 2: Compute delta ---
-        // Delta = entries in merged R whose OpId is NOT in the VlogLsm index
-        // (new from other replicas) OR whose OpId is in resolved_ops (merge
-        // changed the result).
-        let delta = match &merged {
-            PersistentRecord::Indexed {
-                inconsistent,
-                consensus,
-            } => {
-                let delta_inc: BTreeMap<OpId, InconsistentEntry<IO>> = inconsistent
-                    .iter()
-                    .filter(|(id, _)| {
-                        !self.inc_lsm.index_contains(id) || resolved_ops.contains(id)
-                    })
-                    .map(|(id, e)| (*id, e.clone()))
-                    .collect();
-                let delta_con: BTreeMap<OpId, ConsensusEntry<CO, CR>> = consensus
-                    .iter()
-                    .filter(|(id, _)| {
-                        !self.con_lsm.index_contains(id) || resolved_ops.contains(id)
-                    })
-                    .map(|(id, e)| (*id, e.clone()))
-                    .collect();
-                PersistentRecord::Indexed {
-                    inconsistent: delta_inc,
-                    consensus: delta_con,
-                }
-            }
-            PersistentRecord::Raw { .. } => {
-                panic!("install_merged_record: merged must be Indexed");
-            }
-        };
-
-        let delta_ms = iw.elapsed().as_millis();
-
-        // --- Step 3: Encode and persist delta as a sealed segment ---
-        let (delta_inc_bytes, delta_con_bytes) =
-            Self::encode_indexed_as_segments(&delta)
-                .expect("install_merged: encode delta failed");
+        // --- Step 2: Encode and persist merged record as a sealed segment ---
+        // R IS the delta. R contains only merged memtable entries from
+        // the current view — none are in the VlogLsm sealed index
+        // (memtable entries haven't been sealed yet). Missed-view sealed
+        // entries from best_payload are imported in step 1 above as raw
+        // segments, not through R.
+        //
+        // The resolved_ops filter that previously existed here caught
+        // indexed entries whose consensus result changed by merge(d,u).
+        // With memtable-only R, no entry is indexed, so the filter is
+        // unnecessary.
+        let (merged_inc_bytes, merged_con_bytes) =
+            Self::encode_indexed_as_segments(&merged)
+                .expect("install_merged: encode merged failed");
 
         let new_view_range = vec![ViewRange {
             view: new_view,
@@ -1195,34 +1155,34 @@ where
             num_entries: 0,
         }];
 
-        if !delta_inc_bytes.is_empty()
+        if !merged_inc_bytes.is_empty()
             && let Some(meta) = self
                 .inc_lsm
                 .persist_sealed_segment(
-                    &delta_inc_bytes,
+                    &merged_inc_bytes,
                     op_id_from_raw,
                     new_view_range.clone(),
                 )
-                .unwrap_or_else(|e| panic!("install_merged: persist inc delta failed: {e}"))
+                .unwrap_or_else(|e| panic!("install_merged: persist inc failed: {e}"))
         {
             self.manifest.ir_inc.sealed_vlog_segments.push(meta);
         }
-        if !delta_con_bytes.is_empty()
+        if !merged_con_bytes.is_empty()
             && let Some(meta) = self
                 .con_lsm
                 .persist_sealed_segment(
-                    &delta_con_bytes,
+                    &merged_con_bytes,
                     op_id_from_raw,
                     new_view_range.clone(),
                 )
-                .unwrap_or_else(|e| panic!("install_merged: persist con delta failed: {e}"))
+                .unwrap_or_else(|e| panic!("install_merged: persist con failed: {e}"))
         {
             self.manifest.ir_con.sealed_vlog_segments.push(meta);
         }
 
         let persist_ms = iw.elapsed().as_millis();
 
-        // --- Step 4: Finalize state ---
+        // --- Step 3: Finalize state ---
         self.inc_lsm.clear_memtable();
         self.con_lsm.clear_memtable();
         self.base_view = new_view;
@@ -1232,21 +1192,21 @@ where
 
         let total_ms = iw.elapsed().as_millis();
         tracing::debug!(
-            "[install_merged] view={new_view} base={from_view} import={import_ms}ms delta={delta_ms}ms persist={persist_ms}ms total={total_ms}ms",
+            "[install_merged] view={new_view} base={from_view} import={import_ms}ms persist={persist_ms}ms total={total_ms}ms",
         );
 
         // Build start_view_delta for same-base recipients.
         let start_view_delta = previous_base_view.map(|prev_bv| {
             PersistentPayload::delta(
                 prev_bv,
-                delta_inc_bytes.clone(),
-                delta_con_bytes.clone(),
+                merged_inc_bytes.clone(),
+                merged_con_bytes.clone(),
                 new_view_range.clone(),
             )
         });
 
-        // Transition = the delta entries from this view change.
-        let transition = (from_view, delta);
+        // Transition = the merged memtable entries from this view change.
+        let transition = (from_view, merged);
 
         MergeInstallResult {
             transition,
@@ -1387,18 +1347,20 @@ mod tests {
     }
 
     #[test]
-    fn full_record_merges_memtable_and_sealed() {
+    fn memtable_record_returns_only_memtable() {
         let mut store = make_store();
-        // Insert and finalize an entry, then seal
-        store.insert_inconsistent_entry(op_id(1, 1), fin_inc_entry("op1", 0));
+        // Seal a finalized entry into sealed storage
+        store.insert_inconsistent_entry(op_id(1, 1), fin_inc_entry("sealed_op", 0));
         store.seal(1).unwrap();
 
-        // Add another entry to memtable (current view)
-        store.insert_inconsistent_entry(op_id(2, 1), inc_entry("op2", 1));
+        // Add entry to memtable (current view)
+        store.insert_inconsistent_entry(op_id(2, 1), inc_entry("memtable_op", 1));
 
-        let record = store.full_record();
+        // memtable_record returns only memtable entry
+        let record = store.memtable_record();
         let entries: Vec<_> = record.inconsistent_entries().collect();
-        assert_eq!(entries.len(), 2);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].1.op, "memtable_op");
     }
 
     #[test]
@@ -1410,11 +1372,11 @@ mod tests {
         store.insert_inconsistent_entry(op_id(2, 1), fin_inc_entry("finalized", 0));
         store.seal(1).unwrap();
 
-        // Only finalized entry should survive in sealed data
-        let record = store.full_record();
-        let entries: Vec<_> = record.inconsistent_entries().collect();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].1.op, "finalized");
+        // Tentative entry should be discarded after seal
+        assert!(store.get_inconsistent_entry(&op_id(1, 1)).is_none());
+        // Finalized entry should survive
+        let entry = store.get_inconsistent_entry(&op_id(2, 1)).unwrap();
+        assert_eq!(entry.op, "finalized");
     }
 
     #[test]
@@ -1501,7 +1463,7 @@ mod tests {
         merged.insert_inconsistent(op_id(1, 1), fin_inc_entry("op1", 0));
         merged.insert_consensus(op_id(1, 2), fin_con_entry("cop1", "r1", 0));
 
-        let result = store.install_merged_record(merged, 1, None, &std::collections::BTreeSet::new());
+        let result = store.install_merged_record(merged, 1, None);
         assert!(result.start_view_delta.is_none()); // no base yet
         assert_eq!(store.base_view, 1);
 
@@ -1597,7 +1559,7 @@ mod tests {
             PersistentRecord::default();
         merged_v1.insert_inconsistent(op_id(1, 1), fin_inc_entry("op1", 0));
         merged_v1.insert_consensus(op_id(1, 2), fin_con_entry("cop1", "r1", 0));
-        leader.install_merged_record(merged_v1, 1, None, &std::collections::BTreeSet::new());
+        leader.install_merged_record(merged_v1, 1, None);
 
         // Leader sends StartView payload to recipient B
         let payload_v1 = leader.build_start_view_payload(None);
@@ -1615,7 +1577,7 @@ mod tests {
         merged_v2.insert_consensus(op_id(1, 2), fin_con_entry("cop1", "r1", 0));
         merged_v2.insert_inconsistent(op_id(2, 1), fin_inc_entry("op2", 1));
         merged_v2.insert_consensus(op_id(2, 2), fin_con_entry("cop2", "r2", 1));
-        leader.install_merged_record(merged_v2, 2, None, &std::collections::BTreeSet::new());
+        leader.install_merged_record(merged_v2, 2, None);
 
         // Leader sends full StartView payload (non-same-base)
         let payload_v2 = leader.build_start_view_payload(None);
@@ -1656,7 +1618,7 @@ mod tests {
         let mut merged_v1: PersistentRecord<String, String, String> =
             PersistentRecord::default();
         merged_v1.insert_inconsistent(op_id(1, 1), fin_inc_entry("v1_op", 0));
-        leader.install_merged_record(merged_v1, 1, None, &std::collections::BTreeSet::new());
+        leader.install_merged_record(merged_v1, 1, None);
 
         // Recipient B installs from view 1
         let payload_v1 = leader.build_start_view_payload(None);
@@ -1670,14 +1632,14 @@ mod tests {
             PersistentRecord::default();
         merged_v2.insert_inconsistent(op_id(1, 1), fin_inc_entry("v1_op", 0));
         merged_v2.insert_inconsistent(op_id(2, 1), fin_inc_entry("v2_op", 1));
-        leader.install_merged_record(merged_v2, 2, None, &std::collections::BTreeSet::new());
+        leader.install_merged_record(merged_v2, 2, None);
 
         let mut merged_v3: PersistentRecord<String, String, String> =
             PersistentRecord::default();
         merged_v3.insert_inconsistent(op_id(1, 1), fin_inc_entry("v1_op", 0));
         merged_v3.insert_inconsistent(op_id(2, 1), fin_inc_entry("v2_op", 1));
         merged_v3.insert_inconsistent(op_id(3, 1), fin_inc_entry("v3_op", 2));
-        leader.install_merged_record(merged_v3, 3, None, &std::collections::BTreeSet::new());
+        leader.install_merged_record(merged_v3, 3, None);
 
         // Leader sends full payload for view 3 to B (doesn't know B's LNV)
         let payload_v3 = leader.build_start_view_payload(None);
