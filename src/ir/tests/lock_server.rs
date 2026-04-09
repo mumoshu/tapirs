@@ -1,7 +1,7 @@
 use crate::{
     discovery::InMemoryShardDirectory,
     ChannelRegistry, ChannelTransport, IrClient, IrClientId, IrMembership, IrMembershipSize,
-    IrOpId, IrRecordView, IrReplica, IrReplicaUpcalls, Transport,
+    IrOpId, IrRecordIter, IrRecordView, IrReplica, IrReplicaUpcalls, Transport,
 };
 use crate::mvcc::disk::disk_io::OpenFlags;
 use crate::mvcc::disk::memory_io::MemoryIo;
@@ -123,7 +123,7 @@ async fn lock_server(num_replicas: usize) {
             }
         }
 
-        fn sync<L: IrRecordView<IO = Self::IO, CO = Self::CO, CR = Self::CR>, R: IrRecordView<IO = Self::IO, CO = Self::CO, CR = Self::CR>>(&mut self, _: &L, record: &R) {
+        fn sync<L: IrRecordView<IO = Self::IO, CO = Self::CO, CR = Self::CR>, R: IrRecordIter<IO = Self::IO, CO = Self::CO, CR = Self::CR>>(&mut self, _: &L, record: &R) {
             self.locked = None;
 
             let mut locked = BTreeSet::<IrClientId>::new();

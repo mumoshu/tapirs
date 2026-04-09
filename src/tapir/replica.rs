@@ -3,7 +3,7 @@ use super::message::MinPrepareBaselineResult;
 use crate::ir::ReplyUnlogged;
 use crate::tapir::store::TapirStore;
 use crate::{
-    DefaultDiskIo, IrClient, IrClientId, IrMembership, IrMembershipSize, IrOpId, IrRecordView,
+    DefaultDiskIo, IrClient, IrClientId, IrMembership, IrMembershipSize, IrOpId, IrRecordIter, IrRecordView,
     IrReplicaUpcalls,
     OccPrepareResult, OccSharedTransaction, OccTransactionId, TapirTransport, Transport,
 };
@@ -640,7 +640,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
     }
 
     fn sync<L: IrRecordView<IO = Self::IO, CO = Self::CO, CR = Self::CR>,
-            R: IrRecordView<IO = Self::IO, CO = Self::CO, CR = Self::CR>>(
+            R: IrRecordIter<IO = Self::IO, CO = Self::CO, CR = Self::CR>>(
         &mut self,
         local: &L,
         leader: &R,
@@ -816,7 +816,7 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> IrReplicaUpcalls for Replica<K, V, S
         }
     }
 
-    fn on_install_leader_record_delta<Rec: IrRecordView<IO = Self::IO, CO = Self::CO, CR = Self::CR>>(
+    fn on_install_leader_record_delta<Rec: IrRecordIter<IO = Self::IO, CO = Self::CO, CR = Self::CR>>(
         &mut self,
         base_view: u64,
         new_view: u64,

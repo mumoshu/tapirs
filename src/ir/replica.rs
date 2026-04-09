@@ -65,7 +65,7 @@ pub trait Upcalls: Sized + Send + 'static {
     /// of any ancient records (from before the last view change) in the
     /// leader's record.
     fn sync<L: RecordView<IO = Self::IO, CO = Self::CO, CR = Self::CR>,
-            R: RecordView<IO = Self::IO, CO = Self::CO, CR = Self::CR>>(
+            R: RecordIter<IO = Self::IO, CO = Self::CO, CR = Self::CR>>(
         &mut self,
         local: &L,
         leader: &R,
@@ -84,7 +84,7 @@ pub trait Upcalls: Sized + Send + 'static {
     /// changed during `base_view` (the view preceding the new view).
     /// `new_view` is the view the shard is transitioning to.
     /// Default: no-op.
-    fn on_install_leader_record_delta<Rec: RecordView<IO = Self::IO, CO = Self::CO, CR = Self::CR>>(
+    fn on_install_leader_record_delta<Rec: RecordIter<IO = Self::IO, CO = Self::CO, CR = Self::CR>>(
         &mut self,
         _base_view: u64,
         _new_view: u64,
