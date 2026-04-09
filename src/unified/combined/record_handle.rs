@@ -101,6 +101,10 @@ where
             .insert_consensus_entry(op_id, entry);
     }
 
+    fn base_view(&self) -> u64 {
+        self.inner.lock().unwrap().ir.base_view()
+    }
+
     fn full_record(&self) -> Self::Record {
         self.inner.lock().unwrap().ir.full_record()
     }

@@ -105,11 +105,28 @@ where
         resolved_ops: &BTreeSet<OpId>,
     ) -> MergeInstallResult<Self::Record, Self::Payload>;
 
+    /// The highest view whose entries have been sealed to durable storage.
+    fn base_view(&self) -> u64;
+
     /// Return a Record containing only the payload's own segment entries,
     /// without resolving against a base. For delta payloads this contains
     /// only the delta entries; for full payloads, all entries.
     fn payload_as_record(&self, payload: &Self::Payload) -> Self::Record {
         payload.as_unresolved_record()
+    }
+
+    /// Return a Record containing only payload segments newer than base_view.
+    /// Used by the leader to extract missed-view sealed entries from peer
+    /// full payloads without loading segments the leader already has.
+    fn payload_as_record_since(&self, payload: &Self::Payload, base_view: u64) -> Self::Record {
+        payload.as_record_since(base_view)
+    }
+
+    /// Return a Record containing only memtable segments from the payload.
+    /// For delta payloads, the entire payload is the memtable.
+    /// For full payloads, only segments with empty ViewRange are included.
+    fn payload_as_memtable_record(&self, payload: &Self::Payload) -> Self::Record {
+        payload.as_memtable_record()
     }
 
     /// Seal VlogLsm memtables to durable storage and save manifest.
