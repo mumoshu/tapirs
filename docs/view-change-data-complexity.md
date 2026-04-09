@@ -31,9 +31,9 @@ What every replica builds and exchanges during an IR view change, with Big-O com
 | 10 | StartView (full) | leader → lagging | O(S) reads | O(N) |
 | 11 | StartView (delta) | leader → caught-up | O(1) Arc clone | O(\|delta\|) |
 | 12 | Routing decision | leader | O(f) | — |
-| 13 | install_start_view | non-leader | **O(N log N) ×3** + O(S) | O(N) indexed |
+| 13 | install_start_view | non-leader | **O(\|delta\| log \|delta\|)** + O(S) | O(\|delta\|) indexed |
 | 14a | sync() leader | leader (TAPIR) | **O(f·D · log D)** | — |
-| 14b | sync() non-leader | non-leader (TAPIR) | **O(N · log N)** | — |
+| 14b | sync() non-leader | non-leader (TAPIR) | **O(\|delta\| · log N)** | — |
 | 15 | CDC delta | all replicas (TAPIR) | O(\|delta\| · W) | O(\|delta\| · W) |
 | 16 | flush/seal | all replicas | O(D + S) | O(D) disk |
 | 17 | S3 sync | all replicas (async) | O(\|new bytes\|) net | O(\|new bytes\|) |
@@ -159,20 +159,23 @@ Determines whether each recipient gets a full or delta StartView.
 
 ## Phase 4: install_start_view (non-leader replicas)
 
-### 13. install_start_view_unified
+### 13. prepare + complete start_view install
 
-Installs the StartView payload, producing three records for upcalls.
+Split into two phases. Prepare partitions segments and builds the transition record. Complete imports segments and updates state. Between the two, the VlogLsm's existing index serves as the "previous record" for sync skip-check lookups.
 
-- **Source**: `src/unified/ir/ir_record_store.rs:747-886`
+- **Source**: `src/unified/ir/ir_record_store.rs` — `prepare_start_view_unified` + `complete_start_view_unified`
 - **How**:
-  1. **Partition segments** (lines 775-810): For each payload segment, if max(view) <= base_view, classify as existing (skip). Otherwise import via `persist_sealed_segment`. O(S) comparisons + O(|new bytes|) disk persist.
-  2. **Build three records** (lines 815-851):
-     - `previous_record`: existing segments + memtable → `into_indexed()`: O((N_existing + D) log(N_existing + D))
-     - `transition`: new segments only → `into_indexed()`: O(|delta| log |delta|)
-     - `new_record`: all segments → `into_indexed()`: O(N log N)
-  3. **Update state** (lines 860-872): Clear memtable, advance base_view, update manifest.
-- **Build**: **O(N log N + S)** — dominated by the three `into_indexed()` calls.
-- **Produces**: `ViewInstallResult` with previous_record, transition, new_record.
+  1. **Prepare** (`&self`, no VlogLsm mutation):
+     - Partition payload segments by view: skip if max(view) <= base_view.
+     - Build `transition` from new segments only → `into_indexed()`: O(|delta| log |delta|).
+     - Return `PreparedInstall` with transition record + payload for complete phase.
+  2. **Caller performs CDC + sync** (VlogLsm still has pre-install state):
+     - `sync(RecordStoreView(&record), &transition)`: iterates |delta| entries, O(log N) VlogLsm lookup per entry.
+  3. **Complete** (`&mut self`):
+     - Import new segments via `persist_sealed_segment`: O(|new bytes|) disk persist.
+     - Clear memtable, advance base_view, update manifest.
+- **Build**: **O(|delta| log |delta|)** (transition indexing) + **O(|delta| · log N)** (sync via VlogLsm).
+- **Produces**: `PreparedInstall` with transition record (no previous_record or new_record).
 
 ### 14a. sync() — leader path (TAPIR upcall)
 
@@ -185,17 +188,16 @@ Synchronizes leader's TAPIR state with the merged memtable record.
 
 ### 14b. sync() — non-leader path (TAPIR upcall)
 
-Synchronizes follower's TAPIR state with the leader's full record.
+Synchronizes follower's TAPIR state with the transition (delta) record.
 
 - **Source**: `src/tapir/replica.rs:642-732`
-- **Called with**: `sync(&previous_record, &new_record)` at `replica.rs:834`
-- **How**: Iterates all N entries in `new_record` (the full record from `install_start_view_unified`). For each:
-  - Looks up `previous_record` via `get_consensus`/`get_inconsistent`: O(log N).
+- **Called with**: `sync(RecordStoreView(&record), &transition)` at `replica.rs:843`
+- **How**: Iterates |delta| entries in `transition` (the delta record from prepare phase). For each:
+  - Looks up `RecordStoreView` (backed by VlogLsm) via `get_consensus`/`get_inconsistent`: O(log N).
   - If already finalized with same result: skip (O(1)).
   - Otherwise: syncs prepared txn state or calls `exec_inconsistent`.
   - Calls `gc_stale_state()` at end.
-- **Build**: **O(N · log N)** — dominated by iterating all N entries even though most are skipped.
-- **Next action**: Pass `transition` (delta-only) instead of `new_record` to reduce to O(|delta| · log N). See observation #6.
+- **Build**: **O(|delta| · log N)** — iterates only delta entries, O(log N) VlogLsm lookups.
 
 ### 15. CDC delta (on_install_leader_record_delta)
 
@@ -248,40 +250,27 @@ O(N) to O(|delta|) on consecutive views (same-base recipients).
 
 The IR record accumulates entries across all views. There is no pruning or compaction of old entries. N increases monotonically over the cluster's lifetime, degrading every O(N) and O(N log N) term.
 
-### 4. Triple into_indexed() in install_start_view
+### 4. ~~Triple into_indexed() in install_start_view~~ — RESOLVED
 
-Lines 831, 839, and 851 each call `into_indexed()` which is O(N log N). `previous_record` and `new_record` share most of their segments — a single-pass overlay approach could reduce the total to O(N log N) once plus O(|delta| log |delta|).
+Resolved by splitting install into prepare + complete. Only the transition record is indexed via `into_indexed()` — O(|delta| log |delta|). The "previous record" is the VlogLsm's existing index, accessed via `RecordStoreView` at O(log N) per lookup. `new_record` and `previous_record` construction eliminated entirely.
 
 ### 5. Quadratic majority detection
 
 The d/u computation at lines 675-686 is O(f²) per undecided OpId due to the nested filter. With f typically 1-2 in production, this is not a practical concern but is theoretically quadratic in f.
 
-### 6. Remaining O(N) sites and next actions
+### 6. O(N) sites — all resolved
 
-Two hot-path O(N) sites remain. The leader merge path is fully optimized to O(D).
+All hot-path O(N) sites have been eliminated. The leader merge path was optimized to O(D) in earlier work. The non-leader install+sync path was the last remaining O(N) bottleneck.
 
-**1. `install_start_view_unified()` — triple `into_indexed()`** [HOT, every non-leader VC]
+**Resolution for install_start_view (was triple `into_indexed()`):**
 
-Builds three Indexed records from segment bytes:
+Split into `prepare_start_view_install` (partition + build transition, `&self`) and `complete_start_view_install` (import + state update, `&mut self`). Between the two, VlogLsm still has pre-install state. Only transition is indexed: O(|delta| log |delta|). previous_record and new_record are no longer built.
 
-- `previous_record`: existing segments + memtable → `into_indexed()` — O((N_existing + D) log(N_existing + D))
-- `transition`: new segments only → `into_indexed()` — O(|delta| log |delta|)
-- `new_record`: ALL segments (existing + new) → `into_indexed()` — O(N log N)
+**Resolution for sync() non-leader (was O(N · log N)):**
 
-`previous_record` and `new_record` share most of their segments — observation #4 notes a single-pass overlay approach could reduce to O(N log N) once + O(|delta| log |delta|).
+Changed to `sync(RecordStoreView(&record), &transition)`. Iterates |delta| transition entries, doing O(log N) VlogLsm lookup per entry via RecordStoreView adapter. Total: O(|delta| · log N).
 
-**Next action**: Build only `new_record` via `into_indexed()` once. Derive `previous_record` by filtering `new_record` entries with `modified_view <= base_view` (O(N) scan, no sort). Derive `transition` by filtering with `modified_view > base_view` (O(|delta|) scan). Total: O(N log N) once instead of ×3.
-
-**2. `sync()` on non-leader path iterates full record** [HOT, every non-leader VC]
-
-`tapir/replica.rs:642-732` — iterates all entries in the second argument (`leader` record), doing O(log N) lookup per entry in the first argument (`local` record).
-
-- **Leader path** (`replica.rs:711`): `sync(&leader_record, &R)` — R is memtable-only O(f·D). **Already optimized.**
-- **Non-leader path** (`replica.rs:834`): `sync(&previous_record, &new_record)` — `new_record` is the full O(N) record built by `install_start_view_unified`. The skip check (local already finalized → continue) means most entries are skipped in O(1), but the iteration itself is O(N).
-
-**Next action**: This is coupled to the triple `into_indexed()` problem. If `install_start_view_unified` passes the `transition` record (delta-only, O(|delta|)) to sync instead of the full `new_record`, sync becomes O(|delta| · log N). The `transition` record already exists — it just needs to be used as the sync target. `previous_record` would still serve as `local` for the skip check.
-
-**3. `RecordView` on Raw peer records** [WARM, bounded by O(D)]
+**`RecordView` on Raw peer records** [WARM, bounded by O(D)]
 
 Merge loop iterates peer DVC payload records via `as_unresolved_record()` → Raw → `scan_entries()`. Since DVC payloads are always delta (memtable-only), each scan is O(D). Total: O(f · D). Acceptable.
 
@@ -292,8 +281,8 @@ Merge loop iterates peer DVC payload records via `as_unresolved_record()` → Ra
 | `memtable_record()` | O(D) | leader merge | **Optimized** |
 | `install_merged_record` | O(\|R\|) | leader merge | **Optimized** (was O(M + S)) |
 | DVC payload | O(D) | every VC sender | **Optimized** (was O(N) for full) |
-| `install_start_view_unified` ×3 | O(N log N) ×3 | non-leader install | **Next target** |
-| `sync()` non-leader | O(N · log N) | non-leader install | **Next target** (coupled to above) |
+| `install_start_view` (prepare) | O(\|delta\| log \|delta\|) | non-leader install | **Optimized** (was O(N log N) ×3) |
+| `sync()` non-leader | O(\|delta\| · log N) | non-leader install | **Optimized** (was O(N · log N)) |
 | `sync()` leader | O(f·D · log D) | leader merge | **Optimized** |
 | `build_start_view_payload` full | O(S) reads | leader, lagging followers only | Cold path, necessary |
 | `list_files_reverse` | O(manifests) | read replica refresh (async) | Cold path, documented caveat |
