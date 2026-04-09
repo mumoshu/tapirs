@@ -2,9 +2,10 @@ use super::ViewNumber;
 
 pub trait IrPayload: Clone + std::fmt::Debug + Send + 'static {
     type Record;
+    type RawRecord;
     fn base_view(&self) -> Option<ViewNumber>;
-    /// Return a Record containing only this payload's own segment entries,
-    /// without resolving against a base. For delta payloads this contains
-    /// only the delta entries; for full payloads, all entries.
-    fn as_unresolved_record(&self) -> Self::Record;
+    /// Return a raw record for iteration over this payload's entries.
+    /// The raw record supports iteration only (RecordIter), not point lookups.
+    /// Use `into_indexed()` on the result to get a PersistentRecord with lookups.
+    fn as_raw_record(&self) -> Self::RawRecord;
 }

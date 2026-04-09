@@ -99,7 +99,8 @@ where
     CR: Clone,
 {
     type Record: RecordView<IO = IO, CO = CO, CR = CR> + RecordBuilder + Debug + Default + Send + 'static;
-    type Payload: IrPayload<Record = Self::Record>;
+    type RawRecord: RecordIter<IO = IO, CO = CO, CR = CR> + Send + 'static;
+    type Payload: IrPayload<Record = Self::Record, RawRecord = Self::RawRecord>;
 
     /// Look up an inconsistent entry by OpId (owned return).
     fn get_inconsistent_entry(&self, op_id: &OpId) -> Option<InconsistentEntry<IO>>;
@@ -182,11 +183,10 @@ where
     /// The highest view whose entries have been sealed to durable storage.
     fn base_view(&self) -> u64;
 
-    /// Return a Record containing only the payload's own segment entries,
-    /// without resolving against a base. For delta payloads this contains
-    /// only the delta entries; for full payloads, all entries.
-    fn payload_as_record(&self, payload: &Self::Payload) -> Self::Record {
-        payload.as_unresolved_record()
+    /// Return a raw record for iteration over the payload's entries.
+    /// The raw record supports iteration only (RecordIter), not point lookups.
+    fn payload_as_raw_record(&self, payload: &Self::Payload) -> Self::RawRecord {
+        payload.as_raw_record()
     }
 
     /// Seal VlogLsm memtables to durable storage and save manifest.

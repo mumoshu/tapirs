@@ -4,7 +4,7 @@ use crate::ir::{
     RecordInconsistentEntry as InconsistentEntry,
 };
 use crate::mvcc::disk::disk_io::DiskIo;
-use crate::unified::ir::ir_record_store::{PersistentPayload, PersistentRecord};
+use crate::unified::ir::ir_record_store::{PersistentPayload, PersistentRecord, RawRecord};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::fmt::Debug;
@@ -53,6 +53,11 @@ where
     DIO: DiskIo,
 {
     type Record = PersistentRecord<
+        crate::tapir::IO<K, V>,
+        crate::tapir::CO<K, V>,
+        crate::tapir::CR,
+    >;
+    type RawRecord = RawRecord<
         crate::tapir::IO<K, V>,
         crate::tapir::CO<K, V>,
         crate::tapir::CR,

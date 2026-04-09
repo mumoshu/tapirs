@@ -47,48 +47,52 @@ fn con_header_fn<CO, CR>(
 
 /// IR record backed by raw vlog segment bytes (Raw) or in-memory BTreeMaps (Indexed).
 ///
-/// Raw: holds raw vlog segment bytes, streams entries via RecordView — deserializing
-/// one entry at a time without materializing BTreeMaps.
-/// Indexed: holds BTreeMaps for the leader's merged record (efficient O(log n) lookup).
+/// Raw vlog segment bytes — supports iteration only (RecordIter), no point lookups.
 ///
-/// Default creates empty Indexed; full_record()/resolve return Raw.
-pub enum PersistentRecord<IO, CO, CR> {
-    Raw {
-        inc_segments: Vec<Vec<u8>>,
-        con_segments: Vec<Vec<u8>>,
-    },
-    Indexed {
-        inconsistent: BTreeMap<OpId, InconsistentEntry<IO>>,
-        consensus: BTreeMap<OpId, ConsensusEntry<CO, CR>>,
-    },
+/// Use `into_indexed()` to convert to a `PersistentRecord` for O(log N) lookups.
+/// Point lookups on raw data would be O(N) per call — this type prevents that misuse.
+pub struct RawRecord<IO, CO, CR> {
+    pub(crate) inc_segments: Vec<Vec<u8>>,
+    pub(crate) con_segments: Vec<Vec<u8>>,
+    _phantom: std::marker::PhantomData<fn() -> (IO, CO, CR)>,
+}
+
+impl<IO: Clone + DeserializeOwned, CO: Clone + DeserializeOwned, CR: Clone + DeserializeOwned>
+    RawRecord<IO, CO, CR>
+{
+    /// Convert raw segment bytes to an indexed PersistentRecord with BTreeMaps.
+    pub fn into_indexed(self) -> PersistentRecord<IO, CO, CR> {
+        PersistentRecord {
+            inconsistent: scan_entries::<InconsistentEntry<IO>>(&self.inc_segments)
+                .into_iter()
+                .collect(),
+            consensus: scan_entries::<ConsensusEntry<CO, CR>>(&self.con_segments)
+                .into_iter()
+                .collect(),
+        }
+    }
+}
+
+/// BTreeMap-backed IR record with O(log N) lookups.
+///
+/// Implements RecordIter + RecordView + RecordBuilder.
+pub struct PersistentRecord<IO, CO, CR> {
+    pub(crate) inconsistent: BTreeMap<OpId, InconsistentEntry<IO>>,
+    pub(crate) consensus: BTreeMap<OpId, ConsensusEntry<CO, CR>>,
 }
 
 impl<IO: Debug, CO: Debug, CR: Debug> Debug for PersistentRecord<IO, CO, CR> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Raw {
-                inc_segments,
-                con_segments,
-            } => f
-                .debug_struct("PersistentRecord::Raw")
-                .field("inc_segments", &inc_segments.len())
-                .field("con_segments", &con_segments.len())
-                .finish(),
-            Self::Indexed {
-                inconsistent,
-                consensus,
-            } => f
-                .debug_struct("PersistentRecord::Indexed")
-                .field("inconsistent", &inconsistent.len())
-                .field("consensus", &consensus.len())
-                .finish(),
-        }
+        f.debug_struct("PersistentRecord")
+            .field("inconsistent", &self.inconsistent.len())
+            .field("consensus", &self.consensus.len())
+            .finish()
     }
 }
 
 impl<IO, CO, CR> Default for PersistentRecord<IO, CO, CR> {
     fn default() -> Self {
-        Self::Indexed {
+        Self {
             inconsistent: BTreeMap::new(),
             consensus: BTreeMap::new(),
         }
@@ -97,72 +101,20 @@ impl<IO, CO, CR> Default for PersistentRecord<IO, CO, CR> {
 
 impl<IO: Clone, CO: Clone, CR: Clone> PersistentRecord<IO, CO, CR> {
     /// Compute the delta by OpId: entries in `self` whose OpId is NOT in `base`.
-    /// Both `self` and `base` must be `Indexed`.
     /// Unlike equality-based delta_from, this only checks for OpId presence,
     /// making it robust against `modified_view` discrepancies across view changes.
     pub fn delta_from(&self, base: &Self) -> Self {
-        match (self, base) {
-            (
-                Self::Indexed { inconsistent, consensus },
-                Self::Indexed {
-                    inconsistent: base_inc,
-                    consensus: base_con,
-                },
-            ) => Self::Indexed {
-                inconsistent: inconsistent
-                    .iter()
-                    .filter(|(id, _)| !base_inc.contains_key(id))
-                    .map(|(id, e)| (*id, e.clone()))
-                    .collect(),
-                consensus: consensus
-                    .iter()
-                    .filter(|(id, _)| !base_con.contains_key(id))
-                    .map(|(id, e)| (*id, e.clone()))
-                    .collect(),
-            },
-            _ => panic!("delta_from requires both records to be Indexed"),
-        }
-    }
-}
-
-impl<IO: Clone + DeserializeOwned, CO: Clone + DeserializeOwned, CR: Clone + DeserializeOwned>
-    PersistentRecord<IO, CO, CR>
-{
-    /// Convert Raw segment bytes to Indexed BTreeMaps for O(log n) lookups.
-    ///
-    /// Raw records yield O(n) linear scans per `get_consensus`/`get_inconsistent`
-    /// call, making sync O(n²). Converting to Indexed once before sync brings
-    /// the total cost down to O(n log n).
-    pub fn into_indexed(self) -> Self {
-        match self {
-            Self::Indexed { .. } => self,
-            Self::Raw {
-                inc_segments,
-                con_segments,
-            } => Self::Indexed {
-                inconsistent: scan_entries::<InconsistentEntry<IO>>(&inc_segments)
-                    .into_iter()
-                    .collect(),
-                consensus: scan_entries::<ConsensusEntry<CO, CR>>(&con_segments)
-                    .into_iter()
-                    .collect(),
-            },
-        }
-    }
-}
-
-/// Iterator adapter that unifies two concrete iterator types.
-enum EitherIter<A, B> {
-    Left(A),
-    Right(B),
-}
-
-impl<T, A: Iterator<Item = T>, B: Iterator<Item = T>> Iterator for EitherIter<A, B> {
-    type Item = T;
-    fn next(&mut self) -> Option<T> {
-        match self {
-            Self::Left(a) => a.next(),
-            Self::Right(b) => b.next(),
+        Self {
+            inconsistent: self.inconsistent
+                .iter()
+                .filter(|(id, _)| !base.inconsistent.contains_key(id))
+                .map(|(id, e)| (*id, e.clone()))
+                .collect(),
+            consensus: self.consensus
+                .iter()
+                .filter(|(id, _)| !base.consensus.contains_key(id))
+                .map(|(id, e)| (*id, e.clone()))
+                .collect(),
         }
     }
 }
@@ -206,7 +158,7 @@ fn scan_entries<V: DeserializeOwned>(
     result
 }
 
-impl<IO, CO, CR> RecordIter for PersistentRecord<IO, CO, CR>
+impl<IO, CO, CR> RecordIter for RawRecord<IO, CO, CR>
 where
     IO: Clone + DeserializeOwned,
     CO: Clone + DeserializeOwned,
@@ -217,85 +169,45 @@ where
     type CR = CR;
 
     fn consensus_entries(&self) -> impl Iterator<Item = (OpId, ConsensusEntry<CO, CR>)> {
-        match self {
-            Self::Raw { con_segments, .. } => {
-                EitherIter::Left(scan_entries::<ConsensusEntry<CO, CR>>(con_segments).into_iter())
-            }
-            Self::Indexed { consensus, .. } => {
-                EitherIter::Right(consensus.iter().map(|(k, v)| (*k, v.clone())))
-            }
-        }
+        scan_entries::<ConsensusEntry<CO, CR>>(&self.con_segments).into_iter()
     }
 
     fn inconsistent_entries(&self) -> impl Iterator<Item = (OpId, InconsistentEntry<IO>)> {
-        match self {
-            Self::Raw { inc_segments, .. } => {
-                EitherIter::Left(scan_entries::<InconsistentEntry<IO>>(inc_segments).into_iter())
-            }
-            Self::Indexed { inconsistent, .. } => {
-                EitherIter::Right(inconsistent.iter().map(|(k, v)| (*k, v.clone())))
-            }
-        }
+        scan_entries::<InconsistentEntry<IO>>(&self.inc_segments).into_iter()
     }
 }
 
-impl<IO, CO, CR> RecordView for PersistentRecord<IO, CO, CR>
-where
-    IO: Clone + DeserializeOwned,
-    CO: Clone + DeserializeOwned,
-    CR: Clone + DeserializeOwned,
-{
+impl<IO: Clone, CO: Clone, CR: Clone> RecordIter for PersistentRecord<IO, CO, CR> {
+    type IO = IO;
+    type CO = CO;
+    type CR = CR;
+
+    fn consensus_entries(&self) -> impl Iterator<Item = (OpId, ConsensusEntry<CO, CR>)> {
+        self.consensus.iter().map(|(k, v)| (*k, v.clone()))
+    }
+
+    fn inconsistent_entries(&self) -> impl Iterator<Item = (OpId, InconsistentEntry<IO>)> {
+        self.inconsistent.iter().map(|(k, v)| (*k, v.clone()))
+    }
+}
+
+impl<IO: Clone, CO: Clone, CR: Clone> RecordView for PersistentRecord<IO, CO, CR> {
     fn get_consensus(&self, op_id: &OpId) -> Option<ConsensusEntry<CO, CR>> {
-        match self {
-            Self::Raw { con_segments, .. } => {
-                scan_entries::<ConsensusEntry<CO, CR>>(con_segments)
-                    .into_iter()
-                    .find(|(id, _)| id == op_id)
-                    .map(|(_, e)| e)
-            }
-            Self::Indexed { consensus, .. } => consensus.get(op_id).cloned(),
-        }
+        self.consensus.get(op_id).cloned()
     }
 
     fn get_inconsistent(&self, op_id: &OpId) -> Option<InconsistentEntry<IO>> {
-        match self {
-            Self::Raw { inc_segments, .. } => {
-                scan_entries::<InconsistentEntry<IO>>(inc_segments)
-                    .into_iter()
-                    .find(|(id, _)| id == op_id)
-                    .map(|(_, e)| e)
-            }
-            Self::Indexed { inconsistent, .. } => inconsistent.get(op_id).cloned(),
-        }
+        self.inconsistent.get(op_id).cloned()
     }
 }
 
-impl<IO, CO, CR> RecordBuilder for PersistentRecord<IO, CO, CR>
-where
-    IO: Clone + DeserializeOwned,
-    CO: Clone + DeserializeOwned,
-    CR: Clone + DeserializeOwned,
-{
+impl<IO: Clone, CO: Clone, CR: Clone> RecordBuilder for PersistentRecord<IO, CO, CR> {
     fn insert_inconsistent(&mut self, op_id: OpId, entry: InconsistentEntry<Self::IO>) {
-        match self {
-            Self::Indexed { inconsistent, .. } => {
-                inconsistent.insert(op_id, entry);
-            }
-            Self::Raw { .. } => {
-                panic!("RecordBuilder::insert_inconsistent called on Raw variant");
-            }
-        }
+        self.inconsistent.insert(op_id, entry);
     }
 
     fn insert_consensus(&mut self, op_id: OpId, entry: ConsensusEntry<Self::CO, Self::CR>) {
-        match self {
-            Self::Indexed { consensus, .. } => {
-                consensus.insert(op_id, entry);
-            }
-            Self::Raw { .. } => {
-                panic!("RecordBuilder::insert_consensus called on Raw variant");
-            }
-        }
+        self.consensus.insert(op_id, entry);
     }
 }
 
@@ -375,13 +287,14 @@ where
     CR: Clone + Debug + DeserializeOwned + Send + 'static,
 {
     type Record = PersistentRecord<IO, CO, CR>;
+    type RawRecord = RawRecord<IO, CO, CR>;
 
     fn base_view(&self) -> Option<ViewNumber> {
         let PayloadInner::Delta { base_view, .. } = self.inner.as_ref();
         Some(*base_view)
     }
 
-    fn as_unresolved_record(&self) -> Self::Record {
+    fn as_raw_record(&self) -> Self::RawRecord {
         let PayloadInner::Delta {
             inc_segments,
             con_segments,
@@ -390,12 +303,12 @@ where
         let strip = |segs: &[(Vec<ViewRange>, Vec<u8>)]| -> Vec<Vec<u8>> {
             segs.iter().map(|(_, bytes)| bytes.clone()).collect()
         };
-        PersistentRecord::Raw {
+        RawRecord {
             inc_segments: strip(inc_segments),
             con_segments: strip(con_segments),
+            _phantom: std::marker::PhantomData,
         }
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -602,45 +515,35 @@ where
         Ok((inc, con))
     }
 
-    /// Encode a PersistentRecord::Indexed as segment bytes (for install_merged_record).
-    fn encode_indexed_as_segments(
+    /// Encode a PersistentRecord as segment bytes (for install_merged_record).
+    fn encode_as_segments(
         record: &PersistentRecord<IO, CO, CR>,
     ) -> Result<(Vec<u8>, Vec<u8>), StorageError> {
-        match record {
-            PersistentRecord::Indexed {
-                inconsistent,
-                consensus,
-            } => {
-                let mut inc_bytes = Vec::new();
-                for (op_id, entry) in inconsistent {
-                    let payload = bitcode::serialize(entry)
-                        .map_err(|e| StorageError::Codec(e.to_string()))?;
-                    let raw = VlogSegment::<DIO>::encode_raw_entry(
-                        ENTRY_TYPE_INCONSISTENT,
-                        op_id.client_id.0,
-                        op_id.number,
-                        &payload,
-                    );
-                    inc_bytes.extend_from_slice(&raw);
-                }
-                let mut con_bytes = Vec::new();
-                for (op_id, entry) in consensus {
-                    let payload = bitcode::serialize(entry)
-                        .map_err(|e| StorageError::Codec(e.to_string()))?;
-                    let raw = VlogSegment::<DIO>::encode_raw_entry(
-                        ENTRY_TYPE_CONSENSUS,
-                        op_id.client_id.0,
-                        op_id.number,
-                        &payload,
-                    );
-                    con_bytes.extend_from_slice(&raw);
-                }
-                Ok((inc_bytes, con_bytes))
-            }
-            PersistentRecord::Raw { .. } => {
-                panic!("encode_indexed_as_segments called on Raw variant");
-            }
+        let mut inc_bytes = Vec::new();
+        for (op_id, entry) in &record.inconsistent {
+            let payload = bitcode::serialize(entry)
+                .map_err(|e| StorageError::Codec(e.to_string()))?;
+            let raw = VlogSegment::<DIO>::encode_raw_entry(
+                ENTRY_TYPE_INCONSISTENT,
+                op_id.client_id.0,
+                op_id.number,
+                &payload,
+            );
+            inc_bytes.extend_from_slice(&raw);
         }
+        let mut con_bytes = Vec::new();
+        for (op_id, entry) in &record.consensus {
+            let payload = bitcode::serialize(entry)
+                .map_err(|e| StorageError::Codec(e.to_string()))?;
+            let raw = VlogSegment::<DIO>::encode_raw_entry(
+                ENTRY_TYPE_CONSENSUS,
+                op_id.client_id.0,
+                op_id.number,
+                &payload,
+            );
+            con_bytes.extend_from_slice(&raw);
+        }
+        Ok((inc_bytes, con_bytes))
     }
 
     /// Static helper for `IrRecordStore::make_full_payload` — callable from
@@ -648,55 +551,40 @@ where
     pub(crate) fn make_full_payload_static(
         record: PersistentRecord<IO, CO, CR>,
     ) -> PersistentPayload<IO, CO, CR> {
-        match record {
-            PersistentRecord::Raw {
-                inc_segments,
-                con_segments,
-            } => {
-                let inc = inc_segments.into_iter().map(|b| (Vec::new(), b)).collect();
-                let con = con_segments.into_iter().map(|b| (Vec::new(), b)).collect();
-                PersistentPayload::full(inc, con)
+        {
+            let mut inc_bytes = Vec::new();
+            for (op_id, entry) in &record.inconsistent {
+                let payload = bitcode::serialize(entry).expect("serialize inc entry");
+                let raw = VlogSegment::<DIO>::encode_raw_entry(
+                    ENTRY_TYPE_INCONSISTENT,
+                    op_id.client_id.0,
+                    op_id.number,
+                    &payload,
+                );
+                inc_bytes.extend_from_slice(&raw);
             }
-            PersistentRecord::Indexed {
-                ref inconsistent,
-                ref consensus,
-                ..
-            } => {
-                // Serialize Indexed entries to segment bytes (same as make_full_payload)
-                let mut inc_bytes = Vec::new();
-                for (op_id, entry) in inconsistent {
-                    let payload = bitcode::serialize(entry).expect("serialize inc entry");
-                    let raw = VlogSegment::<DIO>::encode_raw_entry(
-                        ENTRY_TYPE_INCONSISTENT,
-                        op_id.client_id.0,
-                        op_id.number,
-                        &payload,
-                    );
-                    inc_bytes.extend_from_slice(&raw);
-                }
-                let mut con_bytes = Vec::new();
-                for (op_id, entry) in consensus {
-                    let payload = bitcode::serialize(entry).expect("serialize con entry");
-                    let raw = VlogSegment::<DIO>::encode_raw_entry(
-                        ENTRY_TYPE_CONSENSUS,
-                        op_id.client_id.0,
-                        op_id.number,
-                        &payload,
-                    );
-                    con_bytes.extend_from_slice(&raw);
-                }
-                let inc = if inc_bytes.is_empty() {
-                    Vec::new()
-                } else {
-                    vec![(Vec::new(), inc_bytes)]
-                };
-                let con = if con_bytes.is_empty() {
-                    Vec::new()
-                } else {
-                    vec![(Vec::new(), con_bytes)]
-                };
-                PersistentPayload::full(inc, con)
+            let mut con_bytes = Vec::new();
+            for (op_id, entry) in &record.consensus {
+                let payload = bitcode::serialize(entry).expect("serialize con entry");
+                let raw = VlogSegment::<DIO>::encode_raw_entry(
+                    ENTRY_TYPE_CONSENSUS,
+                    op_id.client_id.0,
+                    op_id.number,
+                    &payload,
+                );
+                con_bytes.extend_from_slice(&raw);
             }
+            let inc = if inc_bytes.is_empty() {
+                Vec::new()
+            } else {
+                vec![(Vec::new(), inc_bytes)]
+            };
+            let con = if con_bytes.is_empty() {
+                Vec::new()
+            } else {
+                vec![(Vec::new(), con_bytes)]
+            };
+            PersistentPayload::full(inc, con)
         }
     }
 
@@ -754,9 +642,10 @@ where
 
         // transition: bytes from new segments only → O(|delta| log |delta|)
         let from_view = if self.base_view > 0 { self.base_view } else { 0 };
-        let transition_record = PersistentRecord::Raw {
+        let transition_record = RawRecord::<IO, CO, CR> {
             inc_segments: new_inc_bytes,
             con_segments: new_con_bytes,
+            _phantom: std::marker::PhantomData,
         }
         .into_indexed();
 
@@ -852,6 +741,7 @@ where
     CR: Clone + Debug + Serialize + DeserializeOwned + PartialEq + Send + 'static,
 {
     type Record = PersistentRecord<IO, CO, CR>;
+    type RawRecord = RawRecord<IO, CO, CR>;
     type Payload = PersistentPayload<IO, CO, CR>;
 
     fn get_inconsistent_entry(&self, op_id: &OpId) -> Option<InconsistentEntry<IO>> {
@@ -881,9 +771,10 @@ where
             .expect("memtable_record: memtable_bytes failed");
         let inc_segments = if inc_mem.is_empty() { vec![] } else { vec![inc_mem] };
         let con_segments = if con_mem.is_empty() { vec![] } else { vec![con_mem] };
-        PersistentRecord::Raw {
+        RawRecord::<IO, CO, CR> {
             inc_segments,
             con_segments,
+            _phantom: std::marker::PhantomData,
         }
         .into_indexed()
     }
@@ -927,56 +818,7 @@ where
     }
 
     fn make_full_payload(record: Self::Record) -> Self::Payload {
-        match record {
-            PersistentRecord::Raw {
-                inc_segments,
-                con_segments,
-            } => {
-                // Wrap raw segments with empty ViewRange vecs
-                let inc = inc_segments.into_iter().map(|b| (Vec::new(), b)).collect();
-                let con = con_segments.into_iter().map(|b| (Vec::new(), b)).collect();
-                PersistentPayload::full(inc, con)
-            }
-            PersistentRecord::Indexed {
-                inconsistent,
-                consensus,
-            } => {
-                // Serialize Indexed entries to segment bytes
-                let mut inc_bytes = Vec::new();
-                for (op_id, entry) in &inconsistent {
-                    let payload = bitcode::serialize(entry).expect("serialize inc entry");
-                    let raw = VlogSegment::<DIO>::encode_raw_entry(
-                        ENTRY_TYPE_INCONSISTENT,
-                        op_id.client_id.0,
-                        op_id.number,
-                        &payload,
-                    );
-                    inc_bytes.extend_from_slice(&raw);
-                }
-                let mut con_bytes = Vec::new();
-                for (op_id, entry) in &consensus {
-                    let payload = bitcode::serialize(entry).expect("serialize con entry");
-                    let raw = VlogSegment::<DIO>::encode_raw_entry(
-                        ENTRY_TYPE_CONSENSUS,
-                        op_id.client_id.0,
-                        op_id.number,
-                        &payload,
-                    );
-                    con_bytes.extend_from_slice(&raw);
-                }
-                let inc = if inc_bytes.is_empty() {
-                    Vec::new()
-                } else {
-                    vec![(Vec::new(), inc_bytes)]
-                };
-                let con = if con_bytes.is_empty() {
-                    Vec::new()
-                } else {
-                    vec![(Vec::new(), con_bytes)]
-                };
-                PersistentPayload::full(inc, con)
-            }
-        }
+        Self::make_full_payload_static(record)
     }
 
     fn prepare_start_view_install(
@@ -1021,7 +863,7 @@ where
         // their sealed segments are identical to the leader's. No segment
         // import from peer payloads is needed.
         let (merged_inc_bytes, merged_con_bytes) =
-            Self::encode_indexed_as_segments(&merged)
+            Self::encode_as_segments(&merged)
                 .expect("install_merged: encode merged failed");
 
         let new_view_range = vec![ViewRange {
@@ -1267,9 +1109,10 @@ mod tests {
             op.number,
             &payload,
         );
-        let record: PersistentRecord<String, String, String> = PersistentRecord::Raw {
+        let record: RawRecord<String, String, String> = RawRecord {
             inc_segments: vec![raw],
             con_segments: Vec::new(),
+            _phantom: std::marker::PhantomData,
         };
         let entries: Vec<_> = record.inconsistent_entries().collect();
         assert_eq!(entries.len(), 1);
@@ -1378,7 +1221,7 @@ mod tests {
         let payload: PersistentPayload<String, String, String> =
             PersistentPayload::full(vec![(Vec::new(), raw)], Vec::new());
 
-        let record = payload.as_unresolved_record();
+        let record = payload.as_raw_record();
         let entries: Vec<_> = record.inconsistent_entries().collect();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].1.op, "test");

@@ -153,6 +153,76 @@ struct SyncInner<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::
     peer_liveness: BTreeMap<T::Address, Instant>,
 }
 
+/// Merge entries from an iterable record into the accumulated merged record.
+///
+/// Used during view change to merge the leader's memtable record and each
+/// peer's DVC payload record into a single merged record R.
+fn merge_record_into<I, Rec, U>(
+    r: &I,
+    merged: &mut Rec,
+    upcalls: &mut U,
+    view_number: ViewNumber,
+    entries_by_opid: &mut BTreeMap<OpId, Vec<RecordConsensusEntry<U::CO, U::CR>>>,
+    finalized: &mut HashSet<OpId>,
+)
+where
+    I: RecordIter<IO = U::IO, CO = U::CO, CR = U::CR>,
+    Rec: RecordBuilder<IO = U::IO, CO = U::CO, CR = U::CR>,
+    U: Upcalls,
+{
+    for (op_id, entry) in r.inconsistent_entries() {
+        if let Some(existing) = merged.get_inconsistent(&op_id) {
+            // Already in merged — only update if incoming has a
+            // higher-view finalization (never downgrade).
+            if let RecordEntryState::Finalized(view) = entry.state {
+                let dominated = match existing.state {
+                    RecordEntryState::Tentative => true,
+                    RecordEntryState::Finalized(ev) => view > ev,
+                };
+                if dominated {
+                    let mut e = existing;
+                    e.state = RecordEntryState::Finalized(view);
+                    e.modified_view = view.0;
+                    merged.insert_inconsistent(op_id, e);
+                }
+            }
+        } else {
+            // Mark as finalized as `sync` will execute it.
+            let mut e = entry;
+            e.state = RecordEntryState::Finalized(view_number);
+            e.modified_view = view_number.0;
+            merged.insert_inconsistent(op_id, e);
+        }
+    }
+    for (op_id, entry) in r.consensus_entries() {
+        match entry.state {
+            RecordEntryState::Finalized(_) => {
+                if let Some(existing) = merged.get_consensus(&op_id) {
+                    if existing.state.is_tentative() {
+                        upcalls.finalize_consensus(&op_id, &entry.op, &entry.result);
+                        merged.insert_consensus(op_id, entry);
+                    } else {
+                        debug_assert_eq!(existing.result, entry.result);
+                    }
+                } else {
+                    upcalls.finalize_consensus(&op_id, &entry.op, &entry.result);
+                    merged.insert_consensus(op_id, entry);
+                }
+                finalized.insert(op_id);
+                entries_by_opid.remove(&op_id);
+            }
+            RecordEntryState::Tentative => {
+                if !finalized.contains(&op_id) {
+                    entries_by_opid
+                        .entry(op_id)
+                        .or_default()
+                        .push(entry);
+                }
+            }
+        }
+    }
+}
+
 impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload = U::Payload>> Replica<U, T, R> {
     const VIEW_CHANGE_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -574,10 +644,10 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                                     .collect();
 
                                 // DVC payloads are always delta (memtable-only),
-                                // so payload_as_record returns just memtable entries.
+                                // so payload_as_raw_record returns just memtable entries.
                                 let peer_records: Vec<_> = peer_payloads
                                     .iter()
-                                    .map(|p| sync.record.payload_as_record(p))
+                                    .map(|p| sync.record.payload_as_raw_record(p))
                                     .collect();
 
                                 if tracing::enabled!(tracing::Level::TRACE) {
@@ -604,67 +674,13 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                                     BTreeMap::<OpId, Vec<RecordConsensusEntry<U::CO, U::CR>>>::new();
                                 let mut finalized = HashSet::new();
 
-                                // Merge helper: process one record's entries into R.
-                                let mut merge_record = |r: &R::Record| {
-                                    for (op_id, entry) in r.inconsistent_entries() {
-                                        if let Some(existing) = R.get_inconsistent(&op_id) {
-                                            // Already in R — only update if incoming has a
-                                            // higher-view finalization (never downgrade).
-                                            if let RecordEntryState::Finalized(view) = entry.state {
-                                                let dominated = match existing.state {
-                                                    RecordEntryState::Tentative => true,
-                                                    RecordEntryState::Finalized(ev) => view > ev,
-                                                };
-                                                if dominated {
-                                                    let mut e = existing;
-                                                    e.state = RecordEntryState::Finalized(view);
-                                                    e.modified_view = view.0;
-                                                    R.insert_inconsistent(op_id, e);
-                                                }
-                                            }
-                                        } else {
-                                            // Mark as finalized as `sync` will execute it.
-                                            let mut e = entry;
-                                            e.state = RecordEntryState::Finalized(sync.view.number);
-                                            e.modified_view = sync.view.number.0;
-                                            R.insert_inconsistent(op_id, e);
-                                        }
-                                    }
-                                    for (op_id, entry) in r.consensus_entries() {
-                                        match entry.state {
-                                            RecordEntryState::Finalized(_) => {
-                                                if let Some(existing) = R.get_consensus(&op_id) {
-                                                    if existing.state.is_tentative() {
-                                                        sync.upcalls.finalize_consensus(&op_id, &entry.op, &entry.result);
-                                                        R.insert_consensus(op_id, entry);
-                                                    } else {
-                                                        debug_assert_eq!(existing.result, entry.result);
-                                                    }
-                                                } else {
-                                                    sync.upcalls.finalize_consensus(&op_id, &entry.op, &entry.result);
-                                                    R.insert_consensus(op_id, entry);
-                                                }
-                                                finalized.insert(op_id);
-                                                entries_by_opid.remove(&op_id);
-                                            }
-                                            RecordEntryState::Tentative => {
-                                                if !finalized.contains(&op_id) {
-                                                    entries_by_opid
-                                                        .entry(op_id)
-                                                        .or_default()
-                                                        .push(entry);
-                                                }
-                                            }
-                                        }
-                                    }
-                                };
-
                                 // Leader's memtable entries first, then peer entries.
                                 // DVC payloads are always delta (memtable-only), so
                                 // R stays at O(f·D).
-                                merge_record(&leader_record);
+                                let view_number = sync.view.number;
+                                merge_record_into(&leader_record, &mut R, &mut sync.upcalls, view_number, &mut entries_by_opid, &mut finalized);
                                 for r in &peer_records {
-                                    merge_record(r);
+                                    merge_record_into(r, &mut R, &mut sync.upcalls, view_number, &mut entries_by_opid, &mut finalized);
                                 }
 
                                 // build d and u
