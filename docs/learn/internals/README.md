@@ -56,3 +56,4 @@
 | What invariants are easy to violate when implementing or extending IR/TAPIR | -- | [IR/TAPIR Gotchas](ir-tapir-gotchas.md) |
 | Why specific architectural choices were made | -- | [Architecture Decisions](architecture-decisions.md) |
 | How the cluster is laid out (clients, shards, discovery) | -- | [Cluster Topology](topology.md) |
+| Why DoViewChange payloads are always delta | `src/ir/replica.rs` `broadcast_do_view_change` | [DVC Always Delta](view-change-doviewchange-always-delta.md) |
