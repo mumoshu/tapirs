@@ -1076,9 +1076,8 @@ mod tests {
 
         // memtable_record returns only memtable entry
         let record = store.memtable_record();
-        let entries: Vec<_> = record.inconsistent_entries().collect();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].1.op, "memtable_op");
+        assert!(record.get_inconsistent(&op_id(2, 1)).is_some_and(|e| e.op == "memtable_op"));
+        assert!(record.get_inconsistent(&op_id(1, 1)).is_none());
     }
 
     #[test]
@@ -1126,10 +1125,8 @@ mod tests {
         record.insert_inconsistent(op_id(1, 1), inc_entry("a", 0));
         record.insert_consensus(op_id(2, 1), con_entry("b", "r", 0));
 
-        assert_eq!(record.inconsistent_entries().count(), 1);
-        assert_eq!(record.consensus_entries().count(), 1);
-        assert!(record.get_inconsistent(&op_id(1, 1)).is_some());
-        assert!(record.get_consensus(&op_id(2, 1)).is_some());
+        assert!(record.get_inconsistent(&op_id(1, 1)).is_some_and(|e| e.op == "a"));
+        assert!(record.get_consensus(&op_id(2, 1)).is_some_and(|e| e.op == "b"));
     }
 
     #[test]
@@ -1317,8 +1314,7 @@ mod tests {
 
         // transition should contain only new entries
         assert_eq!(from_view, 1);
-        let delta_inc: Vec<_> = transition.inconsistent_entries().collect();
-        assert!(delta_inc.iter().any(|(_, e)| e.op == "op2"), "delta should contain new entry");
+        assert!(transition.get_inconsistent(&op_id(2, 1)).is_some_and(|e| e.op == "op2"), "delta should contain new entry");
     }
 
     #[test]
