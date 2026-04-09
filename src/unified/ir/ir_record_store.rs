@@ -2,7 +2,7 @@ use crate::ir::{
     ClientId, IrPayload, IrRecordStore, MergeInstallResult, OpId,
     PreparedInstall, RecordBuilder, RecordConsensusEntry as ConsensusEntry,
     RecordInconsistentEntry as InconsistentEntry,
-    RecordView, ViewNumber,
+    RecordIter, RecordView, ViewNumber,
 };
 use crate::mvcc::disk::disk_io::{DiskIo, OpenFlags};
 use crate::mvcc::disk::error::StorageError;
@@ -206,7 +206,7 @@ fn scan_entries<V: DeserializeOwned>(
     result
 }
 
-impl<IO, CO, CR> RecordView for PersistentRecord<IO, CO, CR>
+impl<IO, CO, CR> RecordIter for PersistentRecord<IO, CO, CR>
 where
     IO: Clone + DeserializeOwned,
     CO: Clone + DeserializeOwned,
@@ -237,7 +237,14 @@ where
             }
         }
     }
+}
 
+impl<IO, CO, CR> RecordView for PersistentRecord<IO, CO, CR>
+where
+    IO: Clone + DeserializeOwned,
+    CO: Clone + DeserializeOwned,
+    CR: Clone + DeserializeOwned,
+{
     fn get_consensus(&self, op_id: &OpId) -> Option<ConsensusEntry<CO, CR>> {
         match self {
             Self::Raw { con_segments, .. } => {

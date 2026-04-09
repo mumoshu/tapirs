@@ -1,5 +1,5 @@
 use super::payload::IrPayload;
-use super::record::{ConsensusEntry, InconsistentEntry, RecordBuilder, RecordView};
+use super::record::{ConsensusEntry, InconsistentEntry, RecordBuilder, RecordIter, RecordView};
 use super::{OpId, ViewNumber};
 use std::fmt::Debug;
 
@@ -38,7 +38,7 @@ impl<'a, IO: Clone, CO: Clone, CR: Clone, R: IrRecordStore<IO, CO, CR>> RecordSt
     }
 }
 
-impl<IO, CO, CR, R> RecordView for RecordStoreView<'_, IO, CO, CR, R>
+impl<IO, CO, CR, R> RecordIter for RecordStoreView<'_, IO, CO, CR, R>
 where
     IO: Clone,
     CO: Clone,
@@ -55,6 +55,15 @@ where
     fn inconsistent_entries(&self) -> impl Iterator<Item = (OpId, InconsistentEntry<IO>)> {
         std::iter::empty()
     }
+}
+
+impl<IO, CO, CR, R> RecordView for RecordStoreView<'_, IO, CO, CR, R>
+where
+    IO: Clone,
+    CO: Clone,
+    CR: Clone,
+    R: IrRecordStore<IO, CO, CR>,
+{
     fn get_consensus(&self, op_id: &OpId) -> Option<ConsensusEntry<CO, CR>> {
         self.0.get_consensus_entry(op_id)
     }

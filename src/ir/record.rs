@@ -79,18 +79,25 @@ pub struct ConsensusEntry<CO, CR> {
 pub type Record<U> =
     RecordImpl<<U as ReplicaUpcalls>::IO, <U as ReplicaUpcalls>::CO, <U as ReplicaUpcalls>::CR>;
 
-/// Read-only view over IR record entries.
+/// Iteration over IR record entries.
 ///
-/// Abstracts away the concrete record storage structure so that
-/// consumers (like [`super::replica::Upcalls`]) can iterate and
-/// look up entries without depending on `RecordImpl`'s BTreeMap fields.
-pub trait RecordView {
+/// Provides sequential access to consensus and inconsistent entries
+/// without requiring indexed lookups. Implemented by both indexed
+/// records (BTreeMap-backed) and raw records (vlog byte scans).
+pub trait RecordIter {
     type IO;
     type CO;
     type CR;
 
     fn consensus_entries(&self) -> impl Iterator<Item = (OpId, ConsensusEntry<Self::CO, Self::CR>)>;
     fn inconsistent_entries(&self) -> impl Iterator<Item = (OpId, InconsistentEntry<Self::IO>)>;
+}
+
+/// Read-only view over IR record entries with O(log N) point lookups.
+///
+/// Extends [`RecordIter`] with indexed access. Implemented by types
+/// backed by BTreeMaps or LSM indexes — not by raw vlog records.
+pub trait RecordView: RecordIter {
     fn get_consensus(&self, op_id: &OpId) -> Option<ConsensusEntry<Self::CO, Self::CR>>;
     fn get_inconsistent(&self, op_id: &OpId) -> Option<InconsistentEntry<Self::IO>>;
 }

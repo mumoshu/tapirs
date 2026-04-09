@@ -31,7 +31,7 @@ pub use rng::Rng;
 pub use ir::{
     Client as IrClient, ClientConfig as IrClientConfig, ClientId as IrClientId, Membership as IrMembership,
     MembershipSize as IrMembershipSize, Message as IrMessage, OpId as IrOpId, Record as IrRecord,
-    IrPayload, IrRecordStore, RecordView as IrRecordView,
+    IrPayload, IrRecordStore, RecordIter as IrRecordIter, RecordView as IrRecordView,
     RecordConsensusEntry as IrRecordConsensusEntry, Replica as IrReplica,
     ReplicaMetrics as IrReplicaMetrics, ReplicaUpcalls as IrReplicaUpcalls,
     SharedView as IrSharedView, View as IrView, ViewNumber as IrViewNumber,

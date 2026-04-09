@@ -1,4 +1,4 @@
-use super::super::record::{ConsensusEntry, InconsistentEntry, RecordBuilder, RecordView};
+use super::super::record::{ConsensusEntry, InconsistentEntry, RecordBuilder, RecordIter, RecordView};
 use super::super::OpId;
 use crate::util::vectorize_btree;
 use serde::{Deserialize, Serialize};
@@ -25,7 +25,7 @@ pub struct RecordImpl<IO, CO, CR> {
     pub consensus: BTreeMap<OpId, ConsensusEntry<CO, CR>>,
 }
 
-impl<IO: Clone, CO: Clone, CR: Clone> RecordView for RecordImpl<IO, CO, CR> {
+impl<IO: Clone, CO: Clone, CR: Clone> RecordIter for RecordImpl<IO, CO, CR> {
     type IO = IO;
     type CO = CO;
     type CR = CR;
@@ -36,6 +36,9 @@ impl<IO: Clone, CO: Clone, CR: Clone> RecordView for RecordImpl<IO, CO, CR> {
     fn inconsistent_entries(&self) -> impl Iterator<Item = (OpId, InconsistentEntry<IO>)> {
         self.inconsistent.iter().map(|(k, v)| (*k, v.clone()))
     }
+}
+
+impl<IO: Clone, CO: Clone, CR: Clone> RecordView for RecordImpl<IO, CO, CR> {
     fn get_consensus(&self, op_id: &OpId) -> Option<ConsensusEntry<CO, CR>> {
         self.consensus.get(op_id).cloned()
     }

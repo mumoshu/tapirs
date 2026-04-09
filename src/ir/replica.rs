@@ -6,7 +6,7 @@ use super::{
     FinalizeConsensus, FinalizeInconsistent, Membership, Message, OpId, ProposeConsensus,
     ProposeInconsistent, RecordConsensusEntry, RecordEntryState, RecordInconsistentEntry,
     RemoveMember, ReplyConsensus, ReplyInconsistent, ReplyUnlogged, RequestUnlogged, StartView,
-    IrRecordStore, RecordBuilder, RecordView, View, ViewNumber,
+    IrRecordStore, RecordBuilder, RecordIter, RecordView, View, ViewNumber,
 };
 use crate::{Transport, TransportMessage};
 use std::{
