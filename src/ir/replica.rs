@@ -558,18 +558,10 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                                 // memtable entries differ.
                                 let leader_record = sync.record.memtable_record();
 
-                                // Separate peer payloads into memtable vs missed-view.
-                                //
-                                // (a) Memtable entries from all replicas are inconsistent
-                                //     — not yet merged by any leader. They go through
-                                //     merge_record → d/u → merge(d,u) → sync().
-                                //
-                                // (b) Missed-view sealed entries (segments with view >
-                                //     leader's base_view) are already the output of a
-                                //     prior leader's merge. They are already finalized
-                                //     and only need sync() to apply TAPIR side-effects.
-                                let base_view = sync.record.base_view();
-
+                                // Collect peer DVC payloads. All DVC payloads are
+                                // delta (memtable-only) — sealed segments are never
+                                // sent in DVC. Peers with matching LNV have identical
+                                // sealed segments to the leader.
                                 let peer_payloads: Vec<_> = matching
                                     .clone()
                                     .filter(|(addr, r)| {
@@ -580,14 +572,11 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                                     .map(|(_, r)| &r.addendum.as_ref().unwrap().payload)
                                     .collect();
 
-                                let peer_memtable_records: Vec<_> = peer_payloads
+                                // DVC payloads are always delta (memtable-only),
+                                // so payload_as_record returns just memtable entries.
+                                let peer_records: Vec<_> = peer_payloads
                                     .iter()
-                                    .map(|p| sync.record.payload_as_memtable_record(p))
-                                    .collect();
-
-                                let missed_sealed_records: Vec<_> = peer_payloads
-                                    .iter()
-                                    .map(|p| sync.record.payload_as_record_since(p, base_view))
+                                    .map(|p| sync.record.payload_as_record(p))
                                     .collect();
 
                                 if tracing::enabled!(tracing::Level::TRACE) {
@@ -602,9 +591,8 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                                         )
                                         .collect();
                                     trace!(
-                                        "have 1 leader + {} peer memtable + {} missed sealed ({:?})",
-                                        peer_memtable_records.len(),
-                                        missed_sealed_records.len(),
+                                        "have 1 leader + {} peer records ({:?})",
+                                        peer_records.len(),
                                         dvc_debug
                                     );
                                 }
@@ -670,10 +658,11 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                                     }
                                 };
 
-                                // Leader's memtable entries first, then peer memtable entries.
-                                // R stays at O(f·D) — no sealed entries from any replica.
+                                // Leader's memtable entries first, then peer entries.
+                                // DVC payloads are always delta (memtable-only), so
+                                // R stays at O(f·D).
                                 merge_record(&leader_record);
-                                for r in &peer_memtable_records {
+                                for r in &peer_records {
                                     merge_record(r);
                                 }
 
@@ -726,18 +715,7 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
 
                                 {
                                     let sync = &mut *sync;
-                                    // Phase 1: Sync missed-view sealed entries.
-                                    // These are already finalized by a prior leader's
-                                    // merge — they only need TAPIR side-effect
-                                    // application (commit_txn, etc.). All entries are
-                                    // new to this leader, so local is empty: every
-                                    // get_inconsistent/get_consensus returns None and
-                                    // sync processes every entry unconditionally.
-                                    let empty_local = R::Record::default();
-                                    for r in &missed_sealed_records {
-                                        sync.upcalls.sync(&empty_local, r);
-                                    }
-                                    // Phase 2: Sync merged memtable entries.
+                                    // Sync merged memtable entries.
                                     // leader_record (memtable-only) serves as local:
                                     // the leader's own entries are skipped (already
                                     // applied), peer entries are processed.
