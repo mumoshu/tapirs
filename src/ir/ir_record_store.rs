@@ -99,13 +99,8 @@ where
     /// output of merge_record + merge(d,u). Since these entries are not in
     /// the VlogLsm sealed index, the entire merged record IS the delta and
     /// is persisted directly as a new sealed segment.
-    ///
-    /// `best_payload` is the DoViewChange payload from the replica with the
-    /// highest latest_normal_view — its raw segments with view > base_view
-    /// are imported directly to preserve byte identity (no re-encoding).
     fn install_merged_record(
         &mut self, merged: Self::Record, new_view: u64,
-        best_payload: Option<&Self::Payload>,
     ) -> MergeInstallResult<Self::Record, Self::Payload>;
 
     /// The highest view whose entries have been sealed to durable storage.

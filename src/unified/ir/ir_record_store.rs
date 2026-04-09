@@ -361,23 +361,6 @@ impl<IO, CO, CR> PersistentPayload<IO, CO, CR> {
     }
 }
 
-impl<IO, CO, CR> PersistentPayload<IO, CO, CR> {
-    /// Access the raw (ViewRange, bytes) segments in this payload.
-    pub(crate) fn raw_segments(
-        &self,
-    ) -> (
-        &[(Vec<ViewRange>, Vec<u8>)],
-        &[(Vec<ViewRange>, Vec<u8>)],
-    ) {
-        let PayloadInner::Delta {
-            inc_segments,
-            con_segments,
-            ..
-        } = self.inner.as_ref();
-        (inc_segments, con_segments)
-    }
-}
-
 impl<IO, CO, CR> IrPayload for PersistentPayload<IO, CO, CR>
 where
     IO: Clone + Debug + DeserializeOwned + Send + 'static,
@@ -1087,7 +1070,6 @@ where
         &mut self,
         merged: Self::Record,
         new_view: u64,
-        best_payload: Option<&Self::Payload>,
     ) -> MergeInstallResult<Self::Record, Self::Payload> {
         self.log_ir_inc_state(&format!("install_merged_record BEFORE view={new_view}"));
         let iw = std::time::Instant::now();
@@ -1098,52 +1080,11 @@ where
         };
         let from_view = self.base_view;
 
-        // --- Step 1: Import raw segments from best_payload ---
-        // Segments whose max view > self.base_view are new — import them.
-        // This preserves byte identity (no re-encoding).
-        if let Some(payload) = best_payload {
-            let (inc_segs, con_segs) = payload.raw_segments();
-
-            // Helper: max view in a ViewRange list.
-            let max_view = |views: &[ViewRange]| -> u64 {
-                views.iter().map(|v| v.view).max().unwrap_or(0)
-            };
-
-            for (views, bytes) in inc_segs {
-                if !bytes.is_empty() && max_view(views) > self.base_view
-                    && let Some(meta) = self
-                        .inc_lsm
-                        .persist_sealed_segment(bytes, op_id_from_raw, views.clone())
-                        .unwrap_or_else(|e| panic!("install_merged: import inc seg failed: {e}"))
-                {
-                    self.manifest.ir_inc.sealed_vlog_segments.push(meta);
-                }
-            }
-            for (views, bytes) in con_segs {
-                if !bytes.is_empty() && max_view(views) > self.base_view
-                    && let Some(meta) = self
-                        .con_lsm
-                        .persist_sealed_segment(bytes, op_id_from_raw, views.clone())
-                        .unwrap_or_else(|e| panic!("install_merged: import con seg failed: {e}"))
-                {
-                    self.manifest.ir_con.sealed_vlog_segments.push(meta);
-                }
-            }
-        }
-
-        let import_ms = iw.elapsed().as_millis();
-
-        // --- Step 2: Encode and persist merged record as a sealed segment ---
-        // R IS the delta. R contains only merged memtable entries from
-        // the current view — none are in the VlogLsm sealed index
-        // (memtable entries haven't been sealed yet). Missed-view sealed
-        // entries from best_payload are imported in step 1 above as raw
-        // segments, not through R.
-        //
-        // The resolved_ops filter that previously existed here caught
-        // indexed entries whose consensus result changed by merge(d,u).
-        // With memtable-only R, no entry is indexed, so the filter is
-        // unnecessary.
+        // Encode and persist merged record as a sealed segment.
+        // R IS the delta — it contains only merged memtable entries from
+        // the current view. All peers in the merge have matching LNV, so
+        // their sealed segments are identical to the leader's. No segment
+        // import from peer payloads is needed.
         let (merged_inc_bytes, merged_con_bytes) =
             Self::encode_indexed_as_segments(&merged)
                 .expect("install_merged: encode merged failed");
@@ -1192,7 +1133,7 @@ where
 
         let total_ms = iw.elapsed().as_millis();
         tracing::debug!(
-            "[install_merged] view={new_view} base={from_view} import={import_ms}ms persist={persist_ms}ms total={total_ms}ms",
+            "[install_merged] view={new_view} base={from_view} persist={persist_ms}ms total={total_ms}ms",
         );
 
         // Build start_view_delta for same-base recipients.
@@ -1463,7 +1404,7 @@ mod tests {
         merged.insert_inconsistent(op_id(1, 1), fin_inc_entry("op1", 0));
         merged.insert_consensus(op_id(1, 2), fin_con_entry("cop1", "r1", 0));
 
-        let result = store.install_merged_record(merged, 1, None);
+        let result = store.install_merged_record(merged, 1);
         assert!(result.start_view_delta.is_none()); // no base yet
         assert_eq!(store.base_view, 1);
 
@@ -1559,7 +1500,7 @@ mod tests {
             PersistentRecord::default();
         merged_v1.insert_inconsistent(op_id(1, 1), fin_inc_entry("op1", 0));
         merged_v1.insert_consensus(op_id(1, 2), fin_con_entry("cop1", "r1", 0));
-        leader.install_merged_record(merged_v1, 1, None);
+        leader.install_merged_record(merged_v1, 1);
 
         // Leader sends StartView payload to recipient B
         let payload_v1 = leader.build_start_view_payload(None);
@@ -1577,7 +1518,7 @@ mod tests {
         merged_v2.insert_consensus(op_id(1, 2), fin_con_entry("cop1", "r1", 0));
         merged_v2.insert_inconsistent(op_id(2, 1), fin_inc_entry("op2", 1));
         merged_v2.insert_consensus(op_id(2, 2), fin_con_entry("cop2", "r2", 1));
-        leader.install_merged_record(merged_v2, 2, None);
+        leader.install_merged_record(merged_v2, 2);
 
         // Leader sends full StartView payload (non-same-base)
         let payload_v2 = leader.build_start_view_payload(None);
@@ -1618,7 +1559,7 @@ mod tests {
         let mut merged_v1: PersistentRecord<String, String, String> =
             PersistentRecord::default();
         merged_v1.insert_inconsistent(op_id(1, 1), fin_inc_entry("v1_op", 0));
-        leader.install_merged_record(merged_v1, 1, None);
+        leader.install_merged_record(merged_v1, 1);
 
         // Recipient B installs from view 1
         let payload_v1 = leader.build_start_view_payload(None);
@@ -1632,14 +1573,14 @@ mod tests {
             PersistentRecord::default();
         merged_v2.insert_inconsistent(op_id(1, 1), fin_inc_entry("v1_op", 0));
         merged_v2.insert_inconsistent(op_id(2, 1), fin_inc_entry("v2_op", 1));
-        leader.install_merged_record(merged_v2, 2, None);
+        leader.install_merged_record(merged_v2, 2);
 
         let mut merged_v3: PersistentRecord<String, String, String> =
             PersistentRecord::default();
         merged_v3.insert_inconsistent(op_id(1, 1), fin_inc_entry("v1_op", 0));
         merged_v3.insert_inconsistent(op_id(2, 1), fin_inc_entry("v2_op", 1));
         merged_v3.insert_inconsistent(op_id(3, 1), fin_inc_entry("v3_op", 2));
-        leader.install_merged_record(merged_v3, 3, None);
+        leader.install_merged_record(merged_v3, 3);
 
         // Leader sends full payload for view 3 to B (doesn't know B's LNV)
         let payload_v3 = leader.build_start_view_payload(None);

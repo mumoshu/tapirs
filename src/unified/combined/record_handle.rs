@@ -166,13 +166,12 @@ where
         &mut self,
         merged: Self::Record,
         new_view: u64,
-        best_payload: Option<&Self::Payload>,
     ) -> MergeInstallResult<Self::Record, Self::Payload> {
         self.inner
             .lock()
             .unwrap()
             .ir
-            .install_merged_record(merged, new_view, best_payload)
+            .install_merged_record(merged, new_view)
     }
 
     fn flush(&mut self) {
