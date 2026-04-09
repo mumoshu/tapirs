@@ -108,9 +108,6 @@ pub trait DiskIo: Clone + Send + 'static {
     ///
     /// Default: `futures::executor::block_on`. Works for synchronous backends
     /// (BufferedIo, SyncDirectIo, MemoryIo) whose futures resolve immediately.
-    ///
-    /// UringDirectIo overrides this to drive the io_uring ring (submit SQEs,
-    /// wait for CQEs) so io_uring futures can complete.
     fn block_on<F: Future>(fut: F) -> F::Output {
         futures::executor::block_on(fut)
     }
@@ -119,7 +116,7 @@ pub trait DiskIo: Clone + Send + 'static {
 /// Synchronous O_DIRECT I/O (Phase 1 implementation).
 ///
 /// Blocks the calling thread on each operation — acceptable for
-/// development and testing. Production would use `UringDirectIo`.
+/// development and testing. Production uses `BufferedIo`.
 #[derive(Clone)]
 pub struct SyncDirectIo {
     fd: std::sync::Arc<OwnedFd>,
@@ -258,7 +255,7 @@ impl DiskIo for BufferedIo {
     fn pwrite(&self, buf: &AlignedBuf, offset: u64) -> Self::WriteFuture {
         // Write only the logical data (buf.len()), not the full aligned
         // capacity. BufferedIo has no O_DIRECT alignment requirement.
-        // SyncDirectIo/UringDirectIo write capacity() for O_DIRECT.
+        // SyncDirectIo writes capacity() for O_DIRECT.
         let n = unsafe {
             libc::pwrite(
                 self.fd.as_raw_fd(),
