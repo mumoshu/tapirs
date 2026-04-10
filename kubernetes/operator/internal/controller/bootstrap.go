@@ -112,46 +112,56 @@ func (r *TAPIRClusterReconciler) reconcileBootstrap(ctx context.Context, cluster
 		return true, r.setPhase(ctx, cluster, tapirv1alpha1.PhaseWaitingForQuorum)
 
 	case tapirv1alpha1.PhaseWaitingForQuorum:
-		// Gate Running on quorum: each shard needs readyReplicas >= f+1.
-		// The data-node readiness probe is now HTTP /readyz which returns
-		// 200 only after all local shards complete their first view change,
-		// so readyReplicas reflects actual IR quorum participation.
-		for _, pool := range cluster.Spec.NodePools {
-			ready, err := r.getStatefulSetReadyReplicas(ctx, cluster.Namespace, cluster.Name+"-"+pool.Name)
-			if err != nil {
-				return false, err
-			}
-			for _, shard := range cluster.Spec.Shards {
-				f := (shard.Replicas - 1) / 3
-				quorum := f + 1
-				if ready < quorum {
-					log.Info("Waiting for quorum", "pool", pool.Name,
-						"readyReplicas", ready, "needed", quorum)
-					return true, nil
-				}
-			}
-		}
-		return true, r.setPhase(ctx, cluster, tapirv1alpha1.PhaseRunning)
+		return r.reconcileWaitingForQuorum(ctx, cluster)
 
 	case tapirv1alpha1.PhaseRunning:
-		// Handle scale-down first (remove replicas before pods)
-		if err := r.reconcileScaleDown(ctx, cluster); err != nil {
-			log.Error(err, "Failed to reconcile scale-down")
-			return true, nil
-		}
-		// Handle scale-up (add replicas to new/empty pods)
-		if err := r.reconcileScaleUp(ctx, cluster); err != nil {
-			log.Error(err, "Failed to reconcile scale-up")
-			return true, nil
-		}
-		if err := r.updateStatus(ctx, cluster); err != nil {
-			return false, err
-		}
-		return false, nil
+		return r.reconcileRunning(ctx, cluster)
 
 	default:
 		return false, nil
 	}
+}
+
+// reconcileWaitingForQuorum gates the Running phase on quorum readiness.
+// Each shard needs readyReplicas >= f+1. The data-node readiness probe is
+// HTTP /readyz which returns 200 only after all local shards complete their
+// first view change, so readyReplicas reflects actual IR quorum participation.
+func (r *TAPIRClusterReconciler) reconcileWaitingForQuorum(ctx context.Context, cluster *tapirv1alpha1.TAPIRCluster) (bool, error) {
+	log := logf.FromContext(ctx)
+	for _, pool := range cluster.Spec.NodePools {
+		ready, err := r.getStatefulSetReadyReplicas(ctx, cluster.Namespace, cluster.Name+"-"+pool.Name)
+		if err != nil {
+			return false, err
+		}
+		for _, shard := range cluster.Spec.Shards {
+			f := (shard.Replicas - 1) / 3
+			quorum := f + 1
+			if ready < quorum {
+				log.Info("Waiting for quorum", "pool", pool.Name,
+					"readyReplicas", ready, "needed", quorum)
+				return true, nil
+			}
+		}
+	}
+	return true, r.setPhase(ctx, cluster, tapirv1alpha1.PhaseRunning)
+}
+
+// reconcileRunning handles scale-down, scale-up, and status updates
+// once the cluster is in the Running phase.
+func (r *TAPIRClusterReconciler) reconcileRunning(ctx context.Context, cluster *tapirv1alpha1.TAPIRCluster) (bool, error) {
+	log := logf.FromContext(ctx)
+	if err := r.reconcileScaleDown(ctx, cluster); err != nil {
+		log.Error(err, "Failed to reconcile scale-down")
+		return true, nil
+	}
+	if err := r.reconcileScaleUp(ctx, cluster); err != nil {
+		log.Error(err, "Failed to reconcile scale-up")
+		return true, nil
+	}
+	if err := r.updateStatus(ctx, cluster); err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 // bootstrapDiscovery bootstraps discovery replicas with static membership.
