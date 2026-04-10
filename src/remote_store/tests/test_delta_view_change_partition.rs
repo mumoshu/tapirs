@@ -225,13 +225,11 @@ async fn e2e_partition_recovery_time() {
             eprintln!("[recovery] all replicas recovered in {recovery_secs:.1}s (simulated)");
             eprintln!("[recovery] final views: {views:?}");
 
-            // Before fix: recovery takes ~8-12s (behind leader wastes a cycle).
-            // After fix: recovery should take ~4-6s.
-            // Use a generous threshold that catches severe regressions but
-            // allows the test to pass both before and after the fix.
+            // Before fix: recovery took ~6.2s (behind leader wasted a cycle).
+            // After fix: recovery takes ~2.4s (immediate retry skips the wait).
             assert!(
-                recovery_secs <= 14.0,
-                "recovery took {recovery_secs:.1}s, expected <= 14s"
+                recovery_secs <= 5.0,
+                "recovery took {recovery_secs:.1}s, expected <= 5s"
             );
             break;
         }
