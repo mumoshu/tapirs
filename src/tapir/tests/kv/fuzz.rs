@@ -1374,6 +1374,11 @@ where
                         tokio::time::sleep(Duration::from_millis(500)).await;
                         continue;
                     }
+                    Err(TransactionError::PrepareConflict) => {
+                        eprintln!("fuzz: verify key={key} attempt={attempt} got PrepareConflict, retrying (seed={seed})");
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        continue;
+                    }
                     Err(e) => {
                         eprintln!("fuzz: verify key={key} attempt={attempt} got error: {e:?} (seed={seed})");
                         break Err(e);
