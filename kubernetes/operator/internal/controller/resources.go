@@ -254,9 +254,10 @@ func desiredNodePoolService(cluster *tapirv1alpha1.TAPIRCluster, pool tapirv1alp
 			Labels:    labels(cluster, component),
 		},
 		Spec: corev1.ServiceSpec{
-			ClusterIP: "None",
-			Selector:  labels(cluster, component),
-			Ports:     ports,
+			ClusterIP:                "None",
+			PublishNotReadyAddresses: true,
+			Selector:                 labels(cluster, component),
+			Ports:                    ports,
 		},
 	}
 }

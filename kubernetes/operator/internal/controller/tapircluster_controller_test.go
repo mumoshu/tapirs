@@ -423,6 +423,7 @@ var _ = Describe("TAPIRCluster Controller", func() {
 			}, &nodeSvc)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(nodeSvc.Spec.ClusterIP).To(Equal("None"))
+			Expect(nodeSvc.Spec.PublishNotReadyAddresses).To(BeTrue())
 			// admin + metrics + 2 shard ports
 			Expect(nodeSvc.Spec.Ports).To(HaveLen(4))
 
