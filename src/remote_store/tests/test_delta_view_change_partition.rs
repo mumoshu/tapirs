@@ -4,7 +4,7 @@ use std::time::Duration;
 use crate::mvcc::disk::disk_io::OpenFlags;
 use crate::mvcc::disk::memory_io::MemoryIo;
 use crate::tapir::{ShardNumber, Sharded};
-use crate::transport::{FaultyChannelTransport, NetworkFaultConfig};
+use crate::transport::{FaultyChannelTransport, LatencyConfig, NetworkFaultConfig};
 use crate::unified::combined::CombinedStoreInner;
 use crate::unified::combined::record_handle::CombinedRecordHandle;
 use crate::{
@@ -95,6 +95,193 @@ fn heal_all(
         replica.transport().heal_node(target_addr);
     }
     client_transport.heal_node(target_addr);
+}
+
+/// Measure simulated time for a partitioned replica to recover via tick-driven
+/// view changes. Exercises the "behind leader" scenario where the previously
+/// partitioned replica gets elected as view change leader.
+///
+/// With start_paused=true, tokio time advances instantly when all tasks sleep,
+/// so wall-clock time is fast but simulated time accurately tracks recovery.
+#[tokio::test(start_paused = true)]
+async fn e2e_partition_recovery_time() {
+    let shard = ShardNumber(0);
+    let fault_config = NetworkFaultConfig::default();
+
+    let mut rng = crate::Rng::from_seed(88);
+    let registry = ChannelRegistry::<TapirReplica<String, String>>::default();
+    let dir = Arc::new(InMemoryShardDirectory::new());
+
+    let replicas = build_shard_faulty(
+        &mut rng, shard, &registry, &dir, &fault_config, 300,
+    );
+    // Let initial ticks settle.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let client_channel = registry.channel(
+        move |_, _| unreachable!(),
+        Arc::clone(&dir),
+    );
+    let client_transport = FaultyChannelTransport::new(
+        client_channel, fault_config.clone(), 400,
+    );
+    let client = Arc::new(
+        crate::tapir::Client::<String, String, FaultyTransport>::new(
+            rng.fork(), client_transport.clone(),
+        ),
+    );
+
+    // --- Initial setup: write k1=v1 and seal via view change ---
+    eprintln!("[recovery] writing k1=v1...");
+    let txn = client.begin();
+    txn.put(Sharded { shard, key: "k1".to_string() }, Some("v1".to_string()));
+    let commit1 = txn.commit().await.expect("write k1 should commit");
+    eprintln!("[recovery] committed k1 at ts={commit1:?}");
+
+    replicas[0].force_view_change();
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // --- Partition replica C (addr=2) ---
+    let addr_c = replicas[2].address();
+    eprintln!("[recovery] partitioning replica C (addr={addr_c})...");
+    partition_all(&replicas, &client_transport, addr_c);
+
+    // Force view changes so A+B advance far ahead of C.
+    // We keep going until A+B are at a view V where (V+1) % 3 == 2
+    // (C's address), so the next tick-driven view change after heal
+    // elects C (the behind replica) as leader — triggering the
+    // "leader behind majority" abort path.
+    loop {
+        replicas[0].force_view_change();
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let a_view = replicas[0].view_number();
+        let b_view = replicas[1].view_number();
+        let c_view = replicas[2].view_number();
+        eprintln!("[recovery] VC: A view={a_view}, B view={b_view}, C view={c_view}");
+        // Need (a_view + 1) % 3 == addr_c so next tick picks C as leader.
+        // Also need a meaningful gap (A at least 3 views ahead of C).
+        if (a_view + 1) % 3 == addr_c as u64 && a_view >= c_view + 3 {
+            break;
+        }
+    }
+
+    // Write k2=v2 through A+B quorum.
+    eprintln!("[recovery] writing k2=v2 (A+B quorum)...");
+    let txn2 = client.begin();
+    txn2.put(Sharded { shard, key: "k2".to_string() }, Some("v2".to_string()));
+    let commit2 = txn2.commit().await.expect("write k2 should commit with A+B quorum");
+    eprintln!("[recovery] committed k2 at ts={commit2:?}");
+
+    // Align A/B's view so the next tick-driven VC elects C as leader.
+    // Need (a_view + 1) % 3 == addr_c, i.e., the next view has C as leader.
+    // Force VCs on A (with short sleeps to let them complete but avoid tick fires).
+    while (replicas[0].view_number() + 1) % 3 != addr_c as u64 {
+        replicas[0].force_view_change();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    // Brief sleep for last VC to propagate (< 2s to avoid triggering a tick).
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let c_view_before = replicas[2].view_number();
+    let a_view_before = replicas[0].view_number();
+    eprintln!("[recovery] before heal: A view={a_view_before}, C view={c_view_before}");
+    eprintln!("[recovery] next view {} leader addr = {}", a_view_before + 1, (a_view_before + 1) % 3);
+    assert_eq!((a_view_before + 1) % 3, addr_c as u64,
+        "next view should elect C as leader");
+
+    // --- Heal partition and measure tick-driven recovery time ---
+    // Add message latency so that when the behind replica's tick fires,
+    // its DVC can arrive at caught-up replicas BEFORE their own DVCs
+    // reach the behind replica. This creates a window where the behind
+    // replica gets elected as leader — triggering the "leader behind
+    // majority" abort path, as happens in Maelstrom's real network.
+    let latency = LatencyConfig::Fixed(Duration::from_millis(200));
+    for replica in &replicas {
+        replica.transport().set_latency(latency.clone());
+    }
+    client_transport.set_latency(latency.clone());
+
+    heal_all(&replicas, &client_transport, addr_c);
+    let heal_time = tokio::time::Instant::now();
+    eprintln!("[recovery] healed partition (with 200ms latency), waiting for tick-driven recovery...");
+
+    // Poll until all replicas are Normal with matching view numbers.
+    // Tick timers (2s interval) drive view changes; simulated time
+    // advances instantly when all tasks await sleep.
+    let max_wait = Duration::from_secs(30);
+    loop {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let elapsed = heal_time.elapsed();
+
+        let metrics: Vec<_> = replicas.iter()
+            .map(|r| r.collect_metrics().unwrap())
+            .collect();
+        let all_normal = metrics.iter().all(|m| m.status == 0);
+        let views: Vec<_> = metrics.iter().map(|m| m.view_number).collect();
+        let all_same_view = views.windows(2).all(|w| w[0] == w[1]);
+
+        if all_normal && all_same_view {
+            let recovery_secs = elapsed.as_secs_f64();
+            eprintln!("[recovery] all replicas recovered in {recovery_secs:.1}s (simulated)");
+            eprintln!("[recovery] final views: {views:?}");
+
+            // Before fix: recovery takes ~8-12s (behind leader wastes a cycle).
+            // After fix: recovery should take ~4-6s.
+            // Use a generous threshold that catches severe regressions but
+            // allows the test to pass both before and after the fix.
+            assert!(
+                recovery_secs <= 14.0,
+                "recovery took {recovery_secs:.1}s, expected <= 14s"
+            );
+            break;
+        }
+
+        if elapsed > max_wait {
+            panic!(
+                "recovery not complete after {:.1}s: status={:?} views={views:?}",
+                elapsed.as_secs_f64(),
+                metrics.iter().map(|m| m.status).collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    // Remove latency for verification reads.
+    for replica in &replicas {
+        replica.transport().set_latency(LatencyConfig::None);
+    }
+    client_transport.set_latency(LatencyConfig::None);
+
+    // --- Verify correctness: quorum reads ---
+    let verify_channel = registry.channel(
+        move |_, _| unreachable!(),
+        Arc::clone(&dir),
+    );
+    let verify_transport = FaultyChannelTransport::new(
+        verify_channel, fault_config.clone(), 600,
+    );
+    let shard_client = crate::tapir::ShardClient::<String, String, FaultyTransport>::new(
+        rng.fork(),
+        IrClientId::new(&mut rng),
+        shard,
+        IrMembership::new(vec![0, 1, 2]),
+        verify_transport,
+    );
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        shard_client.quorum_read("k1".to_string(), commit1),
+    ).await.expect("quorum_read k1 timed out");
+    assert!(result.is_ok(), "quorum_read k1 failed: {result:?}");
+    assert_eq!(result.unwrap().0.as_deref(), Some("v1"));
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        shard_client.quorum_read("k2".to_string(), commit2),
+    ).await.expect("quorum_read k2 timed out");
+    assert!(result.is_ok(), "quorum_read k2 failed: {result:?}");
+    assert_eq!(result.unwrap().0.as_deref(), Some("v2"));
+
+    eprintln!("[recovery] all quorum_reads passed!");
 }
 
 /// Multiple view changes with different replicas partitioned each time.
