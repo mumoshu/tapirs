@@ -234,7 +234,7 @@ ci/fuzz-diagnose:
 	FUZZ_RUNS=10 ./scripts/fuzz-diagnose.sh
 
 ci/fuzz-multi-seed:
-	./scripts/fuzz-multi-seed.sh
+	FUZZ_CARGO_FLAGS=--release ./scripts/fuzz-multi-seed.sh
 
 ci/test-s3:
 	docker run -d --name tapi-minio -p 9100:9000 \
