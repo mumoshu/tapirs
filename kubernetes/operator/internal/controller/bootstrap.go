@@ -182,7 +182,10 @@ func (r *TAPIRClusterReconciler) bootstrapDiscovery(ctx context.Context, cluster
 	// Bootstrap each discovery pod with shard 0 (the discovery shard)
 	discoverySvc := cluster.Name + "-discovery"
 	for _, p := range pods {
-		client := r.adminClient(ctx, cluster, p, discoverySvc)
+		client, err := r.adminClient(ctx, cluster, p, discoverySvc)
+		if err != nil {
+			return fmt.Errorf("admin client for %s: %w", p.Name, err)
+		}
 
 		// Check if already bootstrapped
 		resp, err := client.Status(ctx)
@@ -335,7 +338,10 @@ func (r *TAPIRClusterReconciler) bootstrapReplicas(ctx context.Context, cluster 
 
 		// Bootstrap each replica
 		for _, p := range shardPods {
-			client := r.adminClient(ctx, cluster, p, p.ServiceName)
+			client, err := r.adminClient(ctx, cluster, p, p.ServiceName)
+			if err != nil {
+				return fmt.Errorf("admin client for %s: %w", p.Name, err)
+			}
 
 			// Check if already bootstrapped
 			resp, err := client.Status(ctx)
@@ -414,7 +420,10 @@ func (r *TAPIRClusterReconciler) registerShards(ctx context.Context, cluster *ta
 		return err
 	}
 
-	smClient := r.shardManagerClient(ctx, cluster)
+	smClient, err := r.shardManagerClient(ctx, cluster)
+	if err != nil {
+		return fmt.Errorf("shard-manager client: %w", err)
+	}
 
 	for _, shard := range cluster.Spec.Shards {
 		port := int32(replicaBasePort) + shard.Number
@@ -451,14 +460,20 @@ func (r *TAPIRClusterReconciler) updateStatus(ctx context.Context, cluster *tapi
 	// Update node status
 	nodeStatuses := make([]tapirv1alpha1.NodeStatus, 0, len(allPods))
 	for _, p := range allPods {
-		client := r.adminClient(ctx, cluster, p, p.ServiceName)
+		client, err := r.adminClient(ctx, cluster, p, p.ServiceName)
 
 		ns := tapirv1alpha1.NodeStatus{
-			Name:      p.Name,
-			PodIP:     p.PodIP,
-			AdminAddr: client.Addr,
-			Ready:     true,
+			Name:  p.Name,
+			PodIP: p.PodIP,
+			Ready: true,
 		}
+
+		if err != nil {
+			ns.Ready = false
+			nodeStatuses = append(nodeStatuses, ns)
+			continue
+		}
+		ns.AdminAddr = client.Addr
 
 		resp, err := client.Status(ctx)
 		if err != nil {

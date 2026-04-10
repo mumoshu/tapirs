@@ -42,7 +42,10 @@ func (r *TAPIRClusterReconciler) reconcileScaleUp(ctx context.Context, cluster *
 		shardPods := allPods[:shard.Replicas]
 
 		for _, p := range shardPods {
-			client := r.adminClient(ctx, cluster, p, p.ServiceName)
+			client, err := r.adminClient(ctx, cluster, p, p.ServiceName)
+			if err != nil {
+				return fmt.Errorf("admin client for %s: %w", p.Name, err)
+			}
 
 			resp, err := client.Status(ctx)
 			if err != nil {
@@ -105,7 +108,11 @@ func (r *TAPIRClusterReconciler) reconcileScaleDown(ctx context.Context, cluster
 				continue // this pod should keep the shard
 			}
 
-			client := r.adminClient(ctx, cluster, p, p.ServiceName)
+			client, err := r.adminClient(ctx, cluster, p, p.ServiceName)
+			if err != nil {
+				log.Error(err, "Failed to create admin client during scale-down", "pod", p.Name)
+				continue
+			}
 
 			resp, err := client.Status(ctx)
 			if err != nil {

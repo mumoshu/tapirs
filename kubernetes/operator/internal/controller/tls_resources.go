@@ -237,36 +237,45 @@ func (r *TAPIRClusterReconciler) loadTLSConfigFromSecret(ctx context.Context, cl
 // adminClient constructs an AdminClient with optional TLS for a pod address.
 // When TLS is enabled, the address uses the pod's DNS FQDN instead of IP for
 // hostname verification against the certificate's wildcard DNS SAN.
-func (r *TAPIRClusterReconciler) adminClient(ctx context.Context, cluster *tapirv1alpha1.TAPIRCluster, p podInfo, serviceName string) *tapir.AdminClient {
+// Returns an error if TLS is enabled but the operator-client TLS secret has
+// not been provisioned by cert-manager yet.
+func (r *TAPIRClusterReconciler) adminClient(ctx context.Context, cluster *tapirv1alpha1.TAPIRCluster, p podInfo, serviceName string) (*tapir.AdminClient, error) {
 	addr := fmt.Sprintf("%s:%d", p.PodIP, adminPort)
 	client := &tapir.AdminClient{Addr: addr, Timeout: 10 * time.Second}
 
 	if tlsEnabled(cluster) {
+		tlsConfig := r.loadTLSConfigFromSecret(ctx, cluster)
+		if tlsConfig == nil {
+			return nil, fmt.Errorf("TLS secret %q not ready", tlsSecretName(cluster.Name, "operator-client"))
+		}
 		// Use DNS FQDN for TLS hostname verification against wildcard SANs.
 		addr = fmt.Sprintf("%s.%s.%s.svc.cluster.local:%d",
 			p.Name, serviceName, cluster.Namespace, adminPort)
 		client.Addr = addr
-		client.TLSConfig = r.loadTLSConfigFromSecret(ctx, cluster)
+		client.TLSConfig = tlsConfig
 	}
 
-	return client
+	return client, nil
 }
 
 // shardManagerClient constructs a ShardManagerClient with optional TLS.
-func (r *TAPIRClusterReconciler) shardManagerClient(ctx context.Context, cluster *tapirv1alpha1.TAPIRCluster) *tapir.ShardManagerClient {
+// Returns an error if TLS is enabled but the operator-client TLS secret has
+// not been provisioned by cert-manager yet.
+func (r *TAPIRClusterReconciler) shardManagerClient(ctx context.Context, cluster *tapirv1alpha1.TAPIRCluster) (*tapir.ShardManagerClient, error) {
 	smClient := &tapir.ShardManagerClient{
 		BaseURL: shardManagerURLForCluster(cluster),
 	}
 
 	if tlsEnabled(cluster) {
 		tlsConfig := r.loadTLSConfigFromSecret(ctx, cluster)
-		if tlsConfig != nil {
-			smClient.HTTPClient = &http.Client{
-				Transport: &http.Transport{TLSClientConfig: tlsConfig},
-				Timeout:   30 * time.Second,
-			}
+		if tlsConfig == nil {
+			return nil, fmt.Errorf("TLS secret %q not ready", tlsSecretName(cluster.Name, "operator-client"))
+		}
+		smClient.HTTPClient = &http.Client{
+			Transport: &http.Transport{TLSClientConfig: tlsConfig},
+			Timeout:   30 * time.Second,
 		}
 	}
 
-	return smClient
+	return smClient, nil
 }
