@@ -618,8 +618,15 @@ impl<U: Upcalls, T: Transport<U>, R: IrRecordStore<U::IO, U::CO, U::CR, Payload 
                                 // are caught up — the view change tick will pick one.
                                 if sync.latest_normal_view.number < latest_normal_view.number {
                                     warn!(
-                                        "leader behind majority: own={:?} majority={:?}, aborting merge",
+                                        "leader behind majority: own={:?} majority={:?}, skipping to next view",
                                         sync.latest_normal_view.number, latest_normal_view.number
+                                    );
+                                    // Don't wait for the next tick — immediately start the
+                                    // next view so a caught-up leader can complete the merge.
+                                    sync.view.make_mut().number.0 += 1;
+                                    Self::broadcast_do_view_change(
+                                        &self.inner.transport,
+                                        &mut *sync,
                                     );
                                     return None;
                                 }
