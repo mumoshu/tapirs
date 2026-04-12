@@ -2,7 +2,6 @@ use super::aligned_buf::AlignedBuf;
 use super::error::StorageError;
 use std::fs::OpenOptions;
 use std::future::{Future, Ready, ready};
-use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::{AsRawFd, OwnedFd};
 use std::path::Path;
 
@@ -107,89 +106,9 @@ pub trait DiskIo: Clone + Send + 'static {
     /// Block on a future to completion using this IO backend's executor.
     ///
     /// Default: `futures::executor::block_on`. Works for synchronous backends
-    /// (BufferedIo, SyncDirectIo, MemoryIo) whose futures resolve immediately.
+    /// (BufferedIo, MemoryIo) whose futures resolve immediately.
     fn block_on<F: Future>(fut: F) -> F::Output {
         futures::executor::block_on(fut)
-    }
-}
-
-/// Synchronous O_DIRECT I/O (Phase 1 implementation).
-///
-/// Blocks the calling thread on each operation — acceptable for
-/// development and testing. Production uses `BufferedIo`.
-#[derive(Clone)]
-pub struct SyncDirectIo {
-    fd: std::sync::Arc<OwnedFd>,
-}
-
-impl DiskIo for SyncDirectIo {
-    type ReadFuture = Ready<Result<(), StorageError>>;
-    type WriteFuture = Ready<Result<(), StorageError>>;
-
-    fn open(path: &Path, flags: OpenFlags, _mode: OpenMode) -> Result<Self, StorageError> {
-        let mut opts = OpenOptions::new();
-        opts.read(true).write(true).create(flags.create);
-        if flags.direct {
-            opts.custom_flags(libc::O_DIRECT);
-        }
-        let file = opts.open(path)?;
-        Ok(Self {
-            fd: std::sync::Arc::new(file.into()),
-        })
-    }
-
-    fn pread(&self, buf: &mut AlignedBuf, offset: u64) -> Self::ReadFuture {
-        let n = unsafe {
-            libc::pread(
-                self.fd.as_raw_fd(),
-                buf.as_mut_ptr() as *mut libc::c_void,
-                buf.capacity(),
-                offset as libc::off_t,
-            )
-        };
-        if n < 0 {
-            return ready(Err(std::io::Error::last_os_error().into()));
-        }
-        buf.set_len(n as usize);
-        ready(Ok(()))
-    }
-
-    fn pwrite(&self, buf: &AlignedBuf, offset: u64) -> Self::WriteFuture {
-        let n = unsafe {
-            libc::pwrite(
-                self.fd.as_raw_fd(),
-                buf.as_ptr() as *const libc::c_void,
-                buf.capacity(),
-                offset as libc::off_t,
-            )
-        };
-        if n < 0 {
-            return ready(Err(std::io::Error::last_os_error().into()));
-        }
-        ready(Ok(()))
-    }
-
-    fn fsync(&self) -> impl Future<Output = Result<(), StorageError>> + Send {
-        let ret = unsafe { libc::fsync(self.fd.as_raw_fd()) };
-        if ret < 0 {
-            ready(Err(std::io::Error::last_os_error().into()))
-        } else {
-            ready(Ok(()))
-        }
-    }
-
-    fn close(self) {
-        // OwnedFd drops and closes automatically.
-        drop(self);
-    }
-
-    fn file_len(&self) -> Result<u64, StorageError> {
-        let mut stat: libc::stat = unsafe { std::mem::zeroed() };
-        let ret = unsafe { libc::fstat(self.fd.as_raw_fd(), &mut stat) };
-        if ret < 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
-        Ok(stat.st_size as u64)
     }
 }
 
@@ -255,7 +174,7 @@ impl DiskIo for BufferedIo {
     fn pwrite(&self, buf: &AlignedBuf, offset: u64) -> Self::WriteFuture {
         // Write only the logical data (buf.len()), not the full aligned
         // capacity. BufferedIo has no O_DIRECT alignment requirement.
-        // SyncDirectIo writes capacity() for O_DIRECT.
+        // An O_DIRECT backend would write capacity() instead.
         let n = unsafe {
             libc::pwrite(
                 self.fd.as_raw_fd(),
