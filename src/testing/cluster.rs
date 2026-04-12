@@ -1,8 +1,8 @@
 use crate::storage::io::memory_io::MemoryIo;
 use crate::storage::io::disk_io::OpenFlags;
 use crate::tapir::{Key, Value};
-use crate::unified::combined::CombinedStoreInner;
-use crate::unified::combined::record_handle::CombinedRecordHandle;
+use crate::storage::combined::CombinedStoreInner;
+use crate::storage::combined::record_handle::CombinedRecordHandle;
 use crate::{
     discovery::{InMemoryShardDirectory, ShardDirectory as _},
     ChannelRegistry, ChannelTransport, IrMembership, IrReplica, ShardNumber,

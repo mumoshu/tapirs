@@ -5,7 +5,7 @@ use crate::storage::io::disk_io::OpenFlags;
 use crate::storage::io::memory_io::MemoryIo;
 use crate::testing::cluster::TestIrReplica;
 use crate::testing::discovery::build_single_node_discovery;
-use crate::unified::combined::CombinedStoreInner;
+use crate::storage::combined::CombinedStoreInner;
 
 #[tokio::test(start_paused = true)]
 async fn test_join_with_preload() {

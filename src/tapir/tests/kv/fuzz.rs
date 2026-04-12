@@ -242,7 +242,7 @@ fn fuzz_tapir_transactions() {
         use crate::storage::io::disk_io::OpenFlags;
         use crate::storage::io::faulty_disk_io::{DiskFaultConfig, FaultyDiskIo};
         use crate::storage::io::memory_io::MemoryIo;
-        use crate::unified::combined::CombinedStoreInner;
+        use crate::storage::combined::CombinedStoreInner;
 
         type FaultyMemIo = FaultyDiskIo<MemoryIo>;
 

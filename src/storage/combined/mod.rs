@@ -110,10 +110,10 @@ pub struct CombinedStoreInner<K: Ord, V, DIO: DiskIo> {
     pub(crate) tapir_view: u64,
 
     // --- S3 remote storage (set via set_s3_config before into_record_handle) ---
-    pub(crate) s3_config: Option<crate::remote_store::config::S3StorageConfig>,
+    pub(crate) s3_config: Option<crate::storage::remote::config::S3StorageConfig>,
 
     // --- Cross-shard consistency (set after restoring from snapshot) ---
-    pub(crate) ghost_filter: Option<crate::remote_store::ghost_filter::GhostFilter>,
+    pub(crate) ghost_filter: Option<crate::storage::remote::ghost_filter::GhostFilter>,
 }
 
 impl<K: Key, V: Value, DIO: DiskIo> CombinedStoreInner<K, V, DIO> {
@@ -255,7 +255,7 @@ impl<K: Key, V: Value, DIO: DiskIo> CombinedStoreInner<K, V, DIO> {
     }
 
     /// Set S3 config for automatic upload on flush.
-    pub fn set_s3_config(&mut self, config: crate::remote_store::config::S3StorageConfig) {
+    pub fn set_s3_config(&mut self, config: crate::storage::remote::config::S3StorageConfig) {
         self.s3_config = Some(config);
     }
 
@@ -349,7 +349,7 @@ impl<K: Key, V: Value, DIO: DiskIo> CombinedStoreInner<K, V, DIO> {
         self.prepared.start_view(self.tapir_view);
         self.mvcc.start_view(self.tapir_view);
 
-        let new_files = crate::remote_store::upload::diff_manifests(
+        let new_files = crate::storage::remote::upload::diff_manifests(
             &manifest_before,
             &self.tapir_manifest,
         );
@@ -378,10 +378,10 @@ impl<K: Key, V: Value, DIO: DiskIo> CombinedStoreInner<K, V, DIO> {
                 )
                 .await;
                 let seg_store =
-                    crate::remote_store::segment_store::RemoteSegmentStore::new(storage.sub(""));
+                    crate::storage::remote::segment_store::RemoteSegmentStore::new(storage.sub(""));
                 let man_store =
-                    crate::remote_store::manifest_store::RemoteManifestStore::new(storage.sub(""));
-                crate::remote_store::sync_to_remote::sync_to_remote(
+                    crate::storage::remote::manifest_store::RemoteManifestStore::new(storage.sub(""));
+                crate::storage::remote::sync_to_remote::sync_to_remote(
                     &seg_store, &man_store, &shard, &base_dir, &before, &after,
                 )
                 .await;

@@ -7,7 +7,7 @@ use crate::{
     IrReplicaUpcalls,
     OccPrepareResult, OccSharedTransaction, OccTransactionId, TapirTransport, Transport,
 };
-use crate::unified::combined::tapir_handle::CombinedTapirHandle;
+use crate::storage::combined::tapir_handle::CombinedTapirHandle;
 use futures::future::join_all;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -925,8 +925,8 @@ mod tests {
     use crate::ir::{IrRecordStore, ReplicaUpcalls};
     use crate::storage::io::disk_io::OpenFlags;
     use crate::storage::io::memory_io::MemoryIo;
-    use crate::unified::combined::CombinedStoreInner;
-    use crate::unified::combined::record_handle::CombinedRecordHandle;
+    use crate::storage::combined::CombinedStoreInner;
+    use crate::storage::combined::record_handle::CombinedRecordHandle;
     use std::sync::Arc;
 
     type TestRecordHandle = CombinedRecordHandle<i64, i64, MemoryIo>;

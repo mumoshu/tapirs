@@ -341,7 +341,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn s3_storage_roundtrip() {
-        let storage = crate::remote_store::test_helpers::minio::test_s3_storage(
+        let storage = crate::storage::remote::test_helpers::minio::test_s3_storage(
             "s3-storage-roundtrip",
         )
         .await;

@@ -1,9 +1,9 @@
 use crate::discovery::InMemoryShardDirectory;
 use crate::storage::io::disk_io::OpenFlags;
 use crate::storage::io::memory_io::MemoryIo;
-use crate::unified::combined::CombinedStoreInner;
-use crate::unified::combined::record_handle::CombinedRecordHandle;
-use crate::unified::combined::tapir_handle::CombinedTapirHandle;
+use crate::storage::combined::CombinedStoreInner;
+use crate::storage::combined::record_handle::CombinedRecordHandle;
+use crate::storage::combined::tapir_handle::CombinedTapirHandle;
 use crate::{tapir, ChannelRegistry};
 use std::sync::Arc;
 
