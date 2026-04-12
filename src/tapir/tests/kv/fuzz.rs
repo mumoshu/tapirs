@@ -240,12 +240,20 @@ fn fuzz_tapir_transactions() {
 
     rt.block_on(fuzz_tapir_transactions_inner(seed, |shard, linearizable| {
         use crate::mvcc::disk::disk_io::OpenFlags;
+        use crate::mvcc::disk::faulty_disk_io::{DiskFaultConfig, FaultyDiskIo};
         use crate::mvcc::disk::memory_io::MemoryIo;
         use crate::unified::combined::CombinedStoreInner;
 
+        type FaultyMemIo = FaultyDiskIo<MemoryIo>;
+
+        // Wire FaultyDiskIo around MemoryIo so future commits can enable
+        // disk fault injection (fsync failures, read corruption, ENOSPC)
+        // without changing the fuzz harness plumbing.
+        FaultyMemIo::enable_shared_fault_state(DiskFaultConfig::default(), seed);
+
         let base_dir = MemoryIo::temp_path();
         let flags = OpenFlags { create: true, direct: false };
-        let inner = CombinedStoreInner::<K, V, MemoryIo>::open(
+        let inner = CombinedStoreInner::<K, V, FaultyMemIo>::open(
             &base_dir, flags, shard, linearizable,
         ).unwrap();
         let record_handle = inner.into_record_handle();
