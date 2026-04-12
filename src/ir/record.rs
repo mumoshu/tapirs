@@ -32,33 +32,6 @@ impl State {
     }
 }
 
-#[derive(Copy, Clone, Serialize, Deserialize)]
-pub enum Consistency {
-    Inconsistent,
-    Consensus,
-}
-
-impl Debug for Consistency {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Inconsistent => "Inc",
-            Self::Consensus => "Con",
-        })
-    }
-}
-
-impl Consistency {
-    #[allow(unused)]
-    pub fn is_inconsistent(&self) -> bool {
-        matches!(self, Self::Inconsistent)
-    }
-
-    #[allow(unused)]
-    pub fn is_consensus(&self) -> bool {
-        matches!(self, Self::Consensus)
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InconsistentEntry<IO> {
     pub op: IO,
