@@ -42,11 +42,6 @@ pub fn register_s3_cache(base_dir: &Path, config: S3CacheConfig) {
         .insert(base_dir.to_path_buf(), config);
 }
 
-/// Remove S3 config for a base directory (cleanup).
-pub fn unregister_s3_cache(base_dir: &Path) {
-    registry().lock().unwrap().remove(base_dir);
-}
-
 fn lookup_config(path: &Path) -> Option<S3CacheConfig> {
     let dir = path.parent()?;
     registry().lock().unwrap().get(dir).cloned()
