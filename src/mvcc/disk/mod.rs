@@ -3,6 +3,7 @@
 pub mod aligned_buf;
 pub mod disk_io;
 pub mod error;
+#[cfg(test)]
 pub mod faulty_disk_io;
 pub mod memory_io;
 pub mod memtable;
