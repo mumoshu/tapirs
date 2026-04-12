@@ -87,7 +87,6 @@ pub type BenchRoutingClient = RoutingClient<K, V, BenchTransport, DynamicRouter<
 
 pub(crate) struct ClusterConfig {
     pub(crate) num_replicas: usize,
-    pub(crate) linearizable: bool,
 }
 
 pub(crate) struct WorkloadConfig {

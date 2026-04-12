@@ -6,7 +6,6 @@ fn bench_mixed_smoke() {
         runner::bootstrap_and_run_bench(BenchConfig {
             cluster: ClusterConfig {
                 num_replicas: 3,
-                linearizable: false,
             },
             workload: WorkloadConfig {
                 key_space_size: 20,
@@ -35,7 +34,6 @@ fn bench_mixed() {
         runner::run_bench_auto(
             ClusterConfig {
                 num_replicas: 3,
-                linearizable: false,
             },
             WorkloadConfig {
                 key_space_size: 10_000,
