@@ -5,10 +5,10 @@ use crate::IrClientId;
 use std::path::Path;
 
 use super::record::{IrMemEntry, IrRecord};
-use crate::unified::wisckeylsm::lsm::{IndexMode, VlogLsm};
-use crate::unified::wisckeylsm::manifest::UnifiedManifest;
-use crate::unified::wisckeylsm::types::VlogPtr;
-use crate::unified::wisckeylsm::vlog::VlogSegment;
+use crate::storage::wisckeylsm::lsm::{IndexMode, VlogLsm};
+use crate::storage::wisckeylsm::manifest::UnifiedManifest;
+use crate::storage::wisckeylsm::types::VlogPtr;
+use crate::storage::wisckeylsm::vlog::VlogSegment;
 
 /// Raw entry overhead: header(21) + crc(4) = 25 bytes.
 const RAW_ENTRY_OVERHEAD: u32 = 25;

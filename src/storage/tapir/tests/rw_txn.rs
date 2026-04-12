@@ -1,5 +1,5 @@
 use super::helpers::*;
-use crate::unified::tapir::Transaction;
+use crate::storage::tapir::Transaction;
 
 #[test]
 fn rw_txn_prepare_commit_read() {
@@ -104,7 +104,7 @@ fn tapir_state_cross_view_read_and_cache() {
 
 #[test]
 fn prepare_cache_lru_eviction() {
-    use crate::unified::tapir::prepare_cache::VlogEntryCache;
+    use crate::storage::tapir::prepare_cache::VlogEntryCache;
 
     let mut cache = VlogEntryCache::<Transaction<String, String>>::new(2);
 

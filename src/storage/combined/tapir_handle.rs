@@ -8,9 +8,9 @@ use crate::occ::{
 };
 use crate::tapir::{Key, LeaderRecordDelta, ShardNumber, Timestamp, Value};
 use crate::tapir::store::{CheckPrepareStatus, TapirStore};
-use crate::unified::ir::ir_record_store::PersistentPayload;
-use crate::unified::tapir::occ_cache::MvccQueries;
-use crate::unified::tapir::storage_types::MvccIndexEntry;
+use crate::storage::ir::ir_record_store::PersistentPayload;
+use crate::storage::tapir::occ_cache::MvccQueries;
+use crate::storage::tapir::storage_types::MvccIndexEntry;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -43,7 +43,7 @@ impl<K: Ord + Debug, V: Debug, DIO: DiskIo> Debug for CombinedTapirHandle<K, V, 
 // ---------------------------------------------------------------------------
 
 struct MvccView<'a, K: Ord, IO: DiskIo> {
-    mvcc: &'a crate::unified::wisckeylsm::lsm::VlogLsm<
+    mvcc: &'a crate::storage::wisckeylsm::lsm::VlogLsm<
         CompositeKey<K, Timestamp>,
         MvccIndexEntry,
         IO,

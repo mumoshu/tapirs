@@ -11,7 +11,7 @@
 // - `prepare` == `tapir-prepare`
 // - `commit`  == `tapir-commit`
 fn main() {
-    let code = tapirs::unified::cli::run(
+    let code = tapirs::storage::cli::run(
         std::env::args(),
         std::io::stdin().lock(),
         std::io::stdout().lock(),

@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use crate::storage::io::disk_io::{BufferedIo, OpenFlags};
-use crate::unified::ir::record::{IrMemEntry, IrPayloadInline, IrState, PrepareRef, VlogEntryType};
-use crate::unified::ir::store as ir_store;
+use crate::storage::ir::record::{IrMemEntry, IrPayloadInline, IrState, PrepareRef, VlogEntryType};
+use crate::storage::ir::store as ir_store;
 
 use super::{IrContext, parse_kv_pair, parse_ts, parse_txn_id};
 

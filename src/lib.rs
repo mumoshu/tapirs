@@ -16,7 +16,6 @@ pub mod tls;
 pub mod remote_store;
 mod transport;
 pub mod store_defaults;
-pub mod unified;
 pub mod util;
 
 

@@ -2,12 +2,12 @@ use super::helpers::*;
 use crate::ir::OpId;
 use crate::storage::io::disk_io::{DiskIo, OpenFlags};
 use crate::storage::io::memory_io::MemoryIo;
-use crate::unified::ir::record::{
+use crate::storage::ir::record::{
     IrMemEntry, IrPayloadInline, IrState, PrepareRef, VlogEntryType,
 };
-use crate::unified::ir::store;
-use crate::unified::wisckeylsm::lsm::{IndexMode, VlogLsm};
-use crate::unified::wisckeylsm::vlog::VlogSegment;
+use crate::storage::ir::store;
+use crate::storage::wisckeylsm::lsm::{IndexMode, VlogLsm};
+use crate::storage::wisckeylsm::vlog::VlogSegment;
 use std::collections::BTreeMap;
 
 fn test_flags() -> OpenFlags {

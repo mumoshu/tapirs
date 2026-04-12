@@ -4,7 +4,7 @@ fn run_raw(mode: &str, script: &str) -> (String, String, i32) {
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let args = vec!["tapirstore".to_string(), mode.to_string(), script.to_string()];
-    let code = tapirs::unified::cli::run(
+    let code = tapirs::storage::cli::run(
         args,
         Cursor::new(Vec::<u8>::new()),
         &mut stdout,

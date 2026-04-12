@@ -1,8 +1,8 @@
 use super::helpers::{test_op_id, test_ts, test_txn_id};
 use crate::storage::io::disk_io::OpenFlags;
 use crate::storage::io::memory_io::MemoryIo;
-use crate::unified::ir;
-use crate::unified::ir::record::{IrMemEntry, IrPayloadInline, IrState, PrepareRef, VlogEntryType};
+use crate::storage::ir;
+use crate::storage::ir::record::{IrMemEntry, IrPayloadInline, IrState, PrepareRef, VlogEntryType};
 
 fn list_dir_files(path: &std::path::Path) -> Vec<(String, usize)> {
     let files = MemoryIo::list_files(path);

@@ -3,7 +3,7 @@ use crate::storage::io::disk_io::OpenFlags;
 use crate::storage::io::memory_io::MemoryIo;
 use crate::occ::{ScanEntry, SharedTransaction, Transaction, TransactionId};
 use crate::tapir::{ShardNumber, Sharded, Timestamp};
-use crate::unified::tapir::store::TapirState;
+use crate::storage::tapir::store::TapirState;
 use crate::IrClientId;
 use std::sync::Arc;
 
@@ -15,7 +15,7 @@ pub type TestStore = TapirState<String, String, MemoryIo>;
 
 /// Create a fresh TapirState at view 0 with MemoryIo.
 pub fn new_test_store() -> TestStore {
-    crate::unified::tapir::store::open(
+    crate::storage::tapir::store::open(
         &MemoryIo::temp_path(),
         OpenFlags {
             create: true,

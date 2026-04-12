@@ -1,7 +1,7 @@
 use super::helpers::{make_txn, test_ts, test_txn_id};
 use crate::storage::io::disk_io::OpenFlags;
 use crate::storage::io::memory_io::MemoryIo;
-use crate::unified::tapir;
+use crate::storage::tapir;
 
 #[test]
 fn tapir_state_prepare_conflict_commit_seal_reopen_get_scan() {

@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use crate::storage::io::memory_io::MemoryIo;
 use crate::tapir::store::TapirStore;
-use crate::unified::types::*;
-use crate::unified::UnifiedStore;
+use crate::storage::types::*;
+use crate::storage::UnifiedStore;
 
 use super::helpers::*;
 

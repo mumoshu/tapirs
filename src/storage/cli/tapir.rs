@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::storage::io::disk_io::{BufferedIo, OpenFlags};
-use crate::unified::tapir::store as tapir_store;
+use crate::storage::tapir::store as tapir_store;
 
 use super::{
     TapirContext, parse_tapir_transaction, parse_ts, parse_txn_id, write_kv_result,

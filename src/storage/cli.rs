@@ -6,9 +6,9 @@ use crate::storage::io::disk_io::BufferedIo;
 use crate::occ::{SharedTransaction, Transaction};
 use crate::occ::TransactionId as OccTransactionId;
 use crate::tapir::{ShardNumber, Sharded, Timestamp};
-use crate::unified::ir::ir_record_store::PersistentIrRecordStore;
-use crate::unified::ir::record::IrRecord;
-use crate::unified::tapir::store::TapirState;
+use crate::storage::ir::ir_record_store::PersistentIrRecordStore;
+use crate::storage::ir::record::IrRecord;
+use crate::storage::tapir::store::TapirState;
 use crate::IrClientId;
 use std::sync::Arc;
 

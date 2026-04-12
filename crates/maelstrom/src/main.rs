@@ -25,8 +25,8 @@ use tapirs::{
 // 2. View changes with disk I/O (BufferedIo) add latency that causes operation
 //    timeouts under Maelstrom's aggressive partition nemesis + ~1s op timeout
 type MaelstromDiskIo = tapirs::MemoryIo;
-type MaelstromTapirStore = tapirs::unified::combined::tapir_handle::CombinedTapirHandle<String, String, MaelstromDiskIo>;
-type MaelstromIrRecordStore = tapirs::unified::combined::record_handle::CombinedRecordHandle<String, String, MaelstromDiskIo>;
+type MaelstromTapirStore = tapirs::storage::combined::tapir_handle::CombinedTapirHandle<String, String, MaelstromDiskIo>;
+type MaelstromIrRecordStore = tapirs::storage::combined::record_handle::CombinedRecordHandle<String, String, MaelstromDiskIo>;
 type ProductionTapirReplica = tapirs::TapirReplica<String, String, MaelstromTapirStore>;
 type ProductionIrRecordStore = MaelstromIrRecordStore;
 use tokio::spawn;
@@ -308,7 +308,7 @@ impl Process<LinKv, Wrapper> for KvNode {
                         create: true,
                         direct: false,
                     };
-                    let inner = tapirs::unified::combined::CombinedStoreInner::<String, String, MaelstromDiskIo>::open(
+                    let inner = tapirs::storage::combined::CombinedStoreInner::<String, String, MaelstromDiskIo>::open(
                         &base_dir,
                         io_flags,
                         tapirs::ShardNumber(0),

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::storage::io::disk_io::{BufferedIo, OpenFlags};
-use crate::unified::ir::ir_record_store::PersistentIrRecordStore;
+use crate::storage::ir::ir_record_store::PersistentIrRecordStore;
 
 use super::Ir2Context;
 

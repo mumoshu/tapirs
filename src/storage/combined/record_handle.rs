@@ -4,7 +4,7 @@ use crate::ir::{
     RecordInconsistentEntry as InconsistentEntry,
 };
 use crate::storage::io::disk_io::DiskIo;
-use crate::unified::ir::ir_record_store::{PersistentPayload, PersistentRecord, RawRecord};
+use crate::storage::ir::ir_record_store::{PersistentPayload, PersistentRecord, RawRecord};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::fmt::Debug;
@@ -16,7 +16,7 @@ use super::CombinedStoreInner;
 ///
 /// Wraps `Arc<Mutex<CombinedStoreInner>>` and implements [`IrRecordStore`]
 /// by delegating every method to the embedded
-/// [`PersistentIrRecordStore`](crate::unified::ir::ir_record_store::PersistentIrRecordStore).
+/// [`PersistentIrRecordStore`](crate::storage::ir::ir_record_store::PersistentIrRecordStore).
 ///
 /// A companion [`CombinedTapirHandle`](super::CombinedTapirHandle) (Commit 3)
 /// clones the same Arc, giving both handles shared ownership of the inner.
@@ -140,7 +140,7 @@ where
 
     fn make_full_payload(record: Self::Record) -> Self::Payload {
         // Static method — delegates directly, no lock needed.
-        crate::unified::ir::ir_record_store::PersistentIrRecordStore::<
+        crate::storage::ir::ir_record_store::PersistentIrRecordStore::<
             crate::tapir::IO<K, V>,
             crate::tapir::CO<K, V>,
             crate::tapir::CR,
