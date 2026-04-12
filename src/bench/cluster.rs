@@ -1,4 +1,4 @@
-#![allow(dead_code, unused_imports)]
+#![allow(unused_imports)]
 
 use super::{BenchRoutingClient, BenchTapirClient, BenchTransport};
 use crate::discovery::{InMemoryShardDirectory, ShardDirectory as _};
@@ -17,7 +17,7 @@ pub struct BenchTarget {
 }
 
 pub(crate) struct BenchCluster {
-    pub nodes: Vec<Arc<Node>>,
+    _nodes: Vec<Arc<Node>>,
     _temp_dirs: Vec<TempDir>,
 }
 
@@ -70,7 +70,7 @@ pub async fn bootstrap_cluster(
     }
 
     let target = BenchTarget { replica_addrs: addrs };
-    let cluster = BenchCluster { nodes, _temp_dirs: temp_dirs };
+    let cluster = BenchCluster { _nodes: nodes, _temp_dirs: temp_dirs };
     (target, cluster)
 }
 

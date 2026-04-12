@@ -10,7 +10,7 @@
 //! separate items and miss the conflict; logical key tracking catches it.
 
 // HashMap used for lookup-only tracking data (order-independent per-key processing).
-#![allow(dead_code, clippy::disallowed_types)]
+#![allow(clippy::disallowed_types)]
 
 use crate::TapirTimestamp;
 use std::collections::{BTreeMap, HashMap};
@@ -25,7 +25,6 @@ pub enum TxnOutcome {
 #[derive(Debug, Clone)]
 pub struct TxnRecord {
     pub index: usize,
-    pub client_id: usize,
     /// Keys read and the values observed (None = key absent).
     pub read_set: Vec<(i64, Option<i64>)>,
     /// Keys written and the values written.
@@ -387,7 +386,6 @@ mod tests {
         let now = tokio::time::Instant::now();
         TxnRecord {
             index,
-            client_id: 0,
             read_set: reads,
             write_set: writes,
             outcome: TxnOutcome::Committed(TapirTimestamp {
@@ -436,7 +434,6 @@ mod tests {
             make_committed_record(0, 1, vec![], vec![(1, 1)]),
             TxnRecord {
                 index: 1,
-                client_id: 1,
                 read_set: vec![(1, Some(1))],
                 write_set: vec![(1, 2)],
                 outcome: TxnOutcome::Aborted,
@@ -476,7 +473,6 @@ mod tests {
         let records = vec![
             TxnRecord {
                 index: 0,
-                client_id: 0,
                 read_set: vec![],
                 write_set: vec![(1, 1)],
                 outcome: TxnOutcome::Committed(TapirTimestamp {
@@ -488,7 +484,6 @@ mod tests {
             },
             TxnRecord {
                 index: 1,
-                client_id: 0,
                 read_set: vec![],
                 write_set: vec![(1, 2)],
                 outcome: TxnOutcome::Committed(TapirTimestamp {
@@ -500,7 +495,6 @@ mod tests {
             },
             TxnRecord {
                 index: 2,
-                client_id: 0,
                 read_set: vec![(1, Some(1))],
                 write_set: vec![],
                 outcome: TxnOutcome::Committed(TapirTimestamp {

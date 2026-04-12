@@ -31,7 +31,7 @@ pub struct FaultyDiskIo<IO: DiskIo> {
 
 /// Internal fault state shared across FaultyDiskIo instances.
 ///
-/// Public to allow test access via `get_shared_fault_state()`.
+/// Internal fault state shared across FaultyDiskIo instances.
 pub(crate) struct FaultState {
     pub(crate) config: DiskFaultConfig,
     pub(crate) rng: StdRng,
@@ -361,33 +361,9 @@ impl<IO: DiskIo> FaultyDiskIo<IO> {
         self.state.lock().unwrap().config.fsync_fail_rate = rate;
     }
 
-    /// Set the probability of bit flips on read.
-    pub fn set_read_corruption_rate(&self, rate: f64) {
-        assert!(
-            (0.0..=1.0).contains(&rate),
-            "read_corruption_rate must be in [0.0, 1.0]"
-        );
-        self.state.lock().unwrap().config.read_corruption_rate = rate;
-    }
-
     /// Set ENOSPC threshold in bytes.
     pub fn set_enospc_after_bytes(&self, limit: Option<u64>) {
         self.state.lock().unwrap().config.enospc_after_bytes = limit;
-    }
-
-    /// Set I/O latency to inject on all operations.
-    pub fn set_slow_io_latency(&self, latency: Option<Duration>) {
-        self.state.lock().unwrap().config.slow_io_latency = latency;
-    }
-
-    /// Replace the entire fault configuration.
-    pub fn set_config(&self, config: DiskFaultConfig) {
-        self.state.lock().unwrap().config = config;
-    }
-
-    /// Get a copy of the current fault configuration.
-    pub fn config(&self) -> DiskFaultConfig {
-        self.state.lock().unwrap().config.clone()
     }
 
     /// Reset the bytes written counter to zero.
@@ -414,7 +390,7 @@ impl<IO: DiskIo> FaultyDiskIo<IO> {
     /// configuration changes to affect all instances (e.g., VlogSegment IO
     /// and all LSM SSTable IOs).
     ///
-    /// Must call `disable_shared_fault_state()` after testing to clean up.
+    /// Thread-local shared state is automatically cleaned up when the thread exits.
     pub fn enable_shared_fault_state(config: DiskFaultConfig, seed: u64) {
         SHARED_FAULT_STATE.with(|s| {
             *s.borrow_mut() = Some(Arc::new(Mutex::new(FaultState {
@@ -425,22 +401,6 @@ impl<IO: DiskIo> FaultyDiskIo<IO> {
         });
     }
 
-    /// Get a handle to the shared fault state for runtime modification.
-    ///
-    /// Returns None if shared state is not enabled. The returned Arc can
-    /// be used to modify the fault configuration at runtime, affecting all
-    /// FaultyDiskIo instances created in this thread.
-    pub fn get_shared_fault_state() -> Option<Arc<Mutex<FaultState>>> {
-        SHARED_FAULT_STATE.with(|s| s.borrow().clone())
-    }
-
-    /// Disable shared fault state for testing.
-    ///
-    /// Clears the thread-local shared state. Should be called after testing
-    /// to avoid affecting other tests.
-    pub fn disable_shared_fault_state() {
-        SHARED_FAULT_STATE.with(|s| *s.borrow_mut() = None);
-    }
 }
 
 #[cfg(test)]
@@ -448,8 +408,6 @@ mod tests {
     use super::*;
     use crate::mvcc::disk::disk_io::BufferedIo;
     use tempfile::NamedTempFile;
-
-    type TestFaultyIo = FaultyDiskIo<BufferedIo>;
 
     #[tokio::test]
     async fn test_no_faults_with_default_config() {

@@ -782,7 +782,6 @@ where
                                     total_committed.fetch_add(1, Ordering::Relaxed);
                                     collector.lock().unwrap().push(TxnRecord {
                                         index: txn_index,
-                                        client_id: client_idx,
                                         read_set: reads,
                                         write_set: writes,
                                         outcome: TxnOutcome::Committed(ts),
@@ -798,7 +797,6 @@ where
                                     });
                                     collector.lock().unwrap().push(TxnRecord {
                                         index: txn_index,
-                                        client_id: client_idx,
                                         read_set: reads,
                                         write_set: writes,
                                         outcome: TxnOutcome::Aborted,
@@ -824,7 +822,6 @@ where
                                     may_have_committed.fetch_add(1, Ordering::Relaxed);
                                     collector.lock().unwrap().push(TxnRecord {
                                         index: txn_index,
-                                        client_id: client_idx,
                                         read_set: reads,
                                         write_set: writes,
                                         outcome: TxnOutcome::TimedOut,
