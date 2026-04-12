@@ -69,7 +69,7 @@ impl Node {
         }
 
         let transport_for_replica = transport.clone();
-        let (upcalls, ir_store) = crate::store_defaults::open_production_stores(
+        let (upcalls, ir_store) = crate::storage::defaults::open_production_stores(
             shard,
             &self.persist_dir,
             cfg.shard,
@@ -87,7 +87,7 @@ impl Node {
                 membership,
                 upcalls,
                 transport_for_replica.clone(),
-                crate::store_defaults::production_app_tick(),
+                crate::storage::defaults::production_app_tick(),
                 Some(Duration::from_secs(10)),
                 ir_store,
             )

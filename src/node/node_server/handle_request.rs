@@ -129,7 +129,7 @@ pub async fn handle_request(node: &Node, line: &str) -> AdminResponse {
                     shards: None,
                 };
             };
-            let s3_config = crate::remote_store::config::S3StorageConfig {
+            let s3_config = crate::storage::remote::config::S3StorageConfig {
                 bucket: s3_src.bucket,
                 prefix: s3_src.prefix,
                 endpoint_url: s3_src.endpoint,
@@ -196,7 +196,7 @@ pub async fn handle_request(node: &Node, line: &str) -> AdminResponse {
                 };
             };
             let refresh_secs = req.refresh_interval_secs.unwrap_or(30);
-            let s3_config = crate::remote_store::config::S3StorageConfig {
+            let s3_config = crate::storage::remote::config::S3StorageConfig {
                 bucket: s3_src.bucket,
                 prefix: s3_src.prefix,
                 endpoint_url: s3_src.endpoint,

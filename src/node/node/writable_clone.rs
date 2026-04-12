@@ -1,8 +1,8 @@
 use super::*;
 use crate::node::types::ReplicaConfig;
 use crate::node::node_server::SnapshotParams;
-use crate::remote_store::config::S3StorageConfig;
-use crate::remote_store::cross_shard_snapshot::{CrossShardSnapshot, ShardSnapshotInfo};
+use crate::storage::remote::config::S3StorageConfig;
+use crate::storage::remote::cross_shard_snapshot::{CrossShardSnapshot, ShardSnapshotInfo};
 use crate::{IrMembership, TcpTransport};
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -80,7 +80,7 @@ impl Node {
             shards: shard_map,
         };
         let (upcalls, ir_store) = tokio::task::block_in_place(|| {
-            crate::store_defaults::open_production_stores_from_s3(
+            crate::storage::defaults::open_production_stores_from_s3(
                 shard,
                 &persist_dir,
                 shard_id,
@@ -100,7 +100,7 @@ impl Node {
                 membership,
                 upcalls,
                 transport_for_replica.clone(),
-                crate::store_defaults::s3_backed_app_tick(),
+                crate::storage::defaults::s3_backed_app_tick(),
                 Some(Duration::from_secs(10)),
                 ir_store,
             )

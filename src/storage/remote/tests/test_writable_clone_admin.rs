@@ -70,7 +70,7 @@ async fn clone_reads_source_data_via_production_s3_path() {
     };
 
     tokio::task::block_in_place(|| {
-        crate::store_defaults::open_production_stores_from_s3(
+        crate::storage::defaults::open_production_stores_from_s3(
             shard,
             clone_dir.path().to_str().unwrap(),
             0,
@@ -272,7 +272,7 @@ async fn clone_reads_after_full_start_view_install() {
         shards,
     };
     tokio::task::block_in_place(|| {
-        crate::store_defaults::open_production_stores_from_s3(
+        crate::storage::defaults::open_production_stores_from_s3(
             shard,
             clone_dir.path().to_str().unwrap(),
             0,

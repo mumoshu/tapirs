@@ -14,7 +14,6 @@ mod tapir;
 #[cfg(feature = "tls")]
 pub mod tls;
 mod transport;
-pub mod store_defaults;
 pub mod util;
 
 

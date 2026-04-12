@@ -2,10 +2,10 @@ use super::*;
 use crate::backup::s3backup::S3BackupStorage;
 use crate::backup::storage::BackupStorage;
 use crate::node::read_replica_shim::ReadReplicaShim;
-use crate::remote_store::config::S3StorageConfig;
-use crate::remote_store::manifest_store::RemoteManifestStore;
-use crate::remote_store::read_replica::ReadReplica;
-use crate::remote_store::read_replica_refresh::spawn_refresh_task;
+use crate::storage::remote::config::S3StorageConfig;
+use crate::storage::remote::manifest_store::RemoteManifestStore;
+use crate::storage::remote::read_replica::ReadReplica;
+use crate::storage::remote::read_replica_refresh::spawn_refresh_task;
 use crate::{IrMembership, TcpTransport};
 use std::time::Duration;
 
@@ -61,14 +61,14 @@ impl Node {
         #[cfg(feature = "tls")]
         let transport =
             if let Some(ref tls_config) = self.tls_config {
-                TcpTransport::<crate::store_defaults::ProductionTapirReplica>::with_tls(
+                TcpTransport::<crate::storage::defaults::ProductionTapirReplica>::with_tls(
                     address,
                     Arc::clone(&self.directory),
                     tls_config,
                 )
                 .map_err(|e| format!("TLS: {e}"))?
             } else {
-                TcpTransport::<crate::store_defaults::ProductionTapirReplica>::with_directory(
+                TcpTransport::<crate::storage::defaults::ProductionTapirReplica>::with_directory(
                     address,
                     Arc::clone(&self.directory),
                 )
@@ -76,7 +76,7 @@ impl Node {
 
         #[cfg(not(feature = "tls"))]
         let transport =
-            TcpTransport::<crate::store_defaults::ProductionTapirReplica>::with_directory(
+            TcpTransport::<crate::storage::defaults::ProductionTapirReplica>::with_directory(
                 address,
                 Arc::clone(&self.directory),
             );

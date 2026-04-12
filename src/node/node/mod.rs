@@ -15,8 +15,8 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
-pub type TapirIrReplica = crate::store_defaults::ProductionIrReplica;
-pub type S3BackedTapirIrReplica = crate::store_defaults::S3BackedIrReplica;
+pub type TapirIrReplica = crate::storage::defaults::ProductionIrReplica;
+pub type S3BackedTapirIrReplica = crate::storage::defaults::S3BackedIrReplica;
 
 /// A replica can be either a production replica (DefaultDiskIo) or an
 /// S3-backed replica (BufferedIo with S3 cache). Both support the same
@@ -77,7 +77,7 @@ pub struct Node {
     pub(crate) new_rng: fn() -> crate::Rng,
     #[cfg(feature = "tls")]
     pub(crate) tls_config: Option<crate::tls::TlsConfig>,
-    pub(crate) s3_config: Option<crate::remote_store::config::S3StorageConfig>,
+    pub(crate) s3_config: Option<crate::storage::remote::config::S3StorageConfig>,
 }
 
 impl Node {
@@ -141,7 +141,7 @@ impl Node {
         self.tls_config = config;
     }
 
-    pub fn set_s3_config(&mut self, config: Option<crate::remote_store::config::S3StorageConfig>) {
+    pub fn set_s3_config(&mut self, config: Option<crate::storage::remote::config::S3StorageConfig>) {
         self.s3_config = config;
     }
 

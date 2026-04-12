@@ -9,10 +9,10 @@ use crate::DefaultDiskIo;
 // ── Type aliases ───────────────────────────────────────────────────────────
 
 pub type ProductionTapirStore =
-    crate::unified::combined::tapir_handle::CombinedTapirHandle<String, String, DefaultDiskIo>;
+    crate::storage::combined::tapir_handle::CombinedTapirHandle<String, String, DefaultDiskIo>;
 
 pub type ProductionIrRecordStore =
-    crate::unified::combined::record_handle::CombinedRecordHandle<String, String, DefaultDiskIo>;
+    crate::storage::combined::record_handle::CombinedRecordHandle<String, String, DefaultDiskIo>;
 
 // ── Composites ─────────────────────────────────────────────────────────────
 
@@ -64,10 +64,10 @@ pub fn s3_backed_app_tick() -> Option<S3AppTickFn> {
 // BufferedIo explicitly so the S3 factory works in all build configs.
 
 pub type S3BackedTapirStore =
-    crate::unified::combined::tapir_handle::CombinedTapirHandle<String, String, crate::storage::io::disk_io::BufferedIo>;
+    crate::storage::combined::tapir_handle::CombinedTapirHandle<String, String, crate::storage::io::disk_io::BufferedIo>;
 
 pub type S3BackedIrRecordStore =
-    crate::unified::combined::record_handle::CombinedRecordHandle<String, String, crate::storage::io::disk_io::BufferedIo>;
+    crate::storage::combined::record_handle::CombinedRecordHandle<String, String, crate::storage::io::disk_io::BufferedIo>;
 
 pub type S3BackedTapirReplica = crate::tapir::Replica<String, String, S3BackedTapirStore>;
 
@@ -90,11 +90,11 @@ pub fn open_production_stores(
     persist_dir: &str,
     shard_id: u32,
     linearizable: bool,
-    s3_config: Option<crate::remote_store::config::S3StorageConfig>,
+    s3_config: Option<crate::storage::remote::config::S3StorageConfig>,
     cluster_type: &str,
 ) -> Result<(ProductionTapirReplica, ProductionIrRecordStore), String> {
     use crate::storage::io::disk_io::OpenFlags;
-    use crate::unified::combined::CombinedStoreInner;
+    use crate::storage::combined::CombinedStoreInner;
 
     let base_dir = format!("{}/shard_{}", persist_dir, shard_id);
     let io_flags = OpenFlags {
@@ -144,16 +144,16 @@ pub fn open_production_stores_from_s3(
     persist_dir: &str,
     shard_id: u32,
     linearizable: bool,
-    source_s3: &crate::remote_store::config::S3StorageConfig,
-    snapshot: &crate::remote_store::cross_shard_snapshot::CrossShardSnapshot,
-    dest_s3: Option<crate::remote_store::config::S3StorageConfig>,
+    source_s3: &crate::storage::remote::config::S3StorageConfig,
+    snapshot: &crate::storage::remote::cross_shard_snapshot::CrossShardSnapshot,
+    dest_s3: Option<crate::storage::remote::config::S3StorageConfig>,
 ) -> Result<(S3BackedTapirReplica, S3BackedIrRecordStore), String> {
     use crate::backup::s3backup::S3BackupStorage;
     use crate::backup::storage::BackupStorage;
     use crate::storage::io::disk_io::OpenFlags;
-    use crate::remote_store::cow_clone::clone_from_remote_lazy;
-    use crate::remote_store::manifest_store::RemoteManifestStore;
-    use crate::unified::combined::CombinedStoreInner;
+    use crate::storage::remote::cow_clone::clone_from_remote_lazy;
+    use crate::storage::remote::manifest_store::RemoteManifestStore;
+    use crate::storage::combined::CombinedStoreInner;
 
     let base_dir = format!("{}/shard_{}", persist_dir, shard_id);
     let shard_name = format!("shard_{}", shard_id);

@@ -49,7 +49,7 @@ async fn clone_removes_prepared_in_ghost_range_preserves_below_cutoff() {
     // Clone shard 0: prepared txn at ts=200 is in ghost range → removed.
     let d0 = tempfile::tempdir().unwrap();
     let (_u0, r0) = tokio::task::block_in_place(|| {
-        crate::store_defaults::open_production_stores_from_s3(
+        crate::storage::defaults::open_production_stores_from_s3(
             shard0, d0.path().to_str().unwrap(), 0, true, &s3_config, &snapshot, None,
         ).unwrap()
     });
@@ -59,7 +59,7 @@ async fn clone_removes_prepared_in_ghost_range_preserves_below_cutoff() {
     // Clone shard 1: prepared txn at ts=100 is at cutoff → preserved.
     let d1 = tempfile::tempdir().unwrap();
     let (_u1, r1) = tokio::task::block_in_place(|| {
-        crate::store_defaults::open_production_stores_from_s3(
+        crate::storage::defaults::open_production_stores_from_s3(
             shard1, d1.path().to_str().unwrap(), 1, true, &s3_config, &snapshot, None,
         ).unwrap()
     });

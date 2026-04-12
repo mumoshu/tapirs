@@ -80,7 +80,7 @@ async fn read_replica_shim_serves_reads() {
     let client_dir = std::sync::Arc::new(
         crate::discovery::InMemoryShardDirectory::new(),
     );
-    let client_transport = TcpTransport::<crate::store_defaults::ProductionTapirReplica>::with_directory(
+    let client_transport = TcpTransport::<crate::storage::defaults::ProductionTapirReplica>::with_directory(
         client_addr, client_dir,
     );
 

@@ -57,7 +57,7 @@ async fn clone_with_snapshot_ghost_filter() {
     let source_s3 = s3_config.clone();
 
     let (_upcalls0, rec_handle0) = tokio::task::block_in_place(|| {
-        crate::store_defaults::open_production_stores_from_s3(
+        crate::storage::defaults::open_production_stores_from_s3(
             shard0, &persist0, 0, true, &source_s3, &snapshot, None,
         )
         .unwrap()
@@ -70,7 +70,7 @@ async fn clone_with_snapshot_ghost_filter() {
     let persist1 = clone1_dir.path().to_str().unwrap().to_string();
 
     let (_upcalls1, rec_handle1) = tokio::task::block_in_place(|| {
-        crate::store_defaults::open_production_stores_from_s3(
+        crate::storage::defaults::open_production_stores_from_s3(
             shard1, &persist1, 1, true, &source_s3, &snapshot, None,
         )
         .unwrap()

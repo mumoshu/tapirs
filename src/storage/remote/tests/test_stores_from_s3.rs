@@ -40,7 +40,7 @@ async fn open_stores_from_s3_reads_source_data() {
     let persist_dir = clone_dir.path().to_str().unwrap().to_string();
 
     let (_upcalls, record_handle) = tokio::task::block_in_place(|| {
-        crate::store_defaults::open_production_stores_from_s3(
+        crate::storage::defaults::open_production_stores_from_s3(
             shard,
             &persist_dir,
             0,

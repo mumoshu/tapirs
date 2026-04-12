@@ -9,7 +9,7 @@ use crate::{
 use crate::storage::io::disk_io::{BufferedIo, OpenFlags};
 use crate::storage::remote::config::S3StorageConfig;
 use crate::storage::remote::cross_shard_snapshot::{CrossShardSnapshot, ShardSnapshotInfo};
-use crate::store_defaults::{S3BackedTapirReplica, S3BackedIrRecordStore};
+use crate::storage::defaults::{S3BackedTapirReplica, S3BackedIrRecordStore};
 use crate::tapir::{ShardNumber, Sharded};
 use crate::storage::combined::CombinedStoreInner;
 use crate::IrClientId;
@@ -94,7 +94,7 @@ fn build_clone_shard(
     let replicas: Vec<Arc<IrRep>> = (0..num_replicas)
         .map(|_| {
             let clone_dir = tempfile::tempdir().unwrap();
-            let (upcalls, record_handle) = crate::store_defaults::open_production_stores_from_s3(
+            let (upcalls, record_handle) = crate::storage::defaults::open_production_stores_from_s3(
                 shard,
                 clone_dir.path().to_str().unwrap(),
                 0,

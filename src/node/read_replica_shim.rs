@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use crate::ir::message::{MessageImpl, ReplyUnlogged, RequestUnlogged};
 use crate::ir::{Membership, SharedView, View, ViewNumber};
-use crate::remote_store::read_replica::ReadReplica;
-use crate::store_defaults::ProductionTapirReplica;
+use crate::storage::remote::read_replica::ReadReplica;
+use crate::storage::defaults::ProductionTapirReplica;
 use crate::tapir::store::TapirStore;
 use crate::tapir::{Timestamp, UO, UR};
 use crate::transport::tokio_bitcode_tcp::wire::TcpIrMessage;
