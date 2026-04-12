@@ -2,7 +2,6 @@ use super::sst::SstMeta;
 use super::types::VlogSegmentMeta;
 use crate::mvcc::disk::disk_io::DiskIo;
 use crate::mvcc::disk::error::StorageError;
-use crate::mvcc::disk::lsm::SSTableMeta;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -32,8 +31,7 @@ impl LsmManifestData {
 
 /// Persisted metadata for the unified storage engine.
 ///
-/// Written atomically via write-temp-rename (same strategy as
-/// `src/mvcc/disk/manifest.rs`).
+/// Written atomically via write-temp-rename.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnifiedManifest {
     /// Current view number.
@@ -46,12 +44,6 @@ pub struct UnifiedManifest {
     pub ir: LsmManifestData,
     /// MVCC VlogLsm metadata (key→timestamp→txn_id index).
     pub mvcc: LsmManifestData,
-    /// MVCC SST metadata — L0 level.
-    pub mvcc_l0_sstables: Vec<SSTableMeta>,
-    /// MVCC SST metadata — L1 level.
-    pub mvcc_l1_sstables: Vec<SSTableMeta>,
-    /// Next MVCC SST file ID.
-    pub next_sst_id: u64,
     /// Highest timestamp seen across all RO read operations.
     /// Used as a conservative global watermark on recovery: any prepare with
     /// commit_ts < max_read_time → Retry. Subsumes all lost range_reads.
@@ -82,9 +74,6 @@ impl UnifiedManifest {
             prepared: LsmManifestData::new(),
             ir: LsmManifestData::new(),
             mvcc: LsmManifestData::new(),
-            mvcc_l0_sstables: Vec::new(),
-            mvcc_l1_sstables: Vec::new(),
-            next_sst_id: 0,
             max_read_time: None,
             txn_log_count: 0,
             replay_start_offset: 0,
