@@ -1,5 +1,5 @@
 use crate::{IrClientId, OccTimestamp};
-use crate::mvcc::disk::memtable::MaxValue;
+use crate::storage::io::memtable::MaxValue;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 

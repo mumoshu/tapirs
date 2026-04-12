@@ -1,5 +1,5 @@
-use crate::mvcc::disk::memory_io::MemoryIo;
-use crate::mvcc::disk::disk_io::OpenFlags;
+use crate::storage::io::memory_io::MemoryIo;
+use crate::storage::io::disk_io::OpenFlags;
 use crate::tapir::{Key, Value};
 use crate::unified::combined::CombinedStoreInner;
 use crate::unified::combined::record_handle::CombinedRecordHandle;

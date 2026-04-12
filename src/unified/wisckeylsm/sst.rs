@@ -1,6 +1,6 @@
-use crate::mvcc::disk::aligned_buf::{AlignedBuf, BLOCK_SIZE, round_up};
-use crate::mvcc::disk::disk_io::{DiskIo, OpenFlags};
-use crate::mvcc::disk::error::StorageError;
+use crate::storage::io::aligned_buf::{AlignedBuf, BLOCK_SIZE, round_up};
+use crate::storage::io::disk_io::{DiskIo, OpenFlags};
+use crate::storage::io::error::StorageError;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -101,7 +101,7 @@ impl SSTableWriter {
         V: Serialize + Clone,
         IO: DiskIo,
     {
-        let io = IO::open(path, io_flags, crate::mvcc::disk::disk_io::OpenMode::CreateNew)?;
+        let io = IO::open(path, io_flags, crate::storage::io::disk_io::OpenMode::CreateNew)?;
         let mut offset: u64 = 0;
         let mut index_entries: Vec<IndexEntry<K>> = Vec::new();
         let mut bloom = BloomFilter::new(entries.len());
@@ -230,7 +230,7 @@ pub(crate) struct SSTableReader<IO: DiskIo> {
 
 impl<IO: DiskIo> SSTableReader<IO> {
     pub async fn open(path: PathBuf, flags: OpenFlags) -> Result<Self, StorageError> {
-        let io = IO::open(&path, flags, crate::mvcc::disk::disk_io::OpenMode::OpenImmutable)?;
+        let io = IO::open(&path, flags, crate::storage::io::disk_io::OpenMode::OpenImmutable)?;
 
         let file_size = io.file_len()?;
         if file_size < BLOCK_SIZE as u64 {
@@ -421,7 +421,7 @@ impl<IO: DiskIo> SSTableReader<IO> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mvcc::disk::disk_io::BufferedIo;
+    use crate::storage::io::disk_io::BufferedIo;
     use tempfile::NamedTempFile;
 
     fn test_flags() -> OpenFlags {

@@ -3,7 +3,7 @@ use crate::ir::{
     RecordConsensusEntry as ConsensusEntry,
     RecordInconsistentEntry as InconsistentEntry,
 };
-use crate::mvcc::disk::disk_io::DiskIo;
+use crate::storage::io::disk_io::DiskIo;
 use crate::unified::ir::ir_record_store::{PersistentPayload, PersistentRecord, RawRecord};
 use serde::de::DeserializeOwned;
 use serde::Serialize;

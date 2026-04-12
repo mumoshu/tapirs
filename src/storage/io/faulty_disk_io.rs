@@ -120,7 +120,7 @@ impl<F> FaultyReadFuture<F> {
 
     fn corrupt_buffer(state: &Arc<Mutex<FaultState>>, buf: &mut AlignedBuf) {
         let mut s = state.lock().unwrap();
-        if buf.len() == 0 {
+        if buf.is_empty() {
             return;
         }
         // Flip a random byte's bits
@@ -406,7 +406,7 @@ impl<IO: DiskIo> FaultyDiskIo<IO> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mvcc::disk::disk_io::BufferedIo;
+    use crate::storage::io::disk_io::BufferedIo;
     use tempfile::NamedTempFile;
 
     #[tokio::test]

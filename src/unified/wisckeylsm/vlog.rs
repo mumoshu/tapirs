@@ -1,7 +1,7 @@
 use super::types::{ViewRange, VlogPtr};
-use crate::mvcc::disk::aligned_buf::{AlignedBuf, round_up};
-use crate::mvcc::disk::disk_io::{DiskIo, OpenFlags};
-use crate::mvcc::disk::error::StorageError;
+use crate::storage::io::aligned_buf::{AlignedBuf, round_up};
+use crate::storage::io::disk_io::{DiskIo, OpenFlags};
+use crate::storage::io::error::StorageError;
 use std::path::{Path, PathBuf};
 
 /// Fixed header size: entry_type(1) + entry_len(4) + op_id.client_id(8) + op_id.number(8) = 21.
@@ -201,7 +201,7 @@ impl<IO: DiskIo> VlogSegment<IO> {
 
     /// Open or create a segment file.
     pub fn open(id: u64, path: PathBuf, flags: OpenFlags) -> Result<Self, StorageError> {
-        let io = IO::open(&path, flags, crate::mvcc::disk::disk_io::OpenMode::CreateNew)?;
+        let io = IO::open(&path, flags, crate::storage::io::disk_io::OpenMode::CreateNew)?;
         Ok(Self {
             id,
             io: Some(io),
@@ -219,7 +219,7 @@ impl<IO: DiskIo> VlogSegment<IO> {
         views: Vec<ViewRange>,
         flags: OpenFlags,
     ) -> Result<Self, StorageError> {
-        let io = IO::open(&path, flags, crate::mvcc::disk::disk_io::OpenMode::OpenMutable { write_offset })?;
+        let io = IO::open(&path, flags, crate::storage::io::disk_io::OpenMode::OpenMutable { write_offset })?;
         Ok(Self {
             id,
             io: Some(io),

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::io::{Read, Write};
 
 use crate::ir::OpId;
-use crate::mvcc::disk::disk_io::BufferedIo;
+use crate::storage::io::disk_io::BufferedIo;
 use crate::occ::{SharedTransaction, Transaction};
 use crate::occ::TransactionId as OccTransactionId;
 use crate::tapir::{ShardNumber, Sharded, Timestamp};

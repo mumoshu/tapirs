@@ -923,8 +923,8 @@ impl<K: Key, V: Value, S: TapirStore<K, V>> Replica<K, V, S> {
 mod tests {
     use super::*;
     use crate::ir::{IrRecordStore, ReplicaUpcalls};
-    use crate::mvcc::disk::disk_io::OpenFlags;
-    use crate::mvcc::disk::memory_io::MemoryIo;
+    use crate::storage::io::disk_io::OpenFlags;
+    use crate::storage::io::memory_io::MemoryIo;
     use crate::unified::combined::CombinedStoreInner;
     use crate::unified::combined::record_handle::CombinedRecordHandle;
     use std::sync::Arc;

@@ -1,7 +1,7 @@
 use super::sst::SstMeta;
 use super::types::VlogSegmentMeta;
-use crate::mvcc::disk::disk_io::DiskIo;
-use crate::mvcc::disk::error::StorageError;
+use crate::storage::io::disk_io::DiskIo;
+use crate::storage::io::error::StorageError;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::mvcc::disk::disk_io::{BufferedIo, OpenFlags};
+use crate::storage::io::disk_io::{BufferedIo, OpenFlags};
 use crate::unified::ir::record::{IrMemEntry, IrPayloadInline, IrState, PrepareRef, VlogEntryType};
 use crate::unified::ir::store as ir_store;
 

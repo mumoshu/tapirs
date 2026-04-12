@@ -5,12 +5,12 @@ use std::path::{Path, PathBuf};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use crate::mvcc::disk::disk_io::{DiskIo, OpenFlags};
-use crate::mvcc::disk::error::StorageError;
+use crate::storage::io::disk_io::{DiskIo, OpenFlags};
+use crate::storage::io::error::StorageError;
 use crate::unified::wisckeylsm::manifest::LsmManifestData;
 use crate::unified::wisckeylsm::sst::{SstMeta, SSTableReader, SSTableWriter};
 use crate::unified::wisckeylsm::types::{ViewRange, VlogPtr, VlogSegmentMeta};
-use crate::mvcc::disk::aligned_buf::AlignedBuf;
+use crate::storage::io::aligned_buf::AlignedBuf;
 use crate::unified::wisckeylsm::vlog::{RawVlogEntry, VlogSegment};
 
 /// Abstraction over the in-memory buffer used by VlogLsm for the current view.
@@ -626,7 +626,7 @@ impl<K: Ord, V, IO: DiskIo, M: Memtable<K, V>> VlogLsm<K, V, IO, M> {
         self.next_segment_id += 1;
         let path = self.vlog_path(id);
         // Write raw bytes to a new segment file
-        let io = IO::open(&path, self.io_flags, crate::mvcc::disk::disk_io::OpenMode::CreateNew)?;
+        let io = IO::open(&path, self.io_flags, crate::storage::io::disk_io::OpenMode::CreateNew)?;
         let mut buf = AlignedBuf::new(bytes.len());
         buf.as_full_slice_mut()[..bytes.len()].copy_from_slice(bytes);
         buf.set_len(bytes.len());
@@ -684,7 +684,7 @@ impl<K: Ord, V, IO: DiskIo, M: Memtable<K, V>> VlogLsm<K, V, IO, M> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mvcc::disk::memory_io::MemoryIo;
+    use crate::storage::io::memory_io::MemoryIo;
 
     fn test_flags() -> OpenFlags {
         OpenFlags {

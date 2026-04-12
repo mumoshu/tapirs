@@ -64,10 +64,10 @@ pub fn s3_backed_app_tick() -> Option<S3AppTickFn> {
 // BufferedIo explicitly so the S3 factory works in all build configs.
 
 pub type S3BackedTapirStore =
-    crate::unified::combined::tapir_handle::CombinedTapirHandle<String, String, crate::mvcc::disk::disk_io::BufferedIo>;
+    crate::unified::combined::tapir_handle::CombinedTapirHandle<String, String, crate::storage::io::disk_io::BufferedIo>;
 
 pub type S3BackedIrRecordStore =
-    crate::unified::combined::record_handle::CombinedRecordHandle<String, String, crate::mvcc::disk::disk_io::BufferedIo>;
+    crate::unified::combined::record_handle::CombinedRecordHandle<String, String, crate::storage::io::disk_io::BufferedIo>;
 
 pub type S3BackedTapirReplica = crate::tapir::Replica<String, String, S3BackedTapirStore>;
 
@@ -93,7 +93,7 @@ pub fn open_production_stores(
     s3_config: Option<crate::remote_store::config::S3StorageConfig>,
     cluster_type: &str,
 ) -> Result<(ProductionTapirReplica, ProductionIrRecordStore), String> {
-    use crate::mvcc::disk::disk_io::OpenFlags;
+    use crate::storage::io::disk_io::OpenFlags;
     use crate::unified::combined::CombinedStoreInner;
 
     let base_dir = format!("{}/shard_{}", persist_dir, shard_id);
@@ -150,7 +150,7 @@ pub fn open_production_stores_from_s3(
 ) -> Result<(S3BackedTapirReplica, S3BackedIrRecordStore), String> {
     use crate::backup::s3backup::S3BackupStorage;
     use crate::backup::storage::BackupStorage;
-    use crate::mvcc::disk::disk_io::OpenFlags;
+    use crate::storage::io::disk_io::OpenFlags;
     use crate::remote_store::cow_clone::clone_from_remote_lazy;
     use crate::remote_store::manifest_store::RemoteManifestStore;
     use crate::unified::combined::CombinedStoreInner;
@@ -188,7 +188,7 @@ pub fn open_production_stores_from_s3(
 
     // Open store with BufferedIo.
     let io_flags = OpenFlags { create: true, direct: false };
-    let mut inner = CombinedStoreInner::<String, String, crate::mvcc::disk::disk_io::BufferedIo>::open(
+    let mut inner = CombinedStoreInner::<String, String, crate::storage::io::disk_io::BufferedIo>::open(
         std::path::Path::new(&base_dir),
         io_flags,
         shard,

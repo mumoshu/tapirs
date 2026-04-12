@@ -7,8 +7,8 @@
 use std::time::Duration;
 
 use crate::backup::s3backup::S3BackupStorage;
-use crate::mvcc::disk::disk_io::OpenFlags;
-use crate::mvcc::disk::s3_caching_io::S3CachingIo;
+use crate::storage::io::disk_io::OpenFlags;
+use crate::storage::io::s3_caching_io::S3CachingIo;
 use crate::unified::combined::CombinedStoreInner;
 
 use super::manifest_store::RemoteManifestStore;

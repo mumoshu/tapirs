@@ -4,8 +4,8 @@
 //! → BackupDescriptor → CrossShardSnapshot → zero-copy clone → read replica
 //! refresh in a single linear test against a shared MinIO bucket.
 
-use crate::mvcc::disk::disk_io::OpenFlags;
-use crate::mvcc::disk::s3_caching_io::S3CachingIo;
+use crate::storage::io::disk_io::OpenFlags;
+use crate::storage::io::s3_caching_io::S3CachingIo;
 use crate::remote_store::backup_descriptor::create_backup;
 use crate::remote_store::cow_clone::clone_from_remote_lazy;
 use crate::remote_store::cross_shard_snapshot::create_cross_shard_snapshot;

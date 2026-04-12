@@ -1,6 +1,6 @@
 use crate::ir::OpId;
-use crate::mvcc::disk::disk_io::{DiskIo, OpenFlags};
-use crate::mvcc::disk::error::StorageError;
+use crate::storage::io::disk_io::{DiskIo, OpenFlags};
+use crate::storage::io::error::StorageError;
 use crate::IrClientId;
 use std::path::Path;
 

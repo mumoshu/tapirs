@@ -6,7 +6,7 @@ use crate::{
     ChannelRegistry, ChannelTransport, IrMembership,
     discovery::{InMemoryShardDirectory, ShardDirectory as _},
 };
-use crate::mvcc::disk::disk_io::{BufferedIo, OpenFlags};
+use crate::storage::io::disk_io::{BufferedIo, OpenFlags};
 use crate::remote_store::config::S3StorageConfig;
 use crate::remote_store::cross_shard_snapshot::{CrossShardSnapshot, ShardSnapshotInfo};
 use crate::store_defaults::{S3BackedTapirReplica, S3BackedIrRecordStore};

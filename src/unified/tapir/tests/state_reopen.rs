@@ -1,6 +1,6 @@
 use super::helpers::{make_txn, test_ts, test_txn_id};
-use crate::mvcc::disk::disk_io::OpenFlags;
-use crate::mvcc::disk::memory_io::MemoryIo;
+use crate::storage::io::disk_io::OpenFlags;
+use crate::storage::io::memory_io::MemoryIo;
 use crate::unified::tapir;
 
 #[test]

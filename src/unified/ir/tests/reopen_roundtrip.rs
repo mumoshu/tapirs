@@ -1,6 +1,6 @@
 use super::helpers::{test_op_id, test_ts, test_txn_id};
-use crate::mvcc::disk::disk_io::OpenFlags;
-use crate::mvcc::disk::memory_io::MemoryIo;
+use crate::storage::io::disk_io::OpenFlags;
+use crate::storage::io::memory_io::MemoryIo;
 use crate::unified::ir;
 use crate::unified::ir::record::{IrMemEntry, IrPayloadInline, IrState, PrepareRef, VlogEntryType};
 

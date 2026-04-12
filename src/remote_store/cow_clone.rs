@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::backup::storage::BackupStorage;
-use crate::mvcc::disk::s3_caching_io::{S3CacheConfig, register_s3_cache};
+use crate::storage::io::s3_caching_io::{S3CacheConfig, register_s3_cache};
 use crate::unified::wisckeylsm::manifest::{LsmManifestData, UnifiedManifest};
 
 use super::config::S3StorageConfig;
@@ -97,7 +97,7 @@ pub async fn clone_from_remote_lazy<S: BackupStorage>(
     super::open_remote::rebase_manifest_paths(&mut cloned, clone_base_dir);
 
     cloned
-        .save::<crate::mvcc::disk::disk_io::BufferedIo>(clone_base_dir)
+        .save::<crate::storage::io::disk_io::BufferedIo>(clone_base_dir)
         .map_err(|e| format!("save clone manifest: {e}"))?;
 
     // Active segment files for the clone are fresh (rewrite_manifest_for_clone

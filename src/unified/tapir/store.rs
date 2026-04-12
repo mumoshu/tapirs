@@ -1,6 +1,6 @@
-use crate::mvcc::disk::error::StorageError;
-use crate::mvcc::disk::disk_io::{DiskIo, OpenFlags};
-use crate::mvcc::disk::memtable::{CompositeKey, MaxValue};
+use crate::storage::io::error::StorageError;
+use crate::storage::io::disk_io::{DiskIo, OpenFlags};
+use crate::storage::io::memtable::{CompositeKey, MaxValue};
 use crate::occ::TransactionId as OccTransactionId;
 use crate::tapir::{Key, ShardNumber, Timestamp, Value};
 use crate::unified::tapir::occ_cache::{MvccQueries, OccCache, OccCacheState, OccCachedTransaction};
@@ -706,15 +706,15 @@ impl<
 
 #[cfg(test)]
 pub(crate) struct TapirStateRunner {
-    state: TapirState<String, String, crate::mvcc::disk::memory_io::MemoryIo>,
+    state: TapirState<String, String, crate::storage::io::memory_io::MemoryIo>,
     base_dir: PathBuf,
 }
 
 #[cfg(test)]
 impl TapirStateRunner {
     pub(crate) fn open(base_dir: PathBuf, io_flags: OpenFlags) -> Result<Self, StorageError> {
-        crate::mvcc::disk::memory_io::MemoryIo::create_dir_all(&base_dir)?;
-        let state = open::<String, String, crate::mvcc::disk::memory_io::MemoryIo>(
+        crate::storage::io::memory_io::MemoryIo::create_dir_all(&base_dir)?;
+        let state = open::<String, String, crate::storage::io::memory_io::MemoryIo>(
             &base_dir,
             io_flags,
             ShardNumber(0),
@@ -726,7 +726,7 @@ impl TapirStateRunner {
     }
 
     pub(crate) fn list_dir_files(&self) -> Vec<(String, usize)> {
-        let files = crate::mvcc::disk::memory_io::MemoryIo::list_files(&self.base_dir);
+        let files = crate::storage::io::memory_io::MemoryIo::list_files(&self.base_dir);
         let prefix = format!("{}/", self.base_dir.display());
         files
             .into_iter()
@@ -887,12 +887,12 @@ mod tests {
 
     #[test]
     fn recovery_rebuilds_occ_cache_from_prepared() {
-        let base_dir = crate::mvcc::disk::memory_io::MemoryIo::temp_path();
+        let base_dir = crate::storage::io::memory_io::MemoryIo::temp_path();
         let flags = OpenFlags { create: true, direct: false };
 
         // Phase 1: prepare a transaction, seal, then "crash" (drop state)
         {
-            let mut state: TapirState<String, String, crate::mvcc::disk::memory_io::MemoryIo> =
+            let mut state: TapirState<String, String, crate::storage::io::memory_io::MemoryIo> =
                 open(&base_dir, flags, ShardNumber(0)).unwrap();
 
             let txn = make_write_only_txn(vec![("x", Some("v1"))]);
@@ -904,7 +904,7 @@ mod tests {
 
         // Phase 2: reopen — OccCache should be rebuilt from prepared VlogLsm
         {
-            let mut state: TapirState<String, String, crate::mvcc::disk::memory_io::MemoryIo> =
+            let mut state: TapirState<String, String, crate::storage::io::memory_io::MemoryIo> =
                 open(&base_dir, flags, ShardNumber(0)).unwrap();
 
             // Another prepare writing to the same key "x" should conflict
@@ -920,12 +920,12 @@ mod tests {
 
     #[test]
     fn recovery_max_read_time_blocks_low_ts_prepare() {
-        let base_dir = crate::mvcc::disk::memory_io::MemoryIo::temp_path();
+        let base_dir = crate::storage::io::memory_io::MemoryIo::temp_path();
         let flags = OpenFlags { create: true, direct: false };
 
         // Phase 1: protected read (sets max_read_time), seal, "crash"
         {
-            let mut state: TapirState<String, String, crate::mvcc::disk::memory_io::MemoryIo> =
+            let mut state: TapirState<String, String, crate::storage::io::memory_io::MemoryIo> =
                 open(&base_dir, flags, ShardNumber(0)).unwrap();
 
             // Commit a key, then do a protected read at ts=20
@@ -948,7 +948,7 @@ mod tests {
 
         // Phase 2: reopen — max_read_time=20 should block prepares at ts < 20
         {
-            let mut state: TapirState<String, String, crate::mvcc::disk::memory_io::MemoryIo> =
+            let mut state: TapirState<String, String, crate::storage::io::memory_io::MemoryIo> =
                 open(&base_dir, flags, ShardNumber(0)).unwrap();
 
             let txn = make_write_only_txn(vec![("any_key", Some("v2"))]);

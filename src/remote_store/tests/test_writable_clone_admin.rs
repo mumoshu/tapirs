@@ -1,5 +1,5 @@
 use crate::ir::IrRecordStore;
-use crate::mvcc::disk::disk_io::OpenFlags;
+use crate::storage::io::disk_io::OpenFlags;
 use crate::remote_store::cross_shard_snapshot::{CrossShardSnapshot, ShardSnapshotInfo};
 use crate::remote_store::open_remote::prepare_local_lazy;
 use crate::tapir::store::TapirStore;
@@ -29,7 +29,7 @@ async fn clone_reads_source_data_via_production_s3_path() {
     // Source: open with S3 config so flush triggers sync_to_remote.
     let dir = tempfile::tempdir().unwrap();
     let mut inner =
-        CombinedStoreInner::<String, String, crate::mvcc::disk::disk_io::BufferedIo>::open(
+        CombinedStoreInner::<String, String, crate::storage::io::disk_io::BufferedIo>::open(
             dir.path(),
             OpenFlags { create: true, direct: false },
             shard,
@@ -85,7 +85,7 @@ async fn clone_reads_source_data_via_production_s3_path() {
     // Open the cloned store directly — exercises resolve_value chain
     // (MVCC entry → committed VlogLsm → IR inc_lsm → IO::Commit).
     let clone_inner =
-        CombinedStoreInner::<String, String, crate::mvcc::disk::disk_io::BufferedIo>::open(
+        CombinedStoreInner::<String, String, crate::storage::io::disk_io::BufferedIo>::open(
             &clone_dir.path().join("shard_0"),
             OpenFlags { create: true, direct: false },
             shard,
@@ -117,7 +117,7 @@ async fn ir_inc_segments_uploaded_after_view_changes() {
 
     let dir = tempfile::tempdir().unwrap();
     let mut inner =
-        CombinedStoreInner::<String, String, crate::mvcc::disk::disk_io::BufferedIo>::open(
+        CombinedStoreInner::<String, String, crate::storage::io::disk_io::BufferedIo>::open(
             dir.path(),
             OpenFlags { create: true, direct: false },
             shard,
@@ -165,7 +165,7 @@ async fn resolve_value_errors_on_broken_ir_chain() {
     // Source: write + flush with S3 config.
     let dir = tempfile::tempdir().unwrap();
     let mut inner =
-        CombinedStoreInner::<String, String, crate::mvcc::disk::disk_io::BufferedIo>::open(
+        CombinedStoreInner::<String, String, crate::storage::io::disk_io::BufferedIo>::open(
             dir.path(),
             OpenFlags { create: true, direct: false },
             shard,
@@ -197,7 +197,7 @@ async fn resolve_value_errors_on_broken_ir_chain() {
     std::fs::write(&ir_inc_path, b"").unwrap();
 
     let clone_inner =
-        CombinedStoreInner::<String, String, crate::mvcc::disk::disk_io::BufferedIo>::open(
+        CombinedStoreInner::<String, String, crate::storage::io::disk_io::BufferedIo>::open(
             clone_dir.path(),
             OpenFlags { create: true, direct: false },
             shard,
@@ -229,7 +229,7 @@ async fn clone_reads_after_full_start_view_install() {
 
     let dir = tempfile::tempdir().unwrap();
     let mut inner =
-        CombinedStoreInner::<String, String, crate::mvcc::disk::disk_io::BufferedIo>::open(
+        CombinedStoreInner::<String, String, crate::storage::io::disk_io::BufferedIo>::open(
             dir.path(),
             OpenFlags { create: true, direct: false },
             shard,
@@ -285,7 +285,7 @@ async fn clone_reads_after_full_start_view_install() {
     .unwrap();
 
     let clone_inner =
-        CombinedStoreInner::<String, String, crate::mvcc::disk::disk_io::BufferedIo>::open(
+        CombinedStoreInner::<String, String, crate::storage::io::disk_io::BufferedIo>::open(
             &clone_dir.path().join("shard_0"),
             OpenFlags { create: true, direct: false },
             shard,

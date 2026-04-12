@@ -5,7 +5,7 @@ use crate::backup::s3backup::S3BackupStorage;
 use crate::backup::storage::BackupStorage;
 use crate::ir::{IrRecordStore, OpId, RecordConsensusEntry, RecordEntryState,
     RecordInconsistentEntry, ViewNumber};
-use crate::mvcc::disk::disk_io::{BufferedIo, DiskIo, OpenFlags};
+use crate::storage::io::disk_io::{BufferedIo, DiskIo, OpenFlags};
 use crate::occ::{PrepareResult, Transaction, TransactionId};
 use crate::remote_store::config::S3StorageConfig;
 use crate::remote_store::manifest_store::RemoteManifestStore;

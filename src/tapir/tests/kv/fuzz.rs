@@ -239,9 +239,9 @@ fn fuzz_tapir_transactions() {
         .unwrap();
 
     rt.block_on(fuzz_tapir_transactions_inner(seed, |shard, linearizable| {
-        use crate::mvcc::disk::disk_io::OpenFlags;
-        use crate::mvcc::disk::faulty_disk_io::{DiskFaultConfig, FaultyDiskIo};
-        use crate::mvcc::disk::memory_io::MemoryIo;
+        use crate::storage::io::disk_io::OpenFlags;
+        use crate::storage::io::faulty_disk_io::{DiskFaultConfig, FaultyDiskIo};
+        use crate::storage::io::memory_io::MemoryIo;
         use crate::unified::combined::CombinedStoreInner;
 
         type FaultyMemIo = FaultyDiskIo<MemoryIo>;

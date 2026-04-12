@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::mvcc::disk::memory_io::MemoryIo;
+use crate::storage::io::memory_io::MemoryIo;
 use crate::tapir::store::TapirStore;
 use crate::unified::types::*;
 use crate::unified::UnifiedStore;

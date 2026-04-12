@@ -1,7 +1,7 @@
 use crate::ir::OpId;
-use crate::mvcc::disk::disk_io::DiskIo;
-use crate::mvcc::disk::error::StorageError;
-use crate::mvcc::disk::memtable::{CompositeKey, MaxValue};
+use crate::storage::io::disk_io::DiskIo;
+use crate::storage::io::error::StorageError;
+use crate::storage::io::memtable::{CompositeKey, MaxValue};
 use crate::occ::{
     PrepareResult, SharedTransaction,
     Transaction as OccTransaction, TransactionId,

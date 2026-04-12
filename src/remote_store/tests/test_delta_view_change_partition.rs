@@ -1,8 +1,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::mvcc::disk::disk_io::OpenFlags;
-use crate::mvcc::disk::memory_io::MemoryIo;
+use crate::storage::io::disk_io::OpenFlags;
+use crate::storage::io::memory_io::MemoryIo;
 use crate::tapir::{ShardNumber, Sharded};
 use crate::transport::{FaultyChannelTransport, LatencyConfig, NetworkFaultConfig};
 use crate::unified::combined::CombinedStoreInner;

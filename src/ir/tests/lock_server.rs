@@ -3,8 +3,8 @@ use crate::{
     ChannelRegistry, ChannelTransport, IrClient, IrClientId, IrMembership, IrMembershipSize,
     IrOpId, IrRecordIter, IrRecordView, IrReplica, IrReplicaUpcalls, Transport,
 };
-use crate::mvcc::disk::disk_io::OpenFlags;
-use crate::mvcc::disk::memory_io::MemoryIo;
+use crate::storage::io::disk_io::OpenFlags;
+use crate::storage::io::memory_io::MemoryIo;
 use crate::unified::ir::ir_record_store::{PersistentIrRecordStore, PersistentPayload};
 use rand::{seq::IteratorRandom, Rng, SeedableRng};
 use rand::rngs::StdRng;

@@ -1,7 +1,7 @@
 use super::helpers::*;
 use crate::ir::OpId;
-use crate::mvcc::disk::disk_io::{DiskIo, OpenFlags};
-use crate::mvcc::disk::memory_io::MemoryIo;
+use crate::storage::io::disk_io::{DiskIo, OpenFlags};
+use crate::storage::io::memory_io::MemoryIo;
 use crate::unified::ir::record::{
     IrMemEntry, IrPayloadInline, IrState, PrepareRef, VlogEntryType,
 };

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::mvcc::disk::disk_io::{BufferedIo, OpenFlags};
+use crate::storage::io::disk_io::{BufferedIo, OpenFlags};
 use crate::unified::tapir::store as tapir_store;
 
 use super::{

@@ -3,7 +3,7 @@
 pub mod backup;
 pub mod discovery;
 mod ir;
-mod mvcc;
+pub mod storage;
 pub mod node;
 pub mod nodecluster;
 mod occ;
@@ -36,13 +36,13 @@ pub use ir::{
     ReplicaMetrics as IrReplicaMetrics, ReplicaUpcalls as IrReplicaUpcalls,
     SharedView as IrSharedView, View as IrView, ViewNumber as IrViewNumber,
 };
-pub use mvcc::disk::StorageError;
-pub use mvcc::disk::disk_io::{BufferedIo, OpenFlags as DiskOpenFlags};
-pub use mvcc::disk::memory_io::MemoryIo;
+pub use storage::io::StorageError;
+pub use storage::io::disk_io::{BufferedIo, OpenFlags as DiskOpenFlags};
+pub use storage::io::memory_io::MemoryIo;
 #[cfg(test)]
-pub use mvcc::disk::memory_io::MemoryIo as DefaultDiskIo;
+pub use storage::io::memory_io::MemoryIo as DefaultDiskIo;
 #[cfg(not(test))]
-pub use mvcc::disk::disk_io::BufferedIo as DefaultDiskIo;
+pub use storage::io::disk_io::BufferedIo as DefaultDiskIo;
 pub use occ::{
     PrepareResult as OccPrepareResult, ScanEntry as OccScanEntry,
     Timestamp as OccTimestamp, SharedTransaction as OccSharedTransaction,

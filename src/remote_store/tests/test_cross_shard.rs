@@ -1,5 +1,5 @@
-use crate::mvcc::disk::disk_io::OpenFlags;
-use crate::mvcc::disk::s3_caching_io::S3CachingIo;
+use crate::storage::io::disk_io::OpenFlags;
+use crate::storage::io::s3_caching_io::S3CachingIo;
 use crate::remote_store::cross_shard_snapshot::create_cross_shard_snapshot;
 
 use crate::remote_store::open_remote::prepare_local_lazy_at_view;

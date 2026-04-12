@@ -1,6 +1,6 @@
 use crate::ir::OpId;
-use crate::mvcc::disk::disk_io::DiskIo;
-use crate::mvcc::disk::error::StorageError;
+use crate::storage::io::disk_io::DiskIo;
+use crate::storage::io::error::StorageError;
 use crate::occ::TransactionId as OccTransactionId;
 use crate::tapir::Timestamp;
 use crate::unified::wisckeylsm::lsm::VlogLsm;

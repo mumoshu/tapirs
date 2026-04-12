@@ -37,7 +37,7 @@ pub enum CommittedReadError {
     /// A prepared-but-uncommitted write conflicts with this read.
     PrepareConflict,
     /// Internal storage error (e.g. missing IR inc segment, corrupt data).
-    StorageError(crate::mvcc::disk::StorageError),
+    StorageError(crate::storage::io::StorageError),
 }
 
 impl<TS: Timestamp> PrepareResult<TS> {

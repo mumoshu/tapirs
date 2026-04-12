@@ -35,9 +35,9 @@ pub mod record_handle;
 pub mod tapir_handle;
 
 use crate::ir::OpId;
-use crate::mvcc::disk::disk_io::{DiskIo, OpenFlags};
-use crate::mvcc::disk::error::StorageError;
-use crate::mvcc::disk::memtable::CompositeKey;
+use crate::storage::io::disk_io::{DiskIo, OpenFlags};
+use crate::storage::io::error::StorageError;
+use crate::storage::io::memtable::CompositeKey;
 use crate::occ::TransactionId;
 use crate::tapir::{Key, ShardNumber, Timestamp, Value, CO, CR, IO};
 use crate::tapir::store::{MinPrepareTimes, RecordDeltaDuringView};
@@ -427,8 +427,8 @@ impl<K: Key, V: Value, DIO: DiskIo> CombinedStoreInner<K, V, DIO> {
 mod tests {
     use super::*;
     use crate::ir::IrRecordStore;
-    use crate::mvcc::disk::disk_io::OpenFlags;
-    use crate::mvcc::disk::memory_io::MemoryIo;
+    use crate::storage::io::disk_io::OpenFlags;
+    use crate::storage::io::memory_io::MemoryIo;
 
     fn test_flags() -> OpenFlags {
         OpenFlags {
@@ -1115,8 +1115,8 @@ mod tests {
 
     mod ir_conformance {
         use crate::discovery::InMemoryShardDirectory;
-        use crate::mvcc::disk::disk_io::OpenFlags;
-        use crate::mvcc::disk::memory_io::MemoryIo;
+        use crate::storage::io::disk_io::OpenFlags;
+        use crate::storage::io::memory_io::MemoryIo;
         use crate::tapir;
         use crate::unified::combined::tapir_handle::CombinedTapirHandle;
         use crate::unified::combined::record_handle::CombinedRecordHandle;

@@ -1,8 +1,8 @@
 use std::path::Path;
 
 use crate::backup::storage::BackupStorage;
-use crate::mvcc::disk::error::StorageError;
-use crate::mvcc::disk::s3_caching_io::{S3CacheConfig, register_s3_cache};
+use crate::storage::io::error::StorageError;
+use crate::storage::io::s3_caching_io::{S3CacheConfig, register_s3_cache};
 use crate::unified::wisckeylsm::manifest::UnifiedManifest;
 
 use super::config::S3StorageConfig;
@@ -58,7 +58,7 @@ async fn prepare_from_manifest_bytes<S: BackupStorage>(
 
     // Save manifest locally so CombinedStoreInner::open() finds it.
     manifest
-        .save::<crate::mvcc::disk::disk_io::BufferedIo>(base_dir)
+        .save::<crate::storage::io::disk_io::BufferedIo>(base_dir)
         .map_err(|e: StorageError| format!("save manifest: {e}"))?;
 
     Ok(manifest)
@@ -127,7 +127,7 @@ fn prepare_lazy_from_bytes(
 
     // Save manifest locally so CombinedStoreInner::open() finds it.
     manifest
-        .save::<crate::mvcc::disk::disk_io::BufferedIo>(base_dir)
+        .save::<crate::storage::io::disk_io::BufferedIo>(base_dir)
         .map_err(|e: StorageError| format!("save manifest: {e}"))?;
 
     Ok(manifest)

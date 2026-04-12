@@ -1,4 +1,4 @@
-use crate::mvcc::disk::error::StorageError;
+use crate::storage::io::error::StorageError;
 use crate::occ::PrepareResult;
 use crate::tapir::Timestamp;
 use std::collections::BTreeMap;

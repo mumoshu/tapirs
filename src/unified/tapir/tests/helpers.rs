@@ -1,6 +1,6 @@
 use crate::ir::OpId;
-use crate::mvcc::disk::disk_io::OpenFlags;
-use crate::mvcc::disk::memory_io::MemoryIo;
+use crate::storage::io::disk_io::OpenFlags;
+use crate::storage::io::memory_io::MemoryIo;
 use crate::occ::{ScanEntry, SharedTransaction, Transaction, TransactionId};
 use crate::tapir::{ShardNumber, Sharded, Timestamp};
 use crate::unified::tapir::store::TapirState;

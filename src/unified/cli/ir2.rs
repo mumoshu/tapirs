@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::mvcc::disk::disk_io::{BufferedIo, OpenFlags};
+use crate::storage::io::disk_io::{BufferedIo, OpenFlags};
 use crate::unified::ir::ir_record_store::PersistentIrRecordStore;
 
 use super::Ir2Context;

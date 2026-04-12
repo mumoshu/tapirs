@@ -10,8 +10,8 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 
 use crate::backup::storage::BackupStorage;
-use crate::mvcc::disk::disk_io::OpenFlags;
-use crate::mvcc::disk::s3_caching_io::S3CachingIo;
+use crate::storage::io::disk_io::OpenFlags;
+use crate::storage::io::s3_caching_io::S3CachingIo;
 use crate::tapir::store::TapirStore;
 use crate::tapir::{ShardNumber, Timestamp};
 use crate::unified::combined::tapir_handle::CombinedTapirHandle;

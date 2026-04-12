@@ -4,8 +4,8 @@ use crate::ir::{
     RecordInconsistentEntry as InconsistentEntry,
     RecordIter, RecordView, ViewNumber,
 };
-use crate::mvcc::disk::disk_io::{DiskIo, OpenFlags};
-use crate::mvcc::disk::error::StorageError;
+use crate::storage::io::disk_io::{DiskIo, OpenFlags};
+use crate::storage::io::error::StorageError;
 use crate::unified::wisckeylsm::lsm::{IndexMode, VlogLsm};
 use crate::unified::wisckeylsm::manifest::UnifiedManifest;
 use crate::unified::wisckeylsm::types::ViewRange;
@@ -967,7 +967,7 @@ where
 mod tests {
     use super::*;
     use crate::ir::RecordEntryState as State;
-    use crate::mvcc::disk::memory_io::MemoryIo;
+    use crate::storage::io::memory_io::MemoryIo;
 
     type Store = PersistentIrRecordStore<String, String, String, MemoryIo>;
 

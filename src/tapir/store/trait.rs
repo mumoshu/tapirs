@@ -1,5 +1,5 @@
 use crate::ir::OpId;
-use crate::mvcc::disk::error::StorageError;
+use crate::storage::io::error::StorageError;
 use crate::occ::{PrepareResult, SharedTransaction, Transaction, TransactionId};
 use crate::tapir::{Key, LeaderRecordDelta, ShardNumber, Timestamp, Value};
 

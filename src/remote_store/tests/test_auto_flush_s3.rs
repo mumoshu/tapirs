@@ -1,6 +1,6 @@
 use crate::ir::IrRecordStore;
-use crate::mvcc::disk::disk_io::OpenFlags;
-use crate::mvcc::disk::s3_caching_io::S3CachingIo;
+use crate::storage::io::disk_io::OpenFlags;
+use crate::storage::io::s3_caching_io::S3CachingIo;
 use crate::remote_store::open_remote::prepare_local_lazy;
 use crate::tapir::{ShardNumber, Timestamp};
 use crate::tapir::store::TapirStore;
@@ -20,7 +20,7 @@ async fn auto_flush_uploads_to_s3() {
     let ts = Timestamp { time: 200, client_id: IrClientId(1) };
 
     let dir = tempfile::tempdir().unwrap();
-    let mut inner = CombinedStoreInner::<String, String, crate::mvcc::disk::disk_io::BufferedIo>::open(
+    let mut inner = CombinedStoreInner::<String, String, crate::storage::io::disk_io::BufferedIo>::open(
         dir.path(),
         OpenFlags { create: true, direct: false },
         shard,
