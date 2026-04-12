@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 pub mod aligned_buf;
 pub mod disk_io;
 pub mod error;

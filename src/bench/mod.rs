@@ -56,7 +56,7 @@
 //! run_bench::<PgResolver, PgWorkload>("postgresql://localhost/bench", &config).await;
 //! ```
 
-#![allow(dead_code, unused_imports)]
+#![allow(unused_imports)]
 
 mod cluster;
 mod executor;

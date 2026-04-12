@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use super::ops::TxnOps;
 use std::future::Future;
 use std::sync::Arc;

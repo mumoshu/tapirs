@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use super::ops::{Op, TxnOps};
 use super::WorkloadType;
 

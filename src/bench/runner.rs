@@ -1,4 +1,4 @@
-#![allow(dead_code, unused_imports)]
+#![allow(unused_imports)]
 
 use super::tapir_impl::{TapirResolver, TapirWorkload};
 use super::traits::{BenchWorkload, TargetResolver};

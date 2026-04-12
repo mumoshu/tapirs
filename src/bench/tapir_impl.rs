@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use super::traits::{BenchWorkload, TargetResolver};
 use super::{executor, ops::TxnOps, BenchRoutingClient, BenchTarget};
 use std::sync::Arc;

@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 /// A single operation within a transaction.
 #[derive(Clone)]
 pub enum Op {
