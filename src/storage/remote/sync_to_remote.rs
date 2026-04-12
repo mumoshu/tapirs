@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::backup::storage::BackupStorage;
-use crate::unified::wisckeylsm::manifest::UnifiedManifest;
+use crate::storage::wisckeylsm::manifest::UnifiedManifest;
 
 use super::manifest_store::RemoteManifestStore;
 use super::segment_store::RemoteSegmentStore;

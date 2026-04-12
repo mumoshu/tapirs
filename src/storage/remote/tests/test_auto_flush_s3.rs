@@ -1,10 +1,10 @@
 use crate::ir::IrRecordStore;
 use crate::storage::io::disk_io::OpenFlags;
 use crate::storage::io::s3_caching_io::S3CachingIo;
-use crate::remote_store::open_remote::prepare_local_lazy;
+use crate::storage::remote::open_remote::prepare_local_lazy;
 use crate::tapir::{ShardNumber, Timestamp};
 use crate::tapir::store::TapirStore;
-use crate::unified::combined::CombinedStoreInner;
+use crate::storage::combined::CombinedStoreInner;
 use crate::IrClientId;
 
 use super::helpers::{create_s3_stores, poll_manifest_versions, write_and_commit};

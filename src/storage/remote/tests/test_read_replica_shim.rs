@@ -43,7 +43,7 @@ async fn read_replica_shim_serves_reads() {
     let listen_addr = listener.local_addr().unwrap();
     drop(listener);
 
-    let source_s3 = crate::remote_store::config::S3StorageConfig {
+    let source_s3 = crate::storage::remote::config::S3StorageConfig {
         bucket: s3_config.bucket.clone(),
         prefix: s3_config.prefix.clone(),
         endpoint_url: s3_config.endpoint_url.clone(),

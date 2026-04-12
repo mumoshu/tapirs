@@ -1,4 +1,4 @@
-use crate::remote_store::cross_shard_snapshot::create_cross_shard_snapshot;
+use crate::storage::remote::cross_shard_snapshot::create_cross_shard_snapshot;
 use crate::tapir::store::TapirStore;
 use crate::tapir::{ShardNumber, Timestamp};
 use crate::IrClientId;

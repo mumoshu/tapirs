@@ -1,9 +1,9 @@
 use crate::storage::io::disk_io::OpenFlags;
 use crate::storage::io::s3_caching_io::S3CachingIo;
-use crate::remote_store::cow_clone::clone_from_remote_lazy;
+use crate::storage::remote::cow_clone::clone_from_remote_lazy;
 use crate::tapir::{ShardNumber, Timestamp};
 use crate::tapir::store::TapirStore;
-use crate::unified::combined::CombinedStoreInner;
+use crate::storage::combined::CombinedStoreInner;
 use crate::IrClientId;
 
 use super::helpers::{

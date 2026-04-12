@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use crate::remote_store::cross_shard_snapshot::{CrossShardSnapshot, ShardSnapshotInfo};
+use crate::storage::remote::cross_shard_snapshot::{CrossShardSnapshot, ShardSnapshotInfo};
 use crate::tapir::{ShardNumber, Timestamp};
 use crate::tapir::store::TapirStore;
 use crate::IrClientId;

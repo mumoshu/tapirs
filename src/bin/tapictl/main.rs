@@ -690,8 +690,8 @@ fn main() {
             rt.block_on(async {
                 use tapirs::backup::s3backup::S3BackupStorage;
                 use tapirs::backup::storage::BackupStorage;
-                use tapirs::remote_store::cross_shard_snapshot::create_cross_shard_snapshot;
-                use tapirs::remote_store::manifest_store::RemoteManifestStore;
+                use tapirs::storage::remote::cross_shard_snapshot::create_cross_shard_snapshot;
+                use tapirs::storage::remote::manifest_store::RemoteManifestStore;
 
                 let (bucket, prefix) =
                     S3BackupStorage::parse_s3_uri(&dir)?;
@@ -706,7 +706,7 @@ fn main() {
                 let snapshot =
                     create_cross_shard_snapshot(&man_store, &shard_names).await?;
 
-                use tapirs::remote_store::cross_shard_snapshot::save_snapshot;
+                use tapirs::storage::remote::cross_shard_snapshot::save_snapshot;
                 let name = save_snapshot(&storage, &snapshot).await
                     .map_err(|e| format!("save snapshot to S3: {e}"))?;
                 // Name to stdout for scripting, JSON to stderr for debugging.

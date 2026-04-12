@@ -1,11 +1,11 @@
 use crate::storage::io::disk_io::OpenFlags;
 use crate::storage::io::s3_caching_io::S3CachingIo;
-use crate::remote_store::cross_shard_snapshot::create_cross_shard_snapshot;
+use crate::storage::remote::cross_shard_snapshot::create_cross_shard_snapshot;
 
-use crate::remote_store::open_remote::prepare_local_lazy_at_view;
+use crate::storage::remote::open_remote::prepare_local_lazy_at_view;
 use crate::tapir::{ShardNumber, Timestamp};
 use crate::tapir::store::TapirStore;
-use crate::unified::combined::CombinedStoreInner;
+use crate::storage::combined::CombinedStoreInner;
 use crate::IrClientId;
 
 use super::helpers::{

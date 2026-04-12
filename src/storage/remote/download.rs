@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::backup::storage::BackupStorage;
-use crate::unified::wisckeylsm::manifest::{LsmManifestData, UnifiedManifest};
+use crate::storage::wisckeylsm::manifest::{LsmManifestData, UnifiedManifest};
 
 use super::segment_store::RemoteSegmentStore;
 
@@ -85,7 +85,7 @@ pub async fn download_all_files<S: BackupStorage>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::unified::wisckeylsm::types::VlogSegmentMeta;
+    use crate::storage::wisckeylsm::types::VlogSegmentMeta;
 
     #[test]
     fn all_file_names_collects_segments_and_ssts() {
@@ -96,7 +96,7 @@ mod tests {
             views: vec![],
             total_size: 100,
         });
-        m.mvcc.sst_metas.push(crate::unified::wisckeylsm::sst::SstMeta {
+        m.mvcc.sst_metas.push(crate::storage::wisckeylsm::sst::SstMeta {
             id: 0,
             path: "/data/comb_mvcc_sst_0000.db".into(),
             num_entries: 10,

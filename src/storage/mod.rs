@@ -5,4 +5,5 @@ pub(crate) mod ir;
 pub(crate) mod tapir;
 pub(crate) mod wisckeylsm;
 pub mod types;
+pub mod remote;
 

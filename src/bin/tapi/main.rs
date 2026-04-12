@@ -92,9 +92,9 @@ pub struct S3Args {
 }
 
 impl S3Args {
-    pub fn to_s3_config(&self) -> Option<tapirs::remote_store::config::S3StorageConfig> {
+    pub fn to_s3_config(&self) -> Option<tapirs::storage::remote::config::S3StorageConfig> {
         self.s3_bucket.as_ref().map(|bucket| {
-            tapirs::remote_store::config::S3StorageConfig {
+            tapirs::storage::remote::config::S3StorageConfig {
                 bucket: bucket.clone(),
                 prefix: self.s3_prefix.clone(),
                 endpoint_url: self.s3_endpoint.clone(),

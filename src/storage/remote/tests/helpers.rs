@@ -7,14 +7,14 @@ use crate::ir::{IrRecordStore, OpId, RecordConsensusEntry, RecordEntryState,
     RecordInconsistentEntry, ViewNumber};
 use crate::storage::io::disk_io::{BufferedIo, DiskIo, OpenFlags};
 use crate::occ::{PrepareResult, Transaction, TransactionId};
-use crate::remote_store::config::S3StorageConfig;
-use crate::remote_store::manifest_store::RemoteManifestStore;
-use crate::remote_store::segment_store::RemoteSegmentStore;
+use crate::storage::remote::config::S3StorageConfig;
+use crate::storage::remote::manifest_store::RemoteManifestStore;
+use crate::storage::remote::segment_store::RemoteSegmentStore;
 use crate::tapir::{CO, CR, IO, ShardNumber, Timestamp};
 use crate::tapir::store::TapirStore;
-use crate::unified::combined::record_handle::CombinedRecordHandle;
-use crate::unified::combined::tapir_handle::CombinedTapirHandle;
-use crate::unified::combined::CombinedStoreInner;
+use crate::storage::combined::record_handle::CombinedRecordHandle;
+use crate::storage::combined::tapir_handle::CombinedTapirHandle;
+use crate::storage::combined::CombinedStoreInner;
 use crate::IrClientId;
 
 static COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -164,12 +164,12 @@ pub async fn flush_and_upload(
     tapir.flush();
     let manifest = tapir.inner.lock().unwrap().tapir_manifest.clone();
     // Force-upload all files (sealed segments may overwrite stale active copies).
-    let all_files = crate::remote_store::upload::all_manifest_files(&manifest);
-    crate::remote_store::upload::upload_segments_force(seg_store, shard, base_dir, &all_files)
+    let all_files = crate::storage::remote::upload::all_manifest_files(&manifest);
+    crate::storage::remote::upload::upload_segments_force(seg_store, shard, base_dir, &all_files)
         .await
         .unwrap();
     let manifest_bytes = bitcode::serialize(&manifest).unwrap();
-    crate::remote_store::upload::upload_manifest_snapshot(
+    crate::storage::remote::upload::upload_manifest_snapshot(
         man_store, shard, manifest.current_view, &manifest_bytes,
     )
     .await
@@ -212,11 +212,11 @@ pub async fn create_s3_stores(
     S3StorageConfig,
     S3BackupStorage,
 ) {
-    let storage = crate::remote_store::test_helpers::minio::test_s3_storage(test_name).await;
+    let storage = crate::storage::remote::test_helpers::minio::test_s3_storage(test_name).await;
     let s3_config = S3StorageConfig {
-        bucket: crate::remote_store::test_helpers::minio::create_test_bucket(test_name).await,
+        bucket: crate::storage::remote::test_helpers::minio::create_test_bucket(test_name).await,
         prefix: String::new(),
-        endpoint_url: Some(crate::remote_store::test_helpers::minio::minio_endpoint().to_string()),
+        endpoint_url: Some(crate::storage::remote::test_helpers::minio::minio_endpoint().to_string()),
         region: None,
     };
     let seg_store = RemoteSegmentStore::new(storage.sub(""));

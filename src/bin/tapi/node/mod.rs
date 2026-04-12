@@ -20,7 +20,7 @@ pub async fn run(
     discovery_json: Option<String>,
     discovery_tapir_endpoint: Option<String>,
     #[cfg(feature = "tls")] tls_config: Option<tapirs::tls::TlsConfig>,
-    s3_config: Option<tapirs::remote_store::config::S3StorageConfig>,
+    s3_config: Option<tapirs::storage::remote::config::S3StorageConfig>,
 ) {
     let persist_dir = cfg
         .persist_dir

@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::backup::storage::BackupStorage;
-use crate::unified::wisckeylsm::manifest::UnifiedManifest;
+use crate::storage::wisckeylsm::manifest::UnifiedManifest;
 
 use super::ghost_filter::GhostFilter;
 use super::manifest_store::RemoteManifestStore;

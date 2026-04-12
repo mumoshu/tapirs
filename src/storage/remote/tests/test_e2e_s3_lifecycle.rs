@@ -6,15 +6,15 @@
 
 use crate::storage::io::disk_io::OpenFlags;
 use crate::storage::io::s3_caching_io::S3CachingIo;
-use crate::remote_store::backup_descriptor::create_backup;
-use crate::remote_store::cow_clone::clone_from_remote_lazy;
-use crate::remote_store::cross_shard_snapshot::create_cross_shard_snapshot;
-use crate::remote_store::read_replica::ReadReplica;
-use crate::remote_store::read_replica_refresh::refresh_once;
-use crate::remote_store::upload::diff_manifests;
+use crate::storage::remote::backup_descriptor::create_backup;
+use crate::storage::remote::cow_clone::clone_from_remote_lazy;
+use crate::storage::remote::cross_shard_snapshot::create_cross_shard_snapshot;
+use crate::storage::remote::read_replica::ReadReplica;
+use crate::storage::remote::read_replica_refresh::refresh_once;
+use crate::storage::remote::upload::diff_manifests;
 use crate::tapir::store::TapirStore;
 use crate::tapir::{ShardNumber, Timestamp};
-use crate::unified::combined::CombinedStoreInner;
+use crate::storage::combined::CombinedStoreInner;
 use crate::IrClientId;
 
 use super::helpers::{create_s3_stores, flush_and_upload, open_buffered_store, write_and_commit};

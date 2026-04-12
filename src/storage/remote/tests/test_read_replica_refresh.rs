@@ -1,5 +1,5 @@
-use crate::remote_store::read_replica::ReadReplica;
-use crate::remote_store::read_replica_refresh::refresh_once;
+use crate::storage::remote::read_replica::ReadReplica;
+use crate::storage::remote::read_replica_refresh::refresh_once;
 use crate::tapir::{ShardNumber, Timestamp};
 use crate::tapir::store::TapirStore;
 use crate::IrClientId;

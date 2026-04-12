@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::backup::storage::BackupStorage;
-use crate::unified::wisckeylsm::manifest::{LsmManifestData, UnifiedManifest};
+use crate::storage::wisckeylsm::manifest::{LsmManifestData, UnifiedManifest};
 
 use super::manifest_store::RemoteManifestStore;
 use super::segment_store::RemoteSegmentStore;
@@ -169,8 +169,8 @@ pub async fn upload_manifest_snapshot<S: BackupStorage>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::unified::wisckeylsm::manifest::LsmManifestData;
-    use crate::unified::wisckeylsm::types::VlogSegmentMeta;
+    use crate::storage::wisckeylsm::manifest::LsmManifestData;
+    use crate::storage::wisckeylsm::types::VlogSegmentMeta;
 
     fn make_lsm(seg_ids: &[u64], sst_ids: &[u64]) -> LsmManifestData {
         let mut data = LsmManifestData::new();
@@ -183,7 +183,7 @@ mod tests {
             });
         }
         for &id in sst_ids {
-            data.sst_metas.push(crate::unified::wisckeylsm::sst::SstMeta {
+            data.sst_metas.push(crate::storage::wisckeylsm::sst::SstMeta {
                 id,
                 path: format!("sst_{id:04}.db").into(),
                 num_entries: 10,

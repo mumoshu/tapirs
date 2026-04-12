@@ -14,8 +14,8 @@ use crate::storage::io::disk_io::OpenFlags;
 use crate::storage::io::s3_caching_io::S3CachingIo;
 use crate::tapir::store::TapirStore;
 use crate::tapir::{ShardNumber, Timestamp};
-use crate::unified::combined::tapir_handle::CombinedTapirHandle;
-use crate::unified::combined::CombinedStoreInner;
+use crate::storage::combined::tapir_handle::CombinedTapirHandle;
+use crate::storage::combined::CombinedStoreInner;
 
 use super::config::S3StorageConfig;
 use super::manifest_store::RemoteManifestStore;

@@ -3,7 +3,7 @@ use std::path::Path;
 use crate::backup::storage::BackupStorage;
 use crate::storage::io::error::StorageError;
 use crate::storage::io::s3_caching_io::{S3CacheConfig, register_s3_cache};
-use crate::unified::wisckeylsm::manifest::UnifiedManifest;
+use crate::storage::wisckeylsm::manifest::UnifiedManifest;
 
 use super::config::S3StorageConfig;
 use super::download::download_all_files;
@@ -145,7 +145,7 @@ pub(crate) fn rebase_manifest_paths(manifest: &mut UnifiedManifest, base_dir: &P
     rebase_lsm_paths(&mut manifest.ir_con, base_dir);
 }
 
-fn rebase_lsm_paths(data: &mut crate::unified::wisckeylsm::manifest::LsmManifestData, base_dir: &Path) {
+fn rebase_lsm_paths(data: &mut crate::storage::wisckeylsm::manifest::LsmManifestData, base_dir: &Path) {
     for seg in &mut data.sealed_vlog_segments {
         if let Some(name) = seg.path.file_name() {
             seg.path = base_dir.join(name);
@@ -163,7 +163,7 @@ fn rebase_lsm_paths(data: &mut crate::unified::wisckeylsm::manifest::LsmManifest
 mod tests {
     use super::*;
     use crate::backup::local::LocalBackupStorage;
-    use crate::unified::wisckeylsm::types::VlogSegmentMeta;
+    use crate::storage::wisckeylsm::types::VlogSegmentMeta;
 
     #[tokio::test(flavor = "current_thread")]
     async fn prepare_local_from_remote_roundtrip() {

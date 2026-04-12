@@ -7,11 +7,11 @@ use crate::{
     discovery::{InMemoryShardDirectory, ShardDirectory as _},
 };
 use crate::storage::io::disk_io::{BufferedIo, OpenFlags};
-use crate::remote_store::config::S3StorageConfig;
-use crate::remote_store::cross_shard_snapshot::{CrossShardSnapshot, ShardSnapshotInfo};
+use crate::storage::remote::config::S3StorageConfig;
+use crate::storage::remote::cross_shard_snapshot::{CrossShardSnapshot, ShardSnapshotInfo};
 use crate::store_defaults::{S3BackedTapirReplica, S3BackedIrRecordStore};
 use crate::tapir::{ShardNumber, Sharded};
-use crate::unified::combined::CombinedStoreInner;
+use crate::storage::combined::CombinedStoreInner;
 use crate::IrClientId;
 
 use super::helpers::{create_s3_stores, poll_manifest_versions};
@@ -304,7 +304,7 @@ async fn e2e_source_write_clone_quorum_read() {
     // Diagnostic: check what's in the S3 manifest for ir_inc
     {
         let man_bytes = man_store.download_manifest("shard_0", manifest_view).await.unwrap();
-        let manifest: crate::unified::wisckeylsm::manifest::UnifiedManifest = bitcode::deserialize(&man_bytes).unwrap();
+        let manifest: crate::storage::wisckeylsm::manifest::UnifiedManifest = bitcode::deserialize(&man_bytes).unwrap();
         eprintln!("[e2e] ir_inc: sealed_segs={} active_id={} active_offset={} sst_metas={}",
             manifest.ir_inc.sealed_vlog_segments.len(),
             manifest.ir_inc.active_segment_id,

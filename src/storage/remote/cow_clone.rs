@@ -2,7 +2,7 @@ use std::path::Path;
 
 use crate::backup::storage::BackupStorage;
 use crate::storage::io::s3_caching_io::{S3CacheConfig, register_s3_cache};
-use crate::unified::wisckeylsm::manifest::{LsmManifestData, UnifiedManifest};
+use crate::storage::wisckeylsm::manifest::{LsmManifestData, UnifiedManifest};
 
 use super::config::S3StorageConfig;
 use super::manifest_store::RemoteManifestStore;
@@ -24,7 +24,7 @@ fn rewrite_lsm_active(label: &str, data: &mut LsmManifestData) {
     // If the source's active segment has data, seal it as a sealed segment
     // in the clone manifest. Otherwise the clone can't find the data.
     if data.active_write_offset > 0 {
-        use crate::unified::wisckeylsm::types::VlogSegmentMeta;
+        use crate::storage::wisckeylsm::types::VlogSegmentMeta;
         data.sealed_vlog_segments.push(VlogSegmentMeta {
             segment_id: data.active_segment_id,
             path: super::download::active_vlog_name(label, data.active_segment_id).into(),
@@ -124,7 +124,7 @@ pub async fn clone_from_remote_lazy<S: BackupStorage>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::unified::wisckeylsm::types::VlogSegmentMeta;
+    use crate::storage::wisckeylsm::types::VlogSegmentMeta;
 
     #[test]
     fn rewrite_advances_active_ids() {
@@ -170,7 +170,7 @@ mod tests {
     async fn clone_rejects_discovery_manifest() {
         use crate::backup::local::LocalBackupStorage;
         use crate::backup::storage::BackupStorage;
-        use crate::remote_store::manifest_store::RemoteManifestStore;
+        use crate::storage::remote::manifest_store::RemoteManifestStore;
 
         let dir = tempfile::tempdir().unwrap();
         let storage = LocalBackupStorage::new(dir.path().join("remote").to_str().unwrap());
@@ -185,7 +185,7 @@ mod tests {
         man_store.upload_manifest("shard_0", 1, &bytes).await.unwrap();
 
 
-        let s3_config = crate::remote_store::config::S3StorageConfig {
+        let s3_config = crate::storage::remote::config::S3StorageConfig {
             bucket: String::new(),
             prefix: String::new(),
             endpoint_url: None,
@@ -207,7 +207,7 @@ mod tests {
     async fn clone_accepts_data_manifest() {
         use crate::backup::local::LocalBackupStorage;
         use crate::backup::storage::BackupStorage;
-        use crate::remote_store::manifest_store::RemoteManifestStore;
+        use crate::storage::remote::manifest_store::RemoteManifestStore;
 
         let dir = tempfile::tempdir().unwrap();
         let storage = LocalBackupStorage::new(dir.path().join("remote").to_str().unwrap());
@@ -222,7 +222,7 @@ mod tests {
         man_store.upload_manifest("shard_0", 1, &bytes).await.unwrap();
 
 
-        let s3_config = crate::remote_store::config::S3StorageConfig {
+        let s3_config = crate::storage::remote::config::S3StorageConfig {
             bucket: String::new(),
             prefix: String::new(),
             endpoint_url: None,

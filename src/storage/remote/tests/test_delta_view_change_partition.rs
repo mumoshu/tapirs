@@ -5,8 +5,8 @@ use crate::storage::io::disk_io::OpenFlags;
 use crate::storage::io::memory_io::MemoryIo;
 use crate::tapir::{ShardNumber, Sharded};
 use crate::transport::{FaultyChannelTransport, LatencyConfig, NetworkFaultConfig};
-use crate::unified::combined::CombinedStoreInner;
-use crate::unified::combined::record_handle::CombinedRecordHandle;
+use crate::storage::combined::CombinedStoreInner;
+use crate::storage::combined::record_handle::CombinedRecordHandle;
 use crate::{
     ChannelRegistry, IrMembership, TapirReplica,
     discovery::{InMemoryShardDirectory, ShardDirectory as _},
