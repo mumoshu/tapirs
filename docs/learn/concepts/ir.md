@@ -24,7 +24,7 @@
 
 **IR guarantees:** IR guarantees four properties ([Paper](https://syslab.cs.washington.edu/papers/tapir-tr-v2.pdf) §3.1.2): P1 (fault tolerance) — every successful operation is in the record of at least one replica in any f+1 quorum; P2 (visibility) — for any two consensus operations, at least one is visible to the other; P3 (consensus results) — successful consensus results persist unless explicitly modified by Merge; P4 (liveness) — all operations eventually execute if all replicas are non-faulty. View changes are coordinated by a per-view leader that merges f+1 records and syncs the result (Paper §3.2.2). Any replica or client can initiate a view change.
 
-**Paper references:** [Paper](https://syslab.cs.washington.edu/papers/tapir-tr-v2.pdf): §3 (IR), §3.2 (view change), §3.2.3 (client recovery), §3.3 (correctness proof). Deep-dive: [Protocol](../internals/protocol-tapir.md). Next: [OCC](occ.md). Back to [Concepts](README.md).
+**Paper references:** [Paper](https://syslab.cs.washington.edu/papers/tapir-tr-v2.pdf): §3 (IR), §3.2 (view change), §3.2.3 (client recovery), §3.3 (correctness proof). Deep-dive: [Protocol](../internals/protocol-tapir.md). For how the IR record shares on-disk storage with TAPIR state, see [Combined store](../internals/combined-store.md). Next: [OCC](occ.md). Back to [Concepts](README.md).
 
 | Term | Definition (Paper reference) | Where it appears in tapirs |
 |------|---------------------|-----------------|
