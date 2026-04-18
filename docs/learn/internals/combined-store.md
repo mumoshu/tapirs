@@ -82,3 +82,4 @@ The design property that makes both 1 and 2 tractable: TAPIR's `prepared` / `com
 - [TAPIR concepts](../concepts/tapir.md) — prepare/commit lifecycle that produces these entries.
 - [tapictl compact shard](../../operate/cli-tapictl-compact.md) — how the accumulated state is reclaimed.
 - [Roadmap: unified manifest write](../roadmap/unified-manifest-write.md) — a proposal to eliminate the seal-gap described above by collapsing the two manifest writes into one.
+- [Roadmap: segment-install startup and recovery](../roadmap/segment-install-startup-recovery.md) — a proposal to eliminate per-op replay in shard-compaction destinations, backup restore, and OccCache rebuild by reusing the view-change segment-install pattern.

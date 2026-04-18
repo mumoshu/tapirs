@@ -20,3 +20,4 @@ Items remain here until either landed (then removed, with a pointer from the sup
 
 - [Unified manifest write — eliminate IR/TAPIR seal gap](unified-manifest-write.md) — collapse the two sequential manifest fsyncs in a combined-store flush into one, eliminating the crash window where the persisted manifest references fresh IR but stale TAPIR state.
 - [Bounded-history compaction](bounded-history-compaction.md) — extend `tapictl compact shard` with `--drop-old-versions-before <TS>` so superseded MVCC versions are dropped instead of being re-shipped to fresh replicas.
+- [Segment-install startup and recovery](segment-install-startup-recovery.md) — extend the view-change segment-install pattern to shard-compaction destinations, backup restore, and warm-start OccCache rebuild — reducing O(N_ops) replays to O(bytes_shipped).
